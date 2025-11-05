@@ -1,0 +1,34 @@
+[package]
+name = "composable-rust-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Core traits and types for the Composable Rust architecture"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Async
+tokio = { workspace = true, features = ["sync"] }
+futures = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+bincode = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# Utilities
+smallvec = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tokio-test = { workspace = true }

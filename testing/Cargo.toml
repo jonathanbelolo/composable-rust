@@ -1,0 +1,37 @@
+[package]
+name = "composable-rust-testing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Testing utilities and helpers for the Composable Rust architecture"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Local dependencies
+composable-rust-core = { path = "../core" }
+composable-rust-runtime = { path = "../runtime" }
+
+# Async
+tokio = { workspace = true }
+futures = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# Testing
+proptest = { workspace = true }
+tokio-test = { workspace = true }
+
+# Observability
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+# No additional dev dependencies needed for testing crate

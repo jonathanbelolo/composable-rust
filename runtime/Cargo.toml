@@ -1,0 +1,39 @@
+[package]
+name = "composable-rust-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Runtime implementation for the Composable Rust architecture (Store and effect execution)"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Local dependencies
+composable-rust-core = { path = "../core" }
+
+# Async
+tokio = { workspace = true }
+futures = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+bincode = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Observability
+tracing = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tokio-test = { workspace = true }
+tracing-subscriber = { workspace = true }

@@ -1,0 +1,22 @@
+# Rust 2024 edition
+edition = "2024"
+
+# Style preferences (stable features only)
+max_width = 100
+hard_tabs = false
+tab_spaces = 4
+newline_style = "Unix"
+
+# Function definitions
+fn_params_layout = "Tall"
+
+# Match arms
+match_block_trailing_comma = true
+
+# Chains
+chain_width = 60
+
+# Misc
+use_try_shorthand = true
+use_field_init_shorthand = true
+force_explicit_abi = true
