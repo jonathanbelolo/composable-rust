@@ -37,3 +37,8 @@ chrono = { workspace = true }
 proptest = { workspace = true }
 tokio-test = { workspace = true }
 tracing-subscriber = { workspace = true }
+criterion = { workspace = true, features = ["async_tokio"] }
+
+[[bench]]
+name = "phase1_benchmarks"
+harness = false
