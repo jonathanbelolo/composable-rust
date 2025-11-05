@@ -1,0 +1,37 @@
+[package]
+name = "counter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Counter example demonstrating the Composable Rust architecture"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# Local dependencies
+composable-rust-core = { path = "../../core" }
+composable-rust-runtime = { path = "../../runtime" }
+composable-rust-testing = { path = "../../testing" }
+
+# Async
+tokio = { workspace = true }
+
+# Observability
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tokio-test = { workspace = true }
+
+[[bin]]
+name = "counter"
+path = "src/main.rs"

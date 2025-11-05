@@ -4,6 +4,7 @@ members = [
     "core",
     "runtime",
     "testing",
+    "examples/counter",
 ]
 
 [workspace.package]
