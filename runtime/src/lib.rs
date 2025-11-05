@@ -679,6 +679,7 @@ mod tests {
         ProduceDelayedAction,
         ProduceParallelEffects,
         ProduceSequentialEffects,
+        ProducePanickingEffect,
     }
 
     // Test environment
@@ -738,6 +739,12 @@ mod tests {
                         Effect::Future(Box::pin(async { Some(TestAction::Increment) })),
                         Effect::Future(Box::pin(async { Some(TestAction::Decrement) })),
                     ])]
+                },
+                TestAction::ProducePanickingEffect => {
+                    // Return an effect that will panic when executed
+                    vec![Effect::Future(Box::pin(async {
+                        panic!("Intentional panic in effect for testing");
+                    }))]
                 },
             }
         }
@@ -907,5 +914,33 @@ mod tests {
         let _ = store2.send(TestAction::Increment).await;
         let value1 = store1.state(|s| s.value).await;
         assert_eq!(value1, 2);
+    }
+
+    #[tokio::test]
+    async fn test_effect_panic_isolation() {
+        // Test that a panic in an effect doesn't crash the Store
+        // This verifies our error handling strategy: effects fail gracefully
+        let state = TestState { value: 0 };
+        let store = Store::new(state, TestReducer, TestEnv);
+
+        // This action produces an effect that will panic
+        let mut handle = store.send(TestAction::ProducePanickingEffect).await;
+
+        // Wait for the effect to complete (which includes the panic)
+        // The effect will panic, but it's isolated in the spawned task
+        handle.wait().await;
+
+        // Small delay to ensure the panicking task has finished
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Store should still be functional after effect panic
+        let _ = store.send(TestAction::Increment).await;
+        let value = store.state(|s| s.value).await;
+        assert_eq!(value, 1);
+
+        // Can send multiple actions after panic
+        let _ = store.send(TestAction::Increment).await;
+        let value = store.state(|s| s.value).await;
+        assert_eq!(value, 2);
     }
 }

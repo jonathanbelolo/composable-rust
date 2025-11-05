@@ -268,6 +268,118 @@ pub mod effect {
         pub const fn chain(effects: Vec<Effect<Action>>) -> Effect<Action> {
             Effect::Sequential(effects)
         }
+
+        /// Transform the action type of this effect
+        ///
+        /// This is useful for composing effects from different reducers or
+        /// wrapping actions in a higher-level action type.
+        ///
+        /// # Type Parameters
+        ///
+        /// - `B`: The target action type
+        /// - `F`: Function that transforms `Action` to `B`
+        ///
+        /// # Arguments
+        ///
+        /// - `f`: The transformation function
+        ///
+        /// # Returns
+        ///
+        /// A new effect that produces actions of type `B`
+        ///
+        /// # Examples
+        ///
+        /// ```rust,ignore
+        /// // Transform counter actions to app-level actions
+        /// let counter_effect: Effect<CounterAction> = Effect::Delay {
+        ///     duration: Duration::from_secs(1),
+        ///     action: Box::new(CounterAction::Increment),
+        /// };
+        ///
+        /// let app_effect: Effect<AppAction> = counter_effect.map(|a| AppAction::Counter(a));
+        /// ```
+        pub fn map<B, F>(self, f: F) -> Effect<B>
+        where
+            F: Fn(Action) -> B + Send + Sync + 'static + Clone,
+            Action: 'static,
+            B: Send + 'static,
+        {
+            match self {
+                Effect::None => Effect::None,
+                Effect::Parallel(effects) => {
+                    let mapped: Vec<Effect<B>> = effects
+                        .into_iter()
+                        .map(|e| {
+                            let f_clone = f.clone();
+                            map_effect(e, f_clone)
+                        })
+                        .collect();
+                    Effect::Parallel(mapped)
+                },
+                Effect::Sequential(effects) => {
+                    let mapped: Vec<Effect<B>> = effects
+                        .into_iter()
+                        .map(|e| {
+                            let f_clone = f.clone();
+                            map_effect(e, f_clone)
+                        })
+                        .collect();
+                    Effect::Sequential(mapped)
+                },
+                Effect::Delay { duration, action } => Effect::Delay {
+                    duration,
+                    action: Box::new(f(*action)),
+                },
+                Effect::Future(fut) => Effect::Future(Box::pin(async move {
+                    match fut.await {
+                        Some(action) => Some(f(action)),
+                        None => None,
+                    }
+                })),
+            }
+        }
+    }
+
+    // Helper function to avoid recursion in type system
+    fn map_effect<A, B, F>(effect: Effect<A>, f: F) -> Effect<B>
+    where
+        F: Fn(A) -> B + Send + Sync + 'static + Clone,
+        A: 'static,
+        B: Send + 'static,
+    {
+        match effect {
+            Effect::None => Effect::None,
+            Effect::Parallel(effects) => {
+                let mapped: Vec<Effect<B>> = effects
+                    .into_iter()
+                    .map(|e| {
+                        let f_clone = f.clone();
+                        map_effect(e, f_clone)
+                    })
+                    .collect();
+                Effect::Parallel(mapped)
+            },
+            Effect::Sequential(effects) => {
+                let mapped: Vec<Effect<B>> = effects
+                    .into_iter()
+                    .map(|e| {
+                        let f_clone = f.clone();
+                        map_effect(e, f_clone)
+                    })
+                    .collect();
+                Effect::Sequential(mapped)
+            },
+            Effect::Delay { duration, action } => Effect::Delay {
+                duration,
+                action: Box::new(f(*action)),
+            },
+            Effect::Future(fut) => Effect::Future(Box::pin(async move {
+                match fut.await {
+                    Some(action) => Some(f(action)),
+                    None => None,
+                }
+            })),
+        }
     }
 }
 
@@ -321,8 +433,205 @@ pub mod environment {
 // Placeholder test module
 #[cfg(test)]
 mod tests {
+    use super::effect::Effect;
+    use std::time::Duration;
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum TestAction {
+        Action1,
+        Action2,
+        Action3,
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum MappedAction {
+        Mapped(TestAction),
+    }
+
     #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
+    fn test_effect_merge() {
+        let effect1 = Effect::None;
+        let effect2 = Effect::<TestAction>::None;
+
+        let merged = Effect::merge(vec![effect1, effect2]);
+
+        match merged {
+            Effect::Parallel(effects) => {
+                assert_eq!(effects.len(), 2);
+            },
+            _ => panic!("Expected Parallel effect"),
+        }
+    }
+
+    #[test]
+    fn test_effect_chain() {
+        let effect1 = Effect::None;
+        let effect2 = Effect::<TestAction>::None;
+
+        let chained = Effect::chain(vec![effect1, effect2]);
+
+        match chained {
+            Effect::Sequential(effects) => {
+                assert_eq!(effects.len(), 2);
+            },
+            _ => panic!("Expected Sequential effect"),
+        }
+    }
+
+    #[test]
+    fn test_effect_map_none() {
+        let effect: Effect<TestAction> = Effect::None;
+        let mapped: Effect<MappedAction> = effect.map(|a| MappedAction::Mapped(a));
+
+        match mapped {
+            Effect::None => {},
+            _ => panic!("Expected None effect"),
+        }
+    }
+
+    #[test]
+    fn test_effect_map_delay() {
+        let effect: Effect<TestAction> = Effect::Delay {
+            duration: Duration::from_secs(1),
+            action: Box::new(TestAction::Action1),
+        };
+
+        let mapped: Effect<MappedAction> = effect.map(|a| MappedAction::Mapped(a));
+
+        match mapped {
+            Effect::Delay { duration, action } => {
+                assert_eq!(duration, Duration::from_secs(1));
+                assert_eq!(*action, MappedAction::Mapped(TestAction::Action1));
+            },
+            _ => panic!("Expected Delay effect"),
+        }
+    }
+
+    #[test]
+    fn test_effect_map_parallel() {
+        let effect: Effect<TestAction> = Effect::Parallel(vec![
+            Effect::None,
+            Effect::Delay {
+                duration: Duration::from_millis(100),
+                action: Box::new(TestAction::Action2),
+            },
+        ]);
+
+        let mapped: Effect<MappedAction> = effect.map(|a| MappedAction::Mapped(a));
+
+        match mapped {
+            Effect::Parallel(effects) => {
+                assert_eq!(effects.len(), 2);
+                // First should be None
+                matches!(effects[0], Effect::None);
+                // Second should be Delay with mapped action
+                match &effects[1] {
+                    Effect::Delay { action, .. } => {
+                        assert_eq!(**action, MappedAction::Mapped(TestAction::Action2));
+                    },
+                    _ => panic!("Expected Delay in parallel"),
+                }
+            },
+            _ => panic!("Expected Parallel effect"),
+        }
+    }
+
+    #[test]
+    fn test_effect_map_sequential() {
+        let effect: Effect<TestAction> = Effect::Sequential(vec![
+            Effect::Delay {
+                duration: Duration::from_millis(100),
+                action: Box::new(TestAction::Action1),
+            },
+            Effect::Delay {
+                duration: Duration::from_millis(200),
+                action: Box::new(TestAction::Action2),
+            },
+        ]);
+
+        let mapped: Effect<MappedAction> = effect.map(|a| MappedAction::Mapped(a));
+
+        match mapped {
+            Effect::Sequential(effects) => {
+                assert_eq!(effects.len(), 2);
+                // Verify both delays are mapped correctly
+                for effect in effects {
+                    match effect {
+                        Effect::Delay { action, .. } => {
+                            // Verify it's a Mapped variant
+                            assert!(matches!(*action, MappedAction::Mapped(_)));
+                        },
+                        _ => panic!("Expected Delay in sequential"),
+                    }
+                }
+            },
+            _ => panic!("Expected Sequential effect"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_effect_map_future() {
+        let effect: Effect<TestAction> = Effect::Future(Box::pin(async {
+            Some(TestAction::Action1)
+        }));
+
+        let mapped: Effect<MappedAction> = effect.map(|a| MappedAction::Mapped(a));
+
+        match mapped {
+            Effect::Future(fut) => {
+                let result = fut.await;
+                assert_eq!(result, Some(MappedAction::Mapped(TestAction::Action1)));
+            },
+            _ => panic!("Expected Future effect"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_effect_map_future_none() {
+        let effect: Effect<TestAction> = Effect::Future(Box::pin(async { None }));
+
+        let mapped: Effect<MappedAction> = effect.map(|a| MappedAction::Mapped(a));
+
+        match mapped {
+            Effect::Future(fut) => {
+                let result = fut.await;
+                assert_eq!(result, None);
+            },
+            _ => panic!("Expected Future effect"),
+        }
+    }
+
+    #[test]
+    fn test_effect_map_nested() {
+        // Test mapping nested effects (Parallel containing Sequential)
+        let effect: Effect<TestAction> = Effect::Parallel(vec![
+            Effect::Sequential(vec![
+                Effect::Delay {
+                    duration: Duration::from_millis(100),
+                    action: Box::new(TestAction::Action1),
+                },
+                Effect::None,
+            ]),
+            Effect::Delay {
+                duration: Duration::from_millis(200),
+                action: Box::new(TestAction::Action3),
+            },
+        ]);
+
+        let mapped: Effect<MappedAction> = effect.map(|a| MappedAction::Mapped(a));
+
+        match mapped {
+            Effect::Parallel(effects) => {
+                assert_eq!(effects.len(), 2);
+                // Verify nested structure is preserved
+                match &effects[0] {
+                    Effect::Sequential(inner) => {
+                        assert_eq!(inner.len(), 2);
+                    },
+                    _ => panic!("Expected Sequential in Parallel"),
+                }
+            },
+            _ => panic!("Expected Parallel effect"),
+        }
     }
 }
