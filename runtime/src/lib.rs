@@ -742,9 +742,12 @@ mod tests {
                 },
                 TestAction::ProducePanickingEffect => {
                     // Return an effect that will panic when executed
-                    vec![Effect::Future(Box::pin(async {
-                        panic!("Intentional panic in effect for testing");
-                    }))]
+                    #[allow(clippy::panic)] // Intentional panic for testing error handling
+                    {
+                        vec![Effect::Future(Box::pin(async {
+                            panic!("Intentional panic in effect for testing");
+                        }))]
+                    }
                 },
             }
         }

@@ -7,6 +7,10 @@
 //!
 //! Run with: `cargo bench`
 
+#![allow(missing_docs)] // Benchmarks don't need extensive docs
+#![allow(clippy::expect_used)] // Benchmarks can use expect for setup
+#![allow(dead_code)] // Benchmark data structures may have unused fields
+
 use composable_rust_core::{effect::Effect, reducer::Reducer};
 use composable_rust_runtime::Store;
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
@@ -16,7 +20,7 @@ use std::time::Duration;
 #[derive(Clone, Debug)]
 struct BenchState {
     counter: i64,
-    data: Vec<u8>,
+    data: Vec<u8>,  // For testing state size impact
 }
 
 impl Default for BenchState {
@@ -151,6 +155,7 @@ fn benchmark_store_throughput(c: &mut Criterion) {
 }
 
 /// Benchmark effect execution overhead
+#[allow(clippy::items_after_statements)] // EffectReducer defined inline for clarity
 fn benchmark_effect_overhead(c: &mut Criterion) {
     let mut group = c.benchmark_group("effect_overhead");
     group.throughput(Throughput::Elements(1));

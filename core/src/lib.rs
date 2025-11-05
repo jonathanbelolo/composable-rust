@@ -330,12 +330,9 @@ pub mod effect {
                     duration,
                     action: Box::new(f(*action)),
                 },
-                Effect::Future(fut) => Effect::Future(Box::pin(async move {
-                    match fut.await {
-                        Some(action) => Some(f(action)),
-                        None => None,
-                    }
-                })),
+                Effect::Future(fut) => {
+                    Effect::Future(Box::pin(async move { fut.await.map(f) }))
+                },
             }
         }
     }
@@ -373,12 +370,9 @@ pub mod effect {
                 duration,
                 action: Box::new(f(*action)),
             },
-            Effect::Future(fut) => Effect::Future(Box::pin(async move {
-                match fut.await {
-                    Some(action) => Some(f(action)),
-                    None => None,
-                }
-            })),
+            Effect::Future(fut) => {
+                Effect::Future(Box::pin(async move { fut.await.map(f) }))
+            },
         }
     }
 }
@@ -432,6 +426,9 @@ pub mod environment {
 
 // Placeholder test module
 #[cfg(test)]
+#[allow(clippy::panic)] // Tests can panic for assertions
+#[allow(clippy::similar_names)] // Test variable names can be similar
+#[allow(clippy::redundant_closure)] // Test closures can be explicit for clarity
 mod tests {
     use super::effect::Effect;
     use std::time::Duration;

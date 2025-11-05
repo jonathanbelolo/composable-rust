@@ -113,14 +113,14 @@ pub mod mocks {
         ///
         /// # Panics
         ///
-        /// Panics if the RwLock is poisoned (which should never happen in normal use).
+        /// Panics if the `RwLock` is poisoned (which should never happen in normal use).
         #[allow(clippy::expect_used)] // Test infrastructure, lock poison is unrecoverable
         pub fn advance(&self, duration: Duration) {
             let mut time = self
                 .time
                 .write()
                 .expect("FixedClock lock poisoned - test infrastructure error");
-            *time = *time + duration;
+            *time += duration;
         }
 
         /// Set the clock to a specific time
@@ -151,7 +151,7 @@ pub mod mocks {
         ///
         /// # Panics
         ///
-        /// Panics if the RwLock is poisoned (which should never happen in normal use).
+        /// Panics if the `RwLock` is poisoned (which should never happen in normal use).
         #[allow(clippy::expect_used)] // Test infrastructure, lock poison is unrecoverable
         pub fn set(&self, time: DateTime<Utc>) {
             let mut current_time = self
@@ -167,7 +167,7 @@ pub mod mocks {
         ///
         /// # Panics
         ///
-        /// Panics if the RwLock is poisoned (which should never happen in normal use).
+        /// Panics if the `RwLock` is poisoned (which should never happen in normal use).
         #[allow(clippy::expect_used)] // Test infrastructure, lock poison is unrecoverable
         fn now(&self) -> DateTime<Utc> {
             *self
