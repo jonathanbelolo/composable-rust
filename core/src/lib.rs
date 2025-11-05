@@ -61,6 +61,11 @@
 pub use chrono::{DateTime, Utc};
 pub use serde::{Deserialize, Serialize};
 
+// Phase 2: Event sourcing modules
+pub mod event;
+pub mod event_store;
+pub mod stream;
+
 /// Action module - Unified input type for reducers (commands, events, cross-aggregate events)
 ///
 /// # Phase 1 Implementation

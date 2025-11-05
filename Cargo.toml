@@ -4,6 +4,7 @@ members = [
     "core",
     "runtime",
     "testing",
+    "postgres",
     "examples/counter",
 ]
 
@@ -48,6 +49,8 @@ smallvec = "1"
 proptest = "1"
 tokio-test = "0.4"
 criterion = "0.5"
+testcontainers = "0.23"
+testcontainers-modules = { version = "0.11", features = ["postgres"] }
 
 [profile.dev]
 opt-level = 0
