@@ -62,17 +62,20 @@ impl Reducer for OrderReducer {
 }
 ```
 
-## Current Status: Phase 0 - Foundation & Tooling
+## Current Status: Phase 1 - Core Abstractions ✅ COMPLETE
 
-✅ Project structure established
-✅ Cargo workspace configured (Rust 2024 edition)
-✅ Core dependencies added
-✅ Development tooling configured (rustfmt, clippy)
-✅ CI/CD pipeline created
-✅ Initial code scaffolding complete
-🚧 Documentation in progress
+✅ **Phase 0**: Foundation & Tooling
+✅ **Phase 1**: Core Abstractions
+  - Reducer trait (pure functions for business logic)
+  - Effect system (5 variants: None, Future, Delay, Parallel, Sequential)
+  - Store runtime (state management + effect execution)
+  - Environment traits (Clock with production/test implementations)
+  - TestStore (deterministic effect testing)
+  - Counter example (validates entire architecture)
+  - 47 comprehensive tests (all passing)
+  - 3,486 lines of documentation
 
-**Next**: Phase 1 - Core Abstractions (full Reducer, Effect, Environment implementation)
+**Next**: Phase 2 - Event Sourcing & Persistence (PostgreSQL event store)
 
 ## Project Structure
 
@@ -95,7 +98,7 @@ composable-rust/
 
 ## Quick Start
 
-> **Note**: The framework is in early development (Phase 0). Full functionality will be available in Phase 1.
+> **Note**: Phase 1 is complete! Core abstractions are ready. See the Counter example for a working reference implementation.
 
 ```toml
 [dependencies]
@@ -106,17 +109,36 @@ composable-rust-runtime = { path = "runtime" }
 composable-rust-testing = { path = "testing" }
 ```
 
+### Run the Counter Example
+
+```bash
+# Run the example
+cargo run -p counter
+
+# Run tests
+cargo test -p counter
+
+# See the architecture reference
+cat examples/counter/README.md
+```
+
 ## Documentation
 
-- **[Architecture Specification](specs/architecture.md)**: Comprehensive architectural design
-- **[Implementation Roadmap](plans/implementation-roadmap.md)**: Development plan and timeline
-- **[Phase 0 TODO](plans/phase-0/TODO.md)**: Current phase checklist
+### Phase 1 Documentation (Complete)
 
-Additional documentation coming in Phase 1:
-- Getting Started Guide
-- Core Concepts
-- API Reference
-- Examples and Patterns
+- **[Getting Started Guide](docs/getting-started.md)**: Tutorial walkthrough with Counter example
+- **[Core Concepts](docs/concepts.md)**: Deep dive into the five fundamental types
+- **[API Reference](docs/api-reference.md)**: Complete API documentation
+- **[Error Handling](docs/error-handling.md)**: Three-tier error model
+- **[Implementation Decisions](docs/implementation-decisions.md)**: Architectural choices and trade-offs
+- **[Counter Example](examples/counter/README.md)**: Architecture reference using Counter
+
+### Architecture & Planning
+
+- **[Architecture Specification](specs/architecture.md)**: Comprehensive architectural design (2,800+ lines)
+- **[Implementation Roadmap](plans/implementation-roadmap.md)**: Development plan and timeline
+- **[Phase 1 Review](PHASE1_REVIEW.md)**: Completion assessment and readiness for Phase 2
+- **[Phase 1 TODO](plans/phase-1/TODO.md)**: Phase 1 checklist (complete)
 
 ## Development
 
@@ -182,27 +204,33 @@ at your option.
 
 ## Roadmap
 
-### Phase 0: Foundation & Tooling ✅ (Current)
+### Phase 0: Foundation & Tooling ✅ COMPLETE
 - Project structure and workspace setup
 - Development tooling configuration
 - CI/CD pipeline
 
-### Phase 1: Core Abstractions (Next)
-- Complete Reducer trait implementation
-- Effect system with all variants
-- Environment traits (Database, Clock, EventPublisher, etc.)
-- Basic Store runtime
+### Phase 1: Core Abstractions ✅ COMPLETE
+- ✅ Reducer trait implementation
+- ✅ Effect system with 5 variants (None, Future, Delay, Parallel, Sequential)
+- ✅ Environment traits (Clock for Phase 1)
+- ✅ Store runtime with effect execution
+- ✅ TestStore for deterministic testing
+- ✅ Counter example validating architecture
+- ✅ 47 comprehensive tests (all passing)
+- ✅ 3,486 lines of documentation
 
-### Phase 2: CQRS/Event Sourcing
+### Phase 2: Event Sourcing & Persistence (Next)
 - PostgreSQL event store
 - Event replay and state reconstruction
 - Snapshot support
+- Database traits and implementations
 
 ### Phase 3: Composition & Coordination
 - Reducer composition utilities
 - Saga pattern implementation
 - Redpanda event bus integration
 - Multi-aggregate workflows
+- EventPublisher trait
 
 ### Phase 4: Production Hardening
 - Performance optimization
@@ -212,9 +240,9 @@ at your option.
 
 ### Phase 5: Developer Experience
 - Macros and code generation
-- Testing utilities
-- Example applications
-- Comprehensive documentation
+- Additional testing utilities
+- More example applications
+- Enhanced documentation
 
 ## Acknowledgments
 

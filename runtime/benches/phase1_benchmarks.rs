@@ -13,14 +13,14 @@
 
 use composable_rust_core::{effect::Effect, reducer::Reducer};
 use composable_rust_runtime::Store;
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use std::time::Duration;
 
 // Test state
 #[derive(Clone, Debug)]
 struct BenchState {
     counter: i64,
-    data: Vec<u8>,  // For testing state size impact
+    data: Vec<u8>, // For testing state size impact
 }
 
 impl Default for BenchState {
@@ -94,22 +94,14 @@ fn benchmark_reducer_execution(c: &mut Criterion) {
     group.bench_function("increment", |b| {
         let mut state = BenchState::default();
         b.iter(|| {
-            let _effects = reducer.reduce(
-                &mut state,
-                black_box(BenchAction::Increment),
-                &env,
-            );
+            let _effects = reducer.reduce(&mut state, black_box(BenchAction::Increment), &env);
         });
     });
 
     group.bench_function("set_value", |b| {
         let mut state = BenchState::default();
         b.iter(|| {
-            let _effects = reducer.reduce(
-                &mut state,
-                black_box(BenchAction::SetValue(42)),
-                &env,
-            );
+            let _effects = reducer.reduce(&mut state, black_box(BenchAction::SetValue(42)), &env);
         });
     });
 
@@ -127,11 +119,7 @@ fn benchmark_store_throughput(c: &mut Criterion) {
         .expect("Failed to build runtime");
 
     group.bench_function("send_action", |b| {
-        let store = Store::new(
-            BenchState::default(),
-            BenchReducer,
-            BenchEnv,
-        );
+        let store = Store::new(BenchState::default(), BenchReducer, BenchEnv);
 
         b.to_async(&runtime).iter(|| async {
             let _ = store.send(black_box(BenchAction::Increment)).await;
@@ -139,11 +127,7 @@ fn benchmark_store_throughput(c: &mut Criterion) {
     });
 
     group.bench_function("send_and_read_state", |b| {
-        let store = Store::new(
-            BenchState::default(),
-            BenchReducer,
-            BenchEnv,
-        );
+        let store = Store::new(BenchState::default(), BenchReducer, BenchEnv);
 
         b.to_async(&runtime).iter(|| async {
             let _ = store.send(black_box(BenchAction::Increment)).await;
@@ -183,9 +167,7 @@ fn benchmark_effect_overhead(c: &mut Criterion) {
                 BenchAction::NoOp => vec![Effect::None],
                 BenchAction::Increment => {
                     state.counter += 1;
-                    vec![Effect::Future(Box::pin(async {
-                        Some(BenchAction::NoOp)
-                    }))]
+                    vec![Effect::Future(Box::pin(async { Some(BenchAction::NoOp) }))]
                 },
                 BenchAction::Decrement => {
                     state.counter -= 1;
@@ -203,21 +185,14 @@ fn benchmark_effect_overhead(c: &mut Criterion) {
                     ])]
                 },
                 BenchAction::SetValue(_) => {
-                    vec![Effect::Sequential(vec![
-                        Effect::None,
-                        Effect::None,
-                    ])]
+                    vec![Effect::Sequential(vec![Effect::None, Effect::None])]
                 },
             }
         }
     }
 
     group.bench_function("effect_none", |b| {
-        let store = Store::new(
-            BenchState::default(),
-            EffectReducer,
-            BenchEnv,
-        );
+        let store = Store::new(BenchState::default(), EffectReducer, BenchEnv);
 
         b.to_async(&runtime).iter(|| async {
             let mut handle = store.send(black_box(BenchAction::NoOp)).await;
@@ -226,11 +201,7 @@ fn benchmark_effect_overhead(c: &mut Criterion) {
     });
 
     group.bench_function("effect_future", |b| {
-        let store = Store::new(
-            BenchState::default(),
-            EffectReducer,
-            BenchEnv,
-        );
+        let store = Store::new(BenchState::default(), EffectReducer, BenchEnv);
 
         b.to_async(&runtime).iter(|| async {
             let mut handle = store.send(black_box(BenchAction::Increment)).await;
@@ -239,11 +210,7 @@ fn benchmark_effect_overhead(c: &mut Criterion) {
     });
 
     group.bench_function("effect_parallel", |b| {
-        let store = Store::new(
-            BenchState::default(),
-            EffectReducer,
-            BenchEnv,
-        );
+        let store = Store::new(BenchState::default(), EffectReducer, BenchEnv);
 
         b.to_async(&runtime).iter(|| async {
             let mut handle = store.send(black_box(BenchAction::Reset)).await;
@@ -266,11 +233,7 @@ fn benchmark_concurrent_access(c: &mut Criterion) {
         .expect("Failed to build runtime");
 
     group.bench_function("10_concurrent_sends", |b| {
-        let store = Store::new(
-            BenchState::default(),
-            BenchReducer,
-            BenchEnv,
-        );
+        let store = Store::new(BenchState::default(), BenchReducer, BenchEnv);
 
         b.to_async(&runtime).iter(|| async {
             let handles: Vec<_> = (0..10)

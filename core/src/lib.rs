@@ -330,9 +330,7 @@ pub mod effect {
                     duration,
                     action: Box::new(f(*action)),
                 },
-                Effect::Future(fut) => {
-                    Effect::Future(Box::pin(async move { fut.await.map(f) }))
-                },
+                Effect::Future(fut) => Effect::Future(Box::pin(async move { fut.await.map(f) })),
             }
         }
     }
@@ -370,9 +368,7 @@ pub mod effect {
                 duration,
                 action: Box::new(f(*action)),
             },
-            Effect::Future(fut) => {
-                Effect::Future(Box::pin(async move { fut.await.map(f) }))
-            },
+            Effect::Future(fut) => Effect::Future(Box::pin(async move { fut.await.map(f) })),
         }
     }
 }
@@ -568,9 +564,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_effect_map_future() {
-        let effect: Effect<TestAction> = Effect::Future(Box::pin(async {
-            Some(TestAction::Action1)
-        }));
+        let effect: Effect<TestAction> =
+            Effect::Future(Box::pin(async { Some(TestAction::Action1) }));
 
         let mapped: Effect<MappedAction> = effect.map(|a| MappedAction::Mapped(a));
 

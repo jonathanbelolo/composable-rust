@@ -653,7 +653,10 @@ mod tests {
         // Advance by 30 seconds
         clock.advance(Duration::seconds(30));
         let after_seconds = clock.now();
-        assert_eq!(after_seconds, start + Duration::hours(1) + Duration::seconds(30));
+        assert_eq!(
+            after_seconds,
+            start + Duration::hours(1) + Duration::seconds(30)
+        );
 
         // Advance by negative duration (go backwards)
         clock.advance(Duration::seconds(-30));
