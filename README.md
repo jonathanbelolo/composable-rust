@@ -137,7 +137,7 @@ cat examples/counter/README.md
 
 - **[Architecture Specification](specs/architecture.md)**: Comprehensive architectural design (2,800+ lines)
 - **[Implementation Roadmap](plans/implementation-roadmap.md)**: Development plan and timeline
-- **[Phase 1 Review](PHASE1_REVIEW.md)**: Completion assessment and readiness for Phase 2
+- **[Phase 1 Review](plans/phase-1/PHASE1_REVIEW.md)**: Completion assessment and readiness for Phase 2
 - **[Phase 1 TODO](plans/phase-1/TODO.md)**: Phase 1 checklist (complete)
 
 ## Development
