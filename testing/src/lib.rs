@@ -46,39 +46,134 @@ use composable_rust_core::environment::Clock;
 /// Mock implementations for testing.
 pub mod mocks {
     use super::{Clock, DateTime, Utc};
+    use chrono::Duration;
+    use std::sync::{Arc, RwLock};
 
     /// Fixed clock for deterministic tests
     ///
-    /// Always returns the same time, making tests reproducible.
+    /// Provides controllable time for testing time-based behavior.
+    /// Unlike a real clock, this clock only advances when you call `advance()`.
     ///
     /// # Example
     ///
     /// ```
     /// use composable_rust_testing::mocks::FixedClock;
     /// use composable_rust_core::environment::Clock;
-    /// use chrono::Utc;
+    /// use chrono::{Duration, Utc};
     ///
     /// let clock = FixedClock::new(Utc::now());
     /// let time1 = clock.now();
     /// let time2 = clock.now();
-    /// assert_eq!(time1, time2); // Always the same!
+    /// assert_eq!(time1, time2); // Always the same until advanced
+    ///
+    /// // Simulate time passage
+    /// clock.advance(Duration::hours(1));
+    /// let time3 = clock.now();
+    /// assert_eq!(time3, time1 + Duration::hours(1));
     /// ```
     #[derive(Debug, Clone)]
     pub struct FixedClock {
-        time: DateTime<Utc>,
+        time: Arc<RwLock<DateTime<Utc>>>,
     }
 
     impl FixedClock {
         /// Create a new fixed clock with the given time
         #[must_use]
-        pub const fn new(time: DateTime<Utc>) -> Self {
-            Self { time }
+        pub fn new(time: DateTime<Utc>) -> Self {
+            Self {
+                time: Arc::new(RwLock::new(time)),
+            }
+        }
+
+        /// Advance the clock by the given duration
+        ///
+        /// This simulates the passage of time in tests, allowing you to
+        /// trigger time-based effects (delays, timeouts, etc.) deterministically.
+        ///
+        /// # Arguments
+        ///
+        /// - `duration`: How much to advance the clock
+        ///
+        /// # Example
+        ///
+        /// ```
+        /// use composable_rust_testing::{test_clock, mocks::FixedClock};
+        /// use composable_rust_core::environment::Clock;
+        /// use chrono::Duration;
+        ///
+        /// let clock = test_clock();
+        /// let start = clock.now();
+        ///
+        /// clock.advance(Duration::seconds(30));
+        /// assert_eq!(clock.now(), start + Duration::seconds(30));
+        ///
+        /// clock.advance(Duration::minutes(5));
+        /// assert_eq!(clock.now(), start + Duration::seconds(330)); // 30s + 5min
+        /// ```
+        ///
+        /// # Panics
+        ///
+        /// Panics if the RwLock is poisoned (which should never happen in normal use).
+        #[allow(clippy::expect_used)] // Test infrastructure, lock poison is unrecoverable
+        pub fn advance(&self, duration: Duration) {
+            let mut time = self
+                .time
+                .write()
+                .expect("FixedClock lock poisoned - test infrastructure error");
+            *time = *time + duration;
+        }
+
+        /// Set the clock to a specific time
+        ///
+        /// Unlike `advance()`, this sets an absolute time rather than
+        /// advancing by a duration.
+        ///
+        /// # Arguments
+        ///
+        /// - `time`: The new time to set
+        ///
+        /// # Example
+        ///
+        /// ```
+        /// use composable_rust_testing::{test_clock, mocks::FixedClock};
+        /// use composable_rust_core::environment::Clock;
+        /// use chrono::{DateTime, Utc};
+        ///
+        /// let clock = test_clock();
+        ///
+        /// let new_time = DateTime::parse_from_rfc3339("2026-06-15T12:00:00Z")
+        ///     .unwrap()
+        ///     .with_timezone(&Utc);
+        ///
+        /// clock.set(new_time);
+        /// assert_eq!(clock.now(), new_time);
+        /// ```
+        ///
+        /// # Panics
+        ///
+        /// Panics if the RwLock is poisoned (which should never happen in normal use).
+        #[allow(clippy::expect_used)] // Test infrastructure, lock poison is unrecoverable
+        pub fn set(&self, time: DateTime<Utc>) {
+            let mut current_time = self
+                .time
+                .write()
+                .expect("FixedClock lock poisoned - test infrastructure error");
+            *current_time = time;
         }
     }
 
     impl Clock for FixedClock {
+        /// Get the current time from this fixed clock
+        ///
+        /// # Panics
+        ///
+        /// Panics if the RwLock is poisoned (which should never happen in normal use).
+        #[allow(clippy::expect_used)] // Test infrastructure, lock poison is unrecoverable
         fn now(&self) -> DateTime<Utc> {
-            self.time
+            *self
+                .time
+                .read()
+                .expect("FixedClock lock poisoned - test infrastructure error")
         }
     }
 
@@ -541,6 +636,56 @@ mod tests {
         let time1 = clock.now();
         let time2 = clock.now();
         assert_eq!(time1, time2);
+    }
+
+    #[test]
+    fn test_fixed_clock_advance() {
+        use chrono::Duration;
+
+        let clock = test_clock();
+        let start = clock.now();
+
+        // Advance by 1 hour
+        clock.advance(Duration::hours(1));
+        let after_hour = clock.now();
+        assert_eq!(after_hour, start + Duration::hours(1));
+
+        // Advance by 30 seconds
+        clock.advance(Duration::seconds(30));
+        let after_seconds = clock.now();
+        assert_eq!(after_seconds, start + Duration::hours(1) + Duration::seconds(30));
+
+        // Advance by negative duration (go backwards)
+        clock.advance(Duration::seconds(-30));
+        let after_backwards = clock.now();
+        assert_eq!(after_backwards, start + Duration::hours(1));
+    }
+
+    #[test]
+    fn test_fixed_clock_set() {
+        use chrono::DateTime;
+
+        let clock = test_clock();
+        let original = clock.now();
+
+        // Set to a specific time
+        let new_time = DateTime::parse_from_rfc3339("2026-06-15T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        clock.set(new_time);
+        assert_eq!(clock.now(), new_time);
+
+        // Setting doesn't affect previous value
+        assert_ne!(original, new_time);
+
+        // Can set again
+        let another_time = DateTime::parse_from_rfc3339("2024-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        clock.set(another_time);
+        assert_eq!(clock.now(), another_time);
     }
 
     // TestStore tests
