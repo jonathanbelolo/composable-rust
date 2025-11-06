@@ -503,6 +503,209 @@ impl<L: std::fmt::Display, R: std::fmt::Display> std::fmt::Display for Either<L,
 
 impl<L: std::error::Error, R: std::error::Error> std::error::Error for Either<L, R> {}
 
+/// Dead letter queue entry
+///
+/// Represents a failed operation with metadata about the failure.
+#[derive(Debug, Clone)]
+pub struct DeadLetter<T> {
+    /// The failed operation payload
+    pub payload: T,
+
+    /// Number of times this operation was retried
+    pub retry_count: usize,
+
+    /// The error message from the last failure
+    pub error_message: String,
+
+    /// Timestamp when first failed (nanoseconds since epoch)
+    pub first_failed_at: u64,
+
+    /// Timestamp when last failed (nanoseconds since epoch)
+    pub last_failed_at: u64,
+}
+
+impl<T> DeadLetter<T> {
+    /// Create a new dead letter entry
+    fn new(payload: T, error_message: String, retry_count: usize) -> Self {
+        let now_nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_nanos() as u64;
+
+        Self {
+            payload,
+            retry_count,
+            error_message,
+            first_failed_at: now_nanos,
+            last_failed_at: now_nanos,
+        }
+    }
+
+    /// Update the last failed timestamp and increment retry count
+    fn update_failure(&mut self, error_message: String) {
+        self.error_message = error_message;
+        self.retry_count += 1;
+        self.last_failed_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_nanos() as u64;
+    }
+}
+
+/// Dead Letter Queue for storing failed operations
+///
+/// The DLQ stores operations that failed after exhausting retries.
+/// These can be inspected, monitored, and potentially retried manually.
+///
+/// # Features
+///
+/// - Bounded queue with configurable max size
+/// - FIFO ordering (oldest entries dropped when full)
+/// - Thread-safe for concurrent access
+/// - Metrics tracking for queue size and operations
+///
+/// # Example
+///
+/// ```ignore
+/// use composable_rust_runtime::DeadLetterQueue;
+///
+/// let dlq = DeadLetterQueue::new(1000);
+///
+/// // Add a failed operation
+/// dlq.push("operation_data".to_string(), "Connection timeout".to_string(), 5);
+///
+/// // Check queue size
+/// println!("Failed operations: {}", dlq.len());
+///
+/// // Drain and retry
+/// for entry in dlq.drain() {
+///     println!("Retry: {:?}", entry);
+/// }
+/// ```
+#[derive(Debug)]
+pub struct DeadLetterQueue<T> {
+    /// The queue storage
+    queue: Arc<Mutex<VecDeque<DeadLetter<T>>>>,
+
+    /// Maximum queue size
+    max_size: usize,
+}
+
+impl<T> DeadLetterQueue<T> {
+    /// Create a new dead letter queue with the given max size
+    ///
+    /// # Arguments
+    ///
+    /// - `max_size`: Maximum number of entries to store
+    ///
+    /// # Returns
+    ///
+    /// A new empty `DeadLetterQueue`
+    #[must_use]
+    pub fn new(max_size: usize) -> Self {
+        Self {
+            queue: Arc::new(Mutex::new(VecDeque::new())),
+            max_size,
+        }
+    }
+
+    /// Push a failed operation onto the queue
+    ///
+    /// If the queue is full, the oldest entry is dropped.
+    ///
+    /// # Arguments
+    ///
+    /// - `payload`: The operation data
+    /// - `error_message`: Description of the failure
+    /// - `retry_count`: Number of times operation was retried
+    pub fn push(&self, payload: T, error_message: String, retry_count: usize) {
+        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Drop oldest if at capacity
+        if queue.len() >= self.max_size {
+            queue.pop_front();
+            metrics::counter!("dlq.dropped").increment(1);
+            tracing::warn!(
+                max_size = self.max_size,
+                "DLQ at capacity, dropping oldest entry"
+            );
+        }
+
+        let entry = DeadLetter::new(payload, error_message, retry_count);
+        queue.push_back(entry);
+
+        metrics::gauge!("dlq.size").set(queue.len() as f64);
+        metrics::counter!("dlq.pushed").increment(1);
+
+        tracing::warn!(
+            retry_count = retry_count,
+            queue_size = queue.len(),
+            "Operation added to dead letter queue"
+        );
+    }
+
+    /// Get the current queue size
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.queue.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+
+    /// Check if the queue is empty
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Drain all entries from the queue
+    ///
+    /// Returns all entries and empties the queue.
+    pub fn drain(&self) -> Vec<DeadLetter<T>> {
+        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        let entries: Vec<_> = queue.drain(..).collect();
+
+        metrics::gauge!("dlq.size").set(0.0);
+        metrics::counter!("dlq.drained").increment(entries.len() as u64);
+
+        tracing::info!(count = entries.len(), "Drained dead letter queue");
+
+        entries
+    }
+
+    /// Peek at the oldest entry without removing it
+    #[must_use]
+    pub fn peek(&self) -> Option<DeadLetter<T>>
+    where
+        T: Clone,
+    {
+        self.queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .front()
+            .cloned()
+    }
+
+    /// Get the maximum queue size
+    #[must_use]
+    pub const fn max_size(&self) -> usize {
+        self.max_size
+    }
+}
+
+impl<T> Clone for DeadLetterQueue<T> {
+    fn clone(&self) -> Self {
+        Self {
+            queue: Arc::clone(&self.queue),
+            max_size: self.max_size,
+        }
+    }
+}
+
+impl<T> Default for DeadLetterQueue<T> {
+    fn default() -> Self {
+        Self::new(1000)
+    }
+}
+
 pub use error::StoreError;
 
 use std::collections::VecDeque;
@@ -2522,6 +2725,187 @@ mod tests {
                 breaker.record_failure();
             }
             assert_eq!(breaker.state(), CircuitState::Open);
+        }
+    }
+
+    mod dlq_tests {
+        use super::*;
+
+        #[test]
+        fn test_dlq_new() {
+            let dlq: DeadLetterQueue<String> = DeadLetterQueue::new(100);
+            assert_eq!(dlq.len(), 0);
+            assert!(dlq.is_empty());
+            assert_eq!(dlq.max_size(), 100);
+        }
+
+        #[test]
+        fn test_dlq_push_and_len() {
+            let dlq = DeadLetterQueue::new(10);
+
+            dlq.push(
+                "operation1".to_string(),
+                "Connection timeout".to_string(),
+                5,
+            );
+            assert_eq!(dlq.len(), 1);
+            assert!(!dlq.is_empty());
+
+            dlq.push(
+                "operation2".to_string(),
+                "Database error".to_string(),
+                3,
+            );
+            assert_eq!(dlq.len(), 2);
+        }
+
+        #[test]
+        fn test_dlq_peek() {
+            let dlq = DeadLetterQueue::new(10);
+
+            dlq.push(
+                "first".to_string(),
+                "error1".to_string(),
+                1,
+            );
+            dlq.push(
+                "second".to_string(),
+                "error2".to_string(),
+                2,
+            );
+
+            // Peek should return first entry without removing it
+            let entry = dlq.peek().unwrap();
+            assert_eq!(entry.payload, "first");
+            assert_eq!(entry.error_message, "error1");
+            assert_eq!(entry.retry_count, 1);
+            assert_eq!(dlq.len(), 2); // Still has 2 entries
+        }
+
+        #[test]
+        fn test_dlq_drain() {
+            let dlq = DeadLetterQueue::new(10);
+
+            dlq.push("op1".to_string(), "err1".to_string(), 1);
+            dlq.push("op2".to_string(), "err2".to_string(), 2);
+            dlq.push("op3".to_string(), "err3".to_string(), 3);
+
+            assert_eq!(dlq.len(), 3);
+
+            let entries = dlq.drain();
+            assert_eq!(entries.len(), 3);
+            assert_eq!(entries[0].payload, "op1");
+            assert_eq!(entries[1].payload, "op2");
+            assert_eq!(entries[2].payload, "op3");
+
+            // Queue should be empty after drain
+            assert_eq!(dlq.len(), 0);
+            assert!(dlq.is_empty());
+        }
+
+        #[test]
+        fn test_dlq_max_size_drops_oldest() {
+            let dlq = DeadLetterQueue::new(3);
+
+            dlq.push("op1".to_string(), "err".to_string(), 1);
+            dlq.push("op2".to_string(), "err".to_string(), 1);
+            dlq.push("op3".to_string(), "err".to_string(), 1);
+            assert_eq!(dlq.len(), 3);
+
+            // This should drop op1
+            dlq.push("op4".to_string(), "err".to_string(), 1);
+            assert_eq!(dlq.len(), 3);
+
+            // Peek should show op2 (op1 was dropped)
+            let entry = dlq.peek().unwrap();
+            assert_eq!(entry.payload, "op2");
+        }
+
+        #[test]
+        fn test_dlq_fifo_ordering() {
+            let dlq = DeadLetterQueue::new(10);
+
+            dlq.push("first".to_string(), "err".to_string(), 1);
+            dlq.push("second".to_string(), "err".to_string(), 1);
+            dlq.push("third".to_string(), "err".to_string(), 1);
+
+            let entries = dlq.drain();
+            assert_eq!(entries[0].payload, "first");
+            assert_eq!(entries[1].payload, "second");
+            assert_eq!(entries[2].payload, "third");
+        }
+
+        #[test]
+        fn test_dlq_clone() {
+            let dlq1 = DeadLetterQueue::new(10);
+            dlq1.push("op1".to_string(), "err".to_string(), 1);
+
+            let dlq2 = dlq1.clone();
+            assert_eq!(dlq2.len(), 1);
+            assert_eq!(dlq2.max_size(), 10);
+
+            // Both should share the same queue
+            dlq2.push("op2".to_string(), "err".to_string(), 1);
+            assert_eq!(dlq1.len(), 2); // dlq1 sees the change
+        }
+
+        #[test]
+        fn test_dlq_default() {
+            let dlq: DeadLetterQueue<i32> = DeadLetterQueue::default();
+            assert_eq!(dlq.max_size(), 1000);
+            assert!(dlq.is_empty());
+        }
+
+        #[test]
+        fn test_dead_letter_metadata() {
+            let dlq = DeadLetterQueue::new(10);
+
+            dlq.push(
+                "operation".to_string(),
+                "Connection timeout".to_string(),
+                5,
+            );
+
+            let entry = dlq.peek().unwrap();
+            assert_eq!(entry.retry_count, 5);
+            assert_eq!(entry.error_message, "Connection timeout");
+            assert!(entry.first_failed_at > 0);
+            assert!(entry.last_failed_at > 0);
+            assert_eq!(entry.first_failed_at, entry.last_failed_at); // Same for first failure
+        }
+
+        #[tokio::test]
+        async fn test_dlq_concurrent_push() {
+            use std::sync::Arc;
+
+            let dlq = Arc::new(DeadLetterQueue::new(100));
+
+            let mut handles = vec![];
+            for i in 0..10 {
+                let dlq_clone = Arc::clone(&dlq);
+                handles.push(tokio::spawn(async move {
+                    dlq_clone.push(
+                        format!("op{}", i),
+                        "error".to_string(),
+                        1,
+                    );
+                }));
+            }
+
+            for handle in handles {
+                handle.await.unwrap();
+            }
+
+            assert_eq!(dlq.len(), 10);
+        }
+
+        #[test]
+        fn test_dlq_empty_drain() {
+            let dlq: DeadLetterQueue<String> = DeadLetterQueue::new(10);
+
+            let entries = dlq.drain();
+            assert_eq!(entries.len(), 0);
+            assert!(dlq.is_empty());
         }
     }
 }
