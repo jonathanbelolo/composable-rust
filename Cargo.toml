@@ -5,6 +5,7 @@ members = [
     "runtime",
     "testing",
     "postgres",
+    "redpanda",
     "examples/counter",
     "examples/order-processing",
 ]

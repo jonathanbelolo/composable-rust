@@ -194,7 +194,7 @@ pub trait Event: Send + Sync + 'static {
 /// This struct contains the event type name and the serialized bytes,
 /// along with optional metadata. It's used as the wire format between
 /// the application and the event store.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SerializedEvent {
     /// The event type identifier (e.g., "OrderPlaced.v1").
     pub event_type: String,
