@@ -267,12 +267,19 @@ event_store.append_batch(events).await?;
 
 **Scope**: Identify and fix performance bottlenecks
 
+**Performance Targets** (from architecture.md):
+- Reducer execution: < 1μs for typical state machines (Counter, Order)
+- Effect execution overhead: < 100μs (excluding actual I/O)
+- Event replay throughput: 10,000+ events/second
+- End-to-end command latency: < 10ms (excluding external service calls)
+
 **Tasks**:
 - [ ] Add `criterion` benchmarks for:
-  - [ ] Reducer execution (Counter, Order, Saga)
-  - [ ] Effect execution (all variants)
-  - [ ] EventStore operations
-  - [ ] EventBus operations
+  - [ ] Reducer execution (Counter, Order, Saga) - target < 1μs
+  - [ ] Effect execution (all variants) - target < 100μs overhead
+  - [ ] EventStore operations (append, load) - target 10k events/sec replay
+  - [ ] EventBus operations (publish, subscribe)
+  - [ ] End-to-end command flow - target < 10ms
 - [ ] Profile with `cargo flamegraph`
 - [ ] Optimize hot paths identified
 - [ ] Document performance characteristics
@@ -280,6 +287,10 @@ event_store.append_batch(events).await?;
 
 **Success Criteria**:
 - Benchmarks establish baseline performance
+- Reducer execution < 1μs for typical state machines
+- Effect overhead < 100μs (excluding I/O)
+- Event replay >= 10k events/sec
+- End-to-end latency < 10ms (excluding external services)
 - Identified bottlenecks documented
 - Optimizations show measurable improvement
 
@@ -400,11 +411,20 @@ event_store.append_batch(events).await?;
 
 ---
 
-## 6. Effect::DispatchCommand (Deferred from Phase 3)
+## 6. Effect::DispatchCommand (Optional - May Defer to Phase 5)
+
+**Note**: This section adds a new Effect variant for in-process command routing. After Phase 3 review, this is **optional for Phase 4** as:
+- EventBus already handles cross-aggregate coordination effectively
+- Adding new Effect variants changes core abstractions (better suited for Phase 5: Developer Experience)
+- Phase 4 focus is production hardening, not new features
+
+**Decision**: If time permits after all other Phase 4 work, implement this. Otherwise, defer to Phase 5.
 
 ### 6.1 In-Process Command Routing
 
-**Scope**: Send commands to other aggregates' stores
+**Scope**: Send commands to other aggregates' stores without EventBus
+
+**Use Case**: Synchronous cross-aggregate commands in same process (e.g., Order → Payment without events)
 
 ```rust
 pub enum Effect<Action> {
@@ -418,18 +438,21 @@ pub enum Effect<Action> {
 }
 ```
 
-**Tasks**:
+**Tasks** (only if time permits):
 - [ ] Define DispatchCommand variant
 - [ ] Implement command routing in Store
 - [ ] Add store registry (aggregate ID → Store reference)
 - [ ] Handle command execution and callbacks
 - [ ] Add tests for cross-aggregate commands
-- [ ] Document command dispatch patterns
+- [ ] Document command dispatch patterns vs EventBus
 
 **Success Criteria**:
 - Can dispatch commands between aggregates in same process
 - Type safety preserved
 - Callbacks work correctly
+- Clear documentation on when to use DispatchCommand vs EventBus
+
+**Alternative**: Continue using EventBus for all cross-aggregate coordination (recommended for Phase 4)
 
 ---
 
@@ -488,7 +511,14 @@ pub enum Effect<Action> {
 - [ ] Configure Prometheus scraping
 - [ ] Create Grafana dashboards
 - [ ] Document setup and usage
-- [ ] Add health check endpoints
+- [ ] Add comprehensive health check endpoints:
+  - [ ] `/health/live` - Liveness probe (is process running?)
+  - [ ] `/health/ready` - Readiness probe (can serve traffic?)
+    - Check PostgreSQL connection
+    - Check Redpanda connection
+    - Check event bus consumer status
+  - [ ] `/health/startup` - Startup probe (initialization complete?)
+  - [ ] `/metrics` - Prometheus metrics endpoint
 
 **Success Criteria**:
 - `docker-compose up` starts entire stack
@@ -624,10 +654,26 @@ pub enum Effect<Action> {
 - [ ] Network partition tests (chaos engineering)
 - [ ] Process crash and recovery tests
 - [ ] Rebalancing and failover tests
+- [ ] Add missing unit tests from Phase 3:
+  - [ ] Reducer composition utilities tests:
+    - [ ] `combine_reducers()` with multiple reducers
+    - [ ] `scope_reducer()` with action mapping
+    - [ ] Combined + scoped reducers together
+  - [ ] Saga timeout scenarios:
+    - [ ] Payment timeout triggers compensation
+    - [ ] Inventory timeout triggers compensation
+    - [ ] Multiple timeout handling with `Effect::Delay`
+- [ ] Add checkout-saga Redpanda integration tests:
+  - [ ] Full saga flow through Redpanda event bus
+  - [ ] Compensation flow through Redpanda
+  - [ ] Event ordering guarantees in saga
 
 **Success Criteria**:
 - Tests run in CI automatically
 - Chaos scenarios handled gracefully
+- Reducer composition utilities fully tested
+- Saga timeout scenarios covered
+- Checkout saga validated with real Redpanda
 
 ---
 
@@ -662,6 +708,7 @@ pub enum Effect<Action> {
 
 Phase 4 is complete when:
 
+**Core Features**:
 - [ ] Full observability (tracing, metrics, OpenTelemetry)
 - [ ] Advanced error handling (retries, circuit breakers, DLQ)
 - [ ] Performance optimized (1000 cmd/sec target met)
@@ -672,6 +719,22 @@ Phase 4 is complete when:
 - [ ] Runbooks created for operations
 - [ ] All quality checks pass (100+ tests)
 - [ ] Ready for production use
+
+**Performance Targets Met** (from architecture.md):
+- [ ] Reducer execution < 1μs for typical state machines
+- [ ] Effect execution overhead < 100μs (excluding I/O)
+- [ ] Event replay >= 10,000 events/second
+- [ ] End-to-end command latency < 10ms (excluding external services)
+- [ ] Sustained load: 1000 commands/sec for 10+ minutes
+- [ ] P95 latency < 100ms under sustained load
+- [ ] No memory leaks during 1-hour soak test
+
+**Testing Coverage**:
+- [ ] Reducer composition utilities fully tested
+- [ ] Saga timeout scenarios covered with Effect::Delay
+- [ ] Checkout saga validated with real Redpanda
+- [ ] Full stack integration tests (Postgres + Redpanda + App)
+- [ ] Chaos engineering tests (network partitions, process crashes)
 
 **Key Quote from Roadmap**: "Can handle 1000 commands/sec sustained load with full observability."
 
