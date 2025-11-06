@@ -49,6 +49,7 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # Utilities
 smallvec = "1"
+rand = "0.8"
 
 # Development dependencies
 proptest = "1"

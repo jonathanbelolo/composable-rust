@@ -61,6 +61,128 @@ pub mod error {
     }
 }
 
+/// Retry policy for handling transient failures
+///
+/// Implements exponential backoff with jitter to handle transient failures
+/// gracefully without overwhelming downstream services.
+///
+/// # Example
+///
+/// ```ignore
+/// use composable_rust_runtime::RetryPolicy;
+/// use std::time::Duration;
+///
+/// let policy = RetryPolicy::default();
+/// // Or customize:
+/// let policy = RetryPolicy::new()
+///     .with_max_attempts(10)
+///     .with_initial_delay(Duration::from_millis(500));
+/// ```
+#[derive(Debug, Clone)]
+pub struct RetryPolicy {
+    /// Maximum number of retry attempts (including initial attempt)
+    max_attempts: u32,
+
+    /// Initial delay before first retry
+    initial_delay: Duration,
+
+    /// Maximum delay between retries (caps exponential backoff)
+    max_delay: Duration,
+
+    /// Multiplier for exponential backoff (2.0 = double each time)
+    backoff_multiplier: f64,
+}
+
+impl RetryPolicy {
+    /// Create a new retry policy with default settings
+    ///
+    /// Defaults:
+    /// - max_attempts: 5
+    /// - initial_delay: 1 second
+    /// - max_delay: 32 seconds
+    /// - backoff_multiplier: 2.0 (exponential)
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            max_attempts: 5,
+            initial_delay: Duration::from_secs(1),
+            max_delay: Duration::from_secs(32),
+            backoff_multiplier: 2.0,
+        }
+    }
+
+    /// Set maximum retry attempts
+    #[must_use]
+    pub const fn with_max_attempts(mut self, attempts: u32) -> Self {
+        self.max_attempts = attempts;
+        self
+    }
+
+    /// Set initial delay before first retry
+    #[must_use]
+    pub const fn with_initial_delay(mut self, delay: Duration) -> Self {
+        self.initial_delay = delay;
+        self
+    }
+
+    /// Set maximum delay between retries
+    #[must_use]
+    pub const fn with_max_delay(mut self, delay: Duration) -> Self {
+        self.max_delay = delay;
+        self
+    }
+
+    /// Set backoff multiplier for exponential backoff
+    #[must_use]
+    pub const fn with_backoff_multiplier(mut self, multiplier: f64) -> Self {
+        self.backoff_multiplier = multiplier;
+        self
+    }
+
+    /// Calculate delay for a given attempt number (0-indexed)
+    ///
+    /// Uses exponential backoff with jitter:
+    /// delay = min(initial_delay * multiplier^attempt, max_delay) * (0.5 + random(0.5))
+    ///
+    /// Jitter prevents thundering herd problem.
+    #[must_use]
+    pub fn delay_for_attempt(&self, attempt: u32) -> Duration {
+        use rand::Rng;
+
+        // Calculate exponential backoff: initial * multiplier^attempt
+        let base_delay_secs = self.initial_delay.as_secs_f64()
+            * self.backoff_multiplier.powi(attempt as i32);
+
+        // Cap at max_delay
+        let capped_secs = base_delay_secs.min(self.max_delay.as_secs_f64());
+
+        // Add jitter: multiply by random value between 0.5 and 1.0
+        // This spreads out retries to prevent thundering herd
+        let jitter = rand::thread_rng().gen_range(0.5..=1.0);
+        let final_secs = capped_secs * jitter;
+
+        Duration::from_secs_f64(final_secs)
+    }
+
+    /// Get maximum number of attempts
+    #[must_use]
+    pub const fn max_attempts(&self) -> u32 {
+        self.max_attempts
+    }
+
+    /// Check if we should retry based on attempt number
+    #[must_use]
+    pub const fn should_retry(&self, attempt: u32) -> bool {
+        attempt < self.max_attempts
+    }
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub use error::StoreError;
 
 use std::collections::VecDeque;
@@ -1647,6 +1769,85 @@ mod tests {
                 assert_eq!(events1.unwrap().len(), 1);
                 assert_eq!(events2.unwrap().len(), 1);
             }
+        }
+    }
+
+    /// Tests for RetryPolicy
+    mod retry_policy_tests {
+        use super::*;
+
+        #[test]
+        fn test_retry_policy_default() {
+            let policy = RetryPolicy::default();
+            assert_eq!(policy.max_attempts(), 5);
+            assert!(policy.should_retry(0));
+            assert!(policy.should_retry(4));
+            assert!(!policy.should_retry(5));
+        }
+
+        #[test]
+        fn test_retry_policy_builder() {
+            let policy = RetryPolicy::new()
+                .with_max_attempts(3)
+                .with_initial_delay(Duration::from_millis(100))
+                .with_max_delay(Duration::from_secs(10))
+                .with_backoff_multiplier(3.0);
+
+            assert_eq!(policy.max_attempts(), 3);
+            assert!(policy.should_retry(2));
+            assert!(!policy.should_retry(3));
+        }
+
+        #[test]
+        fn test_delay_increases_exponentially() {
+            let policy = RetryPolicy::new()
+                .with_initial_delay(Duration::from_secs(1))
+                .with_backoff_multiplier(2.0)
+                .with_max_delay(Duration::from_secs(100));
+
+            let delay0 = policy.delay_for_attempt(0);
+            let delay1 = policy.delay_for_attempt(1);
+            let delay2 = policy.delay_for_attempt(2);
+
+            // Delays should generally increase (accounting for jitter 0.5-1.0)
+            // delay0 ~= 1s * (0.5-1.0)
+            // delay1 ~= 2s * (0.5-1.0)
+            // delay2 ~= 4s * (0.5-1.0)
+            assert!(delay0.as_millis() >= 500 && delay0.as_millis() <= 1000);
+            assert!(delay1.as_millis() >= 1000 && delay1.as_millis() <= 2000);
+            assert!(delay2.as_millis() >= 2000 && delay2.as_millis() <= 4000);
+        }
+
+        #[test]
+        fn test_delay_caps_at_max() {
+            let policy = RetryPolicy::new()
+                .with_initial_delay(Duration::from_secs(1))
+                .with_backoff_multiplier(2.0)
+                .with_max_delay(Duration::from_secs(5));
+
+            // Attempt 10 would normally be 2^10 = 1024 seconds
+            // But should be capped at 5 seconds (plus jitter 0.5-1.0)
+            let delay = policy.delay_for_attempt(10);
+            assert!(delay.as_millis() >= 2500 && delay.as_millis() <= 5000);
+        }
+
+        #[test]
+        fn test_jitter_variation() {
+            let policy = RetryPolicy::new()
+                .with_initial_delay(Duration::from_secs(1))
+                .with_backoff_multiplier(2.0);
+
+            // Run multiple times to ensure jitter provides variation
+            let mut delays = Vec::new();
+            for _ in 0..10 {
+                delays.push(policy.delay_for_attempt(1));
+            }
+
+            // Should have variation due to jitter
+            // Not all delays should be exactly the same
+            let first = delays[0];
+            let has_variation = delays.iter().any(|d| d != &first);
+            assert!(has_variation, "Jitter should produce variation in delays");
         }
     }
 }

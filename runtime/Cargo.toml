@@ -34,6 +34,9 @@ metrics = { workspace = true }
 # Time
 chrono = { workspace = true }
 
+# Utilities
+rand = { workspace = true }
+
 [dev-dependencies]
 composable-rust-testing = { path = "../testing" }
 proptest = { workspace = true }
