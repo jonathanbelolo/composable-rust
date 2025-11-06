@@ -66,6 +66,9 @@ pub mod event;
 pub mod event_store;
 pub mod stream;
 
+// Phase 3: Event bus for cross-aggregate communication
+pub mod event_bus;
+
 /// Action module - Unified input type for reducers (commands, events, cross-aggregate events)
 ///
 /// # Phase 1 Implementation
@@ -191,6 +194,7 @@ pub mod effect {
     use std::time::Duration;
 
     use crate::event::SerializedEvent;
+    use crate::event_bus::{EventBus, EventBusError};
     use crate::event_store::{EventStore, EventStoreError};
     use crate::stream::{StreamId, Version};
     use std::sync::Arc;
@@ -287,6 +291,49 @@ pub mod effect {
         },
     }
 
+    /// Event bus operation descriptions for the `Effect::PublishEvent` variant.
+    ///
+    /// These operations describe event publishing operations that will be executed
+    /// by the runtime with access to the `EventBus` implementation.
+    ///
+    /// Each operation includes success and error callbacks that produce optional actions,
+    /// allowing the effect system to feed results back into the reducer loop.
+    ///
+    /// # Type Parameters
+    ///
+    /// - `Action`: The action type that callbacks can produce
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use composable_rust_core::effect::EventBusOperation;
+    ///
+    /// let op = EventBusOperation::Publish {
+    ///     event_bus: Arc::clone(&event_bus),
+    ///     topic: "order-events".to_string(),
+    ///     event: serialized_event,
+    ///     on_success: Box::new(|| Some(OrderAction::EventPublished)),
+    ///     on_error: Box::new(|error| {
+    ///         Some(OrderAction::PublishFailed { error: error.to_string() })
+    ///     }),
+    /// };
+    /// ```
+    pub enum EventBusOperation<Action> {
+        /// Publish an event to a topic.
+        Publish {
+            /// The event bus implementation to use
+            event_bus: Arc<dyn EventBus>,
+            /// The topic to publish to (e.g., "order-events")
+            topic: String,
+            /// The event to publish
+            event: SerializedEvent,
+            /// Callback invoked on successful publish
+            on_success: Box<dyn Fn(()) -> Option<Action> + Send + Sync>,
+            /// Callback invoked on error
+            on_error: Box<dyn Fn(EventBusError) -> Option<Action> + Send + Sync>,
+        },
+    }
+
     /// Effect type - describes a side effect to be executed
     ///
     /// Effects are NOT executed immediately. They are descriptions of what should happen,
@@ -350,9 +397,31 @@ pub mod effect {
         /// });
         /// ```
         EventStore(EventStoreOperation<Action>),
+
+        /// Event bus operation (Phase 3)
+        ///
+        /// Describes an event publishing operation to be executed by the runtime
+        /// with access to the `EventBus` implementation. Events are published to
+        /// topics after being persisted to the event store.
+        ///
+        /// # Examples
+        ///
+        /// ```rust,ignore
+        /// use composable_rust_core::effect::{Effect, EventBusOperation};
+        ///
+        /// let effect = Effect::PublishEvent(EventBusOperation::Publish {
+        ///     event_bus: Arc::clone(&event_bus),
+        ///     topic: "order-events".to_string(),
+        ///     event: serialized_event,
+        ///     on_success: Box::new(|| Some(OrderAction::EventPublished)),
+        ///     on_error: Box::new(|error| {
+        ///         Some(OrderAction::PublishFailed { error: error.to_string() })
+        ///     }),
+        /// });
+        /// ```
+        PublishEvent(EventBusOperation<Action>),
         // Additional effect variants will be added in future phases:
         // - Http { request, on_success, on_error }
-        // - PublishEvent(Event)
         // - Cancellable { id, effect }
         // - DispatchCommand(Command) - for saga coordination
     }
@@ -416,6 +485,18 @@ pub mod effect {
                         .debug_struct("Effect::EventStore::LoadSnapshot")
                         .field("stream_id", stream_id)
                         .field("event_store", &"<event_store>")
+                        .finish(),
+                },
+                Effect::PublishEvent(op) => match op {
+                    EventBusOperation::Publish {
+                        topic,
+                        event,
+                        ..
+                    } => f
+                        .debug_struct("Effect::PublishEvent::Publish")
+                        .field("topic", topic)
+                        .field("event_type", &event.event_type)
+                        .field("event_bus", &"<event_bus>")
                         .finish(),
                 },
             }
@@ -498,6 +579,7 @@ pub mod effect {
                 },
                 Effect::Future(fut) => Effect::Future(Box::pin(async move { fut.await.map(f) })),
                 Effect::EventStore(op) => Effect::EventStore(map_event_store_operation(op, f)),
+                Effect::PublishEvent(op) => Effect::PublishEvent(map_event_bus_operation(op, f)),
             }
         }
     }
@@ -537,6 +619,7 @@ pub mod effect {
             },
             Effect::Future(fut) => Effect::Future(Box::pin(async move { fut.await.map(f) })),
             Effect::EventStore(op) => Effect::EventStore(map_event_store_operation(op, f)),
+            Effect::PublishEvent(op) => Effect::PublishEvent(map_event_bus_operation(op, f)),
         }
     }
 
@@ -625,6 +708,39 @@ pub mod effect {
                     stream_id,
                     on_success: Box::new(move |snapshot| {
                         on_success(snapshot).map(|a| f_success.clone()(a))
+                    }),
+                    on_error: Box::new(move |error| on_error(error).map(|a| f_error.clone()(a))),
+                }
+            },
+        }
+    }
+
+    // Helper function to map EventBusOperation callbacks to new action type
+    fn map_event_bus_operation<A, B, F>(
+        op: EventBusOperation<A>,
+        f: F,
+    ) -> EventBusOperation<B>
+    where
+        F: Fn(A) -> B + Send + Sync + 'static + Clone,
+        A: 'static,
+        B: Send + 'static,
+    {
+        match op {
+            EventBusOperation::Publish {
+                event_bus,
+                topic,
+                event,
+                on_success,
+                on_error,
+            } => {
+                let f_success = f.clone();
+                let f_error = f;
+                EventBusOperation::Publish {
+                    event_bus,
+                    topic,
+                    event,
+                    on_success: Box::new(move |unit| {
+                        on_success(unit).map(|a| f_success.clone()(a))
                     }),
                     on_error: Box::new(move |error| on_error(error).map(|a| f_error.clone()(a))),
                 }
