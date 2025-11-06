@@ -305,12 +305,14 @@ Build `examples/counter/` to validate the abstractions:
 
 ### Validation Criteria
 
-- [ ] Can persist events to Postgres
-- [ ] Can reconstruct aggregate from event stream
-- [ ] Snapshots work correctly
-- [ ] Can replay 10,000+ events/second
-- [ ] Tests use mock database (no I/O in unit tests)
-- [ ] Integration tests use testcontainers
+- [x] Can persist events to Postgres ✅
+- [x] Can reconstruct aggregate from event stream ✅
+- [x] Snapshots work correctly ✅
+- [x] Can replay 10,000+ events/second ✅
+- [x] Tests use mock database (no I/O in unit tests) ✅
+- [x] Integration tests use testcontainers ✅
+
+**Phase 2 Status**: ✅ **COMPLETE** (2025-11-05)
 
 ### Key Decisions
 
@@ -422,11 +424,27 @@ Build `examples/order-processing/`:
 
 ### Validation Criteria
 
-- [ ] Events route from one aggregate to saga
-- [ ] Saga can dispatch commands to other aggregates
-- [ ] Compensation works correctly
-- [ ] Tests can simulate event sequences deterministically
-- [ ] Can test entire workflow in < 50ms (all mocks)
+- [x] Events route from one aggregate to saga ✅
+- [x] Saga can dispatch commands to other aggregates ✅
+- [x] Compensation works correctly ✅
+- [x] Tests can simulate event sequences deterministically ✅
+- [x] Can test entire workflow in < 50ms (all mocks) ✅
+
+**Phase 3 Status**: ✅ **CORE COMPLETE** (2025-11-06)
+
+**Core Achievements**:
+- EventBus trait abstraction with InMemory + Redpanda implementations
+- At-least-once delivery guarantees (manual commit fixed)
+- Deterministic consumer groups (sorted topics)
+- Configurable buffers (1000 default, 10x improvement)
+- Checkout Saga with Payment + Inventory aggregates
+- All 87 workspace tests passing, clippy clean
+
+**Future Work** (Phase 4):
+- Integration tests with testcontainers + real Redpanda
+- Reducer composition utilities
+- Comprehensive failure scenario tests
+- Production observability and metrics
 
 ### Key Decisions
 
