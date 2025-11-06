@@ -24,9 +24,9 @@ This skill is the **authoritative source** for all Rust coding standards in this
 
 **Composable Rust** is a functional architecture framework for building event-driven backend systems in Rust, inspired by Swift's Composable Architecture (TCA). The framework combines Rust's type safety with functional programming patterns, CQRS, and Event Sourcing to create battle-tested, industrial-grade business process management systems.
 
-**Current Status**: Phase 1 complete. Phase 2 (Event Sourcing & Persistence) is next.
+**Current Status**: Phase 3 complete. Phase 4 (Production Hardening) is next.
 
-**Phase 1 Achievement**: Core abstractions validated with Counter example. 47 tests passing, 3,486 lines of documentation. See `PHASE1_REVIEW.md` for comprehensive completion assessment.
+**Phase 3 Achievement**: Multi-aggregate coordination via Redpanda event bus. Saga pattern with compensation validated. 87 tests passing, 1,360+ lines of new documentation. See `plans/phase-3/TODO.md` for comprehensive completion assessment.
 
 ## Core Architecture
 
@@ -302,23 +302,51 @@ async fn test_reducer() {
 - `examples/counter/`: Complete reference implementation
 - `docs/`: 6 comprehensive documentation files
 
-### Phase 2 (Next)
-Focus: Event Sourcing & Persistence
-- PostgreSQL event store
-- Event replay for state reconstruction
-- Snapshot support for performance
-- Database trait (builds on Environment pattern)
-- bincode serialization
+### Phase 2 (Complete) ✅
+**Achievement**: Event Sourcing & Persistence
+- ✅ PostgreSQL event store with append/load operations
+- ✅ Event replay for state reconstruction
+- ✅ InMemoryEventStore for fast testing
+- ✅ Database trait (EventStore) with PostgreSQL implementation
+- ✅ bincode serialization for events
+- ✅ Order Processing example with full event sourcing
+- ✅ 9 integration tests (all passing)
 
-**Will add**:
-- Database trait and implementations
-- Event store schema and queries
-- State reconstruction from events
-- Snapshot strategies
+**Key files completed**:
+- `postgres/src/lib.rs`: PostgreSQL event store implementation
+- `core/src/event.rs`: SerializedEvent, EventStore trait
+- `testing/src/lib.rs`: InMemoryEventStore
+- `examples/order-processing/`: Complete event-sourced aggregate
+
+### Phase 3 (Complete) ✅
+**Achievement**: Multi-aggregate coordination via event bus
+- ✅ EventBus trait abstraction (publish/subscribe)
+- ✅ InMemoryEventBus for testing (synchronous, deterministic)
+- ✅ RedpandaEventBus with Kafka-compatible integration
+- ✅ At-least-once delivery semantics (manual offset commits)
+- ✅ Reducer composition utilities (combine_reducers, scope_reducer)
+- ✅ Checkout Saga example with compensation (Order + Payment + Inventory)
+- ✅ Testcontainers integration tests (6 tests)
+- ✅ Comprehensive documentation (sagas.md, event-bus.md, redpanda-setup.md)
+- ✅ 87 workspace tests passing, 0 clippy warnings
+
+**Key files completed**:
+- `core/src/event_bus.rs`: EventBus trait, Effect::PublishEvent
+- `testing/src/lib.rs`: InMemoryEventBus
+- `redpanda/src/lib.rs`: RedpandaEventBus with builder pattern
+- `core/src/composition.rs`: Reducer composition utilities
+- `examples/checkout-saga/`: Complete saga with compensation flows
+- `docs/sagas.md`, `docs/event-bus.md`, `docs/redpanda-setup.md`
+
+### Phase 4 (Next)
+Focus: Production Hardening
+- Observability (tracing, metrics, OpenTelemetry)
+- Advanced error handling (dead letter queues, circuit breakers, retries)
+- Performance optimization (profiling, benchmarks)
+- Production deployment patterns
+- Load testing (1000 cmd/sec target)
 
 ### Future Phases
-- Phase 3: Redpanda event bus, Saga pattern, EventPublisher trait
-- Phase 4: Production hardening, observability, metrics
 - Phase 5: Developer experience, macros, more examples
 
 ## Strategic Decisions (Locked In)

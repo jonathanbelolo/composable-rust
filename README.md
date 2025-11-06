@@ -62,20 +62,30 @@ impl Reducer for OrderReducer {
 }
 ```
 
-## Current Status: Phase 1 - Core Abstractions ✅ COMPLETE
+## Current Status: Phase 3 - Sagas & Coordination ✅ COMPLETE
 
 ✅ **Phase 0**: Foundation & Tooling
 ✅ **Phase 1**: Core Abstractions
-  - Reducer trait (pure functions for business logic)
-  - Effect system (5 variants: None, Future, Delay, Parallel, Sequential)
-  - Store runtime (state management + effect execution)
-  - Environment traits (Clock with production/test implementations)
-  - TestStore (deterministic effect testing)
-  - Counter example (validates entire architecture)
-  - 47 comprehensive tests (all passing)
-  - 3,486 lines of documentation
+  - Reducer trait, Effect system (5 variants), Store runtime
+  - Environment traits (Clock), TestStore
+  - Counter example, 47 tests passing
 
-**Next**: Phase 2 - Event Sourcing & Persistence (PostgreSQL event store)
+✅ **Phase 2**: Event Sourcing & Persistence
+  - PostgreSQL event store (append/load operations)
+  - Event replay for state reconstruction
+  - InMemoryEventStore for testing
+  - Order Processing example, 9 integration tests passing
+
+✅ **Phase 3**: Sagas & Coordination
+  - EventBus trait (InMemoryEventBus + RedpandaEventBus)
+  - At-least-once delivery with Redpanda/Kafka integration
+  - Reducer composition utilities (combine_reducers, scope_reducer)
+  - Checkout Saga example with compensation (Order + Payment + Inventory)
+  - Testcontainers integration tests (6 tests)
+  - Comprehensive documentation (sagas.md, event-bus.md, redpanda-setup.md)
+  - 87 workspace tests passing, 0 clippy warnings
+
+**Next**: Phase 4 - Production Hardening (observability, metrics, load testing)
 
 ## Project Structure
 
@@ -92,9 +102,11 @@ composable-rust/
 
 ## Crates
 
-- **`composable-rust-core`**: Core traits (Reducer, Effect, Environment)
+- **`composable-rust-core`**: Core traits (Reducer, Effect, Environment, EventBus, EventStore)
 - **`composable-rust-runtime`**: Store runtime and effect execution
-- **`composable-rust-testing`**: Testing utilities and mock implementations
+- **`composable-rust-testing`**: Testing utilities (TestStore, InMemoryEventBus, InMemoryEventStore)
+- **`composable-rust-postgres`**: PostgreSQL event store implementation
+- **`composable-rust-redpanda`**: Redpanda/Kafka event bus implementation
 
 ## Quick Start
 

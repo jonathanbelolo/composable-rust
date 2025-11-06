@@ -430,21 +430,32 @@ Build `examples/order-processing/`:
 - [x] Tests can simulate event sequences deterministically ✅
 - [x] Can test entire workflow in < 50ms (all mocks) ✅
 
-**Phase 3 Status**: ✅ **CORE COMPLETE** (2025-11-06)
+**Phase 3 Status**: ✅ **COMPLETE** (2025-11-06)
 
 **Core Achievements**:
-- EventBus trait abstraction with InMemory + Redpanda implementations
-- At-least-once delivery guarantees (manual commit fixed)
-- Deterministic consumer groups (sorted topics)
-- Configurable buffers (1000 default, 10x improvement)
-- Checkout Saga with Payment + Inventory aggregates
-- All 87 workspace tests passing, clippy clean
+- ✅ EventBus trait abstraction with InMemory + Redpanda implementations
+- ✅ At-least-once delivery guarantees (manual commit fixed)
+- ✅ Deterministic consumer groups (sorted topics)
+- ✅ Configurable buffers (1000 default, 10x improvement)
+- ✅ Checkout Saga with Payment + Inventory aggregates (8 tests, compensation flows)
+- ✅ Reducer composition utilities (combine_reducers, scope_reducer)
+- ✅ Testcontainers integration tests (6 tests for Redpanda)
+- ✅ Comprehensive documentation (sagas.md, event-bus.md, redpanda-setup.md - 1,360+ lines)
+- ✅ All 87 workspace tests passing, 0 clippy warnings
+
+**Deliverables Summary**:
+- 677 lines: RedpandaEventBus with builder pattern
+- 477 lines: Reducer composition utilities
+- 1,180 lines: Checkout saga example (Order + Payment + Inventory)
+- 438 lines: Testcontainers integration tests
+- 1,360+ lines: Three comprehensive documentation guides
 
 **Future Work** (Phase 4):
-- Integration tests with testcontainers + real Redpanda
-- Reducer composition utilities
-- Comprehensive failure scenario tests
-- Production observability and metrics
+- Production hardening (observability, metrics, tracing)
+- Advanced error handling (dead letter queues, circuit breakers, retries)
+- Effect::DispatchCommand for in-process command routing
+- Full Redpanda integration in saga examples (currently uses InMemoryEventBus)
+- Load testing with examples/production-ready/ (1000 cmd/sec target)
 
 ### Key Decisions
 
