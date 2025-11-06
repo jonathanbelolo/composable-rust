@@ -383,6 +383,34 @@ pub trait EventStore: Send + Sync {
     /// connection lost), the entire batch is rolled back. Individual append failures (e.g.,
     /// concurrency conflicts) are captured per-operation in the results.
     ///
+    /// # Duplicate Stream IDs
+    ///
+    /// **Important**: If the same `stream_id` appears multiple times in a batch, subsequent
+    /// operations for that stream will see the **pre-batch version**, not the version after
+    /// earlier operations in the batch. This typically causes concurrency conflicts.
+    ///
+    /// **Best Practice**: Batch operations should target different streams. To append multiple
+    /// events to the same stream, use one `BatchAppend` with all events rather than multiple
+    /// `BatchAppend` entries.
+    ///
+    /// ```rust,ignore
+    /// // ✅ GOOD: One stream, one BatchAppend with all events
+    /// let batch = vec![
+    ///     BatchAppend::new(
+    ///         StreamId::new("order-1"),
+    ///         Some(Version::new(0)),
+    ///         vec![event1, event2, event3],  // All events together
+    ///     ),
+    /// ];
+    ///
+    /// // ❌ BAD: Same stream in multiple entries
+    /// let batch = vec![
+    ///     BatchAppend::new(StreamId::new("order-1"), Some(Version::new(0)), vec![event1]),
+    ///     BatchAppend::new(StreamId::new("order-1"), Some(Version::new(1)), vec![event2]),
+    ///     // ⚠️ Second operation will fail: it sees version 0, not 1
+    /// ];
+    /// ```
+    ///
     /// # Errors
     ///
     /// Returns `Err` only for transaction-level failures (database errors). Per-operation

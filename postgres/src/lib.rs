@@ -249,6 +249,8 @@ impl EventStore for PostgresEventStore {
             );
 
             // Metrics: Record event count
+            // Note: Precision loss for counts > 2^52 (~4.5 quadrillion) is acceptable
+            #[allow(clippy::cast_precision_loss)]
             metrics::histogram!("event_store.append.event_count").record(events.len() as f64);
 
             // Start transaction for atomicity
@@ -455,6 +457,8 @@ impl EventStore for PostgresEventStore {
             let duration = start.elapsed();
             metrics::histogram!("event_store.load.duration_seconds")
                 .record(duration.as_secs_f64());
+            // Note: Precision loss for counts > 2^52 (~4.5 quadrillion) is acceptable
+            #[allow(clippy::cast_precision_loss)]
             metrics::histogram!("event_store.load.event_count")
                 .record(event_vec.len() as f64);
             metrics::counter!("event_store.load.total", "result" => "success").increment(1);
@@ -571,6 +575,8 @@ impl EventStore for PostgresEventStore {
             }
 
             tracing::debug!(batch_size = batch.len(), "Executing batch append");
+            // Note: Precision loss for counts > 2^52 (~4.5 quadrillion) is acceptable
+            #[allow(clippy::cast_precision_loss)]
             metrics::histogram!("event_store.batch.size").record(batch.len() as f64);
 
             let start = std::time::Instant::now();
@@ -688,73 +694,6 @@ impl EventStore for PostgresEventStore {
 
             Ok(results)
         })
-    }
-}
-
-impl PostgresEventStore {
-    /// Internal helper: append events within an existing transaction
-    async fn append_events_in_tx(
-        &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        stream_id: StreamId,
-        expected_version: Option<Version>,
-        events: Vec<SerializedEvent>,
-    ) -> Result<Version, EventStoreError> {
-        if events.is_empty() {
-            return Err(EventStoreError::DatabaseError(
-                "Cannot append empty event list".to_string(),
-            ));
-        }
-
-        // Get current version
-        let current_version_row = sqlx::query(
-            "SELECT COALESCE(MAX(version), 0) as current_version
-             FROM events
-             WHERE stream_id = $1",
-        )
-        .bind(stream_id.as_str())
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(|e| EventStoreError::DatabaseError(format!("Failed to get current version: {e}")))?;
-
-        let current_version_i64: i64 = current_version_row.get("current_version");
-        let current_version = u64::try_from(current_version_i64)
-            .map_err(|e| EventStoreError::DatabaseError(format!("Invalid version: {e}")))?;
-
-        // Check optimistic concurrency
-        if let Some(expected) = expected_version {
-            if current_version != expected.value() {
-                return Err(EventStoreError::ConcurrencyConflict {
-                    stream_id,
-                    expected,
-                    actual: Version::new(current_version),
-                });
-            }
-        }
-
-        // Insert events
-        let mut new_version = current_version;
-        for event in events {
-            new_version += 1;
-
-            let version_i64 = i64::try_from(new_version)
-                .map_err(|e| EventStoreError::DatabaseError(format!("Version overflow: {e}")))?;
-
-            sqlx::query(
-                "INSERT INTO events (stream_id, version, event_type, event_data, metadata, created_at)
-                 VALUES ($1, $2, $3, $4, $5, now())",
-            )
-            .bind(stream_id.as_str())
-            .bind(version_i64)
-            .bind(&event.event_type)
-            .bind(&event.data)
-            .bind(&event.metadata)
-            .execute(&mut **tx)
-            .await
-            .map_err(|e| EventStoreError::DatabaseError(format!("Failed to insert event: {e}")))?;
-        }
-
-        Ok(Version::new(new_version))
     }
 }
 

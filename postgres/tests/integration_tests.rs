@@ -450,21 +450,25 @@ async fn test_append_batch_success_multiple_streams() {
     assert!(results[1].is_ok(), "Stream 2 should succeed");
     assert!(results[2].is_ok(), "Stream 3 should succeed");
 
-    assert_eq!(
-        results[0].as_ref().unwrap(),
-        &Version::new(2),
-        "Stream 1 should be at version 2"
-    );
-    assert_eq!(
-        results[1].as_ref().unwrap(),
-        &Version::new(1),
-        "Stream 2 should be at version 1"
-    );
-    assert_eq!(
-        results[2].as_ref().unwrap(),
-        &Version::new(3),
-        "Stream 3 should be at version 3"
-    );
+    // Test assertions - safe to use expect after verifying is_ok()
+    #[allow(clippy::expect_used)]
+    {
+        assert_eq!(
+            results[0].as_ref().expect("Stream 1 already verified as Ok"),
+            &Version::new(2),
+            "Stream 1 should be at version 2"
+        );
+        assert_eq!(
+            results[1].as_ref().expect("Stream 2 already verified as Ok"),
+            &Version::new(1),
+            "Stream 2 should be at version 1"
+        );
+        assert_eq!(
+            results[2].as_ref().expect("Stream 3 already verified as Ok"),
+            &Version::new(3),
+            "Stream 3 should be at version 3"
+        );
+    }
 
     // Verify events were persisted correctly
     let stream1_events = store
@@ -709,7 +713,7 @@ async fn test_append_batch_performance_vs_sequential() {
 
     // Measure sequential appends (different stream names)
     let sequential_start = Instant::now();
-    for (i, (stream_id, events)) in individual_operations.into_iter().enumerate() {
+    for (i, (_stream_id, events)) in individual_operations.into_iter().enumerate() {
         let seq_stream = StreamId::new(format!("seq-stream-{i}"));
         store
             .append_events(seq_stream, Some(Version::new(0)), events)
