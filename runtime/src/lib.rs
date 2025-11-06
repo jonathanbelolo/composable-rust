@@ -547,6 +547,7 @@ pub mod store {
         /// - `tracking`: The tracking context for this effect (passed by value to enable cloning)
         #[allow(clippy::needless_pass_by_value)] // tracking is cloned, so pass by value is intentional
         #[allow(clippy::cognitive_complexity)] // TODO: Refactor in Phase 4
+        #[allow(clippy::too_many_lines)] // TODO: Refactor in Phase 4
         fn execute_effect_internal(&self, effect: Effect<A>, tracking: EffectTracking<A>)
         where
             R: Clone,
@@ -634,6 +635,120 @@ pub mod store {
                             }
                         }
                         tracing::trace!("Effect::Sequential completed");
+                    });
+                },
+                Effect::EventStore(op) => {
+                    use composable_rust_core::effect::EventStoreOperation;
+
+                    tracing::trace!("Executing Effect::EventStore");
+                    tracking.increment();
+                    let tracking_clone = tracking.clone();
+                    let store = self.clone();
+
+                    tokio::spawn(async move {
+                        let _guard = DecrementGuard(tracking_clone.clone());
+
+                        let action = match op {
+                            EventStoreOperation::AppendEvents {
+                                event_store,
+                                stream_id,
+                                expected_version,
+                                events,
+                                on_success,
+                                on_error,
+                            } => {
+                                tracing::debug!(
+                                    stream_id = %stream_id,
+                                    expected_version = ?expected_version,
+                                    event_count = events.len(),
+                                    "Executing append_events"
+                                );
+                                match event_store.append_events(stream_id, expected_version, events).await {
+                                    Ok(version) => {
+                                        tracing::debug!(new_version = ?version, "append_events succeeded");
+                                        on_success(version)
+                                    },
+                                    Err(error) => {
+                                        tracing::warn!(error = %error, "append_events failed");
+                                        on_error(error)
+                                    },
+                                }
+                            },
+                            EventStoreOperation::LoadEvents {
+                                event_store,
+                                stream_id,
+                                from_version,
+                                on_success,
+                                on_error,
+                            } => {
+                                tracing::debug!(
+                                    stream_id = %stream_id,
+                                    from_version = ?from_version,
+                                    "Executing load_events"
+                                );
+                                match event_store.load_events(stream_id, from_version).await {
+                                    Ok(events) => {
+                                        tracing::debug!(event_count = events.len(), "load_events succeeded");
+                                        on_success(events)
+                                    },
+                                    Err(error) => {
+                                        tracing::warn!(error = %error, "load_events failed");
+                                        on_error(error)
+                                    },
+                                }
+                            },
+                            EventStoreOperation::SaveSnapshot {
+                                event_store,
+                                stream_id,
+                                version,
+                                state,
+                                on_success,
+                                on_error,
+                            } => {
+                                tracing::debug!(
+                                    stream_id = %stream_id,
+                                    version = ?version,
+                                    state_size = state.len(),
+                                    "Executing save_snapshot"
+                                );
+                                match event_store.save_snapshot(stream_id, version, state).await {
+                                    Ok(()) => {
+                                        tracing::debug!("save_snapshot succeeded");
+                                        on_success(())
+                                    },
+                                    Err(error) => {
+                                        tracing::warn!(error = %error, "save_snapshot failed");
+                                        on_error(error)
+                                    },
+                                }
+                            },
+                            EventStoreOperation::LoadSnapshot {
+                                event_store,
+                                stream_id,
+                                on_success,
+                                on_error,
+                            } => {
+                                tracing::debug!(stream_id = %stream_id, "Executing load_snapshot");
+                                match event_store.load_snapshot(stream_id).await {
+                                    Ok(snapshot) => {
+                                        tracing::debug!(has_snapshot = snapshot.is_some(), "load_snapshot succeeded");
+                                        on_success(snapshot)
+                                    },
+                                    Err(error) => {
+                                        tracing::warn!(error = %error, "load_snapshot failed");
+                                        on_error(error)
+                                    },
+                                }
+                            },
+                        };
+
+                        // Send action back to store if callback produced one
+                        if let Some(action) = action {
+                            tracing::trace!("EventStore operation produced an action, sending to store");
+                            let _ = store.send(action).await;
+                        } else {
+                            tracing::trace!("EventStore operation completed with no action");
+                        }
                     });
                 },
             }

@@ -319,96 +319,103 @@ pub mod mocks {
         }
     }
 
-    #[allow(async_fn_in_trait)] // Trait is Send + Sync bounded
     impl composable_rust_core::event_store::EventStore for InMemoryEventStore {
-        async fn append_events(
+        fn append_events(
             &self,
             stream_id: composable_rust_core::stream::StreamId,
             expected_version: Option<composable_rust_core::stream::Version>,
             mut events: Vec<composable_rust_core::event::SerializedEvent>,
-        ) -> Result<composable_rust_core::stream::Version, composable_rust_core::event_store::EventStoreError> {
-            if events.is_empty() {
-                return Err(composable_rust_core::event_store::EventStoreError::DatabaseError(
-                    "Cannot append empty event list".to_string(),
-                ));
-            }
-
-            let mut store = self
-                .events
-                .write()
-                .map_err(|e| composable_rust_core::event_store::EventStoreError::DatabaseError(format!("Lock poisoned: {e}")))?;
-
-            let stream_events = store.entry(stream_id.as_str().to_string()).or_default();
-            let current_version = composable_rust_core::stream::Version::new(stream_events.len() as u64);
-
-            // Check optimistic concurrency
-            if let Some(expected) = expected_version {
-                if current_version != expected {
-                    return Err(composable_rust_core::event_store::EventStoreError::ConcurrencyConflict {
-                        stream_id,
-                        expected,
-                        actual: current_version,
-                    });
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<composable_rust_core::stream::Version, composable_rust_core::event_store::EventStoreError>> + Send + '_>> {
+            Box::pin(async move {
+                if events.is_empty() {
+                    return Err(composable_rust_core::event_store::EventStoreError::DatabaseError(
+                        "Cannot append empty event list".to_string(),
+                    ));
                 }
-            }
 
-            // Append events
-            stream_events.append(&mut events);
-            let new_version = composable_rust_core::stream::Version::new(stream_events.len() as u64);
+                let mut store = self
+                    .events
+                    .write()
+                    .map_err(|e| composable_rust_core::event_store::EventStoreError::DatabaseError(format!("Lock poisoned: {e}")))?;
 
-            Ok(new_version - 1)
+                let stream_events = store.entry(stream_id.as_str().to_string()).or_default();
+                let current_version = composable_rust_core::stream::Version::new(stream_events.len() as u64);
+
+                // Check optimistic concurrency
+                if let Some(expected) = expected_version {
+                    if current_version != expected {
+                        return Err(composable_rust_core::event_store::EventStoreError::ConcurrencyConflict {
+                            stream_id,
+                            expected,
+                            actual: current_version,
+                        });
+                    }
+                }
+
+                // Append events
+                stream_events.append(&mut events);
+                let new_version = composable_rust_core::stream::Version::new(stream_events.len() as u64);
+
+                Ok(new_version - 1)
+            })
         }
 
-        async fn load_events(
+        fn load_events(
             &self,
             stream_id: composable_rust_core::stream::StreamId,
             from_version: Option<composable_rust_core::stream::Version>,
-        ) -> Result<Vec<composable_rust_core::event::SerializedEvent>, composable_rust_core::event_store::EventStoreError> {
-            let store = self
-                .events
-                .read()
-                .map_err(|e| composable_rust_core::event_store::EventStoreError::DatabaseError(format!("Lock poisoned: {e}")))?;
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<composable_rust_core::event::SerializedEvent>, composable_rust_core::event_store::EventStoreError>> + Send + '_>> {
+            Box::pin(async move {
+                let store = self
+                    .events
+                    .read()
+                    .map_err(|e| composable_rust_core::event_store::EventStoreError::DatabaseError(format!("Lock poisoned: {e}")))?;
 
-            let stream_events = store.get(stream_id.as_str());
+                let stream_events = store.get(stream_id.as_str());
 
-            match (stream_events, from_version) {
-                (Some(events), Some(from_ver)) => {
-                    let start_idx = usize::try_from(from_ver.value())
-                        .map_err(|e| composable_rust_core::event_store::EventStoreError::DatabaseError(
-                            format!("Version too large for usize: {e}")
-                        ))?;
-                    Ok(events.get(start_idx..).unwrap_or(&[]).to_vec())
+                match (stream_events, from_version) {
+                    (Some(events), Some(from_ver)) => {
+                        let start_idx = usize::try_from(from_ver.value())
+                            .map_err(|e| composable_rust_core::event_store::EventStoreError::DatabaseError(
+                                format!("Version too large for usize: {e}")
+                            ))?;
+                        Ok(events.get(start_idx..).unwrap_or(&[]).to_vec())
+                    }
+                    (Some(events), None) => Ok(events.clone()),
+                    (None, _) => Ok(vec![]),
                 }
-                (Some(events), None) => Ok(events.clone()),
-                (None, _) => Ok(vec![]),
-            }
+            })
         }
 
-        async fn save_snapshot(
+        fn save_snapshot(
             &self,
             stream_id: composable_rust_core::stream::StreamId,
             version: composable_rust_core::stream::Version,
             state: Vec<u8>,
-        ) -> Result<(), composable_rust_core::event_store::EventStoreError> {
-            let mut store = self
-                .snapshots
-                .write()
-                .map_err(|e| composable_rust_core::event_store::EventStoreError::DatabaseError(format!("Lock poisoned: {e}")))?;
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), composable_rust_core::event_store::EventStoreError>> + Send + '_>> {
+            Box::pin(async move {
+                let mut store = self
+                    .snapshots
+                    .write()
+                    .map_err(|e| composable_rust_core::event_store::EventStoreError::DatabaseError(format!("Lock poisoned: {e}")))?;
 
-            store.insert(stream_id.as_str().to_string(), (version, state));
-            Ok(())
+                store.insert(stream_id.as_str().to_string(), (version, state));
+                Ok(())
+            })
         }
 
-        async fn load_snapshot(
+        fn load_snapshot(
             &self,
             stream_id: composable_rust_core::stream::StreamId,
-        ) -> Result<Option<(composable_rust_core::stream::Version, Vec<u8>)>, composable_rust_core::event_store::EventStoreError> {
-            let store = self
-                .snapshots
-                .read()
-                .map_err(|e| composable_rust_core::event_store::EventStoreError::DatabaseError(format!("Lock poisoned: {e}")))?;
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<(composable_rust_core::stream::Version, Vec<u8>)>, composable_rust_core::event_store::EventStoreError>> + Send + '_>> {
+            Box::pin(async move {
+                let store = self
+                    .snapshots
+                    .read()
+                    .map_err(|e| composable_rust_core::event_store::EventStoreError::DatabaseError(format!("Lock poisoned: {e}")))?;
 
-            Ok(store.get(stream_id.as_str()).cloned())
+                Ok(store.get(stream_id.as_str()).cloned())
+            })
         }
     }
 }

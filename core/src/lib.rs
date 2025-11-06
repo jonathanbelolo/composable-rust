@@ -190,6 +190,103 @@ pub mod effect {
     use std::pin::Pin;
     use std::time::Duration;
 
+    use crate::event::SerializedEvent;
+    use crate::event_store::{EventStore, EventStoreError};
+    use crate::stream::{StreamId, Version};
+    use std::sync::Arc;
+
+    /// Type alias for snapshot data: `(Version, Vec<u8>)`
+    type SnapshotData = (Version, Vec<u8>);
+
+    /// Event store operation descriptions for the `Effect::EventStore` variant.
+    ///
+    /// These operations describe event sourcing persistence operations that will be
+    /// executed by the runtime with access to the `EventStore` implementation.
+    ///
+    /// Each operation includes success and error callbacks that produce optional actions,
+    /// allowing the effect system to feed results back into the reducer loop.
+    ///
+    /// # Type Parameters
+    ///
+    /// - `Action`: The action type that callbacks can produce
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use composable_rust_core::effect::EventStoreOperation;
+    ///
+    /// let op = EventStoreOperation::AppendEvents {
+    ///     stream_id: StreamId::new("order-123"),
+    ///     expected_version: Some(Version::new(5)),
+    ///     events: vec![serialized_event],
+    ///     on_success: Box::new(|version| {
+    ///         Some(OrderAction::EventsAppended { version })
+    ///     }),
+    ///     on_error: Box::new(|error| {
+    ///         Some(OrderAction::AppendFailed { error: error.to_string() })
+    ///     }),
+    /// };
+    /// ```
+    pub enum EventStoreOperation<Action> {
+        /// Append events to a stream with optimistic concurrency control.
+        AppendEvents {
+            /// The event store implementation to use
+            event_store: Arc<dyn EventStore>,
+            /// The stream to append events to
+            stream_id: StreamId,
+            /// Expected current version for optimistic concurrency
+            expected_version: Option<Version>,
+            /// Events to append
+            events: Vec<SerializedEvent>,
+            /// Callback invoked on success with the new version
+            on_success: Box<dyn Fn(Version) -> Option<Action> + Send + Sync>,
+            /// Callback invoked on error
+            on_error: Box<dyn Fn(EventStoreError) -> Option<Action> + Send + Sync>,
+        },
+
+        /// Load events from a stream.
+        LoadEvents {
+            /// The event store implementation to use
+            event_store: Arc<dyn EventStore>,
+            /// The stream to load events from
+            stream_id: StreamId,
+            /// Optional starting version (None = load all events)
+            from_version: Option<Version>,
+            /// Callback invoked on success with the loaded events
+            on_success: Box<dyn Fn(Vec<SerializedEvent>) -> Option<Action> + Send + Sync>,
+            /// Callback invoked on error
+            on_error: Box<dyn Fn(EventStoreError) -> Option<Action> + Send + Sync>,
+        },
+
+        /// Save a state snapshot for an aggregate.
+        SaveSnapshot {
+            /// The event store implementation to use
+            event_store: Arc<dyn EventStore>,
+            /// The stream this snapshot belongs to
+            stream_id: StreamId,
+            /// The version of the stream at snapshot time
+            version: Version,
+            /// The serialized state data
+            state: Vec<u8>,
+            /// Callback invoked on success
+            on_success: Box<dyn Fn(()) -> Option<Action> + Send + Sync>,
+            /// Callback invoked on error
+            on_error: Box<dyn Fn(EventStoreError) -> Option<Action> + Send + Sync>,
+        },
+
+        /// Load the latest snapshot for a stream.
+        LoadSnapshot {
+            /// The event store implementation to use
+            event_store: Arc<dyn EventStore>,
+            /// The stream to load snapshot from
+            stream_id: StreamId,
+            /// Callback invoked on success with optional snapshot data
+            on_success: Box<dyn Fn(Option<SnapshotData>) -> Option<Action> + Send + Sync>,
+            /// Callback invoked on error
+            on_error: Box<dyn Fn(EventStoreError) -> Option<Action> + Send + Sync>,
+        },
+    }
+
     /// Effect type - describes a side effect to be executed
     ///
     /// Effects are NOT executed immediately. They are descriptions of what should happen,
@@ -229,15 +326,38 @@ pub mod effect {
         ///
         /// Returns `Option<Action>` - if Some, the action is fed back into the reducer
         Future(Pin<Box<dyn Future<Output = Option<Action>> + Send>>),
-        // Additional effect variants will be added during Phase 1 implementation:
-        // - Database(DbOperation)
+
+        /// Event store operation (Phase 2)
+        ///
+        /// Describes an event sourcing persistence operation to be executed by
+        /// the runtime with access to the `EventStore` implementation.
+        ///
+        /// # Examples
+        ///
+        /// ```rust,ignore
+        /// use composable_rust_core::effect::{Effect, EventStoreOperation};
+        ///
+        /// let effect = Effect::EventStore(EventStoreOperation::AppendEvents {
+        ///     stream_id: StreamId::new("order-123"),
+        ///     expected_version: Some(Version::new(5)),
+        ///     events: vec![serialized_event],
+        ///     on_success: Box::new(|version| {
+        ///         Some(OrderAction::EventsAppended { version })
+        ///     }),
+        ///     on_error: Box::new(|error| {
+        ///         Some(OrderAction::AppendFailed { error: error.to_string() })
+        ///     }),
+        /// });
+        /// ```
+        EventStore(EventStoreOperation<Action>),
+        // Additional effect variants will be added in future phases:
         // - Http { request, on_success, on_error }
         // - PublishEvent(Event)
         // - Cancellable { id, effect }
         // - DispatchCommand(Command) - for saga coordination
     }
 
-    // Manual Debug implementation since Future doesn't implement Debug
+    // Manual Debug implementation since Future and EventStoreOperation don't implement Debug
     impl<Action> std::fmt::Debug for Effect<Action>
     where
         Action: std::fmt::Debug,
@@ -257,6 +377,39 @@ pub mod effect {
                     .field("action", action)
                     .finish(),
                 Effect::Future(_) => write!(f, "Effect::Future(<future>)"),
+                Effect::EventStore(op) => {
+                    match op {
+                        EventStoreOperation::AppendEvents { stream_id, expected_version, events, .. } => {
+                            f.debug_struct("Effect::EventStore::AppendEvents")
+                                .field("stream_id", stream_id)
+                                .field("expected_version", expected_version)
+                                .field("event_count", &events.len())
+                                .field("event_store", &"<event_store>")
+                                .finish()
+                        },
+                        EventStoreOperation::LoadEvents { stream_id, from_version, .. } => {
+                            f.debug_struct("Effect::EventStore::LoadEvents")
+                                .field("stream_id", stream_id)
+                                .field("from_version", from_version)
+                                .field("event_store", &"<event_store>")
+                                .finish()
+                        },
+                        EventStoreOperation::SaveSnapshot { stream_id, version, state, .. } => {
+                            f.debug_struct("Effect::EventStore::SaveSnapshot")
+                                .field("stream_id", stream_id)
+                                .field("version", version)
+                                .field("state_size", &state.len())
+                                .field("event_store", &"<event_store>")
+                                .finish()
+                        },
+                        EventStoreOperation::LoadSnapshot { stream_id, .. } => {
+                            f.debug_struct("Effect::EventStore::LoadSnapshot")
+                                .field("stream_id", stream_id)
+                                .field("event_store", &"<event_store>")
+                                .finish()
+                        },
+                    }
+                },
             }
         }
     }
@@ -336,6 +489,9 @@ pub mod effect {
                     action: Box::new(f(*action)),
                 },
                 Effect::Future(fut) => Effect::Future(Box::pin(async move { fut.await.map(f) })),
+                Effect::EventStore(op) => {
+                    Effect::EventStore(map_event_store_operation(op, f))
+                },
             }
         }
     }
@@ -374,6 +530,109 @@ pub mod effect {
                 action: Box::new(f(*action)),
             },
             Effect::Future(fut) => Effect::Future(Box::pin(async move { fut.await.map(f) })),
+            Effect::EventStore(op) => {
+                Effect::EventStore(map_event_store_operation(op, f))
+            },
+        }
+    }
+
+    // Helper function to map EventStoreOperation callbacks to new action type
+    fn map_event_store_operation<A, B, F>(
+        op: EventStoreOperation<A>,
+        f: F,
+    ) -> EventStoreOperation<B>
+    where
+        F: Fn(A) -> B + Send + Sync + 'static + Clone,
+        A: 'static,
+        B: Send + 'static,
+    {
+        match op {
+            EventStoreOperation::AppendEvents {
+                event_store,
+                stream_id,
+                expected_version,
+                events,
+                on_success,
+                on_error,
+            } => {
+                let f_success = f.clone();
+                let f_error = f.clone();
+                EventStoreOperation::AppendEvents {
+                    event_store,
+                    stream_id,
+                    expected_version,
+                    events,
+                    on_success: Box::new(move |version| {
+                        on_success(version).map(|a| f_success.clone()(a))
+                    }),
+                    on_error: Box::new(move |error| {
+                        on_error(error).map(|a| f_error.clone()(a))
+                    }),
+                }
+            },
+            EventStoreOperation::LoadEvents {
+                event_store,
+                stream_id,
+                from_version,
+                on_success,
+                on_error,
+            } => {
+                let f_success = f.clone();
+                let f_error = f.clone();
+                EventStoreOperation::LoadEvents {
+                    event_store,
+                    stream_id,
+                    from_version,
+                    on_success: Box::new(move |events| {
+                        on_success(events).map(|a| f_success.clone()(a))
+                    }),
+                    on_error: Box::new(move |error| {
+                        on_error(error).map(|a| f_error.clone()(a))
+                    }),
+                }
+            },
+            EventStoreOperation::SaveSnapshot {
+                event_store,
+                stream_id,
+                version,
+                state,
+                on_success,
+                on_error,
+            } => {
+                let f_success = f.clone();
+                let f_error = f.clone();
+                EventStoreOperation::SaveSnapshot {
+                    event_store,
+                    stream_id,
+                    version,
+                    state,
+                    on_success: Box::new(move |unit| {
+                        on_success(unit).map(|a| f_success.clone()(a))
+                    }),
+                    on_error: Box::new(move |error| {
+                        on_error(error).map(|a| f_error.clone()(a))
+                    }),
+                }
+            },
+            EventStoreOperation::LoadSnapshot {
+                event_store,
+                stream_id,
+                on_success,
+                on_error,
+            } => {
+                let f_success = f.clone();
+                let f_error = f;
+                EventStoreOperation::LoadSnapshot {
+                    event_store,
+                    stream_id,
+                    on_success: Box::new(move |snapshot| {
+                        on_success(snapshot).map(|a| f_success.clone()(a))
+                    }),
+                    on_error: Box::new(move |error| {
+                        on_error(error).map(|a| f_error.clone()(a))
+                    }),
+                }
+            },
         }
     }
 }

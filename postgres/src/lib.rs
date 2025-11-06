@@ -129,16 +129,16 @@ impl PostgresEventStore {
     }
 }
 
-#[allow(async_fn_in_trait)] // Trait is Send + Sync bounded, same as core
 impl EventStore for PostgresEventStore {
     #[allow(clippy::cognitive_complexity)] // Complex due to race condition handling
     #[allow(clippy::too_many_lines)] // TODO: Refactor in Phase 4
-    async fn append_events(
+    fn append_events(
         &self,
         stream_id: StreamId,
         expected_version: Option<Version>,
         events: Vec<SerializedEvent>,
-    ) -> Result<Version, EventStoreError> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Version, EventStoreError>> + Send + '_>> {
+        Box::pin(async move {
         if events.is_empty() {
             return Err(EventStoreError::DatabaseError(
                 "Cannot append empty event list".to_string(),
@@ -274,13 +274,15 @@ impl EventStore for PostgresEventStore {
 
         // Return the final version (last event inserted)
         Ok(next_version - 1)
+        })
     }
 
-    async fn load_events(
+    fn load_events(
         &self,
         stream_id: StreamId,
         from_version: Option<Version>,
-    ) -> Result<Vec<SerializedEvent>, EventStoreError> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<SerializedEvent>, EventStoreError>> + Send + '_>> {
+        Box::pin(async move {
         tracing::debug!(
             stream_id = %stream_id,
             from_version = ?from_version,
@@ -335,14 +337,16 @@ impl EventStore for PostgresEventStore {
         );
 
         Ok(event_vec)
+        })
     }
 
-    async fn save_snapshot(
+    fn save_snapshot(
         &self,
         stream_id: StreamId,
         version: Version,
         state: Vec<u8>,
-    ) -> Result<(), EventStoreError> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), EventStoreError>> + Send + '_>> {
+        Box::pin(async move {
         tracing::debug!(
             stream_id = %stream_id,
             version = ?version,
@@ -376,12 +380,14 @@ impl EventStore for PostgresEventStore {
         );
 
         Ok(())
+        })
     }
 
-    async fn load_snapshot(
+    fn load_snapshot(
         &self,
         stream_id: StreamId,
-    ) -> Result<Option<(Version, Vec<u8>)>, EventStoreError> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<(Version, Vec<u8>)>, EventStoreError>> + Send + '_>> {
+        Box::pin(async move {
         tracing::debug!(stream_id = %stream_id, "Loading snapshot");
 
         let result = sqlx::query(
@@ -418,6 +424,7 @@ impl EventStore for PostgresEventStore {
             tracing::debug!(stream_id = %stream_id, "No snapshot found");
             Ok(None)
         }
+        })
     }
 }
 

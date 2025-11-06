@@ -44,7 +44,12 @@
 
 use crate::event::SerializedEvent;
 use crate::stream::{StreamId, Version};
+use std::future::Future;
+use std::pin::Pin;
 use thiserror::Error;
+
+/// Type alias for snapshot data: `(Version, Vec<u8>)`
+type SnapshotData = (Version, Vec<u8>);
 
 /// Errors that can occur during event store operations.
 #[derive(Error, Debug)]
@@ -110,7 +115,12 @@ pub enum EventStoreError {
 /// - Complex querying (events are accessed by stream ID only)
 ///
 /// This keeps the event store focused on its core responsibility: reliable event persistence.
-#[allow(async_fn_in_trait)] // Rust 2024 pattern - trait is Send + Sync bounded
+///
+/// # Dyn Compatibility
+///
+/// This trait uses explicit `Pin<Box<dyn Future>>` returns instead of `async fn`
+/// to enable trait object usage (`Arc<dyn EventStore>`). This is required for
+/// the effect system where reducers create effects that capture the event store.
 pub trait EventStore: Send + Sync {
     /// Append events to a stream with optimistic concurrency control.
     ///
@@ -161,12 +171,12 @@ pub trait EventStore: Send + Sync {
     ///     Ok(())
     /// }
     /// ```
-    async fn append_events(
+    fn append_events(
         &self,
         stream_id: StreamId,
         expected_version: Option<Version>,
         events: Vec<SerializedEvent>,
-    ) -> Result<Version, EventStoreError>;
+    ) -> Pin<Box<dyn Future<Output = Result<Version, EventStoreError>> + Send + '_>>;
 
     /// Load events from a stream.
     ///
@@ -205,11 +215,11 @@ pub trait EventStore: Send + Sync {
     ///     Ok(())
     /// }
     /// ```
-    async fn load_events(
+    fn load_events(
         &self,
         stream_id: StreamId,
         from_version: Option<Version>,
-    ) -> Result<Vec<SerializedEvent>, EventStoreError>;
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<SerializedEvent>, EventStoreError>> + Send + '_>>;
 
     /// Save a snapshot of aggregate state.
     ///
@@ -251,12 +261,12 @@ pub trait EventStore: Send + Sync {
     ///     Ok(())
     /// }
     /// ```
-    async fn save_snapshot(
+    fn save_snapshot(
         &self,
         stream_id: StreamId,
         version: Version,
         state: Vec<u8>,
-    ) -> Result<(), EventStoreError>;
+    ) -> Pin<Box<dyn Future<Output = Result<(), EventStoreError>> + Send + '_>>;
 
     /// Load the latest snapshot for a stream.
     ///
@@ -312,10 +322,10 @@ pub trait EventStore: Send + Sync {
     ///
     /// # fn deserialize_state(_: &[u8]) -> Result<(), Box<dyn std::error::Error>> { Ok(()) }
     /// ```
-    async fn load_snapshot(
+    fn load_snapshot(
         &self,
         stream_id: StreamId,
-    ) -> Result<Option<(Version, Vec<u8>)>, EventStoreError>;
+    ) -> Pin<Box<dyn Future<Output = Result<Option<SnapshotData>, EventStoreError>> + Send + '_>>;
 }
 
 #[cfg(test)]
