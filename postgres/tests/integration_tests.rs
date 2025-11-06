@@ -13,41 +13,16 @@ use composable_rust_core::event::SerializedEvent;
 use composable_rust_core::event_store::{EventStore, EventStoreError};
 use composable_rust_core::stream::{StreamId, Version};
 use composable_rust_postgres::PostgresEventStore;
-use sqlx::PgPool;
-use testcontainers::{GenericImage, ImageExt, runners::AsyncRunner};
+use testcontainers::{ContainerAsync, runners::AsyncRunner};
+use testcontainers_modules::postgres::Postgres;
 
-/// Helper to start a Postgres container and return a configured event store.
-///
-/// # Panics
-/// Panics if container setup fails (test environment issue).
-async fn setup_postgres_event_store() -> PostgresEventStore {
-    // Start Postgres container
-    let postgres_image = GenericImage::new("postgres", "16")
-        .with_exposed_port(5432.into())
-        .with_env_var("POSTGRES_USER", "postgres")
-        .with_env_var("POSTGRES_PASSWORD", "postgres")
-        .with_env_var("POSTGRES_DB", "postgres");
-
-    let container = postgres_image
-        .start()
+/// Run database migrations
+async fn run_migrations(pool: &sqlx::PgPool) {
+    let mut conn = pool
+        .acquire()
         .await
-        .expect("Failed to start postgres container");
+        .expect("Failed to acquire connection for migrations");
 
-    let port = container
-        .get_host_port_ipv4(5432)
-        .await
-        .expect("Failed to get postgres port");
-
-    // Wait for postgres to be ready
-    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-
-    // Connect to database
-    let database_url = format!("postgres://postgres:postgres@localhost:{port}/postgres");
-    let pool = PgPool::connect(&database_url)
-        .await
-        .expect("Failed to connect to test database");
-
-    // Run migrations
     sqlx::query(
         r"
         CREATE TABLE IF NOT EXISTS events (
@@ -58,24 +33,83 @@ async fn setup_postgres_event_store() -> PostgresEventStore {
             metadata JSONB,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             PRIMARY KEY (stream_id, version)
-        );
+        )
+        ",
+    )
+    .execute(&mut *conn)
+    .await
+    .expect("Failed to create events table");
 
-        CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
-        CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at)")
+        .execute(&mut *conn)
+        .await
+        .expect("Failed to create created_at index");
 
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type)")
+        .execute(&mut *conn)
+        .await
+        .expect("Failed to create event_type index");
+
+    sqlx::query(
+        r"
         CREATE TABLE IF NOT EXISTS snapshots (
             stream_id TEXT PRIMARY KEY,
             version BIGINT NOT NULL,
             state_data BYTEA NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        );
+        )
         ",
     )
-    .execute(&pool)
+    .execute(&mut *conn)
     .await
-    .expect("Failed to create tables");
+    .expect("Failed to create snapshots table");
 
-    PostgresEventStore::from_pool(pool)
+    drop(conn);
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+}
+
+/// Helper to start a Postgres container and return a configured event store.
+///
+/// Returns both the container (to keep it alive) and the event store.
+///
+/// # Panics
+/// Panics if container setup fails (test environment issue).
+async fn setup_postgres_event_store() -> (ContainerAsync<Postgres>, PostgresEventStore) {
+    // Start Postgres container using the official module
+    let container = Postgres::default()
+        .start()
+        .await
+        .expect("Failed to start postgres container");
+
+    let port = container
+        .get_host_port_ipv4(5432)
+        .await
+        .expect("Failed to get postgres port");
+
+    // Use the connection string from the module
+    let database_url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
+
+    // Container started successfully
+
+    // Wait for postgres to be ready with retry logic
+    let mut retries = 0;
+    let max_retries = 60;
+    loop {
+        if let Ok(pool) = sqlx::PgPool::connect(&database_url).await {
+            // Verify with a simple query
+            if sqlx::query("SELECT 1").execute(&pool).await.is_ok() {
+                // Run migrations
+                run_migrations(&pool).await;
+
+                // Return both container (to keep it alive) and event store
+                return (container, PostgresEventStore::from_pool(pool));
+            }
+        }
+
+        assert!(retries < max_retries, "Failed to connect after {max_retries} retries");
+        retries += 1;
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    }
 }
 
 /// Helper to create test events.
@@ -89,7 +123,7 @@ fn create_test_event(event_type: &str, data: Vec<u8>) -> SerializedEvent {
 
 #[tokio::test]
 async fn test_append_and_load_events() {
-    let store = setup_postgres_event_store().await;
+    let (_container, store) = setup_postgres_event_store().await;
 
     // Test data
     let stream_id = StreamId::new("test-stream-1");
@@ -106,8 +140,8 @@ async fn test_append_and_load_events() {
 
     assert_eq!(
         version,
-        Version::new(1),
-        "Should return version 1 for 2 events"
+        Version::new(2),
+        "Should return version 2 (last event) when appending 2 events starting from 0"
     );
 
     // Load events
@@ -125,7 +159,7 @@ async fn test_append_and_load_events() {
 
 #[tokio::test]
 async fn test_optimistic_concurrency_check() {
-    let store = setup_postgres_event_store().await;
+    let (_container, store) = setup_postgres_event_store().await;
     let stream_id = StreamId::new("test-stream-2");
 
     // Append first event
@@ -138,7 +172,11 @@ async fn test_optimistic_concurrency_check() {
         .await
         .expect("Failed to append first event");
 
-    assert_eq!(version1, Version::new(0));
+    assert_eq!(
+        version1,
+        Version::new(1),
+        "First event should be at version 1"
+    );
 
     // Try to append with wrong expected version (should fail)
     let result = store
@@ -155,21 +193,26 @@ async fn test_optimistic_concurrency_check() {
     );
 
     // Append with correct expected version (should succeed)
+    // After appending first event at version 1, expected version is 1
     let version2 = store
         .append_events(
             stream_id.clone(),
-            Some(Version::new(0)),
+            Some(Version::new(1)),
             vec![create_test_event("Event2", b"data2".to_vec())],
         )
         .await
         .expect("Failed to append with correct version");
 
-    assert_eq!(version2, Version::new(1));
+    assert_eq!(
+        version2,
+        Version::new(2),
+        "Second event should be at version 2"
+    );
 }
 
 #[tokio::test]
 async fn test_concurrent_appends_race_condition() {
-    let store = setup_postgres_event_store().await;
+    let (_container, store) = setup_postgres_event_store().await;
     let stream_id = StreamId::new("concurrent-stream");
 
     // Simulate concurrent appends (both think they're appending to version 0)
@@ -226,7 +269,7 @@ async fn test_concurrent_appends_race_condition() {
 
 #[tokio::test]
 async fn test_load_events_from_version() {
-    let store = setup_postgres_event_store().await;
+    let (_container, store) = setup_postgres_event_store().await;
     let stream_id = StreamId::new("test-stream-3");
 
     // Append 5 events
@@ -259,15 +302,20 @@ async fn test_load_events_from_version() {
         .await
         .expect("Failed to load events from version 2");
 
-    assert_eq!(from_v2.len(), 3, "Should load events 2, 3, 4");
-    assert_eq!(from_v2[0].event_type, "Event3");
-    assert_eq!(from_v2[1].event_type, "Event4");
-    assert_eq!(from_v2[2].event_type, "Event5");
+    assert_eq!(
+        from_v2.len(),
+        4,
+        "Should load events at versions 2, 3, 4, 5"
+    );
+    assert_eq!(from_v2[0].event_type, "Event2");
+    assert_eq!(from_v2[1].event_type, "Event3");
+    assert_eq!(from_v2[2].event_type, "Event4");
+    assert_eq!(from_v2[3].event_type, "Event5");
 }
 
 #[tokio::test]
 async fn test_save_and_load_snapshot() {
-    let store = setup_postgres_event_store().await;
+    let (_container, store) = setup_postgres_event_store().await;
     let stream_id = StreamId::new("test-stream-4");
 
     // Save snapshot
@@ -291,7 +339,7 @@ async fn test_save_and_load_snapshot() {
 
 #[tokio::test]
 async fn test_snapshot_upsert() {
-    let store = setup_postgres_event_store().await;
+    let (_container, store) = setup_postgres_event_store().await;
     let stream_id = StreamId::new("test-stream-5");
 
     // Save first snapshot
@@ -319,7 +367,7 @@ async fn test_snapshot_upsert() {
 
 #[tokio::test]
 async fn test_load_snapshot_not_found() {
-    let store = setup_postgres_event_store().await;
+    let (_container, store) = setup_postgres_event_store().await;
     let stream_id = StreamId::new("nonexistent-stream");
 
     // Try to load non-existent snapshot
@@ -333,7 +381,7 @@ async fn test_load_snapshot_not_found() {
 
 #[tokio::test]
 async fn test_empty_event_list_error() {
-    let store = setup_postgres_event_store().await;
+    let (_container, store) = setup_postgres_event_store().await;
     let stream_id = StreamId::new("test-stream-6");
 
     // Try to append empty event list
@@ -347,7 +395,7 @@ async fn test_empty_event_list_error() {
 
 #[tokio::test]
 async fn test_multiple_streams_isolation() {
-    let store = setup_postgres_event_store().await;
+    let (_container, store) = setup_postgres_event_store().await;
 
     let stream1 = StreamId::new("stream-1");
     let stream2 = StreamId::new("stream-2");

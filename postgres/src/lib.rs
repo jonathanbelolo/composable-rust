@@ -162,24 +162,26 @@ impl EventStore for PostgresEventStore {
                 .map_err(|e| EventStoreError::DatabaseError(e.to_string()))?;
 
             // Get current version for this stream
-            let current_version: Option<i64> =
-                sqlx::query_scalar("SELECT MAX(version) FROM events WHERE stream_id = $1")
-                    .bind(stream_id.as_str())
-                    .fetch_optional(&mut *tx)
-                    .await
-                    .map_err(|e| EventStoreError::DatabaseError(e.to_string()))?;
+            // Use COALESCE to handle NULL when no events exist
+            let current_version: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(MAX(version), -1) FROM events WHERE stream_id = $1",
+            )
+            .bind(stream_id.as_str())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| EventStoreError::DatabaseError(e.to_string()))?;
 
             // Convert i64 to u64 with proper error handling
-            let current_version = match current_version {
-                Some(v) => {
-                    let version_u64 = u64::try_from(v).map_err(|e| {
-                        EventStoreError::DatabaseError(format!(
-                            "Invalid negative version {v} in database: {e}"
-                        ))
-                    })?;
-                    Version::new(version_u64)
-                },
-                None => Version::new(0),
+            let current_version = if current_version == -1 {
+                // No events exist yet, start at version 0
+                Version::new(0)
+            } else {
+                let version_u64 = u64::try_from(current_version).map_err(|e| {
+                    EventStoreError::DatabaseError(format!(
+                        "Invalid negative version {current_version} in database: {e}"
+                    ))
+                })?;
+                Version::new(version_u64)
             };
 
             // Check optimistic concurrency

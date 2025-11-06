@@ -361,9 +361,9 @@ impl Reducer for OrderReducer {
             OrderAction::EventPersisted { event, version } => {
                 // Apply the persisted event to state
                 Self::apply_event(state, &event);
-                // Update version: the returned version is the last event appended,
-                // so the next expected version is version + 1
-                state.version = Some(Version::new(version + 1));
+                // Update version to match the last event appended
+                // This must match the replay logic where version = 1 for first event, 2 for second, etc.
+                state.version = Some(Version::new(version));
                 vec![Effect::None]
             },
 
