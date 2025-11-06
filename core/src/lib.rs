@@ -655,26 +655,38 @@ pub mod environment {
     ///
     /// # Examples
     ///
-    /// ```ignore
-    /// // Production - uses system clock
-    /// struct SystemClock;
-    /// impl Clock for SystemClock {
-    ///     fn now(&self) -> DateTime<Utc> {
-    ///         Utc::now()
-    ///     }
-    /// }
+    /// ```
+    /// use composable_rust_core::environment::{Clock, SystemClock};
     ///
-    /// // Test - fixed time for deterministic tests
-    /// struct FixedClock { time: DateTime<Utc> }
-    /// impl Clock for FixedClock {
-    ///     fn now(&self) -> DateTime<Utc> {
-    ///         self.time
-    ///     }
-    /// }
+    /// // Production - uses system clock
+    /// let clock = SystemClock;
+    /// let now = clock.now();
     /// ```
     pub trait Clock: Send + Sync {
         /// Get the current time
         fn now(&self) -> DateTime<Utc>;
+    }
+
+    /// Production clock implementation that uses the system time.
+    ///
+    /// This is a zero-sized type that delegates to `chrono::Utc::now()`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use composable_rust_core::environment::{Clock, SystemClock};
+    ///
+    /// let clock = SystemClock;
+    /// let now = clock.now();
+    /// println!("Current time: {}", now);
+    /// ```
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct SystemClock;
+
+    impl Clock for SystemClock {
+        fn now(&self) -> DateTime<Utc> {
+            Utc::now()
+        }
     }
 
     // Additional traits will be defined during Phase 1:

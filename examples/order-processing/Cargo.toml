@@ -1,19 +1,22 @@
 [package]
-name = "composable-rust-runtime"
+name = "order-processing"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Runtime implementation for the Composable Rust architecture (Store and effect execution)"
+description = "Order Processing example demonstrating event sourcing with EventStore"
+publish = false
 
 [lints]
 workspace = true
 
 [dependencies]
 # Local dependencies
-composable-rust-core = { path = "../core" }
+composable-rust-core = { path = "../../core" }
+composable-rust-runtime = { path = "../../runtime" }
+composable-rust-testing = { path = "../../testing" }
 
 # Async
 tokio = { workspace = true }
@@ -29,17 +32,15 @@ anyhow = { workspace = true }
 
 # Observability
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 # Time
 chrono = { workspace = true }
 
 [dev-dependencies]
-composable-rust-testing = { path = "../testing" }
 proptest = { workspace = true }
 tokio-test = { workspace = true }
-tracing-subscriber = { workspace = true }
-criterion = { workspace = true, features = ["async_tokio"] }
 
-[[bench]]
-name = "phase1_benchmarks"
-harness = false
+[[bin]]
+name = "order-processing"
+path = "src/main.rs"

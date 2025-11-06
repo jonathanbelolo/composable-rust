@@ -6,6 +6,7 @@ members = [
     "testing",
     "postgres",
     "examples/counter",
+    "examples/order-processing",
 ]
 
 [workspace.package]

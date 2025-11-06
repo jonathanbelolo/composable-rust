@@ -1063,4 +1063,477 @@ mod tests {
         let value = store.state(|s| s.value).await;
         assert_eq!(value, 2);
     }
+
+    // EventStore effect tests
+    mod event_store_tests {
+        use super::*;
+        use composable_rust_core::effect::{Effect, EventStoreOperation};
+        use composable_rust_core::event::SerializedEvent;
+        use composable_rust_core::event_store::EventStore;
+        use composable_rust_core::stream::{StreamId, Version};
+        use std::sync::Arc;
+
+        // Test action for EventStore effects
+        #[derive(Debug, Clone)]
+        enum EventStoreAction {
+            AppendEvents { stream_id: String, events: Vec<String> },
+            EventsAppended { version: u64 },
+            AppendFailed { error: String },
+            LoadEvents { stream_id: String },
+            EventsLoaded { count: usize },
+            LoadFailed { error: String },
+            SaveSnapshot { stream_id: String, version: u64 },
+            SnapshotSaved,
+            LoadSnapshot { stream_id: String },
+            SnapshotLoaded { found: bool },
+        }
+
+        // Test state for EventStore
+        #[derive(Debug, Clone)]
+        struct EventStoreState {
+            last_version: Option<u64>,
+            event_count: usize,
+            snapshot_saved: bool,
+            snapshot_loaded: bool,
+            error: Option<String>,
+        }
+
+        // Test environment with EventStore
+        #[derive(Clone)]
+        struct EventStoreEnv {
+            event_store: Arc<dyn EventStore>,
+        }
+
+        // Test reducer for EventStore
+        #[derive(Clone)]
+        struct EventStoreReducer;
+
+        impl Reducer for EventStoreReducer {
+            type State = EventStoreState;
+            type Action = EventStoreAction;
+            type Environment = EventStoreEnv;
+
+            fn reduce(
+                &self,
+                state: &mut Self::State,
+                action: Self::Action,
+                env: &Self::Environment,
+            ) -> Vec<Effect<Self::Action>> {
+                match action {
+                    EventStoreAction::AppendEvents { stream_id, events } => {
+                        let serialized_events: Vec<SerializedEvent> = events
+                            .into_iter()
+                            .map(|data| {
+                                SerializedEvent::new(
+                                    "TestEvent.v1".to_string(),
+                                    data.into_bytes(),
+                                    None,
+                                )
+                            })
+                            .collect();
+
+                        vec![Effect::EventStore(EventStoreOperation::AppendEvents {
+                            event_store: Arc::clone(&env.event_store),
+                            stream_id: StreamId::new(&stream_id),
+                            expected_version: state.last_version.map(Version::new),
+                            events: serialized_events,
+                            on_success: Box::new(|version| {
+                                Some(EventStoreAction::EventsAppended {
+                                    version: version.value(),
+                                })
+                            }),
+                            on_error: Box::new(|error| {
+                                Some(EventStoreAction::AppendFailed {
+                                    error: error.to_string(),
+                                })
+                            }),
+                        })]
+                    },
+                    EventStoreAction::EventsAppended { version } => {
+                        state.last_version = Some(version);
+                        vec![Effect::None]
+                    },
+                    EventStoreAction::AppendFailed { error }
+                    | EventStoreAction::LoadFailed { error } => {
+                        state.error = Some(error);
+                        vec![Effect::None]
+                    },
+                    EventStoreAction::LoadEvents { stream_id } => {
+                        vec![Effect::EventStore(EventStoreOperation::LoadEvents {
+                            event_store: Arc::clone(&env.event_store),
+                            stream_id: StreamId::new(&stream_id),
+                            from_version: None,
+                            on_success: Box::new(|events| {
+                                Some(EventStoreAction::EventsLoaded { count: events.len() })
+                            }),
+                            on_error: Box::new(|error| {
+                                Some(EventStoreAction::LoadFailed {
+                                    error: error.to_string(),
+                                })
+                            }),
+                        })]
+                    },
+                    EventStoreAction::EventsLoaded { count } => {
+                        state.event_count = count;
+                        vec![Effect::None]
+                    },
+                    EventStoreAction::SaveSnapshot { stream_id, version } => {
+                        let state_bytes = vec![1, 2, 3, 4]; // Mock state data
+                        vec![Effect::EventStore(EventStoreOperation::SaveSnapshot {
+                            event_store: Arc::clone(&env.event_store),
+                            stream_id: StreamId::new(&stream_id),
+                            version: Version::new(version),
+                            state: state_bytes,
+                            on_success: Box::new(|()| Some(EventStoreAction::SnapshotSaved)),
+                            on_error: Box::new(|error| {
+                                Some(EventStoreAction::AppendFailed {
+                                    error: error.to_string(),
+                                })
+                            }),
+                        })]
+                    },
+                    EventStoreAction::SnapshotSaved => {
+                        state.snapshot_saved = true;
+                        vec![Effect::None]
+                    },
+                    EventStoreAction::LoadSnapshot { stream_id } => {
+                        vec![Effect::EventStore(EventStoreOperation::LoadSnapshot {
+                            event_store: Arc::clone(&env.event_store),
+                            stream_id: StreamId::new(&stream_id),
+                            on_success: Box::new(|snapshot| {
+                                Some(EventStoreAction::SnapshotLoaded {
+                                    found: snapshot.is_some(),
+                                })
+                            }),
+                            on_error: Box::new(|error| {
+                                Some(EventStoreAction::LoadFailed {
+                                    error: error.to_string(),
+                                })
+                            }),
+                        })]
+                    },
+                    EventStoreAction::SnapshotLoaded { found } => {
+                        state.snapshot_loaded = found;
+                        vec![Effect::None]
+                    },
+                }
+            }
+        }
+
+        #[tokio::test]
+        async fn test_eventstore_append_success() {
+            use composable_rust_testing::mocks::InMemoryEventStore;
+
+            let event_store = Arc::new(InMemoryEventStore::new()) as Arc<dyn EventStore>;
+            let env = EventStoreEnv {
+                event_store: Arc::clone(&event_store),
+            };
+            let state = EventStoreState {
+                last_version: None,
+                event_count: 0,
+                snapshot_saved: false,
+                snapshot_loaded: false,
+                error: None,
+            };
+
+            let store = Store::new(state, EventStoreReducer, env);
+
+            // Append events
+            let mut handle = store
+                .send(EventStoreAction::AppendEvents {
+                    stream_id: "test-stream".to_string(),
+                    events: vec!["event1".to_string(), "event2".to_string()],
+                })
+                .await;
+
+            handle.wait().await;
+
+            // Check state was updated with version
+            let last_version = store.state(|s| s.last_version).await;
+            assert_eq!(last_version, Some(1)); // 2 events, version 0-1, returns last = 1
+        }
+
+        #[tokio::test]
+        async fn test_eventstore_append_concurrency_conflict() {
+            use composable_rust_testing::mocks::InMemoryEventStore;
+
+            let event_store = Arc::new(InMemoryEventStore::new()) as Arc<dyn EventStore>;
+            let env = EventStoreEnv {
+                event_store: Arc::clone(&event_store),
+            };
+
+            // Pre-populate event store with some events
+            let stream_id = StreamId::new("test-stream");
+            let events = vec![SerializedEvent::new(
+                "TestEvent.v1".to_string(),
+                b"data".to_vec(),
+                None,
+            )];
+            event_store
+                .append_events(stream_id.clone(), Some(Version::new(0)), events)
+                .await
+                .ok();
+
+            // Create store with wrong expected version
+            let state = EventStoreState {
+                last_version: Some(5), // Wrong version, actual is 0
+                event_count: 0,
+                snapshot_saved: false,
+                snapshot_loaded: false,
+                error: None,
+            };
+
+            let store = Store::new(state, EventStoreReducer, env);
+
+            // Try to append with wrong version
+            let mut handle = store
+                .send(EventStoreAction::AppendEvents {
+                    stream_id: "test-stream".to_string(),
+                    events: vec!["event".to_string()],
+                })
+                .await;
+
+            handle.wait().await;
+
+            // Check error was captured
+            let error = store.state(|s| s.error.clone()).await;
+            assert!(error.is_some());
+            #[allow(clippy::unwrap_used)] // Panics: Test verified error is Some above
+            {
+                assert!(error.unwrap().contains("Concurrency"));
+            }
+        }
+
+        #[tokio::test]
+        async fn test_eventstore_load_events() {
+            use composable_rust_testing::mocks::InMemoryEventStore;
+
+            let event_store = Arc::new(InMemoryEventStore::new()) as Arc<dyn EventStore>;
+            let env = EventStoreEnv {
+                event_store: Arc::clone(&event_store),
+            };
+
+            // Pre-populate with events
+            let stream_id = StreamId::new("test-stream");
+            let events = vec![
+                SerializedEvent::new("TestEvent.v1".to_string(), b"event1".to_vec(), None),
+                SerializedEvent::new("TestEvent.v1".to_string(), b"event2".to_vec(), None),
+                SerializedEvent::new("TestEvent.v1".to_string(), b"event3".to_vec(), None),
+            ];
+            event_store
+                .append_events(stream_id, Some(Version::new(0)), events)
+                .await
+                .ok();
+
+            let state = EventStoreState {
+                last_version: None,
+                event_count: 0,
+                snapshot_saved: false,
+                snapshot_loaded: false,
+                error: None,
+            };
+
+            let store = Store::new(state, EventStoreReducer, env);
+
+            // Load events
+            let mut handle = store
+                .send(EventStoreAction::LoadEvents {
+                    stream_id: "test-stream".to_string(),
+                })
+                .await;
+
+            handle.wait().await;
+
+            // Check count was updated
+            let count = store.state(|s| s.event_count).await;
+            assert_eq!(count, 3);
+        }
+
+        #[tokio::test]
+        async fn test_eventstore_snapshot_roundtrip() {
+            use composable_rust_testing::mocks::InMemoryEventStore;
+
+            let event_store = Arc::new(InMemoryEventStore::new()) as Arc<dyn EventStore>;
+            let env = EventStoreEnv {
+                event_store: Arc::clone(&event_store),
+            };
+            let state = EventStoreState {
+                last_version: None,
+                event_count: 0,
+                snapshot_saved: false,
+                snapshot_loaded: false,
+                error: None,
+            };
+
+            let store = Store::new(state, EventStoreReducer, env);
+
+            // Save snapshot
+            let mut handle = store
+                .send(EventStoreAction::SaveSnapshot {
+                    stream_id: "test-stream".to_string(),
+                    version: 10,
+                })
+                .await;
+
+            handle.wait().await;
+
+            // Check snapshot was saved
+            let saved = store.state(|s| s.snapshot_saved).await;
+            assert!(saved);
+
+            // Load snapshot
+            let mut handle = store
+                .send(EventStoreAction::LoadSnapshot {
+                    stream_id: "test-stream".to_string(),
+                })
+                .await;
+
+            handle.wait().await;
+
+            // Check snapshot was loaded
+            let loaded = store.state(|s| s.snapshot_loaded).await;
+            assert!(loaded);
+        }
+
+        #[tokio::test]
+        async fn test_eventstore_parallel_operations() {
+            use composable_rust_testing::mocks::InMemoryEventStore;
+
+            let event_store = Arc::new(InMemoryEventStore::new()) as Arc<dyn EventStore>;
+            let env = EventStoreEnv {
+                event_store: Arc::clone(&event_store),
+            };
+            let state = EventStoreState {
+                last_version: None,
+                event_count: 0,
+                snapshot_saved: false,
+                snapshot_loaded: false,
+                error: None,
+            };
+
+            let store = Store::new(state, EventStoreReducer, env);
+
+            // Append to stream1
+            let mut h1 = store
+                .send(EventStoreAction::AppendEvents {
+                    stream_id: "stream-1".to_string(),
+                    events: vec!["event1".to_string()],
+                })
+                .await;
+
+            // Append to stream2 (different stream, can run concurrently)
+            let mut h2 = store
+                .send(EventStoreAction::AppendEvents {
+                    stream_id: "stream-2".to_string(),
+                    events: vec!["event2".to_string()],
+                })
+                .await;
+
+            // Wait for both
+            h1.wait().await;
+            h2.wait().await;
+
+            // Both should have succeeded (last_version reflects last operation)
+            let last_version = store.state(|s| s.last_version).await;
+            assert!(last_version.is_some());
+        }
+
+        // Reducer for testing parallel EventStore effects
+        #[derive(Clone)]
+        struct ParallelTestReducer;
+
+        impl Reducer for ParallelTestReducer {
+            type State = EventStoreState;
+            type Action = EventStoreAction;
+            type Environment = EventStoreEnv;
+
+            fn reduce(
+                &self,
+                _state: &mut Self::State,
+                _action: Self::Action,
+                env: &Self::Environment,
+            ) -> Vec<Effect<Self::Action>> {
+                // Create parallel effects on each call
+                vec![Effect::Parallel(vec![
+                    Effect::EventStore(EventStoreOperation::AppendEvents {
+                        event_store: Arc::clone(&env.event_store),
+                        stream_id: StreamId::new("stream-1"),
+                        expected_version: Some(Version::new(0)),
+                        events: vec![SerializedEvent::new(
+                            "Test.v1".to_string(),
+                            b"data1".to_vec(),
+                            None,
+                        )],
+                        on_success: Box::new(|_| None), // No feedback action
+                        on_error: Box::new(|_| None),
+                    }),
+                    Effect::EventStore(EventStoreOperation::AppendEvents {
+                        event_store: Arc::clone(&env.event_store),
+                        stream_id: StreamId::new("stream-2"),
+                        expected_version: Some(Version::new(0)),
+                        events: vec![SerializedEvent::new(
+                            "Test.v1".to_string(),
+                            b"data2".to_vec(),
+                            None,
+                        )],
+                        on_success: Box::new(|_| None),
+                        on_error: Box::new(|_| None),
+                    }),
+                ])]
+            }
+        }
+
+        #[tokio::test]
+        async fn test_eventstore_effect_in_parallel_composition() {
+            use composable_rust_testing::mocks::InMemoryEventStore;
+
+            // Test that EventStore effects work inside Parallel effect composition
+            let event_store = Arc::new(InMemoryEventStore::new()) as Arc<dyn EventStore>;
+            let env = EventStoreEnv {
+                event_store: Arc::clone(&event_store),
+            };
+
+            let test_store = Store::new(
+                EventStoreState {
+                    last_version: None,
+                    event_count: 0,
+                    snapshot_saved: false,
+                    snapshot_loaded: false,
+                    error: None,
+                },
+                ParallelTestReducer,
+                env.clone(),
+            );
+
+            // Trigger the parallel effect
+            let mut handle = test_store
+                .send(EventStoreAction::AppendEvents {
+                    stream_id: "dummy".to_string(),
+                    events: vec![],
+                })
+                .await;
+
+            handle.wait().await;
+
+            // Verify both streams got events
+            let events1 = env
+                .event_store
+                .load_events(StreamId::new("stream-1"), None)
+                .await
+                .ok();
+            let events2 = env
+                .event_store
+                .load_events(StreamId::new("stream-2"), None)
+                .await
+                .ok();
+
+            #[allow(clippy::unwrap_used)] // Panics: Test verified events are Some above
+            {
+                assert!(events1.is_some());
+                assert!(events2.is_some());
+                assert_eq!(events1.unwrap().len(), 1);
+                assert_eq!(events2.unwrap().len(), 1);
+            }
+        }
+    }
 }
