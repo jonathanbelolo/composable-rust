@@ -35,6 +35,8 @@ anyhow = "1"
 # Observability
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+metrics = "0.23"
+metrics-exporter-prometheus = "0.15"
 
 # Database (for Phase 2+)
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "macros", "chrono", "uuid", "json"] }

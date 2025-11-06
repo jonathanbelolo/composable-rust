@@ -475,6 +475,9 @@ pub mod store {
         {
             tracing::debug!("Processing action");
 
+            // Metrics: Increment command counter
+            metrics::counter!("store.commands.total").increment(1);
+
             // Create tracking for this action
             let (handle, tracking) = EffectHandle::new::<A>(tracking_mode);
 
@@ -486,8 +489,18 @@ pub mod store {
                 let span = tracing::debug_span!("reducer_execution");
                 let _enter = span.enter();
 
+                // Metrics: Time reducer execution
+                let start = std::time::Instant::now();
                 let effects = self.reducer.reduce(&mut *state, action, &self.environment);
+                let duration = start.elapsed();
+                metrics::histogram!("store.reducer.duration_seconds")
+                    .record(duration.as_secs_f64());
+
                 tracing::trace!("Reducer completed, returned {} effects", effects.len());
+
+                // Metrics: Record number of effects produced
+                metrics::histogram!("store.effects.count").record(effects.len() as f64);
+
                 effects
             };
 
@@ -565,9 +578,11 @@ pub mod store {
             match effect {
                 Effect::None => {
                     tracing::trace!("Executing Effect::None (no-op)");
+                    metrics::counter!("store.effects.executed", "type" => "none").increment(1);
                 },
                 Effect::Future(fut) => {
                     tracing::trace!("Executing Effect::Future");
+                    metrics::counter!("store.effects.executed", "type" => "future").increment(1);
                     tracking.increment();
                     let tracking_clone = tracking.clone();
                     let store = self.clone();
@@ -585,6 +600,7 @@ pub mod store {
                 },
                 Effect::Delay { duration, action } => {
                     tracing::trace!("Executing Effect::Delay (duration: {:?})", duration);
+                    metrics::counter!("store.effects.executed", "type" => "delay").increment(1);
                     tracking.increment();
                     let tracking_clone = tracking.clone();
                     let store = self.clone();
@@ -599,6 +615,7 @@ pub mod store {
                 Effect::Parallel(effects) => {
                     let effect_count = effects.len();
                     tracing::trace!("Executing Effect::Parallel with {} effects", effect_count);
+                    metrics::counter!("store.effects.executed", "type" => "parallel").increment(1);
 
                     // Execute all effects concurrently, each with the same tracking
                     let store = self.clone();
@@ -609,6 +626,7 @@ pub mod store {
                 Effect::Sequential(effects) => {
                     let effect_count = effects.len();
                     tracing::trace!("Executing Effect::Sequential with {} effects", effect_count);
+                    metrics::counter!("store.effects.executed", "type" => "sequential").increment(1);
 
                     tracking.increment();
                     let tracking_clone = tracking.clone();
@@ -649,6 +667,7 @@ pub mod store {
                     use composable_rust_core::effect::EventStoreOperation;
 
                     tracing::trace!("Executing Effect::EventStore");
+                    metrics::counter!("store.effects.executed", "type" => "event_store").increment(1);
                     tracking.increment();
                     let tracking_clone = tracking.clone();
                     let store = self.clone();
@@ -774,6 +793,7 @@ pub mod store {
                     use composable_rust_core::effect::EventBusOperation;
 
                     tracing::trace!("Executing Effect::PublishEvent");
+                    metrics::counter!("store.effects.executed", "type" => "publish_event").increment(1);
                     tracking.increment();
                     let tracking_clone = tracking.clone();
                     let store = self.clone();
