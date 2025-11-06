@@ -28,6 +28,14 @@ pub struct ParseStreamIdError(String);
 /// - Clear intent in function signatures
 /// - Serialization support for storage
 ///
+/// # Validation
+///
+/// - `FromStr::from_str()`: Validates input (rejects empty strings)
+/// - `From::from()` and `new()`: No validation (for internal use with trusted input)
+///
+/// Use `FromStr` when parsing external/user input. Use `new()` or `From` when
+/// constructing stream IDs from application-controlled data
+///
 /// # Examples
 ///
 /// ```
@@ -191,6 +199,12 @@ impl Version {
 
     /// Get the next version (current + 1).
     ///
+    /// # Overflow Behavior
+    ///
+    /// This operation uses wrapping arithmetic. In practice, reaching `u64::MAX`
+    /// (18,446,744,073,709,551,615 events) is not a realistic concern for any
+    /// event stream.
+    ///
     /// # Examples
     ///
     /// ```
@@ -239,6 +253,11 @@ impl From<Version> for u64 {
     }
 }
 
+/// Arithmetic addition for `Version`.
+///
+/// # Overflow Behavior
+///
+/// Uses wrapping arithmetic. Overflow is not a practical concern given `u64::MAX`.
 impl std::ops::Add<u64> for Version {
     type Output = Self;
 
@@ -247,6 +266,12 @@ impl std::ops::Add<u64> for Version {
     }
 }
 
+/// Arithmetic subtraction for `Version`.
+///
+/// # Underflow Behavior
+///
+/// Uses wrapping arithmetic. Caller is responsible for ensuring subtraction
+/// doesn't underflow below 0.
 impl std::ops::Sub<u64> for Version {
     type Output = Self;
 

@@ -6,7 +6,9 @@ set -euo pipefail
 
 # Load environment variables from .env if it exists
 if [ -f .env ]; then
-    export $(cat .env | grep -v '^#' | xargs)
+    set -a
+    source .env
+    set +a
 fi
 
 # Check if DATABASE_URL is set

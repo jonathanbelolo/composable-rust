@@ -464,6 +464,7 @@ pub mod store {
         /// # Returns
         ///
         /// An [`EffectHandle`] for waiting on effect completion
+        #[allow(clippy::cognitive_complexity)] // TODO: Refactor in Phase 4
         async fn send_internal(&self, action: A, tracking_mode: TrackingMode) -> EffectHandle
         where
             R: Clone,
@@ -545,6 +546,7 @@ pub mod store {
         /// - `effect`: The effect to execute
         /// - `tracking`: The tracking context for this effect (passed by value to enable cloning)
         #[allow(clippy::needless_pass_by_value)] // tracking is cloned, so pass by value is intentional
+        #[allow(clippy::cognitive_complexity)] // TODO: Refactor in Phase 4
         fn execute_effect_internal(&self, effect: Effect<A>, tracking: EffectTracking<A>)
         where
             R: Clone,

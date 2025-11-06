@@ -84,7 +84,6 @@ pub enum EventStoreError {
 /// Event store abstraction for storing and retrieving event streams.
 ///
 /// An event store is a specialized database optimized for:
-#[allow(async_fn_in_trait)] // Intentional: Rust 2024 pattern, see Modern Rust Expert skill
 ///
 /// - Appending events to streams (immutable, append-only)
 /// - Loading events for state reconstruction
@@ -111,8 +110,15 @@ pub enum EventStoreError {
 /// - Complex querying (events are accessed by stream ID only)
 ///
 /// This keeps the event store focused on its core responsibility: reliable event persistence.
+#[allow(async_fn_in_trait)] // Rust 2024 pattern - trait is Send + Sync bounded
 pub trait EventStore: Send + Sync {
     /// Append events to a stream with optimistic concurrency control.
+    ///
+    /// # Parameters
+    ///
+    /// - `stream_id`: The stream to append events to
+    /// - `expected_version`: Optional version for optimistic concurrency control
+    /// - `events`: Events to append (consumed/moved - they will be persisted)
     ///
     /// # Optimistic Concurrency
     ///

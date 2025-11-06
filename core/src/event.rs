@@ -227,11 +227,8 @@ impl SerializedEvent {
     /// );
     /// ```
     #[must_use]
-    pub const fn new(
-        event_type: String,
-        data: Vec<u8>,
-        metadata: Option<serde_json::Value>,
-    ) -> Self {
+    #[allow(clippy::missing_const_for_fn)] // Parameters cannot be const-constructed
+    pub fn new(event_type: String, data: Vec<u8>, metadata: Option<serde_json::Value>) -> Self {
         Self {
             event_type,
             data,
