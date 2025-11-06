@@ -893,4 +893,276 @@ mod tests {
         assert_eq!(state.items.get("item-1"), Some(&9));
         assert_eq!(effects.len(), 1);
     }
+
+    #[tokio::test]
+    async fn test_checkout_payment_failure() {
+        let env = CheckoutSagaEnvironment {
+            clock: test_clock(),
+            event_bus: Arc::new(InMemoryEventBus::new()),
+        };
+
+        let store = Store::new(
+            CheckoutSagaState::default(),
+            CheckoutSaga::default(),
+            env,
+        );
+
+        // Initiate checkout
+        let _ = store
+            .send(CheckoutAction::InitiateCheckout {
+                customer_id: "customer-123".to_string(),
+                order_total_cents: 10000,
+                items: vec!["item-1".to_string()],
+            })
+            .await;
+
+        // Simulate OrderPlaced event
+        let _ = store
+            .send(CheckoutAction::OrderPlaced {
+                order_id: "order-123".to_string(),
+            })
+            .await;
+
+        // Get payment_id from current state
+        let payment_id = store.state(|s| {
+            if let CheckoutSagaState::ProcessingPayment { payment_id, .. } = s {
+                payment_id.clone()
+            } else {
+                String::new()
+            }
+        }).await;
+
+        // Simulate PaymentFailed event (triggers compensation)
+        let _ = store
+            .send(CheckoutAction::PaymentFailed {
+                payment_id,
+                reason: "Insufficient funds".to_string(),
+            })
+            .await;
+
+        // Verify we're in compensating state
+        let is_compensating = store.state(|s| {
+            matches!(s, CheckoutSagaState::Compensating { .. })
+        }).await;
+        assert!(is_compensating);
+
+        // Simulate OrderCancelled event (compensation complete)
+        let order_id = store.state(|s| {
+            if let CheckoutSagaState::Compensating { order_id, .. } = s {
+                order_id.clone()
+            } else {
+                None
+            }
+        }).await;
+
+        if let Some(order_id) = order_id {
+            let _ = store
+                .send(CheckoutAction::OrderCancelled { order_id })
+                .await;
+        }
+
+        // Verify final state is Failed
+        let is_failed = store.state(|s| matches!(s, CheckoutSagaState::Failed { .. })).await;
+        assert!(is_failed);
+    }
+
+    #[tokio::test]
+    async fn test_checkout_inventory_failure() {
+        let env = CheckoutSagaEnvironment {
+            clock: test_clock(),
+            event_bus: Arc::new(InMemoryEventBus::new()),
+        };
+
+        let store = Store::new(
+            CheckoutSagaState::default(),
+            CheckoutSaga::default(),
+            env,
+        );
+
+        // Initiate checkout
+        let _ = store
+            .send(CheckoutAction::InitiateCheckout {
+                customer_id: "customer-123".to_string(),
+                order_total_cents: 10000,
+                items: vec!["item-1".to_string(), "item-2".to_string()],
+            })
+            .await;
+
+        // Simulate OrderPlaced
+        let _ = store
+            .send(CheckoutAction::OrderPlaced {
+                order_id: "order-123".to_string(),
+            })
+            .await;
+
+        // Simulate PaymentCompleted
+        let payment_id = store.state(|s| {
+            if let CheckoutSagaState::ProcessingPayment { payment_id, .. } = s {
+                payment_id.clone()
+            } else {
+                String::new()
+            }
+        }).await;
+
+        let _ = store
+            .send(CheckoutAction::PaymentCompleted {
+                payment_id: payment_id.clone(),
+            })
+            .await;
+
+        // Simulate InsufficientInventory (triggers compensation)
+        let reservation_id = store.state(|s| {
+            if let CheckoutSagaState::ReservingInventory { reservation_id, .. } = s {
+                reservation_id.clone()
+            } else {
+                String::new()
+            }
+        }).await;
+
+        let _ = store
+            .send(CheckoutAction::InsufficientInventory {
+                reservation_id,
+            })
+            .await;
+
+        // Verify we're in compensating state
+        let is_compensating = store.state(|s| {
+            matches!(s, CheckoutSagaState::Compensating { .. })
+        }).await;
+        assert!(is_compensating);
+
+        // Simulate PaymentRefunded (compensation step 1)
+        let _ = store
+            .send(CheckoutAction::PaymentRefunded {
+                payment_id: payment_id.clone(),
+            })
+            .await;
+
+        // Simulate OrderCancelled (compensation step 2)
+        let order_id = store.state(|s| {
+            if let CheckoutSagaState::Compensating { order_id, .. } = s {
+                order_id.clone()
+            } else {
+                None
+            }
+        }).await;
+
+        if let Some(order_id) = order_id {
+            let _ = store
+                .send(CheckoutAction::OrderCancelled { order_id })
+                .await;
+        }
+
+        // Verify final state is Failed
+        let final_state = store.state(std::clone::Clone::clone).await;
+        assert!(matches!(final_state, CheckoutSagaState::Failed { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_payment_refund_flow() {
+        let mut state = PaymentState::Completed {
+            payment_id: "payment-123".to_string(),
+            amount_cents: 10000,
+        };
+        let reducer = PaymentReducer;
+
+        // Refund payment (command)
+        let effects = reducer.reduce(
+            &mut state,
+            PaymentAction::RefundPayment {
+                payment_id: "payment-123".to_string(),
+            },
+            &(),
+        );
+
+        // Should transition to Refunded state immediately and issue effect
+        assert!(matches!(state, PaymentState::Refunded { .. }));
+        assert_eq!(effects.len(), 1);
+
+        // Simulate refund completion event (idempotent)
+        let effects = reducer.reduce(
+            &mut state,
+            PaymentAction::PaymentRefunded {
+                payment_id: "payment-123".to_string(),
+            },
+            &(),
+        );
+
+        // Still Refunded, event is idempotent
+        assert!(matches!(state, PaymentState::Refunded { .. }));
+        assert_eq!(effects.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_inventory_insufficient() {
+        let mut state = InventoryState::default();
+        let reducer = InventoryReducer;
+
+        // Add only 1 item
+        reducer.reduce(
+            &mut state,
+            InventoryAction::AddInventory {
+                item_id: "item-1".to_string(),
+                quantity: 1,
+            },
+            &(),
+        );
+
+        // Try to reserve 2 items (should fail)
+        let effects = reducer.reduce(
+            &mut state,
+            InventoryAction::ReserveInventory {
+                reservation_id: "res-1".to_string(),
+                items: vec!["item-1".to_string(), "item-2".to_string()],
+            },
+            &(),
+        );
+
+        // Verify insufficient inventory was detected
+        assert_eq!(effects.len(), 1);
+        // State should remain unchanged (no reservation made)
+        assert_eq!(state.items.get("item-1"), Some(&1));
+        assert!(state.reservations.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_inventory_release() {
+        let mut state = InventoryState::default();
+        let reducer = InventoryReducer;
+
+        // Add inventory and reserve
+        reducer.reduce(
+            &mut state,
+            InventoryAction::AddInventory {
+                item_id: "item-1".to_string(),
+                quantity: 10,
+            },
+            &(),
+        );
+
+        reducer.reduce(
+            &mut state,
+            InventoryAction::ReserveInventory {
+                reservation_id: "res-1".to_string(),
+                items: vec!["item-1".to_string()],
+            },
+            &(),
+        );
+
+        assert_eq!(state.items.get("item-1"), Some(&9));
+
+        // Release the reservation
+        let effects = reducer.reduce(
+            &mut state,
+            InventoryAction::ReleaseInventory {
+                reservation_id: "res-1".to_string(),
+            },
+            &(),
+        );
+
+        // Inventory should be restored
+        assert_eq!(state.items.get("item-1"), Some(&10));
+        assert!(state.reservations.is_empty());
+        assert_eq!(effects.len(), 1);
+    }
 }
