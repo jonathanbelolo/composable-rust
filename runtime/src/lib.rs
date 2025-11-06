@@ -443,6 +443,7 @@ pub mod store {
         /// handle.wait().await;
         /// ```
         #[must_use]
+        #[tracing::instrument(skip(self, action), name = "store_send")]
         pub async fn send(&self, action: A) -> EffectHandle
         where
             R: Clone,
@@ -465,6 +466,7 @@ pub mod store {
         ///
         /// An [`EffectHandle`] for waiting on effect completion
         #[allow(clippy::cognitive_complexity)] // TODO: Refactor in Phase 4
+        #[tracing::instrument(skip(self, action, tracking_mode), name = "store_send_internal")]
         async fn send_internal(&self, action: A, tracking_mode: TrackingMode) -> EffectHandle
         where
             R: Clone,
@@ -479,6 +481,11 @@ pub mod store {
             let effects = {
                 let mut state = self.state.write().await;
                 tracing::trace!("Acquired write lock on state");
+
+                // Create span for reducer execution
+                let span = tracing::debug_span!("reducer_execution");
+                let _enter = span.enter();
+
                 let effects = self.reducer.reduce(&mut *state, action, &self.environment);
                 tracing::trace!("Reducer completed, returned {} effects", effects.len());
                 effects
@@ -548,6 +555,7 @@ pub mod store {
         #[allow(clippy::needless_pass_by_value)] // tracking is cloned, so pass by value is intentional
         #[allow(clippy::cognitive_complexity)] // TODO: Refactor in Phase 4
         #[allow(clippy::too_many_lines)] // TODO: Refactor in Phase 4
+        #[tracing::instrument(skip(self, effect, tracking), name = "execute_effect")]
         fn execute_effect_internal(&self, effect: Effect<A>, tracking: EffectTracking<A>)
         where
             R: Clone,
