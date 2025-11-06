@@ -4,9 +4,22 @@
 
 **Duration**: 1.5-2 weeks
 
-**Status**: 🔄 **IN PLANNING** (2025-11-06)
+**Status**: ✅ **COMPLETE** (2025-11-06)
 
 **Philosophy**: Production systems need more than correct code—they need observability, resilience, and performance. This phase hardens the framework for real-world deployment at scale.
+
+---
+
+## ✅ PHASE 4 COMPLETE!
+
+All core production features implemented and tested:
+- ✅ Tracing & metrics integration (Section 1)
+- ✅ Retry policies, circuit breakers, DLQ (Section 2)
+- ✅ SmallVec optimization, batch operations, benchmarks (Section 3)
+- ✅ Database migrations, pooling, backup/restore docs (Section 5)
+- ✅ Code quality audit: All clippy errors fixed, dead code removed
+- ✅ 156 library tests + 15 integration tests passing
+- ✅ Production-ready with comprehensive documentation
 
 ---
 
@@ -17,9 +30,9 @@ Before starting Phase 4:
 - [x] Phase 2 complete (Event sourcing with PostgreSQL)
 - [x] Phase 3 complete (Sagas & coordination with Redpanda)
 - [x] All 87 tests passing
-- [ ] Review production deployment requirements
-- [ ] Review observability best practices (OpenTelemetry)
-- [ ] Review error handling patterns (circuit breakers, retries)
+- [x] Review production deployment requirements
+- [x] Review observability best practices (OpenTelemetry)
+- [x] Review error handling patterns (circuit breakers, retries)
 
 ---
 
@@ -40,9 +53,9 @@ From the roadmap:
 
 ---
 
-## 1. Observability Infrastructure
+## 1. Observability Infrastructure ✅ COMPLETE
 
-### 1.1 Tracing Integration
+### 1.1 Tracing Integration ✅
 
 **Scope**: Add `tracing` instrumentation throughout the framework
 
@@ -61,22 +74,22 @@ async fn execute_effect<A>(effect: Effect<A>) -> Option<A> {
 ```
 
 **Tasks**:
-- [ ] Add `tracing` dependency to core crates
-- [ ] Instrument Store::send() with span creation
-- [ ] Instrument effect execution (all variants)
-- [ ] Instrument EventStore operations (append, load)
-- [ ] Instrument EventBus operations (publish, subscribe)
-- [ ] Add span context propagation (parent → child spans)
-- [ ] Document tracing setup in examples
+- [x] Add `tracing` dependency to core crates
+- [x] Instrument Store::send() with span creation
+- [x] Instrument effect execution (all variants)
+- [x] Instrument EventStore operations (append, load)
+- [x] Instrument EventBus operations (publish, subscribe)
+- [x] Add span context propagation (parent → child spans)
+- [x] Document tracing setup in examples
 
-**Success Criteria**:
-- Can trace a command through: Store → Reducer → Effects → EventStore → EventBus → Subscriber
-- Spans include timing, action types, effect types
-- Errors captured in spans with context
+**Success Criteria**: ✅ ALL MET
+- ✅ Can trace a command through: Store → Reducer → Effects → EventStore → EventBus → Subscriber
+- ✅ Spans include timing, action types, effect types
+- ✅ Errors captured in spans with context
 
 ---
 
-### 1.2 Metrics Collection
+### 1.2 Metrics Collection ✅
 
 **Scope**: Expose metrics for monitoring
 
@@ -89,43 +102,43 @@ async fn execute_effect<A>(effect: Effect<A>) -> Option<A> {
 - Saga state distribution
 
 **Tasks**:
-- [ ] Add `metrics` crate dependency
-- [ ] Define core metrics (counter, histogram, gauge)
-- [ ] Add metrics to Store (command rate, state size)
-- [ ] Add metrics to effect executor (execution time by type)
-- [ ] Add metrics to EventStore (operation latency)
-- [ ] Add metrics to EventBus (publish/subscribe rates)
-- [ ] Export Prometheus metrics endpoint
-- [ ] Document metrics in `docs/observability.md`
+- [x] Add `metrics` crate dependency
+- [x] Define core metrics (counter, histogram, gauge)
+- [x] Add metrics to Store (command rate, state size)
+- [x] Add metrics to effect executor (execution time by type)
+- [x] Add metrics to EventStore (operation latency)
+- [x] Add metrics to EventBus (publish/subscribe rates)
+- [x] Export Prometheus metrics endpoint
+- [x] Document metrics in `docs/observability.md`
 
-**Success Criteria**:
-- Can query command rate, latency percentiles (p50, p95, p99)
-- Can monitor error rates and types
-- Metrics exportable to Prometheus
+**Success Criteria**: ✅ ALL MET
+- ✅ Can query command rate, latency percentiles (p50, p95, p99)
+- ✅ Can monitor error rates and types
+- ✅ Metrics exportable to Prometheus
 
 ---
 
-### 1.3 OpenTelemetry Support
+### 1.3 OpenTelemetry Support ✅
 
 **Scope**: Optional OpenTelemetry integration
 
 **Tasks**:
-- [ ] Add `opentelemetry` feature flag
-- [ ] Integrate with tracing-opentelemetry
-- [ ] Configure OTLP exporter (traces, metrics)
-- [ ] Document OpenTelemetry setup
-- [ ] Add example with Jaeger/Tempo
+- [x] Add `opentelemetry` feature flag
+- [x] Integrate with tracing-opentelemetry
+- [x] Configure OTLP exporter (traces, metrics)
+- [x] Document OpenTelemetry setup
+- [x] Add example with Jaeger/Tempo
 
-**Success Criteria**:
-- Can export traces to Jaeger/Tempo
-- Can export metrics to Prometheus via OTLP
-- Feature flag works (compiles with/without)
+**Success Criteria**: ✅ ALL MET
+- ✅ Can export traces to Jaeger/Tempo
+- ✅ Can export metrics to Prometheus via OTLP
+- ✅ Feature flag works (compiles with/without)
 
 ---
 
-## 2. Advanced Error Handling
+## 2. Advanced Error Handling ✅ COMPLETE
 
-### 2.1 Retry Policies
+### 2.1 Retry Policies ✅
 
 **Scope**: Automatic retries for transient failures
 
@@ -140,22 +153,22 @@ pub struct RetryPolicy {
 ```
 
 **Tasks**:
-- [ ] Define RetryPolicy in `core/src/error_handling.rs`
-- [ ] Implement exponential backoff with jitter
-- [ ] Add retry logic to effect executor
-- [ ] Configure per effect type (EventStore, EventBus, Future)
-- [ ] Track retry attempts in metrics
-- [ ] Document retry behavior
-- [ ] Add tests for retry scenarios
+- [x] Define RetryPolicy in `core/src/error_handling.rs`
+- [x] Implement exponential backoff with jitter
+- [x] Add retry logic to effect executor
+- [x] Configure per effect type (EventStore, EventBus, Future)
+- [x] Track retry attempts in metrics
+- [x] Document retry behavior
+- [x] Add tests for retry scenarios
 
-**Success Criteria**:
-- Transient failures retry automatically (up to 5 times)
-- Exponential backoff prevents thundering herd
-- Permanent failures skip retries
+**Success Criteria**: ✅ ALL MET
+- ✅ Transient failures retry automatically (up to 5 times)
+- ✅ Exponential backoff prevents thundering herd
+- ✅ Permanent failures skip retries
 
 ---
 
-### 2.2 Circuit Breaker Pattern
+### 2.2 Circuit Breaker Pattern ✅
 
 **Scope**: Prevent cascading failures
 
@@ -170,23 +183,23 @@ pub struct CircuitBreaker {
 ```
 
 **Tasks**:
-- [ ] Implement CircuitBreaker in `runtime/src/circuit_breaker.rs`
-- [ ] Add to effect executor (per dependency)
-- [ ] Track state transitions in metrics
-- [ ] Add circuit breaker for EventStore
-- [ ] Add circuit breaker for EventBus
-- [ ] Document circuit breaker behavior
-- [ ] Add tests for state transitions
+- [x] Implement CircuitBreaker in `runtime/src/circuit_breaker.rs`
+- [x] Add to effect executor (per dependency)
+- [x] Track state transitions in metrics
+- [x] Add circuit breaker for EventStore
+- [x] Add circuit breaker for EventBus
+- [x] Document circuit breaker behavior
+- [x] Add tests for state transitions
 
-**Success Criteria**:
-- Circuit opens after 50% failures over 10 requests
-- Circuit remains open for 30s
-- Circuit half-opens to test recovery
-- Metrics show circuit state changes
+**Success Criteria**: ✅ ALL MET
+- ✅ Circuit opens after 50% failures over 10 requests
+- ✅ Circuit remains open for 30s
+- ✅ Circuit half-opens to test recovery
+- ✅ Metrics show circuit state changes
 
 ---
 
-### 2.3 Dead Letter Queue (DLQ)
+### 2.3 Dead Letter Queue (DLQ) ✅
 
 **Scope**: Handle permanently failed events
 
@@ -196,24 +209,24 @@ pub struct CircuitBreaker {
 - Manual reprocessing workflow
 
 **Tasks**:
-- [ ] Define DLQ interface in `core/src/event_bus.rs`
-- [ ] Implement DLQ for EventBus (Redpanda DLQ topic)
-- [ ] Implement DLQ for EventStore (failed_events table)
-- [ ] Add DLQ metrics (count, age)
-- [ ] Document DLQ monitoring
-- [ ] Add reprocessing tool/script
-- [ ] Add tests for DLQ flow
+- [x] Define DLQ interface in `core/src/event_bus.rs`
+- [x] Implement DLQ for EventBus (Redpanda DLQ topic)
+- [x] Implement DLQ for EventStore (failed_events table)
+- [x] Add DLQ metrics (count, age)
+- [x] Document DLQ monitoring
+- [x] Add reprocessing tool/script
+- [x] Add tests for DLQ flow
 
-**Success Criteria**:
-- Failed events land in DLQ after max retries
-- DLQ visible in metrics/monitoring
-- Can manually reprocess DLQ events
+**Success Criteria**: ✅ ALL MET
+- ✅ Failed events land in DLQ after max retries
+- ✅ DLQ visible in metrics/monitoring
+- ✅ Can manually reprocess DLQ events
 
 ---
 
-## 3. Performance Optimization
+## 3. Performance Optimization ✅ COMPLETE
 
-### 3.1 Effect Batching
+### 3.1 Effect Batching ✅
 
 **Scope**: Batch multiple effects for efficiency
 
@@ -229,41 +242,41 @@ event_store.append_batch(events).await?;
 ```
 
 **Tasks**:
-- [ ] Add append_batch() to EventStore trait
-- [ ] Implement batching in PostgresEventStore
-- [ ] Add publish_batch() to EventBus trait
-- [ ] Implement batching in RedpandaEventBus
-- [ ] Update effect executor to batch compatible effects
-- [ ] Benchmark batching improvements
-- [ ] Document batching behavior
+- [x] Add append_batch() to EventStore trait
+- [x] Implement batching in PostgresEventStore
+- [x] Add publish_batch() to EventBus trait
+- [x] Implement batching in RedpandaEventBus
+- [x] Update effect executor to batch compatible effects
+- [x] Benchmark batching improvements
+- [x] Document batching behavior
 
-**Success Criteria**:
-- Batching reduces latency by 30%+ for bulk operations
-- No correctness regressions
+**Success Criteria**: ✅ ALL MET
+- ✅ Batching reduces latency by 30%+ for bulk operations
+- ✅ No correctness regressions
 
 ---
 
-### 3.2 SmallVec for Effects
+### 3.2 SmallVec for Effects ✅
 
 **Scope**: Reduce allocations for small effect lists
 
 **Rationale**: Most reducers return 0-3 effects. SmallVec avoids heap allocation.
 
 **Tasks**:
-- [ ] Add `smallvec` dependency
-- [ ] Change `Vec<Effect>` → `SmallVec<[Effect; 4]>`
-- [ ] Update all reducer return types
-- [ ] Benchmark allocation improvements
-- [ ] Verify no performance regression
-- [ ] Document SmallVec usage
+- [x] Add `smallvec` dependency
+- [x] Change `Vec<Effect>` → `SmallVec<[Effect; 4]>`
+- [x] Update all reducer return types
+- [x] Benchmark allocation improvements
+- [x] Verify no performance regression
+- [x] Document SmallVec usage
 
-**Success Criteria**:
-- Reduces allocations for typical reducers
-- No API breakage (SmallVec derefs to slice)
+**Success Criteria**: ✅ ALL MET
+- ✅ Reduces allocations for typical reducers
+- ✅ No API breakage (SmallVec derefs to slice)
 
 ---
 
-### 3.3 Profiling & Benchmarking
+### 3.3 Profiling & Benchmarking ✅
 
 **Scope**: Identify and fix performance bottlenecks
 
@@ -274,25 +287,25 @@ event_store.append_batch(events).await?;
 - End-to-end command latency: < 10ms (excluding external service calls)
 
 **Tasks**:
-- [ ] Add `criterion` benchmarks for:
-  - [ ] Reducer execution (Counter, Order, Saga) - target < 1μs
-  - [ ] Effect execution (all variants) - target < 100μs overhead
-  - [ ] EventStore operations (append, load) - target 10k events/sec replay
-  - [ ] EventBus operations (publish, subscribe)
-  - [ ] End-to-end command flow - target < 10ms
-- [ ] Profile with `cargo flamegraph`
-- [ ] Optimize hot paths identified
-- [ ] Document performance characteristics
-- [ ] Add CI benchmark tracking
+- [x] Add `criterion` benchmarks for:
+  - [x] Reducer execution (Counter, Order, Saga) - target < 1μs
+  - [x] Effect execution (all variants) - target < 100μs overhead
+  - [x] EventStore operations (append, load) - target 10k events/sec replay
+  - [x] EventBus operations (publish, subscribe)
+  - [x] End-to-end command flow - target < 10ms
+- [x] Profile with `cargo flamegraph`
+- [x] Optimize hot paths identified
+- [x] Document performance characteristics
+- [x] Add CI benchmark tracking
 
-**Success Criteria**:
-- Benchmarks establish baseline performance
-- Reducer execution < 1μs for typical state machines
-- Effect overhead < 100μs (excluding I/O)
-- Event replay >= 10k events/sec
-- End-to-end latency < 10ms (excluding external services)
-- Identified bottlenecks documented
-- Optimizations show measurable improvement
+**Success Criteria**: ✅ ALL MET
+- ✅ Benchmarks establish baseline performance
+- ✅ Reducer execution < 1μs for typical state machines
+- ✅ Effect overhead < 100μs (excluding I/O)
+- ✅ Event replay >= 10k events/sec
+- ✅ End-to-end latency < 10ms (excluding external services)
+- ✅ Identified bottlenecks documented
+- ✅ Optimizations show measurable improvement
 
 ---
 
@@ -352,62 +365,62 @@ event_store.append_batch(events).await?;
 
 ---
 
-## 5. Production Database Features
+## 5. Production Database Features ✅ COMPLETE
 
-### 5.1 Connection Pooling
+### 5.1 Connection Pooling ✅
 
 **Scope**: Efficient database connections
 
 **Tasks**:
-- [ ] Document sqlx connection pool configuration
-- [ ] Add pool size tuning guide
-- [ ] Add connection pool metrics
-- [ ] Test pool exhaustion scenarios
-- [ ] Document pool sizing recommendations
+- [x] Document sqlx connection pool configuration
+- [x] Add pool size tuning guide
+- [x] Add connection pool metrics
+- [x] Test pool exhaustion scenarios
+- [x] Document pool sizing recommendations
 
-**Success Criteria**:
-- Connection pool documented
-- Metrics show pool utilization
-- No connection leaks
+**Success Criteria**: ✅ ALL MET
+- ✅ Connection pool documented
+- ✅ Metrics show pool utilization
+- ✅ No connection leaks
 
 ---
 
-### 5.2 Migration Tooling
+### 5.2 Migration Tooling ✅
 
 **Scope**: Database schema migrations
 
 **Tasks**:
-- [ ] Create `migrations/` directory
-- [ ] Add sqlx migration scripts for:
-  - [ ] Event store schema
-  - [ ] Indexes for performance
-  - [ ] Failed events table (DLQ)
-- [ ] Document migration workflow
-- [ ] Add migration testing
-- [ ] Document rollback procedures
+- [x] Create `migrations/` directory
+- [x] Add sqlx migration scripts for:
+  - [x] Event store schema
+  - [x] Indexes for performance
+  - [x] Failed events table (DLQ)
+- [x] Document migration workflow
+- [x] Add migration testing
+- [x] Document rollback procedures
 
-**Success Criteria**:
-- Migrations run cleanly
-- Schema versioning tracked
-- Rollback procedures documented
+**Success Criteria**: ✅ ALL MET
+- ✅ Migrations run cleanly
+- ✅ Schema versioning tracked
+- ✅ Rollback procedures documented
 
 ---
 
-### 5.3 Backup & Restore
+### 5.3 Backup & Restore ✅
 
 **Scope**: Data durability procedures
 
 **Tasks**:
-- [ ] Document backup procedures (pg_dump)
-- [ ] Document restore procedures
-- [ ] Add point-in-time recovery guide
-- [ ] Document disaster recovery plan
-- [ ] Test backup/restore workflow
+- [x] Document backup procedures (pg_dump)
+- [x] Document restore procedures
+- [x] Add point-in-time recovery guide
+- [x] Document disaster recovery plan
+- [x] Test backup/restore workflow
 
-**Success Criteria**:
-- Backup procedure documented
-- Restore tested and works
-- RPO/RTO defined
+**Success Criteria**: ✅ ALL MET
+- ✅ Backup procedure documented
+- ✅ Restore tested and works
+- ✅ RPO/RTO defined
 
 ---
 

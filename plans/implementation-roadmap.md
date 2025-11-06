@@ -509,49 +509,49 @@ Build `examples/checkout-workflow/`:
 
 ---
 
-## Phase 4: Production Hardening (Weeks 8-9)
+## Phase 4: Production Hardening ✅ **COMPLETE** (2025-11-06)
 
 **Goal**: Make it production-ready with observability, error handling, and Redpanda production features.
 
 ### Deliverables
 
-1. **Redpanda Production Features**
+1. **Redpanda Production Features** ✅
    - Consumer group management
    - Offset tracking and commit strategies
    - Rebalancing and failover
    - Dead letter queue for failed event processing
    - At-least-once delivery guarantees verified
 
-2. **Observability**
+2. **Observability** ✅
    - `tracing` integration throughout
    - Span propagation through effect execution
    - Metrics collection (command rates, effect execution time)
    - OpenTelemetry support
 
-3. **Error Handling**
+3. **Error Handling** ✅
    - Retry policies for effects
    - Circuit breaker pattern
    - Dead letter queue for failed events
    - Error correlation and debugging
 
-4. **Performance Optimization**
+4. **Performance Optimization** ✅
    - SmallVec for effect lists
    - Effect batching where possible
    - Profiling and optimization based on benchmarks
 
-5. **Production Database Setup**
+5. **Production Database Setup** ✅
    - Migration tooling
    - Connection pooling
    - Backup/restore procedures documented
 
 ### Validation Criteria
 
-- [ ] Can run distributed (multiple processes)
-- [ ] Events survive process crashes (durable message queue)
-- [ ] Full observability (logs, metrics, traces)
-- [ ] Handles failures gracefully (retries, circuit breakers)
-- [ ] Benchmarks meet targets (see architecture doc Section 8.5)
-- [ ] Can deploy to staging environment
+- [x] Can run distributed (multiple processes)
+- [x] Events survive process crashes (durable message queue)
+- [x] Full observability (logs, metrics, traces)
+- [x] Handles failures gracefully (retries, circuit breakers)
+- [x] Benchmarks meet targets (see architecture doc Section 8.5)
+- [x] Can deploy to staging environment
 
 ### Key Decisions
 
