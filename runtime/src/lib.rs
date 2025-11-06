@@ -805,7 +805,9 @@ pub mod store {
 
                         // Send action back to store if callback produced one
                         if let Some(action) = action {
-                            tracing::trace!("PublishEvent operation produced an action, sending to store");
+                            tracing::trace!(
+                                "PublishEvent operation produced an action, sending to store"
+                            );
                             let _ = store.send(action).await;
                         } else {
                             tracing::trace!("PublishEvent operation completed with no action");

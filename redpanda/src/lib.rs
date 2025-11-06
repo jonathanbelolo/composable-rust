@@ -399,9 +399,9 @@ impl RedpandaEventBusBuilder {
     /// - Cannot create producer
     /// - Invalid configuration
     pub fn build(self) -> Result<RedpandaEventBus, EventBusError> {
-        let brokers = self.brokers.ok_or_else(|| EventBusError::ConnectionFailed(
-            "Brokers not configured".to_string(),
-        ))?;
+        let brokers = self
+            .brokers
+            .ok_or_else(|| EventBusError::ConnectionFailed("Brokers not configured".to_string()))?;
 
         // Create producer configuration
         let mut producer_config = ClientConfig::new();
@@ -409,7 +409,10 @@ impl RedpandaEventBusBuilder {
             .set("bootstrap.servers", &brokers)
             .set("message.timeout.ms", "5000")
             .set("acks", self.producer_acks.as_deref().unwrap_or("1"))
-            .set("compression.type", self.compression.as_deref().unwrap_or("none"));
+            .set(
+                "compression.type",
+                self.compression.as_deref().unwrap_or("none"),
+            );
 
         // Create producer
         let producer: FutureProducer = producer_config.create().map_err(|e| {
@@ -431,7 +434,9 @@ impl RedpandaEventBusBuilder {
             timeout: self.timeout.unwrap_or(Duration::from_secs(5)),
             consumer_group: self.consumer_group,
             buffer_size: self.buffer_size.unwrap_or(1000),
-            auto_offset_reset: self.auto_offset_reset.unwrap_or_else(|| "latest".to_string()),
+            auto_offset_reset: self
+                .auto_offset_reset
+                .unwrap_or_else(|| "latest".to_string()),
         })
     }
 }
@@ -449,11 +454,9 @@ impl EventBus for RedpandaEventBus {
 
         Box::pin(async move {
             // Serialize event using bincode
-            let payload = bincode::serialize(&event).map_err(|e| {
-                EventBusError::PublishFailed {
-                    topic: topic.clone(),
-                    reason: format!("Failed to serialize event: {e}"),
-                }
+            let payload = bincode::serialize(&event).map_err(|e| EventBusError::PublishFailed {
+                topic: topic.clone(),
+                reason: format!("Failed to serialize event: {e}"),
             })?;
 
             // Use event_type as the message key for partitioning
@@ -461,15 +464,10 @@ impl EventBus for RedpandaEventBus {
             let key = event.event_type.as_bytes();
 
             // Create Kafka record
-            let record = FutureRecord::to(&topic)
-                .payload(&payload)
-                .key(key);
+            let record = FutureRecord::to(&topic).payload(&payload).key(key);
 
             // Send the message
-            let send_result = self
-                .producer
-                .send(record, Timeout::After(timeout))
-                .await;
+            let send_result = self.producer.send(record, Timeout::After(timeout)).await;
 
             match send_result {
                 Ok((partition, offset)) => {
@@ -537,12 +535,12 @@ impl EventBus for RedpandaEventBus {
 
             // Subscribe to topics
             let topic_refs: Vec<&str> = topics.iter().map(String::as_str).collect();
-            consumer.subscribe(&topic_refs).map_err(|e| {
-                EventBusError::SubscriptionFailed {
+            consumer
+                .subscribe(&topic_refs)
+                .map_err(|e| EventBusError::SubscriptionFailed {
                     topics: topics.clone(),
                     reason: format!("Failed to subscribe to topics: {e}"),
-                }
-            })?;
+                })?;
 
             tracing::info!(
                 topics = ?topics,
@@ -579,7 +577,9 @@ impl EventBus for RedpandaEventBus {
                                         break; // Receiver dropped
                                     }
                                     // Commit even failed messages to avoid reprocessing
-                                    if let Err(e) = consumer.commit_message(&message, CommitMode::Async) {
+                                    if let Err(e) =
+                                        consumer.commit_message(&message, CommitMode::Async)
+                                    {
                                         tracing::warn!(
                                             error = %e,
                                             "Failed to commit message with no payload"
@@ -600,11 +600,9 @@ impl EventBus for RedpandaEventBus {
                                         );
                                         Ok(event)
                                     },
-                                    Err(e) => {
-                                        Err(EventBusError::DeserializationFailed(format!(
-                                            "Failed to deserialize event: {e}"
-                                        )))
-                                    },
+                                    Err(e) => Err(EventBusError::DeserializationFailed(format!(
+                                        "Failed to deserialize event: {e}"
+                                    ))),
                                 }
                             };
 

@@ -527,7 +527,11 @@ pub mod mocks {
             RwLock<
                 std::collections::HashMap<
                     String,
-                    Vec<tokio::sync::mpsc::UnboundedSender<composable_rust_core::event::SerializedEvent>>,
+                    Vec<
+                        tokio::sync::mpsc::UnboundedSender<
+                            composable_rust_core::event::SerializedEvent,
+                        >,
+                    >,
                 >,
             >,
         >,
@@ -647,8 +651,9 @@ pub mod mocks {
 
             Box::pin(async move {
                 // Create a channel for this subscription
-                let (tx, mut rx) =
-                    tokio::sync::mpsc::unbounded_channel::<composable_rust_core::event::SerializedEvent>();
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<
+                    composable_rust_core::event::SerializedEvent,
+                >();
 
                 // Register this subscriber for all requested topics
                 {

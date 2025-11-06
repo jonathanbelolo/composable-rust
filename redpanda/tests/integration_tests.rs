@@ -22,9 +22,9 @@ use composable_rust_redpanda::RedpandaEventBus;
 use futures::StreamExt;
 use std::collections::HashSet;
 use std::time::Duration;
-use testcontainers::runners::AsyncRunner;
 use testcontainers::ImageExt;
-use testcontainers_modules::kafka::{Kafka, KAFKA_PORT};
+use testcontainers::runners::AsyncRunner;
+use testcontainers_modules::kafka::{KAFKA_PORT, Kafka};
 
 /// Helper to create a test event
 fn test_event(event_type: &str, data: Vec<u8>) -> SerializedEvent {
@@ -60,7 +60,10 @@ async fn test_publish_and_subscribe_round_trip() {
         .expect("Failed to start Kafka container");
 
     let host = kafka.get_host().await.expect("Failed to get host");
-    let port = kafka.get_host_port_ipv4(KAFKA_PORT).await.expect("Failed to get port");
+    let port = kafka
+        .get_host_port_ipv4(KAFKA_PORT)
+        .await
+        .expect("Failed to get port");
     let brokers = format!("{host}:{port}");
     wait_for_kafka_ready(&brokers).await;
 
@@ -124,7 +127,10 @@ async fn test_consumer_groups_load_balancing() {
         .expect("Failed to start Kafka container");
 
     let host = kafka.get_host().await.expect("Failed to get host");
-    let port = kafka.get_host_port_ipv4(KAFKA_PORT).await.expect("Failed to get port");
+    let port = kafka
+        .get_host_port_ipv4(KAFKA_PORT)
+        .await
+        .expect("Failed to get port");
     let brokers = format!("{host}:{port}");
     wait_for_kafka_ready(&brokers).await;
 
@@ -206,11 +212,7 @@ async fn test_consumer_groups_load_balancing() {
 
     // Verify all events received
     let total: HashSet<_> = received1.union(&received2).cloned().collect();
-    assert_eq!(
-        total.len(),
-        10,
-        "Should have received all 10 unique events"
-    );
+    assert_eq!(total.len(), 10, "Should have received all 10 unique events");
 }
 
 #[tokio::test]
@@ -223,7 +225,10 @@ async fn test_multiple_topics() {
         .expect("Failed to start Kafka container");
 
     let host = kafka.get_host().await.expect("Failed to get host");
-    let port = kafka.get_host_port_ipv4(KAFKA_PORT).await.expect("Failed to get port");
+    let port = kafka
+        .get_host_port_ipv4(KAFKA_PORT)
+        .await
+        .expect("Failed to get port");
     let brokers = format!("{host}:{port}");
     wait_for_kafka_ready(&brokers).await;
 
@@ -286,7 +291,10 @@ async fn test_at_least_once_delivery() {
         .expect("Failed to start Kafka container");
 
     let host = kafka.get_host().await.expect("Failed to get host");
-    let port = kafka.get_host_port_ipv4(KAFKA_PORT).await.expect("Failed to get port");
+    let port = kafka
+        .get_host_port_ipv4(KAFKA_PORT)
+        .await
+        .expect("Failed to get port");
     let brokers = format!("{host}:{port}");
     wait_for_kafka_ready(&brokers).await;
 
@@ -348,7 +356,10 @@ async fn test_event_ordering_within_partition() {
         .expect("Failed to start Kafka container");
 
     let host = kafka.get_host().await.expect("Failed to get host");
-    let port = kafka.get_host_port_ipv4(KAFKA_PORT).await.expect("Failed to get port");
+    let port = kafka
+        .get_host_port_ipv4(KAFKA_PORT)
+        .await
+        .expect("Failed to get port");
     let brokers = format!("{host}:{port}");
     wait_for_kafka_ready(&brokers).await;
 
@@ -407,7 +418,10 @@ async fn test_producer_configuration() {
         .expect("Failed to start Kafka container");
 
     let host = kafka.get_host().await.expect("Failed to get host");
-    let port = kafka.get_host_port_ipv4(KAFKA_PORT).await.expect("Failed to get port");
+    let port = kafka
+        .get_host_port_ipv4(KAFKA_PORT)
+        .await
+        .expect("Failed to get port");
     let brokers = format!("{host}:{port}");
     wait_for_kafka_ready(&brokers).await;
 

@@ -149,8 +149,7 @@ pub enum EventBusError {
 ///     }
 /// }
 /// ```
-pub type EventStream =
-    Pin<Box<dyn Stream<Item = Result<SerializedEvent, EventBusError>> + Send>>;
+pub type EventStream = Pin<Box<dyn Stream<Item = Result<SerializedEvent, EventBusError>> + Send>>;
 
 /// Trait for event bus implementations.
 ///

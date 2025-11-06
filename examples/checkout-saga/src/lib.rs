@@ -178,7 +178,13 @@ impl Reducer for PaymentReducer {
     ) -> Vec<Effect<Self::Action>> {
         match (state.clone(), action) {
             // Process payment command
-            (PaymentState::Idle, PaymentAction::ProcessPayment { payment_id, amount_cents }) => {
+            (
+                PaymentState::Idle,
+                PaymentAction::ProcessPayment {
+                    payment_id,
+                    amount_cents,
+                },
+            ) => {
                 *state = PaymentState::Processing {
                     payment_id: payment_id.clone(),
                     amount_cents,
@@ -189,11 +195,14 @@ impl Reducer for PaymentReducer {
                     // In real implementation: call payment gateway API
                     Some(PaymentAction::PaymentCompleted { payment_id })
                 }))]
-            }
+            },
 
             // Payment completed event
             (
-                PaymentState::Processing { payment_id, amount_cents },
+                PaymentState::Processing {
+                    payment_id,
+                    amount_cents,
+                },
                 PaymentAction::PaymentCompleted {
                     payment_id: completed_id,
                 },
@@ -203,7 +212,7 @@ impl Reducer for PaymentReducer {
                     amount_cents,
                 };
                 vec![Effect::None]
-            }
+            },
 
             // Payment failed event
             (
@@ -213,17 +222,19 @@ impl Reducer for PaymentReducer {
                     reason,
                 },
             ) if payment_id == failed_id => {
-                *state = PaymentState::Failed {
-                    payment_id,
-                    reason,
-                };
+                *state = PaymentState::Failed { payment_id, reason };
                 vec![Effect::None]
-            }
+            },
 
             // Refund payment command
             (
-                PaymentState::Completed { payment_id, amount_cents },
-                PaymentAction::RefundPayment { payment_id: refund_id },
+                PaymentState::Completed {
+                    payment_id,
+                    amount_cents,
+                },
+                PaymentAction::RefundPayment {
+                    payment_id: refund_id,
+                },
             ) if payment_id == refund_id => {
                 *state = PaymentState::Refunded {
                     payment_id: payment_id.clone(),
@@ -234,11 +245,14 @@ impl Reducer for PaymentReducer {
                     // In real implementation: call payment gateway refund API
                     Some(PaymentAction::PaymentRefunded { payment_id })
                 }))]
-            }
+            },
 
             // Payment refunded event
             (
-                PaymentState::Refunded { payment_id, amount_cents },
+                PaymentState::Refunded {
+                    payment_id,
+                    amount_cents,
+                },
                 PaymentAction::PaymentRefunded {
                     payment_id: refunded_id,
                 },
@@ -249,7 +263,7 @@ impl Reducer for PaymentReducer {
                     amount_cents,
                 };
                 vec![Effect::None]
-            }
+            },
 
             // Invalid transitions
             _ => vec![Effect::None],
@@ -330,7 +344,7 @@ impl Reducer for InventoryReducer {
             InventoryAction::AddInventory { item_id, quantity } => {
                 *state.items.entry(item_id).or_insert(0) += quantity;
                 vec![Effect::None]
-            }
+            },
 
             // Reserve inventory command
             InventoryAction::ReserveInventory {
@@ -366,7 +380,7 @@ impl Reducer for InventoryReducer {
                 vec![Effect::Future(Box::pin(async move {
                     Some(InventoryAction::InventoryReserved { reservation_id })
                 }))]
-            }
+            },
 
             // Event handlers (idempotent - no side effects)
             InventoryAction::InventoryReserved { .. }
@@ -385,7 +399,7 @@ impl Reducer for InventoryReducer {
                 vec![Effect::Future(Box::pin(async move {
                     Some(InventoryAction::InventoryReleased { reservation_id })
                 }))]
-            }
+            },
         }
     }
 }
@@ -602,7 +616,7 @@ where
                 vec![Effect::Future(Box::pin(async move {
                     Some(CheckoutAction::OrderPlaced { order_id })
                 }))]
-            }
+            },
 
             // Order placed successfully
             (
@@ -626,7 +640,7 @@ where
                 vec![Effect::Future(Box::pin(async move {
                     Some(CheckoutAction::PaymentCompleted { payment_id })
                 }))]
-            }
+            },
 
             // Payment completed successfully
             (
@@ -653,7 +667,7 @@ where
                 vec![Effect::Future(Box::pin(async move {
                     Some(CheckoutAction::InventoryReserved { reservation_id })
                 }))]
-            }
+            },
 
             // Payment failed - start compensation
             (
@@ -674,7 +688,7 @@ where
                 vec![Effect::Future(Box::pin(async move {
                     Some(CheckoutAction::OrderCancelled { order_id })
                 }))]
-            }
+            },
 
             // Inventory reserved successfully - checkout complete!
             (
@@ -697,7 +711,7 @@ where
                 vec![Effect::Future(Box::pin(async move {
                     Some(CheckoutAction::CheckoutCompleted { order_id })
                 }))]
-            }
+            },
 
             // Insufficient inventory - start compensation
             (
@@ -718,14 +732,12 @@ where
                 vec![Effect::Future(Box::pin(async move {
                     Some(CheckoutAction::PaymentRefunded { payment_id })
                 }))]
-            }
+            },
 
             // Payment refunded - continue compensation
             (
                 CheckoutSagaState::Compensating {
-                    order_id,
-                    reason,
-                    ..
+                    order_id, reason, ..
                 },
                 CheckoutAction::PaymentRefunded { .. },
             ) => {
@@ -750,7 +762,7 @@ where
                         })
                     }))]
                 }
-            }
+            },
 
             // Order cancelled - compensation complete
             (
@@ -764,7 +776,7 @@ where
                 vec![Effect::Future(Box::pin(async move {
                     Some(CheckoutAction::CheckoutFailed { reason })
                 }))]
-            }
+            },
 
             // Terminal states and invalid transitions
             _ => vec![Effect::None],
@@ -785,11 +797,7 @@ mod tests {
             event_bus: Arc::new(InMemoryEventBus::new()),
         };
 
-        let store = Store::new(
-            CheckoutSagaState::default(),
-            CheckoutSaga::default(),
-            env,
-        );
+        let store = Store::new(CheckoutSagaState::default(), CheckoutSaga::default(), env);
 
         // Initiate checkout
         let _ = store
@@ -808,39 +816,41 @@ mod tests {
             .await;
 
         // Get payment_id from current state
-        let payment_id = store.state(|s| {
-            if let CheckoutSagaState::ProcessingPayment { payment_id, .. } = s {
-                payment_id.clone()
-            } else {
-                String::new()
-            }
-        }).await;
+        let payment_id = store
+            .state(|s| {
+                if let CheckoutSagaState::ProcessingPayment { payment_id, .. } = s {
+                    payment_id.clone()
+                } else {
+                    String::new()
+                }
+            })
+            .await;
 
         // Simulate PaymentCompleted event
         let _ = store
-            .send(CheckoutAction::PaymentCompleted {
-                payment_id,
-            })
+            .send(CheckoutAction::PaymentCompleted { payment_id })
             .await;
 
         // Get reservation_id from current state
-        let reservation_id = store.state(|s| {
-            if let CheckoutSagaState::ReservingInventory { reservation_id, .. } = s {
-                reservation_id.clone()
-            } else {
-                String::new()
-            }
-        }).await;
-
-        // Simulate InventoryReserved event
-        let _ = store
-            .send(CheckoutAction::InventoryReserved {
-                reservation_id,
+        let reservation_id = store
+            .state(|s| {
+                if let CheckoutSagaState::ReservingInventory { reservation_id, .. } = s {
+                    reservation_id.clone()
+                } else {
+                    String::new()
+                }
             })
             .await;
 
+        // Simulate InventoryReserved event
+        let _ = store
+            .send(CheckoutAction::InventoryReserved { reservation_id })
+            .await;
+
         // Verify final state is Completed
-        let is_completed = store.state(|s| matches!(s, CheckoutSagaState::Completed { .. })).await;
+        let is_completed = store
+            .state(|s| matches!(s, CheckoutSagaState::Completed { .. }))
+            .await;
         assert!(is_completed);
     }
 
@@ -901,11 +911,7 @@ mod tests {
             event_bus: Arc::new(InMemoryEventBus::new()),
         };
 
-        let store = Store::new(
-            CheckoutSagaState::default(),
-            CheckoutSaga::default(),
-            env,
-        );
+        let store = Store::new(CheckoutSagaState::default(), CheckoutSaga::default(), env);
 
         // Initiate checkout
         let _ = store
@@ -924,13 +930,15 @@ mod tests {
             .await;
 
         // Get payment_id from current state
-        let payment_id = store.state(|s| {
-            if let CheckoutSagaState::ProcessingPayment { payment_id, .. } = s {
-                payment_id.clone()
-            } else {
-                String::new()
-            }
-        }).await;
+        let payment_id = store
+            .state(|s| {
+                if let CheckoutSagaState::ProcessingPayment { payment_id, .. } = s {
+                    payment_id.clone()
+                } else {
+                    String::new()
+                }
+            })
+            .await;
 
         // Simulate PaymentFailed event (triggers compensation)
         let _ = store
@@ -941,19 +949,21 @@ mod tests {
             .await;
 
         // Verify we're in compensating state
-        let is_compensating = store.state(|s| {
-            matches!(s, CheckoutSagaState::Compensating { .. })
-        }).await;
+        let is_compensating = store
+            .state(|s| matches!(s, CheckoutSagaState::Compensating { .. }))
+            .await;
         assert!(is_compensating);
 
         // Simulate OrderCancelled event (compensation complete)
-        let order_id = store.state(|s| {
-            if let CheckoutSagaState::Compensating { order_id, .. } = s {
-                order_id.clone()
-            } else {
-                None
-            }
-        }).await;
+        let order_id = store
+            .state(|s| {
+                if let CheckoutSagaState::Compensating { order_id, .. } = s {
+                    order_id.clone()
+                } else {
+                    None
+                }
+            })
+            .await;
 
         if let Some(order_id) = order_id {
             let _ = store
@@ -962,7 +972,9 @@ mod tests {
         }
 
         // Verify final state is Failed
-        let is_failed = store.state(|s| matches!(s, CheckoutSagaState::Failed { .. })).await;
+        let is_failed = store
+            .state(|s| matches!(s, CheckoutSagaState::Failed { .. }))
+            .await;
         assert!(is_failed);
     }
 
@@ -973,11 +985,7 @@ mod tests {
             event_bus: Arc::new(InMemoryEventBus::new()),
         };
 
-        let store = Store::new(
-            CheckoutSagaState::default(),
-            CheckoutSaga::default(),
-            env,
-        );
+        let store = Store::new(CheckoutSagaState::default(), CheckoutSaga::default(), env);
 
         // Initiate checkout
         let _ = store
@@ -996,13 +1004,15 @@ mod tests {
             .await;
 
         // Simulate PaymentCompleted
-        let payment_id = store.state(|s| {
-            if let CheckoutSagaState::ProcessingPayment { payment_id, .. } = s {
-                payment_id.clone()
-            } else {
-                String::new()
-            }
-        }).await;
+        let payment_id = store
+            .state(|s| {
+                if let CheckoutSagaState::ProcessingPayment { payment_id, .. } = s {
+                    payment_id.clone()
+                } else {
+                    String::new()
+                }
+            })
+            .await;
 
         let _ = store
             .send(CheckoutAction::PaymentCompleted {
@@ -1011,24 +1021,24 @@ mod tests {
             .await;
 
         // Simulate InsufficientInventory (triggers compensation)
-        let reservation_id = store.state(|s| {
-            if let CheckoutSagaState::ReservingInventory { reservation_id, .. } = s {
-                reservation_id.clone()
-            } else {
-                String::new()
-            }
-        }).await;
-
-        let _ = store
-            .send(CheckoutAction::InsufficientInventory {
-                reservation_id,
+        let reservation_id = store
+            .state(|s| {
+                if let CheckoutSagaState::ReservingInventory { reservation_id, .. } = s {
+                    reservation_id.clone()
+                } else {
+                    String::new()
+                }
             })
             .await;
 
+        let _ = store
+            .send(CheckoutAction::InsufficientInventory { reservation_id })
+            .await;
+
         // Verify we're in compensating state
-        let is_compensating = store.state(|s| {
-            matches!(s, CheckoutSagaState::Compensating { .. })
-        }).await;
+        let is_compensating = store
+            .state(|s| matches!(s, CheckoutSagaState::Compensating { .. }))
+            .await;
         assert!(is_compensating);
 
         // Simulate PaymentRefunded (compensation step 1)
@@ -1039,13 +1049,15 @@ mod tests {
             .await;
 
         // Simulate OrderCancelled (compensation step 2)
-        let order_id = store.state(|s| {
-            if let CheckoutSagaState::Compensating { order_id, .. } = s {
-                order_id.clone()
-            } else {
-                None
-            }
-        }).await;
+        let order_id = store
+            .state(|s| {
+                if let CheckoutSagaState::Compensating { order_id, .. } = s {
+                    order_id.clone()
+                } else {
+                    None
+                }
+            })
+            .await;
 
         if let Some(order_id) = order_id {
             let _ = store

@@ -352,11 +352,11 @@ mod tests {
                 TestAction::Increment => {
                     state.counter += 1;
                     vec![Effect::None]
-                }
+                },
                 TestAction::Decrement => {
                     state.counter -= 1;
                     vec![Effect::None]
-                }
+                },
                 TestAction::SetName(_) => vec![Effect::None],
             }
         }
@@ -379,7 +379,7 @@ mod tests {
                 TestAction::SetName(name) => {
                     state.name = name;
                     vec![Effect::None]
-                }
+                },
                 _ => vec![Effect::None],
             }
         }
@@ -434,11 +434,11 @@ mod tests {
                 SubAction::Add(n) => {
                     state.value += n;
                     vec![Effect::None]
-                }
+                },
                 SubAction::Multiply(n) => {
                     state.value *= n;
                     vec![Effect::None]
-                }
+                },
             }
         }
     }

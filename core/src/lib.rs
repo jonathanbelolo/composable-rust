@@ -491,11 +491,7 @@ pub mod effect {
                         .finish(),
                 },
                 Effect::PublishEvent(op) => match op {
-                    EventBusOperation::Publish {
-                        topic,
-                        event,
-                        ..
-                    } => f
+                    EventBusOperation::Publish { topic, event, .. } => f
                         .debug_struct("Effect::PublishEvent::Publish")
                         .field("topic", topic)
                         .field("event_type", &event.event_type)
@@ -719,10 +715,7 @@ pub mod effect {
     }
 
     // Helper function to map EventBusOperation callbacks to new action type
-    fn map_event_bus_operation<A, B, F>(
-        op: EventBusOperation<A>,
-        f: F,
-    ) -> EventBusOperation<B>
+    fn map_event_bus_operation<A, B, F>(op: EventBusOperation<A>, f: F) -> EventBusOperation<B>
     where
         F: Fn(A) -> B + Send + Sync + 'static + Clone,
         A: 'static,

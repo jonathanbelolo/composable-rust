@@ -106,7 +106,10 @@ async fn setup_postgres_event_store() -> (ContainerAsync<Postgres>, PostgresEven
             }
         }
 
-        assert!(retries < max_retries, "Failed to connect after {max_retries} retries");
+        assert!(
+            retries < max_retries,
+            "Failed to connect after {max_retries} retries"
+        );
         retries += 1;
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
     }
