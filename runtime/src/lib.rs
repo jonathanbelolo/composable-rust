@@ -183,10 +183,330 @@ impl Default for RetryPolicy {
     }
 }
 
+/// Circuit breaker state
+///
+/// A circuit breaker prevents cascading failures by "opening" after
+/// a threshold of failures, rejecting requests immediately rather than
+/// attempting them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CircuitState {
+    /// Circuit is closed - normal operation, requests pass through
+    Closed,
+
+    /// Circuit is open - failing fast, rejecting requests immediately
+    Open,
+
+    /// Circuit is half-open - testing if service recovered
+    HalfOpen,
+}
+
+/// Circuit breaker error
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum CircuitBreakerError {
+    /// Circuit is open, rejecting requests
+    #[error("Circuit breaker is open")]
+    Open,
+}
+
+/// Circuit breaker for preventing cascading failures
+///
+/// The circuit breaker pattern prevents cascading failures by tracking
+/// failure rates and "opening" the circuit after a threshold is reached.
+/// When open, requests fail fast rather than attempting the operation.
+///
+/// # States
+///
+/// - **Closed**: Normal operation, all requests go through
+/// - **Open**: Failing fast, rejecting all requests immediately
+/// - **HalfOpen**: Testing recovery with limited requests
+///
+/// # State Transitions
+///
+/// - `Closed` → `Open`: After `failure_threshold` consecutive failures
+/// - `Open` → `HalfOpen`: After `timeout` duration
+/// - `HalfOpen` → `Closed`: After `success_threshold` consecutive successes
+/// - `HalfOpen` → `Open`: On any failure
+///
+/// # Example
+///
+/// ```ignore
+/// use composable_rust_runtime::CircuitBreaker;
+/// use std::time::Duration;
+///
+/// let breaker = CircuitBreaker::new()
+///     .with_failure_threshold(5)
+///     .with_timeout(Duration::from_secs(30));
+///
+/// // Check before operation
+/// breaker.check_and_call(|| async {
+///     database.query(...).await
+/// }).await?;
+/// ```
+#[derive(Debug)]
+pub struct CircuitBreaker {
+    /// Current state
+    state: Arc<AtomicU8>,
+
+    /// Consecutive failure count
+    failure_count: Arc<AtomicUsize>,
+
+    /// Success count in HalfOpen state
+    success_count: Arc<AtomicUsize>,
+
+    /// Timestamp when circuit was opened (nanoseconds since epoch)
+    opened_at: Arc<AtomicU64>,
+
+    /// Number of consecutive failures before opening circuit
+    failure_threshold: usize,
+
+    /// Duration to wait before attempting HalfOpen
+    timeout: Duration,
+
+    /// Number of consecutive successes in HalfOpen to close circuit
+    success_threshold: usize,
+}
+
+impl CircuitBreaker {
+    /// Create a new circuit breaker with default settings
+    ///
+    /// Defaults:
+    /// - failure_threshold: 5
+    /// - timeout: 60 seconds
+    /// - success_threshold: 2
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            state: Arc::new(AtomicU8::new(CircuitState::Closed as u8)),
+            failure_count: Arc::new(AtomicUsize::new(0)),
+            success_count: Arc::new(AtomicUsize::new(0)),
+            opened_at: Arc::new(AtomicU64::new(0)),
+            failure_threshold: 5,
+            timeout: Duration::from_secs(60),
+            success_threshold: 2,
+        }
+    }
+
+    /// Set the failure threshold
+    ///
+    /// Number of consecutive failures before opening the circuit.
+    #[must_use]
+    pub fn with_failure_threshold(mut self, threshold: usize) -> Self {
+        self.failure_threshold = threshold;
+        self
+    }
+
+    /// Set the timeout duration
+    ///
+    /// Duration to wait before attempting HalfOpen state.
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// Set the success threshold
+    ///
+    /// Number of consecutive successes in HalfOpen to close circuit.
+    #[must_use]
+    pub fn with_success_threshold(mut self, threshold: usize) -> Self {
+        self.success_threshold = threshold;
+        self
+    }
+
+    /// Get current circuit state
+    #[must_use]
+    pub fn state(&self) -> CircuitState {
+        match self.state.load(Ordering::Acquire) {
+            0 => CircuitState::Closed,
+            1 => CircuitState::Open,
+            2 => CircuitState::HalfOpen,
+            _ => CircuitState::Closed, // Fallback
+        }
+    }
+
+    /// Check if we should allow a request through
+    ///
+    /// Returns `Ok(())` if request should proceed, `Err` if circuit is open.
+    fn check(&self) -> Result<(), CircuitBreakerError> {
+        let current_state = self.state();
+
+        match current_state {
+            CircuitState::Closed => Ok(()),
+            CircuitState::Open => {
+                // Check if timeout has elapsed
+                let opened_at_nanos = self.opened_at.load(Ordering::Acquire);
+                let now_nanos = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or(Duration::ZERO)
+                    .as_nanos() as u64;
+
+                let elapsed = Duration::from_nanos(now_nanos.saturating_sub(opened_at_nanos));
+
+                if elapsed >= self.timeout {
+                    // Transition to HalfOpen
+                    self.state.store(CircuitState::HalfOpen as u8, Ordering::Release);
+                    self.success_count.store(0, Ordering::Release);
+
+                    metrics::counter!("circuit_breaker.state_change", "from" => "open", "to" => "half_open")
+                        .increment(1);
+                    tracing::info!("Circuit breaker transitioning from Open to HalfOpen");
+
+                    Ok(())
+                } else {
+                    Err(CircuitBreakerError::Open)
+                }
+            },
+            CircuitState::HalfOpen => Ok(()),
+        }
+    }
+
+    /// Record a successful operation
+    pub fn record_success(&self) {
+        let current_state = self.state();
+
+        match current_state {
+            CircuitState::Closed => {
+                // Reset failure count
+                self.failure_count.store(0, Ordering::Release);
+            },
+            CircuitState::HalfOpen => {
+                let successes = self.success_count.fetch_add(1, Ordering::AcqRel) + 1;
+
+                if successes >= self.success_threshold {
+                    // Close the circuit
+                    self.state.store(CircuitState::Closed as u8, Ordering::Release);
+                    self.failure_count.store(0, Ordering::Release);
+                    self.success_count.store(0, Ordering::Release);
+
+                    metrics::counter!("circuit_breaker.state_change", "from" => "half_open", "to" => "closed")
+                        .increment(1);
+                    tracing::info!("Circuit breaker transitioning from HalfOpen to Closed");
+                }
+            },
+            CircuitState::Open => {
+                // Should not happen, but ignore
+            },
+        }
+    }
+
+    /// Record a failed operation
+    pub fn record_failure(&self) {
+        let current_state = self.state();
+
+        match current_state {
+            CircuitState::Closed => {
+                let failures = self.failure_count.fetch_add(1, Ordering::AcqRel) + 1;
+
+                if failures >= self.failure_threshold {
+                    // Open the circuit
+                    self.state.store(CircuitState::Open as u8, Ordering::Release);
+
+                    let now_nanos = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or(Duration::ZERO)
+                        .as_nanos() as u64;
+                    self.opened_at.store(now_nanos, Ordering::Release);
+
+                    metrics::counter!("circuit_breaker.state_change", "from" => "closed", "to" => "open")
+                        .increment(1);
+                    tracing::warn!(
+                        failures = failures,
+                        threshold = self.failure_threshold,
+                        "Circuit breaker opening due to failures"
+                    );
+                }
+            },
+            CircuitState::HalfOpen => {
+                // Any failure in HalfOpen opens circuit immediately
+                self.state.store(CircuitState::Open as u8, Ordering::Release);
+                self.success_count.store(0, Ordering::Release);
+
+                let now_nanos = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or(Duration::ZERO)
+                    .as_nanos() as u64;
+                self.opened_at.store(now_nanos, Ordering::Release);
+
+                metrics::counter!("circuit_breaker.state_change", "from" => "half_open", "to" => "open")
+                    .increment(1);
+                tracing::warn!("Circuit breaker opening from HalfOpen due to failure");
+            },
+            CircuitState::Open => {
+                // Already open, nothing to do
+            },
+        }
+    }
+
+    /// Execute an operation with circuit breaker protection
+    ///
+    /// # Errors
+    ///
+    /// Returns `CircuitBreakerError::Open` if circuit is open.
+    /// Returns any error from the operation itself.
+    pub async fn call<F, Fut, T, E>(&self, f: F) -> Result<T, Either<CircuitBreakerError, E>>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T, E>>,
+    {
+        self.check().map_err(Either::Left)?;
+
+        match f().await {
+            Ok(result) => {
+                self.record_success();
+                Ok(result)
+            },
+            Err(error) => {
+                self.record_failure();
+                Err(Either::Right(error))
+            },
+        }
+    }
+}
+
+impl Clone for CircuitBreaker {
+    fn clone(&self) -> Self {
+        Self {
+            state: Arc::clone(&self.state),
+            failure_count: Arc::clone(&self.failure_count),
+            success_count: Arc::clone(&self.success_count),
+            opened_at: Arc::clone(&self.opened_at),
+            failure_threshold: self.failure_threshold,
+            timeout: self.timeout,
+            success_threshold: self.success_threshold,
+        }
+    }
+}
+
+impl Default for CircuitBreaker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Either type for circuit breaker results
+#[derive(Debug)]
+pub enum Either<L, R> {
+    /// Left variant (circuit breaker error)
+    Left(L),
+    /// Right variant (operation error)
+    Right(R),
+}
+
+impl<L: std::fmt::Display, R: std::fmt::Display> std::fmt::Display for Either<L, R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Either::Left(l) => write!(f, "{}", l),
+            Either::Right(r) => write!(f, "{}", r),
+        }
+    }
+}
+
+impl<L: std::error::Error, R: std::error::Error> std::error::Error for Either<L, R> {}
+
 pub use error::StoreError;
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Mutex, Weak};
 use std::time::Duration;
 use tokio::sync::watch;
@@ -2016,6 +2336,192 @@ mod tests {
             let first = delays[0];
             let has_variation = delays.iter().any(|d| d != &first);
             assert!(has_variation, "Jitter should produce variation in delays");
+        }
+    }
+
+    mod circuit_breaker_tests {
+        use super::*;
+
+        #[test]
+        fn test_circuit_breaker_initial_state() {
+            let breaker = CircuitBreaker::new();
+            assert_eq!(breaker.state(), CircuitState::Closed);
+        }
+
+        #[test]
+        fn test_circuit_breaker_opens_after_threshold() {
+            let breaker = CircuitBreaker::new().with_failure_threshold(3);
+
+            assert_eq!(breaker.state(), CircuitState::Closed);
+
+            // Record failures
+            breaker.record_failure();
+            assert_eq!(breaker.state(), CircuitState::Closed);
+
+            breaker.record_failure();
+            assert_eq!(breaker.state(), CircuitState::Closed);
+
+            breaker.record_failure();
+            assert_eq!(breaker.state(), CircuitState::Open);
+        }
+
+        #[test]
+        fn test_circuit_breaker_resets_on_success() {
+            let breaker = CircuitBreaker::new().with_failure_threshold(3);
+
+            // Record some failures
+            breaker.record_failure();
+            breaker.record_failure();
+            assert_eq!(breaker.state(), CircuitState::Closed);
+
+            // Success resets the count
+            breaker.record_success();
+
+            // Should need 3 more failures to open
+            breaker.record_failure();
+            breaker.record_failure();
+            assert_eq!(breaker.state(), CircuitState::Closed);
+
+            breaker.record_failure();
+            assert_eq!(breaker.state(), CircuitState::Open);
+        }
+
+        #[tokio::test]
+        async fn test_circuit_breaker_half_open_after_timeout() {
+            let breaker = CircuitBreaker::new()
+                .with_failure_threshold(2)
+                .with_timeout(Duration::from_millis(100));
+
+            // Open the circuit
+            breaker.record_failure();
+            breaker.record_failure();
+            assert_eq!(breaker.state(), CircuitState::Open);
+
+            // Check should fail immediately
+            assert!(breaker.check().is_err());
+
+            // Wait for timeout
+            tokio::time::sleep(Duration::from_millis(150)).await;
+
+            // Check should transition to HalfOpen
+            assert!(breaker.check().is_ok());
+            assert_eq!(breaker.state(), CircuitState::HalfOpen);
+        }
+
+        #[test]
+        fn test_circuit_breaker_closes_after_success_threshold() {
+            let breaker = CircuitBreaker::new()
+                .with_failure_threshold(2)
+                .with_success_threshold(2);
+
+            // Open the circuit
+            breaker.record_failure();
+            breaker.record_failure();
+            assert_eq!(breaker.state(), CircuitState::Open);
+
+            // Manually transition to HalfOpen for testing
+            breaker
+                .state
+                .store(CircuitState::HalfOpen as u8, Ordering::Release);
+
+            // Record successes
+            breaker.record_success();
+            assert_eq!(breaker.state(), CircuitState::HalfOpen);
+
+            breaker.record_success();
+            assert_eq!(breaker.state(), CircuitState::Closed);
+        }
+
+        #[test]
+        fn test_circuit_breaker_reopens_on_half_open_failure() {
+            let breaker = CircuitBreaker::new().with_failure_threshold(2);
+
+            // Open the circuit
+            breaker.record_failure();
+            breaker.record_failure();
+            assert_eq!(breaker.state(), CircuitState::Open);
+
+            // Manually transition to HalfOpen
+            breaker
+                .state
+                .store(CircuitState::HalfOpen as u8, Ordering::Release);
+
+            // Any failure in HalfOpen should reopen circuit
+            breaker.record_failure();
+            assert_eq!(breaker.state(), CircuitState::Open);
+        }
+
+        #[tokio::test]
+        async fn test_circuit_breaker_call_success() {
+            let breaker = CircuitBreaker::new();
+
+            let result = breaker
+                .call(|| async { Ok::<i32, String>(42) })
+                .await;
+
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), 42);
+            assert_eq!(breaker.state(), CircuitState::Closed);
+        }
+
+        #[tokio::test]
+        async fn test_circuit_breaker_call_opens_on_failures() {
+            let breaker = CircuitBreaker::new().with_failure_threshold(3);
+
+            // Fail 3 times
+            for _ in 0..3 {
+                let result = breaker
+                    .call(|| async { Err::<i32, String>("error".to_string()) })
+                    .await;
+                assert!(result.is_err());
+            }
+
+            assert_eq!(breaker.state(), CircuitState::Open);
+
+            // Next call should fail fast
+            let result = breaker
+                .call(|| async { Ok::<i32, String>(42) })
+                .await;
+
+            assert!(result.is_err());
+            assert!(matches!(result, Err(Either::Left(_))));
+        }
+
+        #[tokio::test]
+        async fn test_circuit_breaker_concurrent_access() {
+            use std::sync::Arc;
+
+            let breaker = Arc::new(CircuitBreaker::new().with_failure_threshold(5));
+
+            // Record failures concurrently
+            let mut handles = vec![];
+            for _ in 0..10 {
+                let breaker_clone = Arc::clone(&breaker);
+                handles.push(tokio::spawn(async move {
+                    breaker_clone.record_failure();
+                }));
+            }
+
+            for handle in handles {
+                handle.await.unwrap();
+            }
+
+            // Circuit should be open (10 failures, threshold is 5)
+            assert_eq!(breaker.state(), CircuitState::Open);
+        }
+
+        #[test]
+        fn test_circuit_breaker_builder() {
+            let breaker = CircuitBreaker::new()
+                .with_failure_threshold(10)
+                .with_timeout(Duration::from_secs(30))
+                .with_success_threshold(3);
+
+            // Verify by opening the circuit
+            for _ in 0..10 {
+                breaker.record_failure();
+            }
+            assert_eq!(breaker.state(), CircuitState::Open);
         }
     }
 }
