@@ -972,8 +972,8 @@ impl<A> Drop for DecrementGuard<A> {
 /// Store runtime for coordinating reducer execution and effect handling.
 pub mod store {
     use super::{
-        Arc, AtomicUsize, DecrementGuard, Effect, EffectHandle, EffectTracking, Ordering, Reducer,
-        RetryPolicy, RwLock, TrackingMode,
+        Arc, AtomicUsize, DeadLetterQueue, DecrementGuard, Effect, EffectHandle, EffectTracking,
+        Ordering, Reducer, RetryPolicy, RwLock, TrackingMode,
     };
     use tokio::sync::watch;
 
@@ -1014,6 +1014,7 @@ pub mod store {
         reducer: R,
         environment: E,
         retry_policy: RetryPolicy,
+        dlq: DeadLetterQueue<String>,
     }
 
     impl<S, A, E, R> Store<S, A, E, R>
@@ -1041,6 +1042,7 @@ pub mod store {
                 reducer,
                 environment,
                 retry_policy: RetryPolicy::default(),
+                dlq: DeadLetterQueue::default(),
             }
         }
 
@@ -1063,7 +1065,16 @@ pub mod store {
                 reducer,
                 environment,
                 retry_policy,
+                dlq: DeadLetterQueue::default(),
             }
+        }
+
+        /// Get access to the dead letter queue
+        ///
+        /// Returns a clone of the DLQ for inspecting failed operations.
+        #[must_use]
+        pub fn dlq(&self) -> DeadLetterQueue<String> {
+            self.dlq.clone()
         }
 
         /// Send an action to the store
@@ -1249,7 +1260,14 @@ pub mod store {
                     Err(error) => {
                         // Check if we should retry
                         if !self.retry_policy.should_retry(attempt + 1) {
-                            // Exhausted retries
+                            // Exhausted retries - push to DLQ
+                            let error_msg = format!("{}", error);
+                            self.dlq.push(
+                                operation_name.to_string(),
+                                error_msg.clone(),
+                                (attempt + 1) as usize,
+                            );
+
                             metrics::counter!(
                                 "store.retry.exhausted",
                                 "operation" => operation_name.to_string(),
@@ -1260,7 +1278,7 @@ pub mod store {
                                 operation = operation_name,
                                 attempt = attempt,
                                 error = %error,
-                                "Operation failed after exhausting retries"
+                                "Operation failed after exhausting retries, added to DLQ"
                             );
                             return Err(error);
                         }
@@ -1669,6 +1687,7 @@ pub mod store {
                 reducer: self.reducer.clone(),
                 environment: self.environment.clone(),
                 retry_policy: self.retry_policy.clone(),
+                dlq: self.dlq.clone(),
             }
         }
     }
