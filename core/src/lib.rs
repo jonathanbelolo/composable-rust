@@ -69,6 +69,9 @@ pub mod stream;
 // Phase 3: Event bus for cross-aggregate communication
 pub mod event_bus;
 
+// Phase 3: Reducer composition utilities
+pub mod composition;
+
 /// Action module - Unified input type for reducers (commands, events, cross-aggregate events)
 ///
 /// # Phase 1 Implementation
