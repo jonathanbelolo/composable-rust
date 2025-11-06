@@ -11,7 +11,7 @@
 #![allow(clippy::expect_used)] // Benchmarks can use expect for setup
 #![allow(dead_code)] // Benchmark data structures may have unused fields
 
-use composable_rust_core::{effect::Effect, reducer::Reducer};
+use composable_rust_core::{effect::Effect, reducer::Reducer, smallvec, SmallVec};
 use composable_rust_runtime::Store;
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use std::time::Duration;
@@ -60,25 +60,25 @@ impl Reducer for BenchReducer {
         state: &mut Self::State,
         action: Self::Action,
         _env: &Self::Environment,
-    ) -> Vec<Effect<Self::Action>> {
+    ) -> SmallVec<[Effect<Self::Action>; 4]> {
         match action {
             BenchAction::Increment => {
                 state.counter += 1;
-                vec![Effect::None]
+                smallvec![Effect::None]
             },
             BenchAction::Decrement => {
                 state.counter -= 1;
-                vec![Effect::None]
+                smallvec![Effect::None]
             },
             BenchAction::Reset => {
                 state.counter = 0;
-                vec![Effect::None]
+                smallvec![Effect::None]
             },
             BenchAction::SetValue(v) => {
                 state.counter = v;
-                vec![Effect::None]
+                smallvec![Effect::None]
             },
-            BenchAction::NoOp => vec![Effect::None],
+            BenchAction::NoOp => smallvec![Effect::None],
         }
     }
 }
@@ -162,30 +162,30 @@ fn benchmark_effect_overhead(c: &mut Criterion) {
             state: &mut Self::State,
             action: Self::Action,
             _env: &Self::Environment,
-        ) -> Vec<Effect<Self::Action>> {
+        ) -> SmallVec<[Effect<Self::Action>; 4]> {
             match action {
-                BenchAction::NoOp => vec![Effect::None],
+                BenchAction::NoOp => smallvec![Effect::None],
                 BenchAction::Increment => {
                     state.counter += 1;
-                    vec![Effect::Future(Box::pin(async { Some(BenchAction::NoOp) }))]
+                    smallvec![Effect::Future(Box::pin(async { Some(BenchAction::NoOp) }))]
                 },
                 BenchAction::Decrement => {
                     state.counter -= 1;
-                    vec![Effect::Delay {
+                    smallvec![Effect::Delay {
                         duration: Duration::from_nanos(1),
                         action: Box::new(BenchAction::NoOp),
                     }]
                 },
                 BenchAction::Reset => {
                     state.counter = 0;
-                    vec![Effect::Parallel(vec![
+                    smallvec![Effect::Parallel(vec![
                         Effect::None,
                         Effect::None,
                         Effect::None,
                     ])]
                 },
                 BenchAction::SetValue(_) => {
-                    vec![Effect::Sequential(vec![Effect::None, Effect::None])]
+                    smallvec![Effect::Sequential(vec![Effect::None, Effect::None])]
                 },
             }
         }
@@ -195,7 +195,7 @@ fn benchmark_effect_overhead(c: &mut Criterion) {
         let store = Store::new(BenchState::default(), EffectReducer, BenchEnv);
 
         b.to_async(&runtime).iter(|| async {
-            let mut handle = store.send(black_box(BenchAction::NoOp)).await;
+            let mut handle = store.send(black_box(BenchAction::NoOp)).await.expect("send failed");
             handle.wait().await;
         });
     });
@@ -204,7 +204,7 @@ fn benchmark_effect_overhead(c: &mut Criterion) {
         let store = Store::new(BenchState::default(), EffectReducer, BenchEnv);
 
         b.to_async(&runtime).iter(|| async {
-            let mut handle = store.send(black_box(BenchAction::Increment)).await;
+            let mut handle = store.send(black_box(BenchAction::Increment)).await.expect("send failed");
             handle.wait().await;
         });
     });
@@ -213,7 +213,7 @@ fn benchmark_effect_overhead(c: &mut Criterion) {
         let store = Store::new(BenchState::default(), EffectReducer, BenchEnv);
 
         b.to_async(&runtime).iter(|| async {
-            let mut handle = store.send(black_box(BenchAction::Reset)).await;
+            let mut handle = store.send(black_box(BenchAction::Reset)).await.expect("send failed");
             handle.wait().await;
         });
     });
