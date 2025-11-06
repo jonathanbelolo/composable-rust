@@ -61,6 +61,169 @@ pub mod error {
     }
 }
 
+/// Health check status levels
+///
+/// Indicates the current health state of a component or system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum HealthStatus {
+    /// Component is fully operational
+    Healthy,
+
+    /// Component is operational but experiencing issues (e.g., high DLQ size)
+    Degraded,
+
+    /// Component is not operational
+    Unhealthy,
+}
+
+impl HealthStatus {
+    /// Check if status is healthy
+    #[must_use]
+    pub const fn is_healthy(self) -> bool {
+        matches!(self, Self::Healthy)
+    }
+
+    /// Check if status is degraded
+    #[must_use]
+    pub const fn is_degraded(self) -> bool {
+        matches!(self, Self::Degraded)
+    }
+
+    /// Check if status is unhealthy
+    #[must_use]
+    pub const fn is_unhealthy(self) -> bool {
+        matches!(self, Self::Unhealthy)
+    }
+
+    /// Get the worst status between two statuses
+    #[must_use]
+    pub const fn worst(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Unhealthy, _) | (_, Self::Unhealthy) => Self::Unhealthy,
+            (Self::Degraded, _) | (_, Self::Degraded) => Self::Degraded,
+            _ => Self::Healthy,
+        }
+    }
+}
+
+impl std::fmt::Display for HealthStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Healthy => write!(f, "healthy"),
+            Self::Degraded => write!(f, "degraded"),
+            Self::Unhealthy => write!(f, "unhealthy"),
+        }
+    }
+}
+
+/// Health check result for a component
+#[derive(Debug, Clone)]
+pub struct HealthCheck {
+    /// Name of the component being checked
+    pub component: String,
+
+    /// Current health status
+    pub status: HealthStatus,
+
+    /// Optional message providing details
+    pub message: Option<String>,
+
+    /// Optional metadata (e.g., metrics, error counts)
+    pub metadata: Vec<(String, String)>,
+}
+
+impl HealthCheck {
+    /// Create a healthy check result
+    #[must_use]
+    pub fn healthy(component: impl Into<String>) -> Self {
+        Self {
+            component: component.into(),
+            status: HealthStatus::Healthy,
+            message: None,
+            metadata: Vec::new(),
+        }
+    }
+
+    /// Create a degraded check result
+    #[must_use]
+    pub fn degraded(component: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            component: component.into(),
+            status: HealthStatus::Degraded,
+            message: Some(message.into()),
+            metadata: Vec::new(),
+        }
+    }
+
+    /// Create an unhealthy check result
+    #[must_use]
+    pub fn unhealthy(component: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            component: component.into(),
+            status: HealthStatus::Unhealthy,
+            message: Some(message.into()),
+            metadata: Vec::new(),
+        }
+    }
+
+    /// Add metadata to the health check
+    #[must_use]
+    pub fn with_metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.metadata.push((key.into(), value.into()));
+        self
+    }
+}
+
+/// Aggregated health report
+///
+/// Combines multiple health checks into an overall system status.
+#[derive(Debug, Clone)]
+pub struct HealthReport {
+    /// Overall system status (worst of all checks)
+    pub status: HealthStatus,
+
+    /// Individual component checks
+    pub checks: Vec<HealthCheck>,
+
+    /// Timestamp when report was generated
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+}
+
+impl HealthReport {
+    /// Create a new health report from checks
+    #[must_use]
+    pub fn new(checks: Vec<HealthCheck>) -> Self {
+        let status = checks
+            .iter()
+            .map(|c| c.status)
+            .fold(HealthStatus::Healthy, HealthStatus::worst);
+
+        Self {
+            status,
+            checks,
+            timestamp: chrono::Utc::now(),
+        }
+    }
+
+    /// Check if overall system is healthy
+    #[must_use]
+    pub const fn is_healthy(&self) -> bool {
+        self.status.is_healthy()
+    }
+
+    /// Check if overall system is degraded
+    #[must_use]
+    pub const fn is_degraded(&self) -> bool {
+        self.status.is_degraded()
+    }
+
+    /// Check if overall system is unhealthy
+    #[must_use]
+    pub const fn is_unhealthy(&self) -> bool {
+        self.status.is_unhealthy()
+    }
+}
+
 /// Retry policy for handling transient failures
 ///
 /// Implements exponential backoff with jitter to handle transient failures
@@ -973,7 +1136,7 @@ impl<A> Drop for DecrementGuard<A> {
 pub mod store {
     use super::{
         Arc, AtomicUsize, DeadLetterQueue, DecrementGuard, Effect, EffectHandle, EffectTracking,
-        Ordering, Reducer, RetryPolicy, RwLock, TrackingMode,
+        HealthCheck, Ordering, Reducer, RetryPolicy, RwLock, TrackingMode,
     };
     use tokio::sync::watch;
 
@@ -1075,6 +1238,38 @@ pub mod store {
         #[must_use]
         pub fn dlq(&self) -> DeadLetterQueue<String> {
             self.dlq.clone()
+        }
+
+        /// Perform a health check on the Store
+        ///
+        /// Checks:
+        /// - Dead letter queue size (degraded if > 50% capacity, unhealthy if full)
+        /// - Store is operational
+        ///
+        /// Returns a `HealthCheck` with current status and metadata.
+        #[must_use]
+        pub fn health(&self) -> HealthCheck {
+            let dlq_size = self.dlq.len();
+            let dlq_capacity = self.dlq.max_size();
+            let dlq_usage = (dlq_size as f64 / dlq_capacity as f64) * 100.0;
+
+            let mut check = if dlq_size >= dlq_capacity {
+                HealthCheck::unhealthy("store", "Dead letter queue is full")
+            } else if dlq_usage > 50.0 {
+                HealthCheck::degraded(
+                    "store",
+                    format!("Dead letter queue is {}% full", dlq_usage as u32),
+                )
+            } else {
+                HealthCheck::healthy("store")
+            };
+
+            check = check
+                .with_metadata("dlq_size", dlq_size.to_string())
+                .with_metadata("dlq_capacity", dlq_capacity.to_string())
+                .with_metadata("dlq_usage_pct", format!("{:.1}", dlq_usage));
+
+            check
         }
 
         /// Send an action to the store
@@ -2925,6 +3120,153 @@ mod tests {
             let entries = dlq.drain();
             assert_eq!(entries.len(), 0);
             assert!(dlq.is_empty());
+        }
+    }
+
+    mod health_check_tests {
+        use super::*;
+
+        #[test]
+        fn test_health_status_ordering() {
+            assert!(HealthStatus::Healthy < HealthStatus::Degraded);
+            assert!(HealthStatus::Degraded < HealthStatus::Unhealthy);
+        }
+
+        #[test]
+        fn test_health_status_worst() {
+            assert_eq!(
+                HealthStatus::Healthy.worst(HealthStatus::Degraded),
+                HealthStatus::Degraded
+            );
+            assert_eq!(
+                HealthStatus::Degraded.worst(HealthStatus::Unhealthy),
+                HealthStatus::Unhealthy
+            );
+            assert_eq!(
+                HealthStatus::Healthy.worst(HealthStatus::Unhealthy),
+                HealthStatus::Unhealthy
+            );
+        }
+
+        #[test]
+        fn test_health_check_healthy() {
+            let check = HealthCheck::healthy("store");
+            assert_eq!(check.component, "store");
+            assert_eq!(check.status, HealthStatus::Healthy);
+            assert!(check.message.is_none());
+        }
+
+        #[test]
+        fn test_health_check_degraded() {
+            let check = HealthCheck::degraded("store", "High latency");
+            assert_eq!(check.component, "store");
+            assert_eq!(check.status, HealthStatus::Degraded);
+            assert_eq!(check.message, Some("High latency".to_string()));
+        }
+
+        #[test]
+        fn test_health_check_unhealthy() {
+            let check = HealthCheck::unhealthy("database", "Connection failed");
+            assert_eq!(check.component, "database");
+            assert_eq!(check.status, HealthStatus::Unhealthy);
+            assert_eq!(check.message, Some("Connection failed".to_string()));
+        }
+
+        #[test]
+        fn test_health_check_with_metadata() {
+            let check = HealthCheck::healthy("store")
+                .with_metadata("requests", "1000")
+                .with_metadata("errors", "5");
+
+            assert_eq!(check.metadata.len(), 2);
+            assert_eq!(check.metadata[0], ("requests".to_string(), "1000".to_string()));
+            assert_eq!(check.metadata[1], ("errors".to_string(), "5".to_string()));
+        }
+
+        #[test]
+        fn test_health_report_all_healthy() {
+            let checks = vec![
+                HealthCheck::healthy("store"),
+                HealthCheck::healthy("database"),
+                HealthCheck::healthy("cache"),
+            ];
+
+            let report = HealthReport::new(checks);
+            assert_eq!(report.status, HealthStatus::Healthy);
+            assert!(report.is_healthy());
+            assert!(!report.is_degraded());
+            assert!(!report.is_unhealthy());
+        }
+
+        #[test]
+        fn test_health_report_one_degraded() {
+            let checks = vec![
+                HealthCheck::healthy("store"),
+                HealthCheck::degraded("database", "Slow queries"),
+                HealthCheck::healthy("cache"),
+            ];
+
+            let report = HealthReport::new(checks);
+            assert_eq!(report.status, HealthStatus::Degraded);
+            assert!(!report.is_healthy());
+            assert!(report.is_degraded());
+        }
+
+        #[test]
+        fn test_health_report_one_unhealthy() {
+            let checks = vec![
+                HealthCheck::healthy("store"),
+                HealthCheck::degraded("database", "Slow"),
+                HealthCheck::unhealthy("cache", "Disconnected"),
+            ];
+
+            let report = HealthReport::new(checks);
+            assert_eq!(report.status, HealthStatus::Unhealthy);
+            assert!(report.is_unhealthy());
+        }
+
+        #[test]
+        fn test_store_health_empty_dlq() {
+            let store = Store::new(TestState { value: 0 }, TestReducer, TestEnv);
+
+            let health = store.health();
+            assert_eq!(health.status, HealthStatus::Healthy);
+            assert_eq!(health.component, "store");
+        }
+
+        #[test]
+        fn test_store_health_degraded_dlq() {
+            let store = Store::new(TestState { value: 0 }, TestReducer, TestEnv);
+
+            // Fill DLQ to 60% capacity (degraded threshold is 50%)
+            for i in 0..600 {
+                store.dlq().push(format!("op_{}", i), "error".to_string(), 5);
+            }
+
+            let health = store.health();
+            assert_eq!(health.status, HealthStatus::Degraded);
+            assert!(health.message.is_some());
+        }
+
+        #[test]
+        fn test_store_health_unhealthy_full_dlq() {
+            let store = Store::new(TestState { value: 0 }, TestReducer, TestEnv);
+
+            // Fill DLQ to capacity
+            for i in 0..1000 {
+                store.dlq().push(format!("op_{}", i), "error".to_string(), 5);
+            }
+
+            let health = store.health();
+            assert_eq!(health.status, HealthStatus::Unhealthy);
+            assert_eq!(health.message, Some("Dead letter queue is full".to_string()));
+        }
+
+        #[test]
+        fn test_health_status_display() {
+            assert_eq!(format!("{}", HealthStatus::Healthy), "healthy");
+            assert_eq!(format!("{}", HealthStatus::Degraded), "degraded");
+            assert_eq!(format!("{}", HealthStatus::Unhealthy), "unhealthy");
         }
     }
 }
