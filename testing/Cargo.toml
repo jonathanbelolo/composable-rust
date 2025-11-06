@@ -19,6 +19,7 @@ composable-rust-runtime = { path = "../runtime" }
 # Async
 tokio = { workspace = true }
 futures = { workspace = true }
+async-stream = "0.3"
 
 # Serialization
 serde = { workspace = true }

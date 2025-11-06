@@ -477,6 +477,217 @@ pub mod mocks {
             })
         }
     }
+
+    /// In-memory event bus for fast, deterministic unit tests.
+    ///
+    /// This implementation uses `HashMap` and tokio channels for storage and delivery,
+    /// providing the same publish/subscribe semantics as `RedpandaEventBus` but with
+    /// synchronous delivery and no network overhead.
+    ///
+    /// # Features
+    ///
+    /// - **Synchronous delivery**: Events delivered immediately when published
+    /// - **Multiple subscribers**: Each topic can have multiple concurrent subscribers
+    /// - **Test inspection**: Methods to inspect topic and subscriber counts
+    /// - **Thread-safe**: Safe to use across async tasks
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use composable_rust_testing::mocks::InMemoryEventBus;
+    /// use composable_rust_core::event_bus::EventBus;
+    /// use composable_rust_core::event::SerializedEvent;
+    /// use futures::StreamExt;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let event_bus = InMemoryEventBus::new();
+    ///
+    /// // Publish an event
+    /// let event = SerializedEvent::new(
+    ///     "OrderPlaced".to_string(),
+    ///     vec![1, 2, 3],
+    ///     None,
+    /// );
+    /// event_bus.publish("order-events", &event).await?;
+    ///
+    /// // Subscribe to events
+    /// let mut stream = event_bus.subscribe(&["order-events"]).await?;
+    /// if let Some(result) = stream.next().await {
+    ///     let received_event = result?;
+    ///     assert_eq!(received_event.event_type, "OrderPlaced");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[derive(Debug, Clone, Default)]
+    pub struct InMemoryEventBus {
+        /// Subscribers indexed by topic
+        /// Each topic has a list of channels to deliver events to
+        subscribers: Arc<
+            RwLock<
+                std::collections::HashMap<
+                    String,
+                    Vec<tokio::sync::mpsc::UnboundedSender<composable_rust_core::event::SerializedEvent>>,
+                >,
+            >,
+        >,
+    }
+
+    impl InMemoryEventBus {
+        /// Create a new empty in-memory event bus.
+        #[must_use]
+        pub fn new() -> Self {
+            Self {
+                subscribers: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            }
+        }
+
+        /// Get the number of topics that have active subscribers.
+        ///
+        /// # Panics
+        ///
+        /// Panics if the `RwLock` is poisoned.
+        #[must_use]
+        #[allow(clippy::expect_used)] // Test infrastructure, lock poison is unrecoverable
+        pub fn topic_count(&self) -> usize {
+            self.subscribers
+                .read()
+                .expect("InMemoryEventBus lock poisoned")
+                .len()
+        }
+
+        /// Get the number of active subscribers for a topic.
+        ///
+        /// Returns 0 if the topic doesn't exist or has no subscribers.
+        ///
+        /// # Panics
+        ///
+        /// Panics if the `RwLock` is poisoned.
+        #[must_use]
+        #[allow(clippy::expect_used)] // Test infrastructure, lock poison is unrecoverable
+        pub fn subscriber_count(&self, topic: &str) -> usize {
+            let subscribers = self
+                .subscribers
+                .read()
+                .expect("InMemoryEventBus lock poisoned");
+
+            subscribers.get(topic).map_or(0, Vec::len)
+        }
+
+        /// Reset the event bus by closing all subscriptions.
+        ///
+        /// Useful for test isolation when reusing an event bus instance.
+        ///
+        /// # Panics
+        ///
+        /// Panics if the `RwLock` is poisoned.
+        #[allow(clippy::expect_used)] // Test infrastructure, lock poison is unrecoverable
+        pub fn reset(&self) {
+            self.subscribers
+                .write()
+                .expect("InMemoryEventBus lock poisoned")
+                .clear();
+        }
+    }
+
+    impl composable_rust_core::event_bus::EventBus for InMemoryEventBus {
+        fn publish(
+            &self,
+            topic: &str,
+            event: &composable_rust_core::event::SerializedEvent,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<(), composable_rust_core::event_bus::EventBusError>,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            // Clone data before moving into async block
+            let topic = topic.to_string();
+            let event = event.clone();
+
+            Box::pin(async move {
+                let subscribers_lock = self.subscribers.read().map_err(|e| {
+                    composable_rust_core::event_bus::EventBusError::PublishFailed {
+                        topic: topic.clone(),
+                        reason: format!("Lock poisoned: {e}"),
+                    }
+                })?;
+
+                if let Some(topic_subscribers) = subscribers_lock.get(&topic) {
+                    // Send to all subscribers (at-least-once semantics)
+                    for sender in topic_subscribers {
+                        // Ignore send errors - subscriber might have dropped
+                        // This mirrors real event bus behavior where subscribers can disconnect
+                        let _ = sender.send(event.clone());
+                    }
+                }
+
+                Ok(())
+            })
+        }
+
+        fn subscribe(
+            &self,
+            topics: &[&str],
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            composable_rust_core::event_bus::EventStream,
+                            composable_rust_core::event_bus::EventBusError,
+                        >,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            // Clone topics before moving into async block
+            let topics: Vec<String> = topics.iter().map(|s| (*s).to_string()).collect();
+
+            Box::pin(async move {
+                // Create a channel for this subscription
+                let (tx, mut rx) =
+                    tokio::sync::mpsc::unbounded_channel::<composable_rust_core::event::SerializedEvent>();
+
+                // Register this subscriber for all requested topics
+                {
+                    let mut subscribers = self.subscribers.write().map_err(|e| {
+                        composable_rust_core::event_bus::EventBusError::SubscriptionFailed {
+                            topics: topics.clone(),
+                            reason: format!("Lock poisoned: {e}"),
+                        }
+                    })?;
+
+                    for topic in &topics {
+                        subscribers
+                            .entry(topic.clone())
+                            .or_default()
+                            .push(tx.clone());
+                    }
+                }
+
+                // Create a stream from the receiver
+                let stream = async_stream::stream! {
+                    while let Some(event) = rx.recv().await {
+                        yield Ok(event);
+                    }
+                };
+
+                Ok(Box::pin(stream)
+                    as std::pin::Pin<
+                        Box<
+                            dyn futures::Stream<
+                                    Item = Result<
+                                        composable_rust_core::event::SerializedEvent,
+                                        composable_rust_core::event_bus::EventBusError,
+                                    >,
+                                > + Send,
+                        >,
+                    >)
+            })
+        }
+    }
 }
 
 /// Test helpers and utilities

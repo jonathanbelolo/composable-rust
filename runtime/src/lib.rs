@@ -762,6 +762,56 @@ pub mod store {
                         }
                     });
                 },
+                Effect::PublishEvent(op) => {
+                    use composable_rust_core::effect::EventBusOperation;
+
+                    tracing::trace!("Executing Effect::PublishEvent");
+                    tracking.increment();
+                    let tracking_clone = tracking.clone();
+                    let store = self.clone();
+
+                    tokio::spawn(async move {
+                        let _guard = DecrementGuard(tracking_clone.clone());
+
+                        let action = match op {
+                            EventBusOperation::Publish {
+                                event_bus,
+                                topic,
+                                event,
+                                on_success,
+                                on_error,
+                            } => {
+                                tracing::debug!(
+                                    topic = %topic,
+                                    event_type = %event.event_type,
+                                    "Executing publish"
+                                );
+                                match event_bus.publish(&topic, &event).await {
+                                    Ok(()) => {
+                                        tracing::debug!(topic = %topic, "publish succeeded");
+                                        on_success(())
+                                    },
+                                    Err(error) => {
+                                        tracing::warn!(
+                                            topic = %topic,
+                                            error = %error,
+                                            "publish failed"
+                                        );
+                                        on_error(error)
+                                    },
+                                }
+                            },
+                        };
+
+                        // Send action back to store if callback produced one
+                        if let Some(action) = action {
+                            tracing::trace!("PublishEvent operation produced an action, sending to store");
+                            let _ = store.send(action).await;
+                        } else {
+                            tracing::trace!("PublishEvent operation completed with no action");
+                        }
+                    });
+                },
             }
         }
     }
