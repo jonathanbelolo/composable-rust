@@ -450,7 +450,7 @@ impl<A> Drop for DecrementGuard<A> {
 pub mod store {
     use super::{
         Arc, AtomicUsize, DecrementGuard, Effect, EffectHandle, EffectTracking, Ordering, Reducer,
-        RwLock, TrackingMode,
+        RetryPolicy, RwLock, TrackingMode,
     };
     use tokio::sync::watch;
 
@@ -490,6 +490,7 @@ pub mod store {
         state: Arc<RwLock<S>>,
         reducer: R,
         environment: E,
+        retry_policy: RetryPolicy,
     }
 
     impl<S, A, E, R> Store<S, A, E, R>
@@ -516,6 +517,29 @@ pub mod store {
                 state: Arc::new(RwLock::new(initial_state)),
                 reducer,
                 environment,
+                retry_policy: RetryPolicy::default(),
+            }
+        }
+
+        /// Create a new Store with a custom retry policy
+        ///
+        /// # Arguments
+        ///
+        /// - `initial_state`: Initial state value
+        /// - `reducer`: The reducer function
+        /// - `environment`: Dependencies injected into the reducer
+        /// - `retry_policy`: Policy for retrying failed effects
+        pub fn with_retry_policy(
+            initial_state: S,
+            reducer: R,
+            environment: E,
+            retry_policy: RetryPolicy,
+        ) -> Self {
+            Self {
+                state: Arc::new(RwLock::new(initial_state)),
+                reducer,
+                environment,
+                retry_policy,
             }
         }
 
@@ -657,6 +681,88 @@ pub mod store {
         {
             let state = self.state.read().await;
             f(&*state)
+        }
+
+        /// Retry an async operation according to the retry policy
+        ///
+        /// This wraps an async operation with exponential backoff retry logic.
+        /// Metrics are recorded for retry attempts.
+        ///
+        /// # Arguments
+        ///
+        /// - `operation_name`: Name for logging/metrics (e.g., "append_events")
+        /// - `f`: Async function to execute (will be called multiple times on failure)
+        ///
+        /// # Returns
+        ///
+        /// Result from the operation, or the last error if all retries exhausted
+        async fn retry_operation<F, Fut, T, Err>(&self, operation_name: &str, mut f: F) -> Result<T, Err>
+        where
+            F: FnMut() -> Fut,
+            Fut: std::future::Future<Output = Result<T, Err>>,
+            Err: std::fmt::Display,
+        {
+            let mut attempt = 0;
+
+            loop {
+                match f().await {
+                    Ok(result) => {
+                        // Success! Record metrics if this was a retry
+                        if attempt > 0 {
+                            metrics::counter!(
+                                "store.retry.success",
+                                "operation" => operation_name.to_string(),
+                                "attempts" => attempt.to_string()
+                            )
+                            .increment(1);
+                            tracing::info!(
+                                operation = operation_name,
+                                attempt = attempt,
+                                "Operation succeeded after retry"
+                            );
+                        }
+                        return Ok(result);
+                    }
+                    Err(error) => {
+                        // Check if we should retry
+                        if !self.retry_policy.should_retry(attempt + 1) {
+                            // Exhausted retries
+                            metrics::counter!(
+                                "store.retry.exhausted",
+                                "operation" => operation_name.to_string(),
+                                "attempts" => attempt.to_string()
+                            )
+                            .increment(1);
+                            tracing::error!(
+                                operation = operation_name,
+                                attempt = attempt,
+                                error = %error,
+                                "Operation failed after exhausting retries"
+                            );
+                            return Err(error);
+                        }
+
+                        // Calculate delay and retry
+                        let delay = self.retry_policy.delay_for_attempt(attempt);
+                        metrics::counter!(
+                            "store.retry.attempt",
+                            "operation" => operation_name.to_string(),
+                            "attempt" => attempt.to_string()
+                        )
+                        .increment(1);
+                        tracing::warn!(
+                            operation = operation_name,
+                            attempt = attempt,
+                            delay_ms = delay.as_millis(),
+                            error = %error,
+                            "Operation failed, retrying after delay"
+                        );
+
+                        tokio::time::sleep(delay).await;
+                        attempt += 1;
+                    }
+                }
+            }
         }
 
         /// Execute an effect with tracking
@@ -812,10 +918,21 @@ pub mod store {
                                     event_count = events.len(),
                                     "Executing append_events"
                                 );
-                                match event_store
-                                    .append_events(stream_id, expected_version, events)
-                                    .await
-                                {
+
+                                // Wrap with retry logic
+                                let stream_id_clone = stream_id.clone();
+                                let result = store.retry_operation("append_events", || {
+                                    let event_store_clone = event_store.clone();
+                                    let stream_id_clone = stream_id_clone.clone();
+                                    let events_clone = events.clone();
+                                    async move {
+                                        event_store_clone
+                                            .append_events(stream_id_clone, expected_version, events_clone)
+                                            .await
+                                    }
+                                }).await;
+
+                                match result {
                                     Ok(version) => {
                                         tracing::debug!(new_version = ?version, "append_events succeeded");
                                         on_success(version)
@@ -838,7 +955,18 @@ pub mod store {
                                     from_version = ?from_version,
                                     "Executing load_events"
                                 );
-                                match event_store.load_events(stream_id, from_version).await {
+
+                                // Wrap with retry logic
+                                let stream_id_clone = stream_id.clone();
+                                let result = store.retry_operation("load_events", || {
+                                    let event_store_clone = event_store.clone();
+                                    let stream_id_clone = stream_id_clone.clone();
+                                    async move {
+                                        event_store_clone.load_events(stream_id_clone, from_version).await
+                                    }
+                                }).await;
+
+                                match result {
                                     Ok(events) => {
                                         tracing::debug!(
                                             event_count = events.len(),
@@ -866,7 +994,22 @@ pub mod store {
                                     state_size = state.len(),
                                     "Executing save_snapshot"
                                 );
-                                match event_store.save_snapshot(stream_id, version, state).await {
+
+                                // Wrap with retry logic
+                                let stream_id_clone = stream_id.clone();
+                                let state_clone = state.clone();
+                                let result = store.retry_operation("save_snapshot", || {
+                                    let event_store_clone = event_store.clone();
+                                    let stream_id_clone = stream_id_clone.clone();
+                                    let state_clone = state_clone.clone();
+                                    async move {
+                                        event_store_clone
+                                            .save_snapshot(stream_id_clone, version, state_clone)
+                                            .await
+                                    }
+                                }).await;
+
+                                match result {
                                     Ok(()) => {
                                         tracing::debug!("save_snapshot succeeded");
                                         on_success(())
@@ -884,7 +1027,18 @@ pub mod store {
                                 on_error,
                             } => {
                                 tracing::debug!(stream_id = %stream_id, "Executing load_snapshot");
-                                match event_store.load_snapshot(stream_id).await {
+
+                                // Wrap with retry logic
+                                let stream_id_clone = stream_id.clone();
+                                let result = store.retry_operation("load_snapshot", || {
+                                    let event_store_clone = event_store.clone();
+                                    let stream_id_clone = stream_id_clone.clone();
+                                    async move {
+                                        event_store_clone.load_snapshot(stream_id_clone).await
+                                    }
+                                }).await;
+
+                                match result {
                                     Ok(snapshot) => {
                                         tracing::debug!(
                                             has_snapshot = snapshot.is_some(),
@@ -936,7 +1090,20 @@ pub mod store {
                                     event_type = %event.event_type,
                                     "Executing publish"
                                 );
-                                match event_bus.publish(&topic, &event).await {
+
+                                // Wrap with retry logic
+                                let topic_clone = topic.clone();
+                                let event_clone = event.clone();
+                                let result = store.retry_operation("publish", || {
+                                    let event_bus_clone = event_bus.clone();
+                                    let topic_clone = topic_clone.clone();
+                                    let event_clone = event_clone.clone();
+                                    async move {
+                                        event_bus_clone.publish(&topic_clone, &event_clone).await
+                                    }
+                                }).await;
+
+                                match result {
                                     Ok(()) => {
                                         tracing::debug!(topic = %topic, "publish succeeded");
                                         on_success(())
@@ -978,6 +1145,7 @@ pub mod store {
                 state: Arc::clone(&self.state),
                 reducer: self.reducer.clone(),
                 environment: self.environment.clone(),
+                retry_policy: self.retry_policy.clone(),
             }
         }
     }
