@@ -453,6 +453,9 @@ impl EventBus for RedpandaEventBus {
         let timeout = self.timeout;
 
         Box::pin(async move {
+            // Metrics: Start timing
+            let start = std::time::Instant::now();
+
             // Serialize event using bincode
             let payload = bincode::serialize(&event).map_err(|e| EventBusError::PublishFailed {
                 topic: topic.clone(),
@@ -469,6 +472,11 @@ impl EventBus for RedpandaEventBus {
             // Send the message
             let send_result = self.producer.send(record, Timeout::After(timeout)).await;
 
+            // Metrics: Record duration
+            let duration = start.elapsed();
+            metrics::histogram!("event_bus.publish.duration_seconds")
+                .record(duration.as_secs_f64());
+
             match send_result {
                 Ok((partition, offset)) => {
                     tracing::debug!(
@@ -478,6 +486,8 @@ impl EventBus for RedpandaEventBus {
                         event_type = %event.event_type,
                         "Event published successfully"
                     );
+                    // Metrics: Record success
+                    metrics::counter!("event_bus.publish.total", "result" => "success", "topic" => topic.clone()).increment(1);
                     Ok(())
                 },
                 Err((kafka_error, _)) => {
@@ -486,6 +496,8 @@ impl EventBus for RedpandaEventBus {
                         error = %kafka_error,
                         "Failed to publish event"
                     );
+                    // Metrics: Record failure
+                    metrics::counter!("event_bus.publish.total", "result" => "error", "topic" => topic.clone()).increment(1);
                     Err(EventBusError::PublishFailed {
                         topic,
                         reason: kafka_error.to_string(),
@@ -598,11 +610,17 @@ impl EventBus for RedpandaEventBus {
                                             event_type = %event.event_type,
                                             "Received event"
                                         );
+                                        // Metrics: Record received event
+                                        metrics::counter!("event_bus.subscribe.events_received", "topic" => message.topic().to_string()).increment(1);
                                         Ok(event)
                                     },
-                                    Err(e) => Err(EventBusError::DeserializationFailed(format!(
-                                        "Failed to deserialize event: {e}"
-                                    ))),
+                                    Err(e) => {
+                                        // Metrics: Record deserialization error
+                                        metrics::counter!("event_bus.subscribe.deserialization_errors", "topic" => message.topic().to_string()).increment(1);
+                                        Err(EventBusError::DeserializationFailed(format!(
+                                            "Failed to deserialize event: {e}"
+                                        )))
+                                    },
                                 }
                             };
 

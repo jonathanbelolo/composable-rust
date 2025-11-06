@@ -141,6 +141,9 @@ impl EventStore for PostgresEventStore {
         Box<dyn std::future::Future<Output = Result<Version, EventStoreError>> + Send + '_>,
     > {
         Box::pin(async move {
+            // Metrics: Start timing
+            let start = std::time::Instant::now();
+
             if events.is_empty() {
                 return Err(EventStoreError::DatabaseError(
                     "Cannot append empty event list".to_string(),
@@ -153,6 +156,9 @@ impl EventStore for PostgresEventStore {
                 event_count = events.len(),
                 "Appending events to stream"
             );
+
+            // Metrics: Record event count
+            metrics::histogram!("event_store.append.event_count").record(events.len() as f64);
 
             // Start transaction for atomicity
             let mut tx = self
@@ -275,6 +281,12 @@ impl EventStore for PostgresEventStore {
                 "Successfully appended events"
             );
 
+            // Metrics: Record success and duration
+            let duration = start.elapsed();
+            metrics::histogram!("event_store.append.duration_seconds")
+                .record(duration.as_secs_f64());
+            metrics::counter!("event_store.append.total", "result" => "success").increment(1);
+
             // Return the final version (last event inserted)
             Ok(next_version - 1)
         })
@@ -292,6 +304,9 @@ impl EventStore for PostgresEventStore {
         >,
     > {
         Box::pin(async move {
+            // Metrics: Start timing
+            let start = std::time::Instant::now();
+
             tracing::debug!(
                 stream_id = %stream_id,
                 from_version = ?from_version,
@@ -344,6 +359,14 @@ impl EventStore for PostgresEventStore {
                 event_count = event_vec.len(),
                 "Loaded events from stream"
             );
+
+            // Metrics: Record success, duration, and event count
+            let duration = start.elapsed();
+            metrics::histogram!("event_store.load.duration_seconds")
+                .record(duration.as_secs_f64());
+            metrics::histogram!("event_store.load.event_count")
+                .record(event_vec.len() as f64);
+            metrics::counter!("event_store.load.total", "result" => "success").increment(1);
 
             Ok(event_vec)
         })

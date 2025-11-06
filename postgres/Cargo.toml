@@ -13,6 +13,7 @@ sqlx = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+metrics = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
