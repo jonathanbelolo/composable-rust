@@ -44,6 +44,19 @@
 //! └───────┘ └───────┘
 //! ```
 //!
+//! # Delivery Semantics
+//!
+//! **At-least-once delivery** with manual offset commits:
+//! - Events are committed AFTER successful delivery to the subscriber's channel
+//! - If the process crashes before commit, events will be redelivered
+//! - Subscribers MUST be idempotent (use correlation IDs to detect duplicates)
+//! - Ordering is guaranteed within the same partition (same event type)
+//!
+//! **Configuration options**:
+//! - `consumer_group`: Explicit consumer group for load balancing
+//! - `buffer_size`: Event buffer (default: 1000) for handling bursts
+//! - `auto_offset_reset`: Where to start reading (default: "latest")
+//!
 //! # Example
 //!
 //! ```no_run
@@ -103,9 +116,11 @@ use std::time::Duration;
 /// # Configuration
 ///
 /// The event bus can be configured with:
-/// - Broker addresses (bootstrap servers)
-/// - Producer settings (acks, compression, batching)
-/// - Consumer settings (consumer group ID, offset reset strategy)
+/// - **Broker addresses**: Bootstrap servers (required)
+/// - **Producer settings**: Acks, compression, timeout
+/// - **Consumer group**: Explicit ID or auto-generated from topics
+/// - **Buffer size**: Event buffer capacity (default: 1000)
+/// - **Offset reset**: Where new groups start reading (default: "latest")
 ///
 /// # Performance
 ///
@@ -139,6 +154,12 @@ pub struct RedpandaEventBus {
     brokers: String,
     /// Producer timeout
     timeout: Duration,
+    /// Consumer group ID (if explicitly set)
+    consumer_group: Option<String>,
+    /// Event buffer size for subscribers
+    buffer_size: usize,
+    /// Auto offset reset policy
+    auto_offset_reset: String,
 }
 
 impl RedpandaEventBus {
@@ -224,6 +245,9 @@ pub struct RedpandaEventBusBuilder {
     producer_acks: Option<String>,
     compression: Option<String>,
     timeout: Option<Duration>,
+    consumer_group: Option<String>,
+    buffer_size: Option<usize>,
+    auto_offset_reset: Option<String>,
 }
 
 impl RedpandaEventBusBuilder {
@@ -273,6 +297,99 @@ impl RedpandaEventBusBuilder {
         self
     }
 
+    /// Set the consumer group ID for subscriptions.
+    ///
+    /// If not set, the consumer group will be auto-generated based on subscribed topics.
+    /// Setting an explicit consumer group ID allows multiple instances of your service
+    /// to share the workload (consumer group semantics).
+    ///
+    /// # Parameters
+    ///
+    /// - `consumer_group`: The consumer group ID (e.g., "my-service-orders")
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use composable_rust_redpanda::RedpandaEventBus;
+    ///
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let event_bus = RedpandaEventBus::builder()
+    ///     .brokers("localhost:9092")
+    ///     .consumer_group("payment-saga-coordinator")
+    ///     .build()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn consumer_group(mut self, consumer_group: impl Into<String>) -> Self {
+        self.consumer_group = Some(consumer_group.into());
+        self
+    }
+
+    /// Set the event buffer size for subscriptions.
+    ///
+    /// This controls how many events can be buffered in memory between the Kafka
+    /// consumer and the subscriber. Larger buffers provide more tolerance for
+    /// temporary processing slowdowns, but use more memory.
+    ///
+    /// # Parameters
+    ///
+    /// - `buffer_size`: Number of events to buffer (default: 1000)
+    ///
+    /// # Panics
+    ///
+    /// Panics if `buffer_size` is 0.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use composable_rust_redpanda::RedpandaEventBus;
+    ///
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let event_bus = RedpandaEventBus::builder()
+    ///     .brokers("localhost:9092")
+    ///     .buffer_size(5000)  // Large buffer for high-throughput
+    ///     .build()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn buffer_size(mut self, buffer_size: usize) -> Self {
+        assert!(buffer_size > 0, "buffer_size must be greater than 0");
+        self.buffer_size = Some(buffer_size);
+        self
+    }
+
+    /// Set the auto offset reset policy for new consumer groups.
+    ///
+    /// Controls where new consumer groups start reading when no committed offset exists:
+    /// - `"earliest"`: Start from the beginning of the topic
+    /// - `"latest"`: Start from the end (only new events)
+    /// - `"error"`: Throw error if no offset exists
+    ///
+    /// # Parameters
+    ///
+    /// - `policy`: The offset reset policy (default: "latest")
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use composable_rust_redpanda::RedpandaEventBus;
+    ///
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let event_bus = RedpandaEventBus::builder()
+    ///     .brokers("localhost:9092")
+    ///     .auto_offset_reset("earliest")  // Process historical events
+    ///     .build()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn auto_offset_reset(mut self, policy: impl Into<String>) -> Self {
+        self.auto_offset_reset = Some(policy.into());
+        self
+    }
+
     /// Build the [`RedpandaEventBus`].
     ///
     /// # Errors
@@ -303,6 +420,8 @@ impl RedpandaEventBusBuilder {
             brokers = %brokers,
             acks = self.producer_acks.as_deref().unwrap_or("1"),
             compression = self.compression.as_deref().unwrap_or("none"),
+            buffer_size = self.buffer_size.unwrap_or(1000),
+            auto_offset_reset = self.auto_offset_reset.as_deref().unwrap_or("latest"),
             "RedpandaEventBus created successfully"
         );
 
@@ -310,6 +429,9 @@ impl RedpandaEventBusBuilder {
             producer,
             brokers,
             timeout: self.timeout.unwrap_or(Duration::from_secs(5)),
+            consumer_group: self.consumer_group,
+            buffer_size: self.buffer_size.unwrap_or(1000),
+            auto_offset_reset: self.auto_offset_reset.unwrap_or_else(|| "latest".to_string()),
         })
     }
 }
@@ -375,25 +497,36 @@ impl EventBus for RedpandaEventBus {
         })
     }
 
+    #[allow(clippy::too_many_lines)] // Complexity required for at-least-once delivery with manual commits
     fn subscribe(
         &self,
         topics: &[&str],
     ) -> Pin<Box<dyn Future<Output = Result<EventStream, EventBusError>> + Send + '_>> {
-        // Clone topics and brokers before moving into async block
+        // Clone configuration before moving into async block
         let topics: Vec<String> = topics.iter().map(|s| (*s).to_string()).collect();
         let brokers = self.brokers.clone();
+        let consumer_group = self.consumer_group.clone();
+        let buffer_size = self.buffer_size;
+        let auto_offset_reset = self.auto_offset_reset.clone();
 
         Box::pin(async move {
-            // Generate a consumer group ID based on the topics
-            // In production, this should be configurable per subscriber
-            let consumer_group_id = format!("composable-rust-{}", topics.join("-"));
+            // Determine consumer group ID
+            // If explicitly set, use it; otherwise generate from sorted topics
+            let consumer_group_id = if let Some(group) = consumer_group {
+                group
+            } else {
+                // Sort topics for deterministic consumer group naming
+                let mut sorted_topics = topics.clone();
+                sorted_topics.sort();
+                format!("composable-rust-{}", sorted_topics.join("-"))
+            };
 
-            // Create consumer configuration
+            // Create consumer configuration with manual commit for at-least-once delivery
             let consumer: StreamConsumer = ClientConfig::new()
                 .set("bootstrap.servers", &brokers)
                 .set("group.id", &consumer_group_id)
-                .set("enable.auto.commit", "true")
-                .set("auto.offset.reset", "earliest")
+                .set("enable.auto.commit", "false")  // Manual commit for at-least-once
+                .set("auto.offset.reset", &auto_offset_reset)
                 .set("session.timeout.ms", "6000")
                 .set("enable.partition.eof", "false")
                 .create()
@@ -414,60 +547,98 @@ impl EventBus for RedpandaEventBus {
             tracing::info!(
                 topics = ?topics,
                 consumer_group = %consumer_group_id,
+                buffer_size = buffer_size,
+                auto_offset_reset = %auto_offset_reset,
+                manual_commit = true,
                 "Subscribed to topics"
             );
 
             // Create a channel for forwarding messages
-            // Use bounded channel with reasonable buffer size
-            let (tx, rx) = tokio::sync::mpsc::channel(100);
+            // Buffer size is configurable to handle bursts and slow subscribers
+            let (tx, rx) = tokio::sync::mpsc::channel(buffer_size);
 
             // Spawn a task that owns the consumer and forwards messages
             tokio::spawn(async move {
                 use futures::StreamExt;
+                use rdkafka::consumer::CommitMode;
 
                 let mut stream = consumer.stream();
 
                 while let Some(msg_result) = stream.next().await {
-                    let event_result = match msg_result {
+                    match msg_result {
                         Ok(message) => {
-                            // Get payload
-                            let Some(payload) = message.payload() else {
-                                let err = EventBusError::DeserializationFailed(
-                                    "Message has no payload".to_string(),
-                                );
-                                if tx.send(Err(err)).await.is_err() {
-                                    break; // Receiver dropped
+                            // Process the message
+                            let event_result = {
+                                // Get payload
+                                let Some(payload) = message.payload() else {
+                                    // No payload - send error but continue
+                                    let err = EventBusError::DeserializationFailed(
+                                        "Message has no payload".to_string(),
+                                    );
+                                    if tx.send(Err(err)).await.is_err() {
+                                        break; // Receiver dropped
+                                    }
+                                    // Commit even failed messages to avoid reprocessing
+                                    if let Err(e) = consumer.commit_message(&message, CommitMode::Async) {
+                                        tracing::warn!(
+                                            error = %e,
+                                            "Failed to commit message with no payload"
+                                        );
+                                    }
+                                    continue;
+                                };
+
+                                // Deserialize event
+                                match bincode::deserialize::<SerializedEvent>(payload) {
+                                    Ok(event) => {
+                                        tracing::trace!(
+                                            topic = message.topic(),
+                                            partition = message.partition(),
+                                            offset = message.offset(),
+                                            event_type = %event.event_type,
+                                            "Received event"
+                                        );
+                                        Ok(event)
+                                    },
+                                    Err(e) => {
+                                        Err(EventBusError::DeserializationFailed(format!(
+                                            "Failed to deserialize event: {e}"
+                                        )))
+                                    },
                                 }
-                                continue;
                             };
 
-                            // Deserialize event
-                            match bincode::deserialize::<SerializedEvent>(payload) {
-                                Ok(event) => {
-                                    tracing::trace!(
-                                        topic = message.topic(),
-                                        partition = message.partition(),
-                                        offset = message.offset(),
-                                        event_type = %event.event_type,
-                                        "Received event"
-                                    );
-                                    Ok(event)
-                                },
-                                Err(e) => {
-                                    Err(EventBusError::DeserializationFailed(format!(
-                                        "Failed to deserialize event: {e}"
-                                    )))
-                                },
+                            // Forward to channel
+                            // CRITICAL: Only commit AFTER successful send to channel
+                            if tx.send(event_result).await.is_err() {
+                                tracing::debug!("Channel receiver dropped, exiting consumer task");
+                                break; // Receiver dropped, exit WITHOUT committing
+                            }
+
+                            // Commit offset AFTER successful delivery to channel
+                            // This provides at-least-once semantics: if we crash before commit,
+                            // the message will be redelivered
+                            if let Err(e) = consumer.commit_message(&message, CommitMode::Async) {
+                                tracing::warn!(
+                                    topic = message.topic(),
+                                    partition = message.partition(),
+                                    offset = message.offset(),
+                                    error = %e,
+                                    "Failed to commit offset (message may be redelivered)"
+                                );
+                                // Don't break - continue processing even if commit fails
+                                // This is safer than stopping, though may cause duplicates
                             }
                         },
-                        Err(e) => Err(EventBusError::TransportError(format!(
-                            "Failed to receive message: {e}"
-                        ))),
-                    };
-
-                    // Forward to channel
-                    if tx.send(event_result).await.is_err() {
-                        break; // Receiver dropped, exit task
+                        Err(e) => {
+                            // Kafka error - send to stream and continue
+                            let err = EventBusError::TransportError(format!(
+                                "Failed to receive message: {e}"
+                            ));
+                            if tx.send(Err(err)).await.is_err() {
+                                break; // Receiver dropped
+                            }
+                        },
                     }
                 }
 
