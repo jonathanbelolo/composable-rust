@@ -24,7 +24,7 @@
 #![warn(missing_docs)]
 
 use composable_rust_core::event::SerializedEvent;
-use composable_rust_core::event_store::{EventStore, EventStoreError};
+use composable_rust_core::event_store::{BatchAppend, EventStore, EventStoreError};
 use composable_rust_core::stream::{StreamId, Version};
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -466,6 +466,204 @@ impl EventStore for PostgresEventStore {
                 Ok(None)
             }
         })
+    }
+
+    fn append_batch(
+        &self,
+        batch: Vec<BatchAppend>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<Result<Version, EventStoreError>>, EventStoreError>> + Send + '_>,
+    > {
+        Box::pin(async move {
+            if batch.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            tracing::debug!(batch_size = batch.len(), "Executing batch append");
+            metrics::histogram!("event_store.batch.size").record(batch.len() as f64);
+
+            let start = std::time::Instant::now();
+
+            // Start transaction
+            let mut tx = self
+                .pool
+                .begin()
+                .await
+                .map_err(|e| EventStoreError::DatabaseError(format!("Failed to begin transaction: {e}")))?;
+
+            let mut results = Vec::with_capacity(batch.len());
+
+            // Phase 1: Validate all streams and prepare events for bulk insert
+            struct ValidatedEvent {
+                stream_id: String,
+                version: i64,
+                event: SerializedEvent,
+            }
+
+            let mut validated_events: Vec<ValidatedEvent> = Vec::new();
+
+            for operation in batch {
+                // Validate empty events list
+                if operation.events.is_empty() {
+                    results.push(Err(EventStoreError::DatabaseError(
+                        "Cannot append empty event list".to_string(),
+                    )));
+                    continue;
+                }
+
+                // Get current version for this stream
+                let current_version_row = sqlx::query(
+                    "SELECT COALESCE(MAX(version), 0) as current_version
+                     FROM events
+                     WHERE stream_id = $1",
+                )
+                .bind(operation.stream_id.as_str())
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| EventStoreError::DatabaseError(format!("Failed to get current version: {e}")))?;
+
+                let current_version_i64: i64 = current_version_row.get("current_version");
+                let current_version = u64::try_from(current_version_i64)
+                    .map_err(|e| EventStoreError::DatabaseError(format!("Invalid version: {e}")))?;
+
+                // Check optimistic concurrency
+                if let Some(expected) = operation.expected_version {
+                    if current_version != expected.value() {
+                        results.push(Err(EventStoreError::ConcurrencyConflict {
+                            stream_id: operation.stream_id,
+                            expected,
+                            actual: Version::new(current_version),
+                        }));
+                        continue;
+                    }
+                }
+
+                // Validation passed - prepare events with correct versions
+                let mut next_version = current_version;
+                for event in operation.events {
+                    next_version += 1;
+                    let version_i64 = i64::try_from(next_version)
+                        .map_err(|e| EventStoreError::DatabaseError(format!("Version overflow: {e}")))?;
+
+                    validated_events.push(ValidatedEvent {
+                        stream_id: operation.stream_id.as_str().to_string(),
+                        version: version_i64,
+                        event,
+                    });
+                }
+
+                // Record success for this operation
+                results.push(Ok(Version::new(next_version)));
+            }
+
+            // Phase 2: Bulk insert all validated events in a single query
+            if !validated_events.is_empty() {
+                let event_count = validated_events.len();
+
+                let mut query_builder = sqlx::QueryBuilder::new(
+                    "INSERT INTO events (stream_id, version, event_type, event_data, metadata, created_at) "
+                );
+
+                query_builder.push_values(validated_events, |mut b, validated_event| {
+                    b.push_bind(validated_event.stream_id)
+                        .push_bind(validated_event.version)
+                        .push_bind(validated_event.event.event_type)
+                        .push_bind(validated_event.event.data)
+                        .push_bind(validated_event.event.metadata)
+                        .push("now()");
+                });
+
+                let query = query_builder.build();
+                query.execute(&mut *tx)
+                    .await
+                    .map_err(|e| EventStoreError::DatabaseError(format!("Failed to bulk insert events: {e}")))?;
+
+                tracing::debug!(event_count, "Bulk inserted events");
+            }
+
+            // Commit transaction
+            tx.commit()
+                .await
+                .map_err(|e| EventStoreError::DatabaseError(format!("Failed to commit batch: {e}")))?;
+
+            let duration = start.elapsed();
+            metrics::histogram!("event_store.batch.duration").record(duration.as_secs_f64());
+
+            tracing::debug!(
+                batch_size = results.len(),
+                duration_ms = duration.as_millis(),
+                "Batch append completed"
+            );
+
+            Ok(results)
+        })
+    }
+}
+
+impl PostgresEventStore {
+    /// Internal helper: append events within an existing transaction
+    async fn append_events_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        stream_id: StreamId,
+        expected_version: Option<Version>,
+        events: Vec<SerializedEvent>,
+    ) -> Result<Version, EventStoreError> {
+        if events.is_empty() {
+            return Err(EventStoreError::DatabaseError(
+                "Cannot append empty event list".to_string(),
+            ));
+        }
+
+        // Get current version
+        let current_version_row = sqlx::query(
+            "SELECT COALESCE(MAX(version), 0) as current_version
+             FROM events
+             WHERE stream_id = $1",
+        )
+        .bind(stream_id.as_str())
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| EventStoreError::DatabaseError(format!("Failed to get current version: {e}")))?;
+
+        let current_version_i64: i64 = current_version_row.get("current_version");
+        let current_version = u64::try_from(current_version_i64)
+            .map_err(|e| EventStoreError::DatabaseError(format!("Invalid version: {e}")))?;
+
+        // Check optimistic concurrency
+        if let Some(expected) = expected_version {
+            if current_version != expected.value() {
+                return Err(EventStoreError::ConcurrencyConflict {
+                    stream_id,
+                    expected,
+                    actual: Version::new(current_version),
+                });
+            }
+        }
+
+        // Insert events
+        let mut new_version = current_version;
+        for event in events {
+            new_version += 1;
+
+            let version_i64 = i64::try_from(new_version)
+                .map_err(|e| EventStoreError::DatabaseError(format!("Version overflow: {e}")))?;
+
+            sqlx::query(
+                "INSERT INTO events (stream_id, version, event_type, event_data, metadata, created_at)
+                 VALUES ($1, $2, $3, $4, $5, now())",
+            )
+            .bind(stream_id.as_str())
+            .bind(version_i64)
+            .bind(&event.event_type)
+            .bind(&event.data)
+            .bind(&event.metadata)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| EventStoreError::DatabaseError(format!("Failed to insert event: {e}")))?;
+        }
+
+        Ok(Version::new(new_version))
     }
 }
 

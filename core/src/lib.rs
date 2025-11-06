@@ -60,6 +60,7 @@
 // Re-export commonly used types
 pub use chrono::{DateTime, Utc};
 pub use serde::{Deserialize, Serialize};
+pub use smallvec::{smallvec, SmallVec};
 
 // Phase 2: Event sourcing modules
 pub mod event;
@@ -112,6 +113,7 @@ pub mod state {}
 /// They contain all business logic and are deterministic and testable.
 pub mod reducer {
     use super::effect::Effect;
+    use smallvec::SmallVec;
 
     /// The Reducer trait - core abstraction for business logic
     ///
@@ -170,13 +172,16 @@ pub mod reducer {
         ///
         /// # Returns
         ///
-        /// A vector of effects to be executed by the runtime
+        /// A `SmallVec` of effects to be executed by the runtime.
+        ///
+        /// `SmallVec<[Effect; 4]>` stores up to 4 effects inline on the stack,
+        /// avoiding heap allocations for the common case of 0-3 effects per action.
         fn reduce(
             &self,
             state: &mut Self::State,
             action: Self::Action,
             env: &Self::Environment,
-        ) -> Vec<Effect<Self::Action>>;
+        ) -> SmallVec<[Effect<Self::Action>; 4]>;
     }
 }
 
@@ -1009,5 +1014,86 @@ mod tests {
             },
             _ => panic!("Expected Parallel effect"),
         }
+    }
+
+    // ========== SmallVec Spillover Tests ==========
+
+    #[test]
+    fn test_smallvec_inline_storage() {
+        use crate::{smallvec, SmallVec};
+
+        // Test that ≤4 effects stay on stack (no heap allocation)
+        let effects: SmallVec<[Effect<TestAction>; 4]> = smallvec![
+            Effect::None,
+            Effect::None,
+            Effect::None,
+            Effect::None,
+        ];
+
+        assert_eq!(effects.len(), 4);
+        assert!(!effects.spilled(), "Should NOT spill to heap with 4 effects");
+    }
+
+    #[test]
+    fn test_smallvec_heap_spillover() {
+        use crate::{smallvec, SmallVec};
+
+        // Test that >4 effects correctly spill to heap
+        let effects: SmallVec<[Effect<TestAction>; 4]> = smallvec![
+            Effect::None,
+            Effect::None,
+            Effect::None,
+            Effect::None,
+            Effect::None, // 5th effect triggers heap allocation
+        ];
+
+        assert_eq!(effects.len(), 5);
+        assert!(effects.spilled(), "SHOULD spill to heap with 5 effects");
+
+        // Verify all effects are accessible
+        for (i, effect) in effects.iter().enumerate() {
+            assert!(
+                matches!(effect, Effect::None),
+                "Effect {i} should be None"
+            );
+        }
+    }
+
+    #[test]
+    fn test_smallvec_many_effects() {
+        use crate::{smallvec, SmallVec};
+
+        // Test with significantly more effects (10)
+        let effects: SmallVec<[Effect<TestAction>; 4]> = smallvec![
+            Effect::None,
+            Effect::None,
+            Effect::None,
+            Effect::None,
+            Effect::None,
+            Effect::None,
+            Effect::None,
+            Effect::None,
+            Effect::None,
+            Effect::None,
+        ];
+
+        assert_eq!(effects.len(), 10);
+        assert!(effects.spilled(), "Should spill with 10 effects");
+
+        // Verify iteration works correctly
+        assert_eq!(effects.iter().count(), 10);
+    }
+
+    #[test]
+    fn test_smallvec_collect_into() {
+        use crate::SmallVec;
+
+        // Test that collect works correctly (common pattern in reducers)
+        let effects: SmallVec<[Effect<TestAction>; 4]> = (0..6)
+            .map(|_| Effect::None)
+            .collect();
+
+        assert_eq!(effects.len(), 6);
+        assert!(effects.spilled(), "Collected 6 effects should spill");
     }
 }

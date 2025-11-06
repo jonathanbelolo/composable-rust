@@ -169,8 +169,8 @@ where
         state: &mut Self::State,
         action: Self::Action,
         env: &Self::Environment,
-    ) -> Vec<Effect<Self::Action>> {
-        let mut all_effects = Vec::new();
+    ) -> smallvec::SmallVec<[Effect<Self::Action>; 4]> {
+        let mut all_effects = smallvec::SmallVec::new();
 
         for reducer in &self.reducers {
             let effects = reducer.reduce(state, action.clone(), env);
@@ -301,7 +301,7 @@ where
         state: &mut Self::State,
         action: Self::Action,
         env: &Self::Environment,
-    ) -> Vec<Effect<Self::Action>> {
+    ) -> smallvec::SmallVec<[Effect<Self::Action>; 4]> {
         // Extract the sub-state
         let sub_state = (self.get_state)(state).clone();
 
@@ -321,6 +321,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{smallvec, SmallVec};
 
     #[derive(Clone, Default)]
     struct TestState {
@@ -347,17 +348,17 @@ mod tests {
             state: &mut Self::State,
             action: Self::Action,
             _env: &Self::Environment,
-        ) -> Vec<Effect<Self::Action>> {
+        ) -> SmallVec<[Effect<Self::Action>; 4]> {
             match action {
                 TestAction::Increment => {
                     state.counter += 1;
-                    vec![Effect::None]
+                    smallvec![Effect::None]
                 },
                 TestAction::Decrement => {
                     state.counter -= 1;
-                    vec![Effect::None]
+                    smallvec![Effect::None]
                 },
-                TestAction::SetName(_) => vec![Effect::None],
+                TestAction::SetName(_) => smallvec![Effect::None],
             }
         }
     }
@@ -374,13 +375,13 @@ mod tests {
             state: &mut Self::State,
             action: Self::Action,
             _env: &Self::Environment,
-        ) -> Vec<Effect<Self::Action>> {
+        ) -> SmallVec<[Effect<Self::Action>; 4]> {
             match action {
                 TestAction::SetName(name) => {
                     state.name = name;
-                    vec![Effect::None]
+                    smallvec![Effect::None]
                 },
-                _ => vec![Effect::None],
+                _ => smallvec![Effect::None],
             }
         }
     }
@@ -429,15 +430,15 @@ mod tests {
             state: &mut Self::State,
             action: Self::Action,
             _env: &Self::Environment,
-        ) -> Vec<Effect<Self::Action>> {
+        ) -> SmallVec<[Effect<Self::Action>; 4]> {
             match action {
                 SubAction::Add(n) => {
                     state.value += n;
-                    vec![Effect::None]
+                    smallvec![Effect::None]
                 },
                 SubAction::Multiply(n) => {
                     state.value *= n;
-                    vec![Effect::None]
+                    smallvec![Effect::None]
                 },
             }
         }

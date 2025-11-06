@@ -85,6 +85,7 @@ use composable_rust_core::effect::Effect;
 use composable_rust_core::environment::Clock;
 use composable_rust_core::event_bus::EventBus;
 use composable_rust_core::reducer::Reducer;
+use composable_rust_core::{smallvec, SmallVec};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -175,7 +176,7 @@ impl Reducer for PaymentReducer {
         state: &mut Self::State,
         action: Self::Action,
         _env: &Self::Environment,
-    ) -> Vec<Effect<Self::Action>> {
+    ) -> SmallVec<[Effect<Self::Action>; 4]> {
         match (state.clone(), action) {
             // Process payment command
             (
@@ -191,7 +192,7 @@ impl Reducer for PaymentReducer {
                 };
 
                 // Simulate payment processing (always succeeds in this simplified example)
-                vec![Effect::Future(Box::pin(async move {
+                smallvec![Effect::Future(Box::pin(async move {
                     // In real implementation: call payment gateway API
                     Some(PaymentAction::PaymentCompleted { payment_id })
                 }))]
@@ -211,7 +212,7 @@ impl Reducer for PaymentReducer {
                     payment_id,
                     amount_cents,
                 };
-                vec![Effect::None]
+                smallvec![Effect::None]
             },
 
             // Payment failed event
@@ -223,7 +224,7 @@ impl Reducer for PaymentReducer {
                 },
             ) if payment_id == failed_id => {
                 *state = PaymentState::Failed { payment_id, reason };
-                vec![Effect::None]
+                smallvec![Effect::None]
             },
 
             // Refund payment command
@@ -241,7 +242,7 @@ impl Reducer for PaymentReducer {
                     amount_cents,
                 };
 
-                vec![Effect::Future(Box::pin(async move {
+                smallvec![Effect::Future(Box::pin(async move {
                     // In real implementation: call payment gateway refund API
                     Some(PaymentAction::PaymentRefunded { payment_id })
                 }))]
@@ -262,11 +263,11 @@ impl Reducer for PaymentReducer {
                     payment_id,
                     amount_cents,
                 };
-                vec![Effect::None]
+                smallvec![Effect::None]
             },
 
             // Invalid transitions
-            _ => vec![Effect::None],
+            _ => smallvec![Effect::None],
         }
     }
 }
@@ -338,12 +339,12 @@ impl Reducer for InventoryReducer {
         state: &mut Self::State,
         action: Self::Action,
         _env: &Self::Environment,
-    ) -> Vec<Effect<Self::Action>> {
+    ) -> SmallVec<[Effect<Self::Action>; 4]> {
         match action {
             // Add inventory command
             InventoryAction::AddInventory { item_id, quantity } => {
                 *state.items.entry(item_id).or_insert(0) += quantity;
-                vec![Effect::None]
+                smallvec![Effect::None]
             },
 
             // Reserve inventory command
@@ -361,7 +362,7 @@ impl Reducer for InventoryReducer {
 
                 if !missing_items.is_empty() {
                     // Insufficient inventory
-                    return vec![Effect::Future(Box::pin(async move {
+                    return smallvec![Effect::Future(Box::pin(async move {
                         Some(InventoryAction::InsufficientInventory {
                             reservation_id,
                             missing_items,
@@ -377,7 +378,7 @@ impl Reducer for InventoryReducer {
                 }
                 state.reservations.insert(reservation_id.clone(), items);
 
-                vec![Effect::Future(Box::pin(async move {
+                smallvec![Effect::Future(Box::pin(async move {
                     Some(InventoryAction::InventoryReserved { reservation_id })
                 }))]
             },
@@ -385,7 +386,7 @@ impl Reducer for InventoryReducer {
             // Event handlers (idempotent - no side effects)
             InventoryAction::InventoryReserved { .. }
             | InventoryAction::InsufficientInventory { .. }
-            | InventoryAction::InventoryReleased { .. } => vec![Effect::None],
+            | InventoryAction::InventoryReleased { .. } => smallvec![Effect::None],
 
             // Release inventory command
             InventoryAction::ReleaseInventory { reservation_id } => {
@@ -396,7 +397,7 @@ impl Reducer for InventoryReducer {
                     }
                 }
 
-                vec![Effect::Future(Box::pin(async move {
+                smallvec![Effect::Future(Box::pin(async move {
                     Some(InventoryAction::InventoryReleased { reservation_id })
                 }))]
             },
@@ -593,7 +594,7 @@ where
         state: &mut Self::State,
         action: Self::Action,
         _env: &Self::Environment,
-    ) -> Vec<Effect<Self::Action>> {
+    ) -> SmallVec<[Effect<Self::Action>; 4]> {
         match (state.clone(), action) {
             // Initiate checkout
             (
@@ -613,7 +614,7 @@ where
                 // TODO: Dispatch PlaceOrder command to Order aggregate
                 // For now, simulate immediate OrderPlaced event
                 let order_id = format!("order-{}", uuid::Uuid::new_v4());
-                vec![Effect::Future(Box::pin(async move {
+                smallvec![Effect::Future(Box::pin(async move {
                     Some(CheckoutAction::OrderPlaced { order_id })
                 }))]
             },
@@ -637,7 +638,7 @@ where
 
                 // TODO: Dispatch ProcessPayment command to Payment aggregate
                 // For now, simulate immediate PaymentCompleted event
-                vec![Effect::Future(Box::pin(async move {
+                smallvec![Effect::Future(Box::pin(async move {
                     Some(CheckoutAction::PaymentCompleted { payment_id })
                 }))]
             },
@@ -664,7 +665,7 @@ where
 
                 // TODO: Dispatch ReserveInventory command to Inventory aggregate
                 // For now, simulate immediate InventoryReserved event
-                vec![Effect::Future(Box::pin(async move {
+                smallvec![Effect::Future(Box::pin(async move {
                     Some(CheckoutAction::InventoryReserved { reservation_id })
                 }))]
             },
@@ -685,7 +686,7 @@ where
                 };
 
                 // TODO: Dispatch CancelOrder command to Order aggregate
-                vec![Effect::Future(Box::pin(async move {
+                smallvec![Effect::Future(Box::pin(async move {
                     Some(CheckoutAction::OrderCancelled { order_id })
                 }))]
             },
@@ -708,7 +709,7 @@ where
                     reservation_id,
                 };
 
-                vec![Effect::Future(Box::pin(async move {
+                smallvec![Effect::Future(Box::pin(async move {
                     Some(CheckoutAction::CheckoutCompleted { order_id })
                 }))]
             },
@@ -729,7 +730,7 @@ where
                 };
 
                 // TODO: Dispatch RefundPayment and CancelOrder commands
-                vec![Effect::Future(Box::pin(async move {
+                smallvec![Effect::Future(Box::pin(async move {
                     Some(CheckoutAction::PaymentRefunded { payment_id })
                 }))]
             },
@@ -749,14 +750,14 @@ where
                         reason: reason.clone(),
                     };
 
-                    vec![Effect::Future(Box::pin(async move {
+                    smallvec![Effect::Future(Box::pin(async move {
                         Some(CheckoutAction::OrderCancelled {
                             order_id: order_id_clone,
                         })
                     }))]
                 } else {
                     *state = CheckoutSagaState::Failed { reason };
-                    vec![Effect::Future(Box::pin(async {
+                    smallvec![Effect::Future(Box::pin(async {
                         Some(CheckoutAction::CheckoutFailed {
                             reason: "Compensation completed".to_string(),
                         })
@@ -773,13 +774,13 @@ where
                     reason: reason.clone(),
                 };
 
-                vec![Effect::Future(Box::pin(async move {
+                smallvec![Effect::Future(Box::pin(async move {
                     Some(CheckoutAction::CheckoutFailed { reason })
                 }))]
             },
 
             // Terminal states and invalid transitions
-            _ => vec![Effect::None],
+            _ => smallvec![Effect::None],
         }
     }
 }

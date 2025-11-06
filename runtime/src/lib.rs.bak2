@@ -30,7 +30,7 @@
 //! let value = store.state(|s| s.some_field).await;
 //! ```
 
-use composable_rust_core::{effect::Effect, reducer::Reducer, smallvec, SmallVec};
+use composable_rust_core::{effect::Effect, reducer::Reducer};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -889,86 +889,6 @@ use std::sync::{Mutex, Weak};
 use std::time::Duration;
 use tokio::sync::watch;
 
-/// Configuration for Store instances
-///
-/// Provides configurable parameters for DLQ size, retry policy, and other runtime settings.
-///
-/// # Example
-///
-/// ```ignore
-/// let config = StoreConfig::default()
-///     .with_dlq_max_size(5000)
-///     .with_retry_policy(
-///         RetryPolicy::new()
-///             .with_max_attempts(5)
-///             .with_initial_delay(Duration::from_millis(200))
-///     );
-///
-/// let store = Store::with_config(state, reducer, env, config);
-/// ```
-#[derive(Debug, Clone)]
-pub struct StoreConfig {
-    /// Maximum size of the dead letter queue
-    pub dlq_max_size: usize,
-    /// Retry policy for failed effects
-    pub retry_policy: RetryPolicy,
-    /// Default timeout for graceful shutdown
-    pub default_shutdown_timeout: Duration,
-}
-
-impl StoreConfig {
-    /// Create a new configuration with custom values
-    ///
-    /// # Arguments
-    ///
-    /// - `dlq_max_size`: Maximum number of items in the DLQ
-    /// - `retry_policy`: Policy for retrying failed effects
-    /// - `default_shutdown_timeout`: Default timeout for shutdown operations
-    #[must_use]
-    pub const fn new(
-        dlq_max_size: usize,
-        retry_policy: RetryPolicy,
-        default_shutdown_timeout: Duration,
-    ) -> Self {
-        Self {
-            dlq_max_size,
-            retry_policy,
-            default_shutdown_timeout,
-        }
-    }
-
-    /// Set the DLQ maximum size
-    #[must_use]
-    pub const fn with_dlq_max_size(mut self, max_size: usize) -> Self {
-        self.dlq_max_size = max_size;
-        self
-    }
-
-    /// Set the retry policy
-    #[must_use]
-    pub const fn with_retry_policy(mut self, policy: RetryPolicy) -> Self {
-        self.retry_policy = policy;
-        self
-    }
-
-    /// Set the default shutdown timeout
-    #[must_use]
-    pub const fn with_shutdown_timeout(mut self, timeout: Duration) -> Self {
-        self.default_shutdown_timeout = timeout;
-        self
-    }
-}
-
-impl Default for StoreConfig {
-    fn default() -> Self {
-        Self {
-            dlq_max_size: 1000,
-            retry_policy: RetryPolicy::default(),
-            default_shutdown_timeout: Duration::from_secs(30),
-        }
-    }
-}
-
 /// Effect tracking mode - controls how effects are tracked for completion
 ///
 /// # Modes
@@ -1238,7 +1158,7 @@ pub mod store {
     use super::{
         Arc, AtomicBool, AtomicCounterGuard, AtomicUsize, DeadLetterQueue, DecrementGuard,
         Duration, Effect, EffectHandle, EffectTracking, HealthCheck, Ordering, Reducer,
-        RetryPolicy, RwLock, StoreConfig, StoreError, TrackingMode,
+        RetryPolicy, RwLock, StoreError, TrackingMode,
     };
     use tokio::sync::watch;
 
@@ -1335,47 +1255,6 @@ pub mod store {
                 environment,
                 retry_policy,
                 dlq: DeadLetterQueue::default(),
-                shutdown: Arc::new(AtomicBool::new(false)),
-                pending_effects: Arc::new(AtomicUsize::new(0)),
-            }
-        }
-
-        /// Create a new Store with custom configuration
-        ///
-        /// # Arguments
-        ///
-        /// - `initial_state`: Initial state value
-        /// - `reducer`: The reducer function
-        /// - `environment`: Dependencies injected into the reducer
-        /// - `config`: Configuration for DLQ, retry policy, and shutdown behavior
-        ///
-        /// # Example
-        ///
-        /// ```ignore
-        /// let config = StoreConfig::default()
-        ///     .with_dlq_max_size(500)
-        ///     .with_shutdown_timeout(Duration::from_secs(60));
-        ///
-        /// let store = Store::with_config(
-        ///     MyState::default(),
-        ///     MyReducer,
-        ///     my_environment,
-        ///     config,
-        /// );
-        /// ```
-        #[must_use]
-        pub fn with_config(
-            initial_state: S,
-            reducer: R,
-            environment: E,
-            config: StoreConfig,
-        ) -> Self {
-            Self {
-                state: Arc::new(RwLock::new(initial_state)),
-                reducer,
-                environment,
-                retry_policy: config.retry_policy,
-                dlq: DeadLetterQueue::new(config.dlq_max_size),
                 shutdown: Arc::new(AtomicBool::new(false)),
                 pending_effects: Arc::new(AtomicUsize::new(0)),
             }
@@ -2147,7 +2026,7 @@ pub use store::Store;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use composable_rust_core::{effect::Effect, reducer::Reducer, smallvec, SmallVec};
+    use composable_rust_core::{effect::Effect, reducer::Reducer};
     use std::time::Duration;
 
     // Test state
@@ -2187,33 +2066,33 @@ mod tests {
             state: &mut Self::State,
             action: Self::Action,
             _env: &Self::Environment,
-        ) -> SmallVec<[Effect<Self::Action>; 4]> {
+        ) -> Vec<Effect<Self::Action>> {
             match action {
                 TestAction::Increment => {
                     state.value += 1;
-                    smallvec![Effect::None]
+                    vec![Effect::None]
                 },
                 TestAction::Decrement => {
                     state.value -= 1;
-                    smallvec![Effect::None]
+                    vec![Effect::None]
                 },
-                TestAction::NoOp => smallvec![Effect::None],
+                TestAction::NoOp => vec![Effect::None],
                 TestAction::ProduceEffect => {
                     // Return an effect that produces another action
-                    smallvec![Effect::Future(Box::pin(async {
+                    vec![Effect::Future(Box::pin(async {
                         Some(TestAction::Increment)
                     }))]
                 },
                 TestAction::ProduceDelayedAction => {
                     // Return a delayed effect
-                    smallvec![Effect::Delay {
+                    vec![Effect::Delay {
                         duration: Duration::from_millis(10),
                         action: Box::new(TestAction::Increment),
                     }]
                 },
                 TestAction::ProduceParallelEffects => {
                     // Return parallel effects that each produce an increment
-                    smallvec![Effect::Parallel(vec![
+                    vec![Effect::Parallel(vec![
                         Effect::Future(Box::pin(async { Some(TestAction::Increment) })),
                         Effect::Future(Box::pin(async { Some(TestAction::Increment) })),
                         Effect::Future(Box::pin(async { Some(TestAction::Increment) })),
@@ -2221,7 +2100,7 @@ mod tests {
                 },
                 TestAction::ProduceSequentialEffects => {
                     // Return sequential effects: increment, increment, decrement
-                    smallvec![Effect::Sequential(vec![
+                    vec![Effect::Sequential(vec![
                         Effect::Future(Box::pin(async { Some(TestAction::Increment) })),
                         Effect::Future(Box::pin(async { Some(TestAction::Increment) })),
                         Effect::Future(Box::pin(async { Some(TestAction::Decrement) })),
@@ -2231,7 +2110,7 @@ mod tests {
                     // Return an effect that will panic when executed
                     #[allow(clippy::panic)] // Intentional panic for testing error handling
                     {
-                        smallvec![Effect::Future(Box::pin(async {
+                        vec![Effect::Future(Box::pin(async {
                             panic!("Intentional panic in effect for testing");
                         }))]
                     }
@@ -2407,14 +2286,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_effect_panic_isolation() -> Result<(), StoreError> {
+    async fn test_effect_panic_isolation() {
         // Test that a panic in an effect doesn't crash the Store
         // This verifies our error handling strategy: effects fail gracefully
         let state = TestState { value: 0 };
         let store = Store::new(state, TestReducer, TestEnv);
 
         // This action produces an effect that will panic
-        let mut handle = store.send(TestAction::ProducePanickingEffect).await?;
+        let mut handle = store.send(TestAction::ProducePanickingEffect).await;
 
         // Wait for the effect to complete (which includes the panic)
         // The effect will panic, but it's isolated in the spawned task
@@ -2432,8 +2311,6 @@ mod tests {
         let _ = store.send(TestAction::Increment).await;
         let value = store.state(|s| s.value).await;
         assert_eq!(value, 2);
-
-        Ok(())
     }
 
     // EventStore effect tests
@@ -2510,7 +2387,7 @@ mod tests {
                 state: &mut Self::State,
                 action: Self::Action,
                 env: &Self::Environment,
-            ) -> SmallVec<[Effect<Self::Action>; 4]> {
+            ) -> Vec<Effect<Self::Action>> {
                 match action {
                     EventStoreAction::AppendEvents { stream_id, events } => {
                         let serialized_events: Vec<SerializedEvent> = events
@@ -2524,7 +2401,7 @@ mod tests {
                             })
                             .collect();
 
-                        smallvec![Effect::EventStore(EventStoreOperation::AppendEvents {
+                        vec![Effect::EventStore(EventStoreOperation::AppendEvents {
                             event_store: Arc::clone(&env.event_store),
                             stream_id: StreamId::new(&stream_id),
                             expected_version: state.last_version.map(Version::new),
@@ -2543,15 +2420,15 @@ mod tests {
                     },
                     EventStoreAction::EventsAppended { version } => {
                         state.last_version = Some(version);
-                        smallvec![Effect::None]
+                        vec![Effect::None]
                     },
                     EventStoreAction::AppendFailed { error }
                     | EventStoreAction::LoadFailed { error } => {
                         state.error = Some(error);
-                        smallvec![Effect::None]
+                        vec![Effect::None]
                     },
                     EventStoreAction::LoadEvents { stream_id } => {
-                        smallvec![Effect::EventStore(EventStoreOperation::LoadEvents {
+                        vec![Effect::EventStore(EventStoreOperation::LoadEvents {
                             event_store: Arc::clone(&env.event_store),
                             stream_id: StreamId::new(&stream_id),
                             from_version: None,
@@ -2569,11 +2446,11 @@ mod tests {
                     },
                     EventStoreAction::EventsLoaded { count } => {
                         state.event_count = count;
-                        smallvec![Effect::None]
+                        vec![Effect::None]
                     },
                     EventStoreAction::SaveSnapshot { stream_id, version } => {
                         let state_bytes = vec![1, 2, 3, 4]; // Mock state data
-                        smallvec![Effect::EventStore(EventStoreOperation::SaveSnapshot {
+                        vec![Effect::EventStore(EventStoreOperation::SaveSnapshot {
                             event_store: Arc::clone(&env.event_store),
                             stream_id: StreamId::new(&stream_id),
                             version: Version::new(version),
@@ -2588,10 +2465,10 @@ mod tests {
                     },
                     EventStoreAction::SnapshotSaved => {
                         state.snapshot_saved = true;
-                        smallvec![Effect::None]
+                        vec![Effect::None]
                     },
                     EventStoreAction::LoadSnapshot { stream_id } => {
-                        smallvec![Effect::EventStore(EventStoreOperation::LoadSnapshot {
+                        vec![Effect::EventStore(EventStoreOperation::LoadSnapshot {
                             event_store: Arc::clone(&env.event_store),
                             stream_id: StreamId::new(&stream_id),
                             on_success: Box::new(|snapshot| {
@@ -2608,14 +2485,14 @@ mod tests {
                     },
                     EventStoreAction::SnapshotLoaded { found } => {
                         state.snapshot_loaded = found;
-                        smallvec![Effect::None]
+                        vec![Effect::None]
                     },
                 }
             }
         }
 
         #[tokio::test]
-        async fn test_eventstore_append_success() -> Result<(), StoreError> {
+        async fn test_eventstore_append_success() {
             use composable_rust_testing::mocks::InMemoryEventStore;
 
             let event_store = Arc::new(InMemoryEventStore::new()) as Arc<dyn EventStore>;
@@ -2638,19 +2515,17 @@ mod tests {
                     stream_id: "test-stream".to_string(),
                     events: vec!["event1".to_string(), "event2".to_string()],
                 })
-                .await?;
+                .await;
 
             handle.wait().await;
 
             // Check state was updated with version
             let last_version = store.state(|s| s.last_version).await;
             assert_eq!(last_version, Some(1)); // 2 events, version 0-1, returns last = 1
-
-            Ok(())
         }
 
         #[tokio::test]
-        async fn test_eventstore_append_concurrency_conflict() -> Result<(), StoreError> {
+        async fn test_eventstore_append_concurrency_conflict() {
             use composable_rust_testing::mocks::InMemoryEventStore;
 
             let event_store = Arc::new(InMemoryEventStore::new()) as Arc<dyn EventStore>;
@@ -2687,7 +2562,7 @@ mod tests {
                     stream_id: "test-stream".to_string(),
                     events: vec!["event".to_string()],
                 })
-                .await?;
+                .await;
 
             handle.wait().await;
 
@@ -2698,12 +2573,10 @@ mod tests {
             {
                 assert!(error.unwrap().contains("Concurrency"));
             }
-
-            Ok(())
         }
 
         #[tokio::test]
-        async fn test_eventstore_load_events() -> Result<(), StoreError> {
+        async fn test_eventstore_load_events() {
             use composable_rust_testing::mocks::InMemoryEventStore;
 
             let event_store = Arc::new(InMemoryEventStore::new()) as Arc<dyn EventStore>;
@@ -2738,19 +2611,17 @@ mod tests {
                 .send(EventStoreAction::LoadEvents {
                     stream_id: "test-stream".to_string(),
                 })
-                .await?;
+                .await;
 
             handle.wait().await;
 
             // Check count was updated
             let count = store.state(|s| s.event_count).await;
             assert_eq!(count, 3);
-
-            Ok(())
         }
 
         #[tokio::test]
-        async fn test_eventstore_snapshot_roundtrip() -> Result<(), StoreError> {
+        async fn test_eventstore_snapshot_roundtrip() {
             use composable_rust_testing::mocks::InMemoryEventStore;
 
             let event_store = Arc::new(InMemoryEventStore::new()) as Arc<dyn EventStore>;
@@ -2773,7 +2644,7 @@ mod tests {
                     stream_id: "test-stream".to_string(),
                     version: 10,
                 })
-                .await?;
+                .await;
 
             handle.wait().await;
 
@@ -2786,19 +2657,17 @@ mod tests {
                 .send(EventStoreAction::LoadSnapshot {
                     stream_id: "test-stream".to_string(),
                 })
-                .await?;
+                .await;
 
             handle.wait().await;
 
             // Check snapshot was loaded
             let loaded = store.state(|s| s.snapshot_loaded).await;
             assert!(loaded);
-
-            Ok(())
         }
 
         #[tokio::test]
-        async fn test_eventstore_parallel_operations() -> Result<(), StoreError> {
+        async fn test_eventstore_parallel_operations() {
             use composable_rust_testing::mocks::InMemoryEventStore;
 
             let event_store = Arc::new(InMemoryEventStore::new()) as Arc<dyn EventStore>;
@@ -2821,7 +2690,7 @@ mod tests {
                     stream_id: "stream-1".to_string(),
                     events: vec!["event1".to_string()],
                 })
-                .await?;
+                .await;
 
             // Append to stream2 (different stream, can run concurrently)
             let mut h2 = store
@@ -2829,7 +2698,7 @@ mod tests {
                     stream_id: "stream-2".to_string(),
                     events: vec!["event2".to_string()],
                 })
-                .await?;
+                .await;
 
             // Wait for both
             h1.wait().await;
@@ -2838,8 +2707,6 @@ mod tests {
             // Both should have succeeded (last_version reflects last operation)
             let last_version = store.state(|s| s.last_version).await;
             assert!(last_version.is_some());
-
-            Ok(())
         }
 
         // Reducer for testing parallel EventStore effects
@@ -2856,9 +2723,9 @@ mod tests {
                 _state: &mut Self::State,
                 _action: Self::Action,
                 env: &Self::Environment,
-            ) -> SmallVec<[Effect<Self::Action>; 4]> {
+            ) -> Vec<Effect<Self::Action>> {
                 // Create parallel effects on each call
-                smallvec![Effect::Parallel(vec![
+                vec![Effect::Parallel(vec![
                     Effect::EventStore(EventStoreOperation::AppendEvents {
                         event_store: Arc::clone(&env.event_store),
                         stream_id: StreamId::new("stream-1"),
@@ -2888,7 +2755,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_eventstore_effect_in_parallel_composition() -> Result<(), StoreError> {
+        async fn test_eventstore_effect_in_parallel_composition() {
             use composable_rust_testing::mocks::InMemoryEventStore;
 
             // Test that EventStore effects work inside Parallel effect composition
@@ -2915,7 +2782,7 @@ mod tests {
                     stream_id: "dummy".to_string(),
                     events: vec![],
                 })
-                .await?;
+                .await;
 
             handle.wait().await;
 
@@ -2938,8 +2805,6 @@ mod tests {
                 assert_eq!(events1.unwrap().len(), 1);
                 assert_eq!(events2.unwrap().len(), 1);
             }
-
-            Ok(())
         }
     }
 
@@ -3533,255 +3398,6 @@ mod tests {
             assert_eq!(format!("{}", HealthStatus::Healthy), "healthy");
             assert_eq!(format!("{}", HealthStatus::Degraded), "degraded");
             assert_eq!(format!("{}", HealthStatus::Unhealthy), "unhealthy");
-        }
-    }
-
-    /// Tests for graceful shutdown
-    mod shutdown_tests {
-        use super::*;
-        use std::time::Duration;
-
-        #[tokio::test]
-        async fn test_shutdown_with_no_pending_effects() -> Result<(), StoreError> {
-            let state = TestState { value: 0 };
-            let store = Store::new(state, TestReducer, TestEnv);
-
-            // Shutdown immediately with no effects running
-            let result = store.shutdown(Duration::from_secs(5)).await;
-            assert!(result.is_ok());
-
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn test_shutdown_rejects_new_actions() -> Result<(), StoreError> {
-            let state = TestState { value: 0 };
-            let store = Store::new(state, TestReducer, TestEnv);
-
-            // Initiate shutdown
-            tokio::spawn({
-                let store = store.clone();
-                async move {
-                    let _ = store.shutdown(Duration::from_secs(10)).await;
-                }
-            });
-
-            // Give shutdown time to set the flag
-            tokio::time::sleep(Duration::from_millis(50)).await;
-
-            // Try to send action during shutdown
-            let result = store.send(TestAction::Increment).await;
-            assert!(matches!(result, Err(StoreError::ShutdownInProgress)));
-
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn test_shutdown_waits_for_effects() -> Result<(), StoreError> {
-            let state = TestState { value: 0 };
-            let store = Store::new(state, TestReducer, TestEnv);
-
-            // Send action with delayed effect
-            let _handle = store.send(TestAction::ProduceDelayedAction).await?;
-
-            // Start shutdown in background (should wait for effect)
-            let shutdown_store = store.clone();
-            let shutdown_handle = tokio::spawn(async move {
-                shutdown_store.shutdown(Duration::from_secs(5)).await
-            });
-
-            // Give it a moment to start shutdown
-            tokio::time::sleep(Duration::from_millis(50)).await;
-
-            // Wait for shutdown to complete
-            let result = shutdown_handle.await;
-            assert!(result.is_ok());
-            assert!(result.unwrap().is_ok());
-
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn test_shutdown_timeout() -> Result<(), StoreError> {
-            // Create a custom reducer that returns a long-running effect
-            #[derive(Clone)]
-            struct LongRunningReducer;
-
-            impl Reducer for LongRunningReducer {
-                type State = TestState;
-                type Action = TestAction;
-                type Environment = TestEnv;
-
-                fn reduce(
-                    &self,
-                    _state: &mut Self::State,
-                    _action: Self::Action,
-                    _env: &Self::Environment,
-                ) -> SmallVec<[Effect<Self::Action>; 4]> {
-                    smallvec![Effect::Future(Box::pin(async {
-                        // Sleep for 200ms - longer than our timeout
-                        tokio::time::sleep(Duration::from_millis(200)).await;
-                        Some(TestAction::Increment)
-                    }))]
-                }
-            }
-
-            let state = TestState { value: 0 };
-            let store = Store::new(state, LongRunningReducer, TestEnv);
-
-            // Send action that triggers long-running effect
-            let _handle = store.send(TestAction::Increment).await?;
-
-            // Give the effect time to start running
-            tokio::time::sleep(Duration::from_millis(10)).await;
-
-            // Try to shutdown with short timeout (50ms - effect won't finish in time)
-            let result = store.shutdown(Duration::from_millis(50)).await;
-
-            // Should timeout because the effect takes 200ms
-            assert!(matches!(result, Err(StoreError::ShutdownTimeout(_))), "Expected ShutdownTimeout, got: {:?}", result);
-
-            if let Err(StoreError::ShutdownTimeout(pending)) = result {
-                assert!(pending > 0, "Should report pending effects");
-            }
-
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn test_shutdown_idempotent() -> Result<(), StoreError> {
-            let state = TestState { value: 0 };
-            let store = Store::new(state, TestReducer, TestEnv);
-
-            // First shutdown
-            let result1 = store.shutdown(Duration::from_secs(1)).await;
-            assert!(result1.is_ok());
-
-            // Second shutdown should also succeed (already shut down)
-            let result2 = store.shutdown(Duration::from_secs(1)).await;
-            assert!(result2.is_ok());
-
-            Ok(())
-        }
-    }
-
-    mod config_tests {
-        use super::*;
-        use std::time::Duration;
-
-        #[test]
-        fn test_store_config_default() {
-            let config = StoreConfig::default();
-            assert_eq!(config.dlq_max_size, 1000);
-            assert_eq!(config.default_shutdown_timeout, Duration::from_secs(30));
-        }
-
-        #[test]
-        fn test_store_config_builder_pattern() {
-            let custom_retry = RetryPolicy::new()
-                .with_max_attempts(10)
-                .with_initial_delay(Duration::from_millis(100));
-
-            let config = StoreConfig::default()
-                .with_dlq_max_size(500)
-                .with_retry_policy(custom_retry.clone())
-                .with_shutdown_timeout(Duration::from_secs(60));
-
-            assert_eq!(config.dlq_max_size, 500);
-            assert_eq!(config.default_shutdown_timeout, Duration::from_secs(60));
-        }
-
-        #[test]
-        fn test_store_config_new() {
-            let retry_policy = RetryPolicy::new().with_max_attempts(5);
-            let config = StoreConfig::new(
-                2000,
-                retry_policy.clone(),
-                Duration::from_secs(45),
-            );
-
-            assert_eq!(config.dlq_max_size, 2000);
-            assert_eq!(config.default_shutdown_timeout, Duration::from_secs(45));
-        }
-
-        #[tokio::test]
-        async fn test_store_with_config_uses_custom_dlq_size() -> Result<(), StoreError> {
-            let config = StoreConfig::default().with_dlq_max_size(50);
-
-            let state = TestState { value: 0 };
-            let store = Store::with_config(state, TestReducer, TestEnv, config);
-
-            // Verify DLQ has correct capacity
-            let dlq = store.dlq();
-            assert_eq!(dlq.max_size(), 50);
-
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn test_store_with_config_uses_custom_retry_policy() -> Result<(), StoreError> {
-            let custom_retry = RetryPolicy::new()
-                .with_max_attempts(2)
-                .with_initial_delay(Duration::from_millis(50));
-
-            let config = StoreConfig::default().with_retry_policy(custom_retry);
-
-            let state = TestState { value: 0 };
-            let store = Store::with_config(state, TestReducer, TestEnv, config);
-
-            // Verify store was created successfully with custom config
-            // The retry policy is used internally by the store
-            // This test confirms the store accepts and uses the configuration
-            let _handle = store.send(TestAction::Increment).await?;
-
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn test_store_with_config_independent_instances() -> Result<(), StoreError> {
-            // Create two stores with different configurations
-            let config1 = StoreConfig::default().with_dlq_max_size(100);
-            let config2 = StoreConfig::default().with_dlq_max_size(200);
-
-            let store1 = Store::with_config(
-                TestState { value: 0 },
-                TestReducer,
-                TestEnv,
-                config1,
-            );
-            let store2 = Store::with_config(
-                TestState { value: 0 },
-                TestReducer,
-                TestEnv,
-                config2,
-            );
-
-            // Verify each has independent configuration
-            assert_eq!(store1.dlq().max_size(), 100);
-            assert_eq!(store2.dlq().max_size(), 200);
-
-            Ok(())
-        }
-
-        #[test]
-        fn test_store_config_clone() {
-            let config1 = StoreConfig::default().with_dlq_max_size(300);
-            let config2 = config1.clone();
-
-            assert_eq!(config1.dlq_max_size, config2.dlq_max_size);
-            assert_eq!(config1.default_shutdown_timeout, config2.default_shutdown_timeout);
-        }
-
-        #[test]
-        fn test_store_config_chaining() {
-            // Test that builder methods can be chained
-            let config = StoreConfig::default()
-                .with_dlq_max_size(400)
-                .with_shutdown_timeout(Duration::from_secs(120))
-                .with_retry_policy(RetryPolicy::new().with_max_attempts(3));
-
-            assert_eq!(config.dlq_max_size, 400);
-            assert_eq!(config.default_shutdown_timeout, Duration::from_secs(120));
         }
     }
 }

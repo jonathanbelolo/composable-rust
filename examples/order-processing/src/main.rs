@@ -115,7 +115,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await;
 
     // Wait for effects to complete
-    handle.wait().await;
+    handle?.wait().await;
 
     // Read state after placing order
     let state_after_place = store.state(Clone::clone).await;
@@ -137,7 +137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await;
 
-    handle.wait().await;
+    handle?.wait().await;
 
     let state_after_ship = store.state(Clone::clone).await;
     info!("  Order shipped! Status: {}", state_after_ship.status);
@@ -177,7 +177,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Send event through store (will apply via reducer)
         let mut handle = new_store.send(event).await;
-        handle.wait().await;
+        handle?.wait().await;
     }
 
     // Now state should be reconstructed
@@ -220,7 +220,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await;
 
-    handle.wait().await;
+    handle?.wait().await;
 
     let state_after_invalid_cancel = new_store.state(Clone::clone).await;
     info!(

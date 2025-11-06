@@ -440,3 +440,334 @@ async fn test_multiple_streams_isolation() {
     assert_eq!(events1[0].event_type, "Event1");
     assert_eq!(events2[0].event_type, "Event2");
 }
+
+// ========== append_batch Tests ==========
+
+#[tokio::test]
+async fn test_append_batch_success_multiple_streams() {
+    use composable_rust_core::event_store::BatchAppend;
+
+    let (_container, store) = setup_postgres_event_store().await;
+
+    let stream1 = StreamId::new("batch-stream-1");
+    let stream2 = StreamId::new("batch-stream-2");
+    let stream3 = StreamId::new("batch-stream-3");
+
+    // Create batch with 3 streams
+    let batch = vec![
+        BatchAppend::new(
+            stream1.clone(),
+            Some(Version::new(0)),
+            vec![
+                create_test_event("Stream1Event1", b"data1".to_vec()),
+                create_test_event("Stream1Event2", b"data2".to_vec()),
+            ],
+        ),
+        BatchAppend::new(
+            stream2.clone(),
+            Some(Version::new(0)),
+            vec![create_test_event("Stream2Event1", b"data3".to_vec())],
+        ),
+        BatchAppend::new(
+            stream3.clone(),
+            Some(Version::new(0)),
+            vec![
+                create_test_event("Stream3Event1", b"data4".to_vec()),
+                create_test_event("Stream3Event2", b"data5".to_vec()),
+                create_test_event("Stream3Event3", b"data6".to_vec()),
+            ],
+        ),
+    ];
+
+    // Execute batch
+    let results = store
+        .append_batch(batch)
+        .await
+        .expect("Batch should not fail at transaction level");
+
+    // Verify all succeeded
+    assert_eq!(results.len(), 3);
+    assert!(results[0].is_ok(), "Stream 1 should succeed");
+    assert!(results[1].is_ok(), "Stream 2 should succeed");
+    assert!(results[2].is_ok(), "Stream 3 should succeed");
+
+    assert_eq!(
+        results[0].as_ref().unwrap(),
+        &Version::new(2),
+        "Stream 1 should be at version 2"
+    );
+    assert_eq!(
+        results[1].as_ref().unwrap(),
+        &Version::new(1),
+        "Stream 2 should be at version 1"
+    );
+    assert_eq!(
+        results[2].as_ref().unwrap(),
+        &Version::new(3),
+        "Stream 3 should be at version 3"
+    );
+
+    // Verify events were persisted correctly
+    let stream1_events = store
+        .load_events(stream1, None)
+        .await
+        .expect("Should load stream 1");
+    assert_eq!(stream1_events.len(), 2);
+
+    let stream2_events = store
+        .load_events(stream2, None)
+        .await
+        .expect("Should load stream 2");
+    assert_eq!(stream2_events.len(), 1);
+
+    let stream3_events = store
+        .load_events(stream3, None)
+        .await
+        .expect("Should load stream 3");
+    assert_eq!(stream3_events.len(), 3);
+}
+
+#[tokio::test]
+async fn test_append_batch_partial_failure_concurrency_conflict() {
+    use composable_rust_core::event_store::BatchAppend;
+
+    let (_container, store) = setup_postgres_event_store().await;
+
+    let stream1 = StreamId::new("batch-conflict-1");
+    let stream2 = StreamId::new("batch-conflict-2");
+
+    // Pre-populate stream1 with an event (so it's at version 1)
+    store
+        .append_events(
+            stream1.clone(),
+            Some(Version::new(0)),
+            vec![create_test_event("PreExisting", b"pre".to_vec())],
+        )
+        .await
+        .expect("Pre-populate should succeed");
+
+    // Create batch where stream1 expects wrong version
+    let batch = vec![
+        BatchAppend::new(
+            stream1.clone(),
+            Some(Version::new(0)), // WRONG! Should be 1
+            vec![create_test_event("ShouldFail", b"fail".to_vec())],
+        ),
+        BatchAppend::new(
+            stream2.clone(),
+            Some(Version::new(0)), // Correct for new stream
+            vec![create_test_event("ShouldSucceed", b"success".to_vec())],
+        ),
+    ];
+
+    // Execute batch
+    let results = store
+        .append_batch(batch)
+        .await
+        .expect("Batch should not fail at transaction level");
+
+    // Verify results
+    assert_eq!(results.len(), 2);
+    assert!(
+        results[0].is_err(),
+        "Stream 1 should fail with concurrency conflict"
+    );
+    assert!(
+        matches!(
+            results[0],
+            Err(EventStoreError::ConcurrencyConflict { .. })
+        ),
+        "Should be concurrency conflict"
+    );
+    assert!(results[1].is_ok(), "Stream 2 should succeed");
+
+    // Verify stream1 was NOT modified
+    let stream1_events = store
+        .load_events(stream1, None)
+        .await
+        .expect("Should load stream 1");
+    assert_eq!(
+        stream1_events.len(),
+        1,
+        "Stream 1 should still have only 1 event"
+    );
+    assert_eq!(stream1_events[0].event_type, "PreExisting");
+
+    // Verify stream2 WAS modified
+    let stream2_events = store
+        .load_events(stream2, None)
+        .await
+        .expect("Should load stream 2");
+    assert_eq!(stream2_events.len(), 1);
+    assert_eq!(stream2_events[0].event_type, "ShouldSucceed");
+}
+
+#[tokio::test]
+async fn test_append_batch_empty_events_validation() {
+    use composable_rust_core::event_store::BatchAppend;
+
+    let (_container, store) = setup_postgres_event_store().await;
+
+    let stream1 = StreamId::new("batch-empty-1");
+    let stream2 = StreamId::new("batch-empty-2");
+
+    // Batch with one empty events list and one valid
+    let batch = vec![
+        BatchAppend::new(stream1.clone(), Some(Version::new(0)), vec![]), // Empty!
+        BatchAppend::new(
+            stream2.clone(),
+            Some(Version::new(0)),
+            vec![create_test_event("Valid", b"data".to_vec())],
+        ),
+    ];
+
+    let results = store
+        .append_batch(batch)
+        .await
+        .expect("Batch should not fail at transaction level");
+
+    assert_eq!(results.len(), 2);
+    assert!(results[0].is_err(), "Empty events should fail");
+    assert!(
+        matches!(results[0], Err(EventStoreError::DatabaseError(_))),
+        "Should be database error"
+    );
+    assert!(results[1].is_ok(), "Valid operation should succeed");
+
+    // Verify stream2 was created
+    let stream2_events = store
+        .load_events(stream2, None)
+        .await
+        .expect("Should load stream 2");
+    assert_eq!(stream2_events.len(), 1);
+}
+
+#[tokio::test]
+async fn test_append_batch_empty_batch() {
+    let (_container, store) = setup_postgres_event_store().await;
+
+    // Empty batch
+    let results = store
+        .append_batch(vec![])
+        .await
+        .expect("Empty batch should succeed");
+
+    assert_eq!(results.len(), 0, "Empty batch should return empty results");
+}
+
+#[tokio::test]
+async fn test_append_batch_atomicity_all_or_nothing_at_stream_level() {
+    use composable_rust_core::event_store::BatchAppend;
+
+    let (_container, store) = setup_postgres_event_store().await;
+
+    let stream1 = StreamId::new("batch-atomic-1");
+    let stream2 = StreamId::new("batch-atomic-2");
+
+    // Create batch where second operation will fail
+    let batch = vec![
+        BatchAppend::new(
+            stream1.clone(),
+            Some(Version::new(0)),
+            vec![create_test_event("Event1", b"data1".to_vec())],
+        ),
+        BatchAppend::new(
+            stream2.clone(),
+            Some(Version::new(5)), // Wrong expected version for new stream
+            vec![create_test_event("Event2", b"data2".to_vec())],
+        ),
+    ];
+
+    let results = store
+        .append_batch(batch)
+        .await
+        .expect("Transaction should commit despite per-operation failures");
+
+    // Verify: first operation succeeds, second fails
+    assert!(results[0].is_ok(), "First operation should succeed");
+    assert!(results[1].is_err(), "Second operation should fail");
+
+    // CRITICAL: Verify first stream WAS created (not rolled back)
+    // This is the current behavior: per-operation results, not all-or-nothing
+    let stream1_events = store
+        .load_events(stream1, None)
+        .await
+        .expect("Should load stream 1");
+    assert_eq!(
+        stream1_events.len(),
+        1,
+        "First stream should have been created despite second operation failing"
+    );
+
+    // Verify second stream was NOT created
+    let stream2_events = store
+        .load_events(stream2, None)
+        .await
+        .expect("Should load stream 2");
+    assert_eq!(stream2_events.len(), 0, "Second stream should be empty");
+}
+
+#[tokio::test]
+async fn test_append_batch_performance_vs_sequential() {
+    use composable_rust_core::event_store::BatchAppend;
+    use std::time::Instant;
+
+    let (_container, store) = setup_postgres_event_store().await;
+
+    // Prepare 10 streams with 5 events each
+    let num_streams = 10;
+    let events_per_stream = 5;
+
+    let mut batch_operations = Vec::new();
+    let mut individual_operations = Vec::new();
+
+    for i in 0..num_streams {
+        let stream_id = StreamId::new(format!("perf-stream-{i}"));
+        let events: Vec<_> = (0..events_per_stream)
+            .map(|j| create_test_event(&format!("Event{j}"), vec![i as u8, j as u8]))
+            .collect();
+
+        batch_operations.push(BatchAppend::new(
+            stream_id.clone(),
+            Some(Version::new(0)),
+            events.clone(),
+        ));
+        individual_operations.push((stream_id, events));
+    }
+
+    // Measure batch append
+    let batch_start = Instant::now();
+    let batch_results = store
+        .append_batch(batch_operations)
+        .await
+        .expect("Batch should succeed");
+    let batch_duration = batch_start.elapsed();
+
+    assert_eq!(batch_results.len(), num_streams);
+    assert!(batch_results.iter().all(|r| r.is_ok()));
+
+    println!("Batch append ({} streams): {:?}", num_streams, batch_duration);
+
+    // Measure sequential appends (different stream names)
+    let sequential_start = Instant::now();
+    for (i, (stream_id, events)) in individual_operations.into_iter().enumerate() {
+        let seq_stream = StreamId::new(format!("seq-stream-{i}"));
+        store
+            .append_events(seq_stream, Some(Version::new(0)), events)
+            .await
+            .expect("Sequential append should succeed");
+    }
+    let sequential_duration = sequential_start.elapsed();
+
+    println!(
+        "Sequential append ({} streams): {:?}",
+        num_streams, sequential_duration
+    );
+
+    // Batch should be faster (even with current implementation)
+    // Note: With multi-row INSERT, this should be significantly faster
+    println!(
+        "Speedup: {:.2}x",
+        sequential_duration.as_secs_f64() / batch_duration.as_secs_f64()
+    );
+}

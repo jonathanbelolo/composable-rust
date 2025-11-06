@@ -476,6 +476,101 @@ pub mod mocks {
                 Ok(store.get(stream_id.as_str()).cloned())
             })
         }
+
+        fn append_batch(
+            &self,
+            batch: Vec<composable_rust_core::event_store::BatchAppend>,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            Vec<
+                                Result<
+                                    composable_rust_core::stream::Version,
+                                    composable_rust_core::event_store::EventStoreError,
+                                >,
+                            >,
+                            composable_rust_core::event_store::EventStoreError,
+                        >,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async move {
+                if batch.is_empty() {
+                    return Ok(Vec::new());
+                }
+
+                // CRITICAL: Take write lock once for entire batch (atomicity)
+                let mut store = self.events.write().map_err(|e| {
+                    composable_rust_core::event_store::EventStoreError::DatabaseError(format!(
+                        "Lock poisoned: {e}"
+                    ))
+                })?;
+
+                let mut results = Vec::with_capacity(batch.len());
+
+                // Phase 1: Validate all operations WITHOUT mutating store
+                let mut validated_operations = Vec::with_capacity(batch.len());
+                for operation in batch {
+                    // Early validation: empty events list
+                    if operation.events.is_empty() {
+                        results.push(Err(
+                            composable_rust_core::event_store::EventStoreError::DatabaseError(
+                                "Cannot append empty event list".to_string(),
+                            ),
+                        ));
+                        validated_operations.push(None);
+                        continue;
+                    }
+
+                    // Get current version WITHOUT mutating (use get, not entry)
+                    let current_version = store
+                        .get(operation.stream_id.as_str())
+                        .map_or(composable_rust_core::stream::Version::new(0), |stream_events| {
+                            composable_rust_core::stream::Version::new(stream_events.len() as u64)
+                        });
+
+                    // Check optimistic concurrency
+                    if let Some(expected) = operation.expected_version {
+                        if current_version != expected {
+                            results.push(Err(
+                                composable_rust_core::event_store::EventStoreError::ConcurrencyConflict {
+                                    stream_id: operation.stream_id,
+                                    expected,
+                                    actual: current_version,
+                                },
+                            ));
+                            validated_operations.push(None);
+                            continue;
+                        }
+                    }
+
+                    // Calculate new version (last event's version)
+                    let new_version = composable_rust_core::stream::Version::new(
+                        current_version.value() + operation.events.len() as u64,
+                    );
+
+                    // Store validated operation
+                    validated_operations.push(Some((operation.stream_id, operation.events, new_version)));
+                    // Return last event's version (which is new_version, not new_version - 1)
+                    results.push(Ok(new_version));
+                }
+
+                // Phase 2: Apply all validated changes atomically
+                for validated_op in validated_operations {
+                    if let Some((stream_id, mut events, _new_version)) = validated_op {
+                        let stream_events = store
+                            .entry(stream_id.as_str().to_string())
+                            .or_default();
+                        stream_events.append(&mut events);
+                    }
+                }
+
+                // Lock released here automatically when store is dropped
+                Ok(results)
+            })
+        }
     }
 
     /// In-memory event bus for fast, deterministic unit tests.
@@ -738,7 +833,7 @@ pub mod properties {
 #[allow(clippy::mismatching_type_param_order)] // Generic A conflicts with Vec<A>
 pub mod test_store {
     use composable_rust_core::reducer::Reducer;
-    use composable_rust_runtime::{EffectHandle, Store};
+    use composable_rust_runtime::{EffectHandle, Store, StoreError};
     use std::collections::VecDeque;
     use std::fmt::Debug;
     use std::sync::{Arc, Mutex};
@@ -925,7 +1020,11 @@ pub mod test_store {
         /// # Returns
         ///
         /// An [`EffectHandle`] for waiting on effect completion
-        pub async fn send(&self, action: A) -> EffectHandle {
+        ///
+        /// # Errors
+        ///
+        /// Returns [`StoreError::ShutdownInProgress`] if the store is shutting down.
+        pub async fn send(&self, action: A) -> Result<EffectHandle, StoreError> {
             // TODO: Use queued feedback destination
             // For now, just use normal store send
             self.store.send(action).await
@@ -1129,7 +1228,7 @@ pub use test_store::{ExpectedActions, TestStore, TestStoreError};
 #[allow(dead_code)] // Test types may have unused variants
 mod tests {
     use super::*;
-    use composable_rust_core::{effect::Effect, reducer::Reducer};
+    use composable_rust_core::{effect::Effect, reducer::Reducer, smallvec, SmallVec};
 
     #[test]
     fn test_fixed_clock() {
@@ -1223,25 +1322,25 @@ mod tests {
             state: &mut Self::State,
             action: Self::Action,
             _env: &Self::Environment,
-        ) -> Vec<Effect<Self::Action>> {
+        ) -> SmallVec<[Effect<Self::Action>; 4]> {
             match action {
                 TestAction::Action1 => {
                     state.value += 1;
-                    vec![]
+                    smallvec![]
                 },
                 TestAction::Action2 => {
                     state.value += 2;
-                    vec![]
+                    smallvec![]
                 },
                 TestAction::Action3 => {
                     state.value += 3;
-                    vec![]
+                    smallvec![]
                 },
                 TestAction::ProduceAction(action) => {
-                    vec![Effect::Future(Box::pin(async move { Some(*action) }))]
+                    smallvec![Effect::Future(Box::pin(async move { Some(*action) }))]
                 },
                 TestAction::ProduceMultiple(actions) => {
-                    vec![Effect::Parallel(
+                    smallvec![Effect::Parallel(
                         actions
                             .into_iter()
                             .map(|a| Effect::Future(Box::pin(async move { Some(a) })))
@@ -1550,5 +1649,149 @@ mod tests {
             let mut queue = store.effect_queue.lock().unwrap();
             queue.clear();
         }
+    }
+
+    // ========== InMemoryEventStore append_batch Atomicity Tests ==========
+
+    #[tokio::test]
+    async fn test_inmemory_append_batch_atomicity() {
+        use composable_rust_core::event::SerializedEvent;
+        use composable_rust_core::event_store::{BatchAppend, EventStore};
+        use composable_rust_core::stream::{StreamId, Version};
+
+        let store = mocks::InMemoryEventStore::new();
+
+        let stream1 = StreamId::new("atomic-test-1");
+        let stream2 = StreamId::new("atomic-test-2");
+
+        // Pre-populate stream1 with an event
+        store
+            .append_events(
+                stream1.clone(),
+                None,
+                vec![SerializedEvent::new(
+                    "PreExisting".to_string(),
+                    b"data".to_vec(),
+                    None,
+                )],
+            )
+            .await
+            .unwrap();
+
+        // Create batch where stream1 will fail concurrency check
+        let batch = vec![
+            BatchAppend::new(
+                stream1.clone(),
+                Some(Version::new(5)), // WRONG! Should be 1
+                vec![SerializedEvent::new(
+                    "ShouldFail".to_string(),
+                    b"fail".to_vec(),
+                    None,
+                )],
+            ),
+            BatchAppend::new(
+                stream2.clone(),
+                Some(Version::new(0)),
+                vec![SerializedEvent::new(
+                    "ShouldSucceed".to_string(),
+                    b"success".to_vec(),
+                    None,
+                )],
+            ),
+        ];
+
+        // Execute batch
+        let results = store.append_batch(batch).await.unwrap();
+
+        // Verify results
+        assert_eq!(results.len(), 2);
+        assert!(results[0].is_err(), "Stream 1 should fail");
+        assert!(results[1].is_ok(), "Stream 2 should succeed");
+
+        // CRITICAL: Verify stream1 was NOT modified (atomicity)
+        let stream1_events = store.load_events(stream1, None).await.unwrap();
+        assert_eq!(
+            stream1_events.len(),
+            1,
+            "Stream 1 should still have only 1 event - not modified by failed batch operation"
+        );
+        assert_eq!(stream1_events[0].event_type, "PreExisting");
+
+        // Verify stream2 WAS created
+        let stream2_events = store.load_events(stream2, None).await.unwrap();
+        assert_eq!(stream2_events.len(), 1);
+        assert_eq!(stream2_events[0].event_type, "ShouldSucceed");
+    }
+
+    #[tokio::test]
+    async fn test_inmemory_append_batch_all_succeed() {
+        use composable_rust_core::event::SerializedEvent;
+        use composable_rust_core::event_store::{BatchAppend, EventStore};
+        use composable_rust_core::stream::{StreamId, Version};
+
+        let store = mocks::InMemoryEventStore::new();
+
+        let stream1 = StreamId::new("batch-success-1");
+        let stream2 = StreamId::new("batch-success-2");
+
+        let batch = vec![
+            BatchAppend::new(
+                stream1.clone(),
+                Some(Version::new(0)),
+                vec![
+                    SerializedEvent::new("Event1".to_string(), b"data1".to_vec(), None),
+                    SerializedEvent::new("Event2".to_string(), b"data2".to_vec(), None),
+                ],
+            ),
+            BatchAppend::new(
+                stream2.clone(),
+                Some(Version::new(0)),
+                vec![SerializedEvent::new(
+                    "Event3".to_string(),
+                    b"data3".to_vec(),
+                    None,
+                )],
+            ),
+        ];
+
+        let results = store.append_batch(batch).await.unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert!(results[0].is_ok());
+        assert!(results[1].is_ok());
+
+        assert_eq!(results[0].as_ref().unwrap(), &Version::new(2));
+        assert_eq!(results[1].as_ref().unwrap(), &Version::new(1));
+
+        // Verify events were persisted
+        let stream1_events = store.load_events(stream1, None).await.unwrap();
+        assert_eq!(stream1_events.len(), 2);
+
+        let stream2_events = store.load_events(stream2, None).await.unwrap();
+        assert_eq!(stream2_events.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_inmemory_append_batch_empty_events() {
+        use composable_rust_core::event_store::{BatchAppend, EventStore, EventStoreError};
+        use composable_rust_core::stream::{StreamId, Version};
+
+        let store = mocks::InMemoryEventStore::new();
+
+        let stream1 = StreamId::new("batch-empty");
+
+        let batch = vec![BatchAppend::new(
+            stream1,
+            Some(Version::new(0)),
+            vec![], // Empty!
+        )];
+
+        let results = store.append_batch(batch).await.unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert!(matches!(
+            results[0],
+            Err(EventStoreError::DatabaseError(_))
+        ));
     }
 }

@@ -32,7 +32,7 @@
 //! # }
 //! ```
 
-use composable_rust_core::{effect::Effect, environment::Clock, reducer::Reducer};
+use composable_rust_core::{effect::Effect, environment::Clock, reducer::Reducer, smallvec, SmallVec};
 
 /// Counter state
 ///
@@ -120,7 +120,7 @@ impl<C: Clock> Reducer for CounterReducer<C> {
         state: &mut Self::State,
         action: Self::Action,
         _environment: &Self::Environment,
-    ) -> Vec<Effect<Self::Action>> {
+    ) -> SmallVec<[Effect<Self::Action>; 4]> {
         match action {
             CounterAction::Increment => {
                 state.count += 1;
@@ -134,7 +134,7 @@ impl<C: Clock> Reducer for CounterReducer<C> {
         }
 
         // Pure state machine - no side effects
-        vec![Effect::None]
+        smallvec![Effect::None]
     }
 }
 

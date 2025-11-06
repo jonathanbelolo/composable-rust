@@ -10,6 +10,7 @@ use composable_rust_core::event::SerializedEvent;
 use composable_rust_core::event_store::EventStore;
 use composable_rust_core::reducer::Reducer;
 use composable_rust_core::stream::{StreamId, Version};
+use composable_rust_core::{smallvec, SmallVec};
 use std::sync::Arc;
 
 /// Environment for order processing containing dependencies
@@ -222,7 +223,7 @@ impl Reducer for OrderReducer {
         state: &mut Self::State,
         action: Self::Action,
         env: &Self::Environment,
-    ) -> Vec<Effect<Self::Action>> {
+    ) -> SmallVec<[Effect<Self::Action>; 4]> {
         match action {
             // ========== Commands ==========
             OrderAction::PlaceOrder {
@@ -240,7 +241,7 @@ impl Reducer for OrderReducer {
                             error: error.clone(),
                         },
                     );
-                    return vec![Effect::None];
+                    return smallvec![Effect::None];
                 }
 
                 // Calculate total
@@ -262,7 +263,7 @@ impl Reducer for OrderReducer {
                 // For existing orders (shouldn't happen due to validation), use current version
                 let expected_version = state.version;
 
-                vec![Self::create_append_effect(
+                smallvec![Self::create_append_effect(
                     Arc::clone(&env.event_store),
                     stream_id,
                     expected_version,
@@ -281,7 +282,7 @@ impl Reducer for OrderReducer {
                             error: error.clone(),
                         },
                     );
-                    return vec![Effect::None];
+                    return smallvec![Effect::None];
                 }
 
                 // Create event
@@ -297,7 +298,7 @@ impl Reducer for OrderReducer {
                 // Use current version from state for optimistic concurrency
                 let expected_version = state.version;
 
-                vec![Self::create_append_effect(
+                smallvec![Self::create_append_effect(
                     Arc::clone(&env.event_store),
                     stream_id,
                     expected_version,
@@ -316,7 +317,7 @@ impl Reducer for OrderReducer {
                             error: error.clone(),
                         },
                     );
-                    return vec![Effect::None];
+                    return smallvec![Effect::None];
                 }
 
                 // Create event
@@ -332,7 +333,7 @@ impl Reducer for OrderReducer {
                 // Use current version from state for optimistic concurrency
                 let expected_version = state.version;
 
-                vec![Self::create_append_effect(
+                smallvec![Self::create_append_effect(
                     Arc::clone(&env.event_store),
                     stream_id,
                     expected_version,
@@ -355,7 +356,7 @@ impl Reducer for OrderReducer {
                     Some(v) => Some(v.next()),
                 };
 
-                vec![Effect::None]
+                smallvec![Effect::None]
             },
 
             OrderAction::EventPersisted { event, version } => {
@@ -364,7 +365,7 @@ impl Reducer for OrderReducer {
                 // Update version to match the last event appended
                 // This must match the replay logic where version = 1 for first event, 2 for second, etc.
                 state.version = Some(Version::new(version));
-                vec![Effect::None]
+                smallvec![Effect::None]
             },
 
             OrderAction::ValidationFailed { error } => {
@@ -373,7 +374,7 @@ impl Reducer for OrderReducer {
                 // 2. Event store operation failures (from effect callbacks)
                 // In both cases, we've already logged and applied to state, so just continue
                 tracing::debug!("ValidationFailed processed: {error}");
-                vec![Effect::None]
+                smallvec![Effect::None]
             },
         }
     }

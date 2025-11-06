@@ -1,0 +1,29 @@
+[package]
+name = "metrics-demo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Example demonstrating Prometheus metrics export"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Local dependencies
+composable-rust-core = { path = "../../core" }
+composable-rust-runtime = { path = "../../runtime" }
+
+# Async
+tokio = { workspace = true }
+
+# Observability
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+metrics = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
