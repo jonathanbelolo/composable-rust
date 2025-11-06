@@ -8,6 +8,7 @@ members = [
     "redpanda",
     "examples/counter",
     "examples/order-processing",
+    "examples/checkout-saga",
 ]
 
 [workspace.package]

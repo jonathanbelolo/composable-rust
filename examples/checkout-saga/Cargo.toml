@@ -1,0 +1,43 @@
+[package]
+name = "checkout-saga"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Checkout Saga example demonstrating multi-aggregate coordination with compensation"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Local dependencies
+composable-rust-core = { path = "../../core" }
+composable-rust-runtime = { path = "../../runtime" }
+composable-rust-testing = { path = "../../testing" }
+
+# Async runtime
+tokio = { workspace = true }
+futures = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+bincode = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# Observability
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# UUID generation
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tokio-test = { workspace = true }
