@@ -127,6 +127,97 @@ impl PostgresEventStore {
     pub const fn pool(&self) -> &PgPool {
         &self.pool
     }
+
+    /// Run database migrations.
+    ///
+    /// This runs all pending SQL migrations from the `migrations/` directory.
+    /// Migrations are automatically embedded at compile time and tracked in the
+    /// `_sqlx_migrations` table.
+    ///
+    /// # Idempotency
+    ///
+    /// This method is idempotent - running it multiple times is safe. Already-applied
+    /// migrations will be skipped.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EventStoreError::DatabaseError`] if:
+    /// - A migration file has invalid SQL syntax
+    /// - A migration fails to execute (e.g., constraint violation)
+    /// - Database connection is lost during migration
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use composable_rust_postgres::PostgresEventStore;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let store = PostgresEventStore::new("postgres://localhost/mydb").await?;
+    ///
+    /// // Run migrations before using the event store
+    /// store.run_migrations().await?;
+    ///
+    /// // Now the database schema is ready
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn run_migrations(&self) -> Result<(), EventStoreError> {
+        sqlx::migrate!("../migrations")
+            .run(&self.pool)
+            .await
+            .map_err(|e| EventStoreError::DatabaseError(format!("Migration failed: {e}")))?;
+
+        tracing::info!("Database migrations completed successfully");
+        Ok(())
+    }
+}
+
+/// Run database migrations on a database URL.
+///
+/// This is a convenience function for running migrations during application startup
+/// without creating a [`PostgresEventStore`] instance first. Useful for initialization
+/// scripts and deployment automation.
+///
+/// # Idempotency
+///
+/// This function is idempotent - running it multiple times is safe. Already-applied
+/// migrations will be skipped.
+///
+/// # Errors
+///
+/// Returns [`EventStoreError::DatabaseError`] if:
+/// - The database URL is invalid
+/// - Cannot connect to the database
+/// - A migration file has invalid SQL syntax
+/// - A migration fails to execute
+///
+/// # Example
+///
+/// ```no_run
+/// use composable_rust_postgres::run_migrations;
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// // Run migrations during application startup
+/// run_migrations("postgres://localhost/mydb").await?;
+///
+/// // Now safe to create the event store
+/// # Ok(())
+/// # }
+/// ```
+pub async fn run_migrations(database_url: &str) -> Result<(), EventStoreError> {
+    let pool = PgPoolOptions::new()
+        .max_connections(1) // Only need one connection for migrations
+        .connect(database_url)
+        .await
+        .map_err(|e| EventStoreError::DatabaseError(format!("Connection failed: {e}")))?;
+
+    sqlx::migrate!("../migrations")
+        .run(&pool)
+        .await
+        .map_err(|e| EventStoreError::DatabaseError(format!("Migration failed: {e}")))?;
+
+    tracing::info!("Database migrations completed successfully");
+    Ok(())
 }
 
 impl EventStore for PostgresEventStore {

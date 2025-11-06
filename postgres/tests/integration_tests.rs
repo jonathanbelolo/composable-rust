@@ -16,55 +16,14 @@ use composable_rust_postgres::PostgresEventStore;
 use testcontainers::{ContainerAsync, runners::AsyncRunner};
 use testcontainers_modules::postgres::Postgres;
 
-/// Run database migrations
+/// Run database migrations using sqlx migrate
 async fn run_migrations(pool: &sqlx::PgPool) {
-    let mut conn = pool
-        .acquire()
+    sqlx::migrate!("../migrations")
+        .run(pool)
         .await
-        .expect("Failed to acquire connection for migrations");
+        .expect("Failed to run migrations");
 
-    sqlx::query(
-        r"
-        CREATE TABLE IF NOT EXISTS events (
-            stream_id TEXT NOT NULL,
-            version BIGINT NOT NULL,
-            event_type TEXT NOT NULL,
-            event_data BYTEA NOT NULL,
-            metadata JSONB,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            PRIMARY KEY (stream_id, version)
-        )
-        ",
-    )
-    .execute(&mut *conn)
-    .await
-    .expect("Failed to create events table");
-
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at)")
-        .execute(&mut *conn)
-        .await
-        .expect("Failed to create created_at index");
-
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type)")
-        .execute(&mut *conn)
-        .await
-        .expect("Failed to create event_type index");
-
-    sqlx::query(
-        r"
-        CREATE TABLE IF NOT EXISTS snapshots (
-            stream_id TEXT PRIMARY KEY,
-            version BIGINT NOT NULL,
-            state_data BYTEA NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-        ",
-    )
-    .execute(&mut *conn)
-    .await
-    .expect("Failed to create snapshots table");
-
-    drop(conn);
+    // Small delay to ensure migrations are fully applied
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 }
 
