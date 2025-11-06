@@ -4,6 +4,18 @@
 //! 1. Placing an order with validation
 //! 2. Shipping an order
 //! 3. State reconstruction from events (simulating process restart)
+//!
+//! # Usage
+//!
+//! Run with in-memory event store (default):
+//! ```bash
+//! cargo run --bin order-processing
+//! ```
+//!
+//! Run with `PostgreSQL` event store:
+//! ```bash
+//! DATABASE_URL=postgres://user:pass@localhost/db cargo run --bin order-processing --features postgres
+//! ```
 
 #![allow(clippy::expect_used)] // Example code demonstrates error handling with expect
 #![allow(clippy::too_many_lines)] // Example main function demonstrates complete workflow
@@ -17,7 +29,7 @@ use order_processing::{
     OrderStatus,
 };
 use std::sync::Arc;
-use tracing::{info, Level};
+use tracing::{Level, info};
 use tracing_subscriber::FmtSubscriber;
 
 #[tokio::main]
@@ -30,9 +42,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("=== Order Processing Example: Event Sourcing Demo ===\n");
 
-    // Create event store (in-memory for this example)
-    let event_store: Arc<dyn composable_rust_core::event_store::EventStore> =
-        Arc::new(InMemoryEventStore::new());
+    // Create event store (in-memory or PostgreSQL based on feature flag)
+    let event_store: Arc<dyn composable_rust_core::event_store::EventStore> = {
+        #[cfg(feature = "postgres")]
+        {
+            if let Ok(database_url) = std::env::var("DATABASE_URL") {
+                info!("Using PostgreSQL event store: {}", database_url);
+                Arc::new(
+                    composable_rust_postgres::PostgresEventStore::new(&database_url)
+                        .await
+                        .expect("Failed to connect to PostgreSQL"),
+                )
+            } else {
+                info!("DATABASE_URL not set, falling back to in-memory event store");
+                Arc::new(InMemoryEventStore::new())
+            }
+        }
+        #[cfg(not(feature = "postgres"))]
+        {
+            info!("Using in-memory event store (compile with --features postgres for PostgreSQL)");
+            Arc::new(InMemoryEventStore::new())
+        }
+    };
+
     let clock: Arc<dyn composable_rust_core::environment::Clock> = Arc::new(SystemClock);
     let env = OrderEnvironment::new(Arc::clone(&event_store), Arc::clone(&clock));
 
@@ -74,11 +106,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Send PlaceOrder command
-    let mut handle = store.send(OrderAction::PlaceOrder {
-        order_id: order_id.clone(),
-        customer_id: customer_id.clone(),
-        items: items.clone(),
-    }).await;
+    let mut handle = store
+        .send(OrderAction::PlaceOrder {
+            order_id: order_id.clone(),
+            customer_id: customer_id.clone(),
+            items: items.clone(),
+        })
+        .await;
 
     // Wait for effects to complete
     handle.wait().await;
@@ -96,10 +130,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tracking = "TRACK-ABC123XYZ".to_string();
     info!("  Tracking number: {}", tracking);
 
-    let mut handle = store.send(OrderAction::ShipOrder {
-        order_id: order_id.clone(),
-        tracking: tracking.clone(),
-    }).await;
+    let mut handle = store
+        .send(OrderAction::ShipOrder {
+            order_id: order_id.clone(),
+            tracking: tracking.clone(),
+        })
+        .await;
 
     handle.wait().await;
 
@@ -177,10 +213,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Try to cancel an already-shipped order (should fail validation)
     info!("  Attempting to cancel an already-shipped order...");
 
-    let mut handle = new_store.send(OrderAction::CancelOrder {
-        order_id: order_id.clone(),
-        reason: "Customer changed mind".to_string(),
-    }).await;
+    let mut handle = new_store
+        .send(OrderAction::CancelOrder {
+            order_id: order_id.clone(),
+            reason: "Customer changed mind".to_string(),
+        })
+        .await;
 
     handle.wait().await;
 

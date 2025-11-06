@@ -67,34 +67,31 @@ impl OrderReducer {
                 state.items.clone_from(items);
                 state.total = *total;
                 state.status = OrderStatus::Placed;
-            }
+            },
             OrderAction::OrderCancelled { .. } => {
                 state.status = OrderStatus::Cancelled;
-            }
+            },
             OrderAction::OrderShipped { tracking, .. } => {
                 state.status = OrderStatus::Shipped;
                 // Could store tracking number in state if needed
                 tracing::info!("Order shipped with tracking: {tracking}");
-            }
+            },
             OrderAction::ValidationFailed { error } => {
                 // Track validation failure in state
                 state.last_error = Some(error.clone());
-            }
+            },
             // Commands and internal actions don't modify state directly
             OrderAction::PlaceOrder { .. }
             | OrderAction::CancelOrder { .. }
             | OrderAction::ShipOrder { .. }
             | OrderAction::EventPersisted { .. } => {
                 // Commands and internal feedback actions are not applied during event replay
-            }
+            },
         }
     }
 
     /// Validates a `PlaceOrder` command
-    fn validate_place_order(
-        state: &OrderState,
-        items: &[LineItem],
-    ) -> Result<(), String> {
+    fn validate_place_order(state: &OrderState, items: &[LineItem]) -> Result<(), String> {
         if state.order_id.is_some() {
             return Err("Order already placed".to_string());
         }
@@ -164,8 +161,8 @@ impl OrderReducer {
     /// Serializes an action (event) to bytes using bincode
     fn serialize_event(action: &OrderAction) -> Result<SerializedEvent, String> {
         let event_type = action.event_type().to_string();
-        let data = bincode::serialize(action)
-            .map_err(|e| format!("Failed to serialize event: {e}"))?;
+        let data =
+            bincode::serialize(action).map_err(|e| format!("Failed to serialize event: {e}"))?;
 
         Ok(SerializedEvent::new(event_type, data, None))
     }
@@ -183,7 +180,7 @@ impl OrderReducer {
             Err(error) => {
                 tracing::error!("Failed to serialize event: {error}");
                 return Effect::None;
-            }
+            },
         };
 
         Effect::EventStore(EventStoreOperation::AppendEvents {
@@ -219,6 +216,7 @@ impl Reducer for OrderReducer {
     type Environment = OrderEnvironment;
 
     #[allow(clippy::cognitive_complexity)] // Large match statement is appropriate for reducer
+    #[allow(clippy::too_many_lines)] // Comprehensive reducer logic for demonstration
     fn reduce(
         &self,
         state: &mut Self::State,
@@ -236,9 +234,12 @@ impl Reducer for OrderReducer {
                 if let Err(error) = Self::validate_place_order(state, &items) {
                     tracing::warn!("PlaceOrder validation failed: {error}");
                     // Apply validation failure to state so it's observable
-                    Self::apply_event(state, &OrderAction::ValidationFailed {
-                        error: error.clone(),
-                    });
+                    Self::apply_event(
+                        state,
+                        &OrderAction::ValidationFailed {
+                            error: error.clone(),
+                        },
+                    );
                     return vec![Effect::None];
                 }
 
@@ -267,16 +268,19 @@ impl Reducer for OrderReducer {
                     expected_version,
                     event,
                 )]
-            }
+            },
 
             OrderAction::CancelOrder { order_id, reason } => {
                 // Validate command
                 if let Err(error) = Self::validate_cancel_order(state, &order_id) {
                     tracing::warn!("CancelOrder validation failed: {error}");
                     // Apply validation failure to state so it's observable
-                    Self::apply_event(state, &OrderAction::ValidationFailed {
-                        error: error.clone(),
-                    });
+                    Self::apply_event(
+                        state,
+                        &OrderAction::ValidationFailed {
+                            error: error.clone(),
+                        },
+                    );
                     return vec![Effect::None];
                 }
 
@@ -299,19 +303,19 @@ impl Reducer for OrderReducer {
                     expected_version,
                     event,
                 )]
-            }
+            },
 
-            OrderAction::ShipOrder {
-                order_id,
-                tracking,
-            } => {
+            OrderAction::ShipOrder { order_id, tracking } => {
                 // Validate command
                 if let Err(error) = Self::validate_ship_order(state, &order_id, &tracking) {
                     tracing::warn!("ShipOrder validation failed: {error}");
                     // Apply validation failure to state so it's observable
-                    Self::apply_event(state, &OrderAction::ValidationFailed {
-                        error: error.clone(),
-                    });
+                    Self::apply_event(
+                        state,
+                        &OrderAction::ValidationFailed {
+                            error: error.clone(),
+                        },
+                    );
                     return vec![Effect::None];
                 }
 
@@ -334,7 +338,7 @@ impl Reducer for OrderReducer {
                     expected_version,
                     event,
                 )]
-            }
+            },
 
             // ========== Events ==========
             OrderAction::OrderPlaced { .. }
@@ -352,7 +356,7 @@ impl Reducer for OrderReducer {
                 };
 
                 vec![Effect::None]
-            }
+            },
 
             OrderAction::EventPersisted { event, version } => {
                 // Apply the persisted event to state
@@ -361,7 +365,7 @@ impl Reducer for OrderReducer {
                 // so the next expected version is version + 1
                 state.version = Some(Version::new(version + 1));
                 vec![Effect::None]
-            }
+            },
 
             OrderAction::ValidationFailed { error } => {
                 // ValidationFailed can come from either:
@@ -370,7 +374,7 @@ impl Reducer for OrderReducer {
                 // In both cases, we've already logged and applied to state, so just continue
                 tracing::debug!("ValidationFailed processed: {error}");
                 vec![Effect::None]
-            }
+            },
         }
     }
 }
@@ -468,7 +472,8 @@ mod tests {
         state.order_id = Some(OrderId::new("order-123".to_string()));
         state.status = OrderStatus::Placed;
 
-        let result = OrderReducer::validate_ship_order(&state, state.order_id.as_ref().unwrap(), "");
+        let result =
+            OrderReducer::validate_ship_order(&state, state.order_id.as_ref().unwrap(), "");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Tracking number"));
     }

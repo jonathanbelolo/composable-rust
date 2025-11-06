@@ -70,6 +70,4 @@ pub mod types;
 
 // Re-export commonly used types
 pub use reducer::{OrderEnvironment, OrderReducer};
-pub use types::{
-    CustomerId, LineItem, Money, OrderAction, OrderId, OrderState, OrderStatus,
-};
+pub use types::{CustomerId, LineItem, Money, OrderAction, OrderId, OrderState, OrderStatus};

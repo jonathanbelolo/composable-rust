@@ -194,7 +194,8 @@ pub mod mocks {
     }
 
     /// Type alias for snapshot storage: maps `stream_id` to `(version, state_bytes)`
-    type SnapshotMap = std::collections::HashMap<String, (composable_rust_core::stream::Version, Vec<u8>)>;
+    type SnapshotMap =
+        std::collections::HashMap<String, (composable_rust_core::stream::Version, Vec<u8>)>;
 
     /// In-memory event store for fast, deterministic unit tests.
     ///
@@ -230,7 +231,14 @@ pub mod mocks {
     #[derive(Debug, Clone, Default)]
     pub struct InMemoryEventStore {
         /// Events indexed by `stream_id`, stored in version order
-        events: Arc<RwLock<std::collections::HashMap<String, Vec<composable_rust_core::event::SerializedEvent>>>>,
+        events: Arc<
+            RwLock<
+                std::collections::HashMap<
+                    String,
+                    Vec<composable_rust_core::event::SerializedEvent>,
+                >,
+            >,
+        >,
         /// Snapshots indexed by `stream_id`
         snapshots: Arc<RwLock<SnapshotMap>>,
     }
@@ -273,7 +281,10 @@ pub mod mocks {
         /// Panics if the `RwLock` is poisoned.
         #[must_use]
         #[allow(clippy::expect_used)] // Test infrastructure, lock poison is unrecoverable
-        pub fn current_version(&self, stream_id: &composable_rust_core::stream::StreamId) -> composable_rust_core::stream::Version {
+        pub fn current_version(
+            &self,
+            stream_id: &composable_rust_core::stream::StreamId,
+        ) -> composable_rust_core::stream::Version {
             let events = self
                 .events
                 .read()
@@ -281,7 +292,9 @@ pub mod mocks {
 
             events
                 .get(stream_id.as_str())
-                .map_or(composable_rust_core::stream::Version::new(0), |v| composable_rust_core::stream::Version::new(v.len() as u64))
+                .map_or(composable_rust_core::stream::Version::new(0), |v| {
+                    composable_rust_core::stream::Version::new(v.len() as u64)
+                })
         }
 
         /// Get the total number of events in a stream.
@@ -325,21 +338,35 @@ pub mod mocks {
             stream_id: composable_rust_core::stream::StreamId,
             expected_version: Option<composable_rust_core::stream::Version>,
             mut events: Vec<composable_rust_core::event::SerializedEvent>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<composable_rust_core::stream::Version, composable_rust_core::event_store::EventStoreError>> + Send + '_>> {
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            composable_rust_core::stream::Version,
+                            composable_rust_core::event_store::EventStoreError,
+                        >,
+                    > + Send
+                    + '_,
+            >,
+        > {
             Box::pin(async move {
                 if events.is_empty() {
-                    return Err(composable_rust_core::event_store::EventStoreError::DatabaseError(
-                        "Cannot append empty event list".to_string(),
-                    ));
+                    return Err(
+                        composable_rust_core::event_store::EventStoreError::DatabaseError(
+                            "Cannot append empty event list".to_string(),
+                        ),
+                    );
                 }
 
-                let mut store = self
-                    .events
-                    .write()
-                    .map_err(|e| composable_rust_core::event_store::EventStoreError::DatabaseError(format!("Lock poisoned: {e}")))?;
+                let mut store = self.events.write().map_err(|e| {
+                    composable_rust_core::event_store::EventStoreError::DatabaseError(format!(
+                        "Lock poisoned: {e}"
+                    ))
+                })?;
 
                 let stream_events = store.entry(stream_id.as_str().to_string()).or_default();
-                let current_version = composable_rust_core::stream::Version::new(stream_events.len() as u64);
+                let current_version =
+                    composable_rust_core::stream::Version::new(stream_events.len() as u64);
 
                 // Check optimistic concurrency
                 if let Some(expected) = expected_version {
@@ -354,7 +381,8 @@ pub mod mocks {
 
                 // Append events
                 stream_events.append(&mut events);
-                let new_version = composable_rust_core::stream::Version::new(stream_events.len() as u64);
+                let new_version =
+                    composable_rust_core::stream::Version::new(stream_events.len() as u64);
 
                 Ok(new_version - 1)
             })
@@ -364,23 +392,35 @@ pub mod mocks {
             &self,
             stream_id: composable_rust_core::stream::StreamId,
             from_version: Option<composable_rust_core::stream::Version>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<composable_rust_core::event::SerializedEvent>, composable_rust_core::event_store::EventStoreError>> + Send + '_>> {
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            Vec<composable_rust_core::event::SerializedEvent>,
+                            composable_rust_core::event_store::EventStoreError,
+                        >,
+                    > + Send
+                    + '_,
+            >,
+        > {
             Box::pin(async move {
-                let store = self
-                    .events
-                    .read()
-                    .map_err(|e| composable_rust_core::event_store::EventStoreError::DatabaseError(format!("Lock poisoned: {e}")))?;
+                let store = self.events.read().map_err(|e| {
+                    composable_rust_core::event_store::EventStoreError::DatabaseError(format!(
+                        "Lock poisoned: {e}"
+                    ))
+                })?;
 
                 let stream_events = store.get(stream_id.as_str());
 
                 match (stream_events, from_version) {
                     (Some(events), Some(from_ver)) => {
-                        let start_idx = usize::try_from(from_ver.value())
-                            .map_err(|e| composable_rust_core::event_store::EventStoreError::DatabaseError(
-                                format!("Version too large for usize: {e}")
-                            ))?;
+                        let start_idx = usize::try_from(from_ver.value()).map_err(|e| {
+                            composable_rust_core::event_store::EventStoreError::DatabaseError(
+                                format!("Version too large for usize: {e}"),
+                            )
+                        })?;
                         Ok(events.get(start_idx..).unwrap_or(&[]).to_vec())
-                    }
+                    },
                     (Some(events), None) => Ok(events.clone()),
                     (None, _) => Ok(vec![]),
                 }
@@ -392,12 +432,20 @@ pub mod mocks {
             stream_id: composable_rust_core::stream::StreamId,
             version: composable_rust_core::stream::Version,
             state: Vec<u8>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), composable_rust_core::event_store::EventStoreError>> + Send + '_>> {
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<(), composable_rust_core::event_store::EventStoreError>,
+                    > + Send
+                    + '_,
+            >,
+        > {
             Box::pin(async move {
-                let mut store = self
-                    .snapshots
-                    .write()
-                    .map_err(|e| composable_rust_core::event_store::EventStoreError::DatabaseError(format!("Lock poisoned: {e}")))?;
+                let mut store = self.snapshots.write().map_err(|e| {
+                    composable_rust_core::event_store::EventStoreError::DatabaseError(format!(
+                        "Lock poisoned: {e}"
+                    ))
+                })?;
 
                 store.insert(stream_id.as_str().to_string(), (version, state));
                 Ok(())
@@ -407,12 +455,23 @@ pub mod mocks {
         fn load_snapshot(
             &self,
             stream_id: composable_rust_core::stream::StreamId,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<(composable_rust_core::stream::Version, Vec<u8>)>, composable_rust_core::event_store::EventStoreError>> + Send + '_>> {
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            Option<(composable_rust_core::stream::Version, Vec<u8>)>,
+                            composable_rust_core::event_store::EventStoreError,
+                        >,
+                    > + Send
+                    + '_,
+            >,
+        > {
             Box::pin(async move {
-                let store = self
-                    .snapshots
-                    .read()
-                    .map_err(|e| composable_rust_core::event_store::EventStoreError::DatabaseError(format!("Lock poisoned: {e}")))?;
+                let store = self.snapshots.read().map_err(|e| {
+                    composable_rust_core::event_store::EventStoreError::DatabaseError(format!(
+                        "Lock poisoned: {e}"
+                    ))
+                })?;
 
                 Ok(store.get(stream_id.as_str()).cloned())
             })

@@ -663,7 +663,10 @@ pub mod store {
                                     event_count = events.len(),
                                     "Executing append_events"
                                 );
-                                match event_store.append_events(stream_id, expected_version, events).await {
+                                match event_store
+                                    .append_events(stream_id, expected_version, events)
+                                    .await
+                                {
                                     Ok(version) => {
                                         tracing::debug!(new_version = ?version, "append_events succeeded");
                                         on_success(version)
@@ -688,7 +691,10 @@ pub mod store {
                                 );
                                 match event_store.load_events(stream_id, from_version).await {
                                     Ok(events) => {
-                                        tracing::debug!(event_count = events.len(), "load_events succeeded");
+                                        tracing::debug!(
+                                            event_count = events.len(),
+                                            "load_events succeeded"
+                                        );
                                         on_success(events)
                                     },
                                     Err(error) => {
@@ -731,7 +737,10 @@ pub mod store {
                                 tracing::debug!(stream_id = %stream_id, "Executing load_snapshot");
                                 match event_store.load_snapshot(stream_id).await {
                                     Ok(snapshot) => {
-                                        tracing::debug!(has_snapshot = snapshot.is_some(), "load_snapshot succeeded");
+                                        tracing::debug!(
+                                            has_snapshot = snapshot.is_some(),
+                                            "load_snapshot succeeded"
+                                        );
                                         on_success(snapshot)
                                     },
                                     Err(error) => {
@@ -744,7 +753,9 @@ pub mod store {
 
                         // Send action back to store if callback produced one
                         if let Some(action) = action {
-                            tracing::trace!("EventStore operation produced an action, sending to store");
+                            tracing::trace!(
+                                "EventStore operation produced an action, sending to store"
+                            );
                             let _ = store.send(action).await;
                         } else {
                             tracing::trace!("EventStore operation completed with no action");
@@ -1076,16 +1087,36 @@ mod tests {
         // Test action for EventStore effects
         #[derive(Debug, Clone)]
         enum EventStoreAction {
-            AppendEvents { stream_id: String, events: Vec<String> },
-            EventsAppended { version: u64 },
-            AppendFailed { error: String },
-            LoadEvents { stream_id: String },
-            EventsLoaded { count: usize },
-            LoadFailed { error: String },
-            SaveSnapshot { stream_id: String, version: u64 },
+            AppendEvents {
+                stream_id: String,
+                events: Vec<String>,
+            },
+            EventsAppended {
+                version: u64,
+            },
+            AppendFailed {
+                error: String,
+            },
+            LoadEvents {
+                stream_id: String,
+            },
+            EventsLoaded {
+                count: usize,
+            },
+            LoadFailed {
+                error: String,
+            },
+            SaveSnapshot {
+                stream_id: String,
+                version: u64,
+            },
             SnapshotSaved,
-            LoadSnapshot { stream_id: String },
-            SnapshotLoaded { found: bool },
+            LoadSnapshot {
+                stream_id: String,
+            },
+            SnapshotLoaded {
+                found: bool,
+            },
         }
 
         // Test state for EventStore
@@ -1164,7 +1195,9 @@ mod tests {
                             stream_id: StreamId::new(&stream_id),
                             from_version: None,
                             on_success: Box::new(|events| {
-                                Some(EventStoreAction::EventsLoaded { count: events.len() })
+                                Some(EventStoreAction::EventsLoaded {
+                                    count: events.len(),
+                                })
                             }),
                             on_error: Box::new(|error| {
                                 Some(EventStoreAction::LoadFailed {

@@ -377,38 +377,46 @@ pub mod effect {
                     .field("action", action)
                     .finish(),
                 Effect::Future(_) => write!(f, "Effect::Future(<future>)"),
-                Effect::EventStore(op) => {
-                    match op {
-                        EventStoreOperation::AppendEvents { stream_id, expected_version, events, .. } => {
-                            f.debug_struct("Effect::EventStore::AppendEvents")
-                                .field("stream_id", stream_id)
-                                .field("expected_version", expected_version)
-                                .field("event_count", &events.len())
-                                .field("event_store", &"<event_store>")
-                                .finish()
-                        },
-                        EventStoreOperation::LoadEvents { stream_id, from_version, .. } => {
-                            f.debug_struct("Effect::EventStore::LoadEvents")
-                                .field("stream_id", stream_id)
-                                .field("from_version", from_version)
-                                .field("event_store", &"<event_store>")
-                                .finish()
-                        },
-                        EventStoreOperation::SaveSnapshot { stream_id, version, state, .. } => {
-                            f.debug_struct("Effect::EventStore::SaveSnapshot")
-                                .field("stream_id", stream_id)
-                                .field("version", version)
-                                .field("state_size", &state.len())
-                                .field("event_store", &"<event_store>")
-                                .finish()
-                        },
-                        EventStoreOperation::LoadSnapshot { stream_id, .. } => {
-                            f.debug_struct("Effect::EventStore::LoadSnapshot")
-                                .field("stream_id", stream_id)
-                                .field("event_store", &"<event_store>")
-                                .finish()
-                        },
-                    }
+                Effect::EventStore(op) => match op {
+                    EventStoreOperation::AppendEvents {
+                        stream_id,
+                        expected_version,
+                        events,
+                        ..
+                    } => f
+                        .debug_struct("Effect::EventStore::AppendEvents")
+                        .field("stream_id", stream_id)
+                        .field("expected_version", expected_version)
+                        .field("event_count", &events.len())
+                        .field("event_store", &"<event_store>")
+                        .finish(),
+                    EventStoreOperation::LoadEvents {
+                        stream_id,
+                        from_version,
+                        ..
+                    } => f
+                        .debug_struct("Effect::EventStore::LoadEvents")
+                        .field("stream_id", stream_id)
+                        .field("from_version", from_version)
+                        .field("event_store", &"<event_store>")
+                        .finish(),
+                    EventStoreOperation::SaveSnapshot {
+                        stream_id,
+                        version,
+                        state,
+                        ..
+                    } => f
+                        .debug_struct("Effect::EventStore::SaveSnapshot")
+                        .field("stream_id", stream_id)
+                        .field("version", version)
+                        .field("state_size", &state.len())
+                        .field("event_store", &"<event_store>")
+                        .finish(),
+                    EventStoreOperation::LoadSnapshot { stream_id, .. } => f
+                        .debug_struct("Effect::EventStore::LoadSnapshot")
+                        .field("stream_id", stream_id)
+                        .field("event_store", &"<event_store>")
+                        .finish(),
                 },
             }
         }
@@ -489,9 +497,7 @@ pub mod effect {
                     action: Box::new(f(*action)),
                 },
                 Effect::Future(fut) => Effect::Future(Box::pin(async move { fut.await.map(f) })),
-                Effect::EventStore(op) => {
-                    Effect::EventStore(map_event_store_operation(op, f))
-                },
+                Effect::EventStore(op) => Effect::EventStore(map_event_store_operation(op, f)),
             }
         }
     }
@@ -530,9 +536,7 @@ pub mod effect {
                 action: Box::new(f(*action)),
             },
             Effect::Future(fut) => Effect::Future(Box::pin(async move { fut.await.map(f) })),
-            Effect::EventStore(op) => {
-                Effect::EventStore(map_event_store_operation(op, f))
-            },
+            Effect::EventStore(op) => Effect::EventStore(map_event_store_operation(op, f)),
         }
     }
 
@@ -565,9 +569,7 @@ pub mod effect {
                     on_success: Box::new(move |version| {
                         on_success(version).map(|a| f_success.clone()(a))
                     }),
-                    on_error: Box::new(move |error| {
-                        on_error(error).map(|a| f_error.clone()(a))
-                    }),
+                    on_error: Box::new(move |error| on_error(error).map(|a| f_error.clone()(a))),
                 }
             },
             EventStoreOperation::LoadEvents {
@@ -586,9 +588,7 @@ pub mod effect {
                     on_success: Box::new(move |events| {
                         on_success(events).map(|a| f_success.clone()(a))
                     }),
-                    on_error: Box::new(move |error| {
-                        on_error(error).map(|a| f_error.clone()(a))
-                    }),
+                    on_error: Box::new(move |error| on_error(error).map(|a| f_error.clone()(a))),
                 }
             },
             EventStoreOperation::SaveSnapshot {
@@ -609,9 +609,7 @@ pub mod effect {
                     on_success: Box::new(move |unit| {
                         on_success(unit).map(|a| f_success.clone()(a))
                     }),
-                    on_error: Box::new(move |error| {
-                        on_error(error).map(|a| f_error.clone()(a))
-                    }),
+                    on_error: Box::new(move |error| on_error(error).map(|a| f_error.clone()(a))),
                 }
             },
             EventStoreOperation::LoadSnapshot {
@@ -628,9 +626,7 @@ pub mod effect {
                     on_success: Box::new(move |snapshot| {
                         on_success(snapshot).map(|a| f_success.clone()(a))
                     }),
-                    on_error: Box::new(move |error| {
-                        on_error(error).map(|a| f_error.clone()(a))
-                    }),
+                    on_error: Box::new(move |error| on_error(error).map(|a| f_error.clone()(a))),
                 }
             },
         }

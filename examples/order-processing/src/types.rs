@@ -463,8 +463,8 @@ mod tests {
         let serialized = SerializedEvent::new(event_type.clone(), data, None);
 
         // Deserialize
-        let deserialized = OrderAction::from_serialized(&serialized)
-            .expect("Failed to deserialize");
+        let deserialized =
+            OrderAction::from_serialized(&serialized).expect("Failed to deserialize");
 
         // Verify event type matches
         assert_eq!(original.event_type(), deserialized.event_type());

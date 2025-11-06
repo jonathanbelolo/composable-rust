@@ -17,6 +17,7 @@ workspace = true
 composable-rust-core = { path = "../../core" }
 composable-rust-runtime = { path = "../../runtime" }
 composable-rust-testing = { path = "../../testing" }
+composable-rust-postgres = { path = "../../postgres", optional = true }
 
 # Async
 tokio = { workspace = true }
@@ -40,6 +41,10 @@ chrono = { workspace = true }
 [dev-dependencies]
 proptest = { workspace = true }
 tokio-test = { workspace = true }
+
+[features]
+default = []
+postgres = ["dep:composable-rust-postgres"]
 
 [[bin]]
 name = "order-processing"
