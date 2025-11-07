@@ -1,6 +1,6 @@
 # API Reference
 
-Complete API documentation for Composable Rust Phase 1. For conceptual explanations, see [Core Concepts](concepts.md).
+Complete API documentation for Composable Rust (Phase 1, Phase 2, and Section 3). For conceptual explanations, see [Core Concepts](concepts.md).
 
 ---
 

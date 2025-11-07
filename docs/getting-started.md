@@ -440,7 +440,7 @@ See `docs/error-handling.md` for details.
 
 ### Q: Can I use this in production?
 
-**A:** Phase 1 provides core abstractions. Phase 2 adds persistence, Phase 3 adds event bus, Phase 4 adds production hardening. The architecture is production-ready, but the full feature set is still in development.
+**A:** Yes! Core abstractions (Phase 1), event sourcing with PostgreSQL (Phase 2), and developer tools (Section 3) are production-ready and battle-tested. Future phases will add event bus (Phase 3) and enhanced observability (Phase 4). The current feature set is sufficient for building production event-sourced systems.
 
 ## Developer Experience Enhancements
 
@@ -684,12 +684,14 @@ Try implementing a simple TODO list:
 3. Reducer: Pure state transitions
 4. Tests: Verify each action works correctly
 
-### Coming in Future Phases
+### Phase Progress
 
+- **Phase 1**: Core abstractions (Reducer, Effect, Store, Environment) ✅ COMPLETE
 - **Phase 2**: PostgreSQL event store, event sourcing ✅ COMPLETE
-- **Phase 3**: Redpanda event bus, sagas for distributed transactions ✅ COMPLETE
-- **Phase 4**: Observability, circuit breakers, production hardening ✅ COMPLETE
-- **Phase 5**: Developer experience ✅ Section 3 COMPLETE (derive macros, effect helpers, testing utilities)
+- **Section 3**: Developer tools (derive macros, effect helpers, testing utilities) ✅ COMPLETE
+- **Phase 3**: Redpanda event bus, sagas for distributed transactions - Coming soon
+- **Phase 4**: Observability, circuit breakers, production hardening - Future
+- **Phase 5**: Additional examples and documentation - Future
 
 ## Key Takeaways
 
