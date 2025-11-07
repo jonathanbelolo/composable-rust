@@ -33,16 +33,18 @@ CREATE INDEX IF NOT EXISTS idx_projection_checkpoints_updated
 
 -- Example: Custom projection table for order projections (queryable)
 --
--- This shows how to create a custom projection table with JSONB for
--- flexible schema and indexes for fast queries.
+-- This shows how to create a custom projection table optimized for queries.
+-- Each column represents data frequently queried in isolation.
 CREATE TABLE IF NOT EXISTS order_projections (
     id TEXT PRIMARY KEY,
     customer_id TEXT NOT NULL,
-    data JSONB NOT NULL,
-    total DECIMAL(10,2),
-    status TEXT,
-    created_at TIMESTAMPTZ NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    item_count INTEGER NOT NULL,
+    total_cents BIGINT NOT NULL,
+    status TEXT NOT NULL,
+    placed_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    tracking TEXT,
+    cancellation_reason TEXT
 );
 
 -- Indexes for common query patterns
@@ -52,9 +54,5 @@ CREATE INDEX IF NOT EXISTS idx_order_projections_customer
 CREATE INDEX IF NOT EXISTS idx_order_projections_status
     ON order_projections(status);
 
-CREATE INDEX IF NOT EXISTS idx_order_projections_created
-    ON order_projections(created_at DESC);
-
--- GIN index for JSONB queries (useful for flexible searching)
-CREATE INDEX IF NOT EXISTS idx_order_projections_data_gin
-    ON order_projections USING gin(data);
+CREATE INDEX IF NOT EXISTS idx_order_projections_placed_at
+    ON order_projections(placed_at DESC);
