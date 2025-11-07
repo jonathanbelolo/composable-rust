@@ -35,6 +35,9 @@ use composable_rust_core::environment::Clock;
 // Projection testing utilities
 mod projection_mocks;
 
+// Reducer testing utilities
+mod reducer_test;
+
 /// Mock implementations of Environment traits
 ///
 /// # Phase 1 Implementation
@@ -1225,6 +1228,7 @@ pub use mocks::{FixedClock, test_clock};
 pub use projection_mocks::{
     InMemoryProjectionCheckpoint, InMemoryProjectionStore, ProjectionTestHarness,
 };
+pub use reducer_test::{assertions, ReducerTest};
 pub use test_store::{ExpectedActions, TestStore, TestStoreError};
 
 // Placeholder test module

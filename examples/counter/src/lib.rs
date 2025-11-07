@@ -141,42 +141,51 @@ impl<C: Clock> Reducer for CounterReducer<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use composable_rust_testing::test_clock;
+    use composable_rust_testing::{assertions, test_clock, ReducerTest};
 
     #[test]
     fn test_increment() {
-        let mut state = CounterState::default();
-        let env = CounterEnvironment::new(test_clock());
-        let reducer = CounterReducer::new();
-
-        let effects = reducer.reduce(&mut state, CounterAction::Increment, &env);
-
-        assert_eq!(state.count, 1);
-        assert_eq!(effects.len(), 1);
+        ReducerTest::new(CounterReducer::new())
+            .with_env(CounterEnvironment::new(test_clock()))
+            .given_state(CounterState::default())
+            .when_action(CounterAction::Increment)
+            .then_state(|state| {
+                assert_eq!(state.count, 1);
+            })
+            .then_effects(|effects| {
+                assertions::assert_no_effects(effects);
+            })
+            .run();
     }
 
     #[test]
     fn test_decrement() {
-        let mut state = CounterState { count: 5 };
-        let env = CounterEnvironment::new(test_clock());
-        let reducer = CounterReducer::new();
-
-        let effects = reducer.reduce(&mut state, CounterAction::Decrement, &env);
-
-        assert_eq!(state.count, 4);
-        assert_eq!(effects.len(), 1);
+        ReducerTest::new(CounterReducer::new())
+            .with_env(CounterEnvironment::new(test_clock()))
+            .given_state(CounterState { count: 5 })
+            .when_action(CounterAction::Decrement)
+            .then_state(|state| {
+                assert_eq!(state.count, 4);
+            })
+            .then_effects(|effects| {
+                assertions::assert_no_effects(effects);
+            })
+            .run();
     }
 
     #[test]
     fn test_reset() {
-        let mut state = CounterState { count: 42 };
-        let env = CounterEnvironment::new(test_clock());
-        let reducer = CounterReducer::new();
-
-        let effects = reducer.reduce(&mut state, CounterAction::Reset, &env);
-
-        assert_eq!(state.count, 0);
-        assert_eq!(effects.len(), 1);
+        ReducerTest::new(CounterReducer::new())
+            .with_env(CounterEnvironment::new(test_clock()))
+            .given_state(CounterState { count: 42 })
+            .when_action(CounterAction::Reset)
+            .then_state(|state| {
+                assert_eq!(state.count, 0);
+            })
+            .then_effects(|effects| {
+                assertions::assert_no_effects(effects);
+            })
+            .run();
     }
 
     #[test]

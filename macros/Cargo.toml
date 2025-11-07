@@ -1,0 +1,27 @@
+[package]
+name = "composable-rust-macros"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85.0"
+authors = ["Composable Rust Contributors"]
+description = "Derive macros for Composable Rust framework"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/composable-rust/composable-rust"
+keywords = ["functional", "event-sourcing", "cqrs", "macros"]
+categories = ["development-tools", "rust-patterns"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"
+
+[dev-dependencies]
+composable-rust-core = { path = "../core" }
+chrono = "0.4"
+trybuild = "1"
+
+[lints]
+workspace = true
