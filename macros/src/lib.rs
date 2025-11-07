@@ -46,6 +46,12 @@ use syn::{parse_macro_input, DeriveInput, Data, Fields, Attribute};
 /// - `#[command]` - Mark a variant as a command
 /// - `#[event]` - Mark a variant as an event
 ///
+/// # Panics
+///
+/// This macro will produce a compile error (not a runtime panic) if:
+/// - Applied to a non-enum type
+/// - A variant has both `#[command]` and `#[event]` attributes
+///
 /// # Example
 ///
 /// ```ignore
@@ -74,6 +80,7 @@ use syn::{parse_macro_input, DeriveInput, Data, Fields, Attribute};
 /// assert!(!action.is_event());
 /// ```
 #[proc_macro_derive(Action, attributes(command, event))]
+#[allow(clippy::expect_used)] // Proc macro panics become compile errors, not runtime panics
 pub fn derive_action(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
@@ -114,9 +121,18 @@ pub fn derive_action(input: TokenStream) -> TokenStream {
         }
     }
 
+    // Build a map of variant names to their field types for efficient lookup
+    let variant_map: std::collections::HashMap<_, _> = data_enum
+        .variants
+        .iter()
+        .map(|v| (&v.ident, &v.fields))
+        .collect();
+
     // Generate is_command() match arms
     let is_command_arms = command_variants.iter().map(|variant| {
-        match &data_enum.variants.iter().find(|v| &v.ident == *variant).unwrap().fields {
+        // SAFETY: We collected these variants from data_enum.variants above, so they must exist
+        let fields = variant_map.get(variant).expect("variant must exist in map");
+        match fields {
             Fields::Named(_) => quote! { Self::#variant { .. } => true, },
             Fields::Unnamed(_) => quote! { Self::#variant(..) => true, },
             Fields::Unit => quote! { Self::#variant => true, },
@@ -125,7 +141,9 @@ pub fn derive_action(input: TokenStream) -> TokenStream {
 
     // Generate is_event() match arms
     let is_event_arms = event_variants.iter().map(|variant| {
-        match &data_enum.variants.iter().find(|v| &v.ident == *variant).unwrap().fields {
+        // SAFETY: We collected these variants from data_enum.variants above, so they must exist
+        let fields = variant_map.get(variant).expect("variant must exist in map");
+        match fields {
             Fields::Named(_) => quote! { Self::#variant { .. } => true, },
             Fields::Unnamed(_) => quote! { Self::#variant(..) => true, },
             Fields::Unit => quote! { Self::#variant => true, },
@@ -134,8 +152,10 @@ pub fn derive_action(input: TokenStream) -> TokenStream {
 
     // Generate event_type() match arms for events only
     let event_type_arms = event_variants.iter().map(|variant| {
-        let type_name = format!("{}.v1", variant);
-        match &data_enum.variants.iter().find(|v| &v.ident == *variant).unwrap().fields {
+        let type_name = format!("{variant}.v1");
+        // SAFETY: We collected these variants from data_enum.variants above, so they must exist
+        let fields = variant_map.get(variant).expect("variant must exist in map");
+        match fields {
             Fields::Named(_) => quote! { Self::#variant { .. } => #type_name, },
             Fields::Unnamed(_) => quote! { Self::#variant(..) => #type_name, },
             Fields::Unit => quote! { Self::#variant => #type_name, },
@@ -188,6 +208,11 @@ pub fn derive_action(input: TokenStream) -> TokenStream {
 ///
 /// - `#[version]` - Mark a field as the version tracker
 ///
+/// # Panics
+///
+/// This macro will produce a compile error (not a runtime panic) if:
+/// - Applied to a non-struct type
+///
 /// # Example
 ///
 /// ```ignore
@@ -202,6 +227,7 @@ pub fn derive_action(input: TokenStream) -> TokenStream {
 /// }
 /// ```
 #[proc_macro_derive(State, attributes(version))]
+#[allow(clippy::expect_used)] // Proc macro panics become compile errors, not runtime panics
 pub fn derive_state(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
@@ -224,7 +250,10 @@ pub fn derive_state(input: TokenStream) -> TokenStream {
 
     // Generate version accessor if version field exists
     let version_impl = if has_version {
-        let version_field_name = version_field.unwrap().ident.as_ref().unwrap();
+        // SAFETY: has_version is true, so version_field must be Some
+        let field = version_field.expect("version_field must be Some when has_version is true");
+        // SAFETY: We're looking at a struct field, which must have an ident
+        let version_field_name = field.ident.as_ref().expect("struct field must have ident");
         quote! {
             impl #name {
                 /// Get the current version of this state
