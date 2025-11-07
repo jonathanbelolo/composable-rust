@@ -381,6 +381,7 @@ mod tests {
     use super::*;
     use crate::types::CustomerId;
     use chrono::Utc;
+    use composable_rust_testing::{assertions, ReducerTest};
 
     fn create_test_item() -> LineItem {
         LineItem::new(
@@ -389,6 +390,17 @@ mod tests {
             2,
             Money::from_dollars(10),
         )
+    }
+
+    fn create_test_env() -> OrderEnvironment {
+        use composable_rust_testing::mocks::{FixedClock, InMemoryEventStore};
+        use std::sync::Arc;
+
+        let event_store: Arc<dyn composable_rust_core::event_store::EventStore> =
+            Arc::new(InMemoryEventStore::new());
+        let clock: Arc<dyn composable_rust_core::environment::Clock> =
+            Arc::new(FixedClock::new(Utc::now()));
+        OrderEnvironment::new(event_store, clock)
     }
 
     #[test]
@@ -499,15 +511,9 @@ mod tests {
     #[test]
     fn test_event_replay_version_tracking() {
         use crate::types::CustomerId;
-        use composable_rust_testing::mocks::FixedClock;
-        use std::sync::Arc;
 
         // Create test environment
-        let event_store: Arc<dyn composable_rust_core::event_store::EventStore> =
-            Arc::new(composable_rust_testing::mocks::InMemoryEventStore::new());
-        let clock: Arc<dyn composable_rust_core::environment::Clock> =
-            Arc::new(FixedClock::new(Utc::now()));
-        let env = OrderEnvironment::new(event_store, clock);
+        let env = create_test_env();
 
         let mut state = OrderState::new();
         let reducer = OrderReducer::new();
@@ -544,5 +550,108 @@ mod tests {
             Some(Version::new(2)),
             "Version should be 2 after second event"
         );
+    }
+
+    // ========== ReducerTest Examples ==========
+    // The following tests demonstrate Section 3 testing utilities
+
+    #[test]
+    fn test_place_order_success_with_reducer_test() {
+        ReducerTest::new(OrderReducer::new())
+            .with_env(create_test_env())
+            .given_state(OrderState::new())
+            .when_action(OrderAction::PlaceOrder {
+                order_id: OrderId::new("order-123".to_string()),
+                customer_id: CustomerId::new("cust-456".to_string()),
+                items: vec![create_test_item()],
+            })
+            .then_state(|state| {
+                // State should still be Draft (not updated until EventPersisted)
+                assert_eq!(state.status, OrderStatus::Draft);
+                assert_eq!(state.order_id, None);
+            })
+            .then_effects(|effects| {
+                // Should produce EventStore effect
+                assertions::assert_effects_count(effects, 1);
+                assertions::assert_has_event_store_effect(effects);
+            })
+            .run();
+    }
+
+    #[test]
+    fn test_place_order_validation_failure() {
+        ReducerTest::new(OrderReducer::new())
+            .with_env(create_test_env())
+            .given_state(OrderState::new())
+            .when_action(OrderAction::PlaceOrder {
+                order_id: OrderId::new("order-123".to_string()),
+                customer_id: CustomerId::new("cust-456".to_string()),
+                items: vec![], // Empty items - should fail validation
+            })
+            .then_state(|state| {
+                // Validation error should be recorded
+                assert!(state.last_error.is_some());
+                assert!(state
+                    .last_error
+                    .as_ref()
+                    .unwrap()
+                    .contains("at least one item"));
+            })
+            .then_effects(|effects| {
+                // Should produce no effects (validation failed)
+                assertions::assert_no_effects(effects);
+            })
+            .run();
+    }
+
+    #[test]
+    fn test_cancel_order_not_placed() {
+        ReducerTest::new(OrderReducer::new())
+            .with_env(create_test_env())
+            .given_state(OrderState::new()) // Draft status, order_id is None
+            .when_action(OrderAction::CancelOrder {
+                order_id: OrderId::new("order-123".to_string()),
+                reason: "Customer request".to_string(),
+            })
+            .then_state(|state| {
+                // Should record validation error (order_id mismatch)
+                assert!(state.last_error.is_some());
+                assert!(state
+                    .last_error
+                    .as_ref()
+                    .unwrap()
+                    .contains("Order ID mismatch"));
+            })
+            .then_effects(assertions::assert_no_effects)
+            .run();
+    }
+
+    #[test]
+    fn test_order_placed_event_application() {
+        let order_id = OrderId::new("order-123".to_string());
+        let customer_id = CustomerId::new("cust-456".to_string());
+        let items = vec![create_test_item()];
+        let total = Money::from_dollars(20);
+
+        ReducerTest::new(OrderReducer::new())
+            .with_env(create_test_env())
+            .given_state(OrderState::new())
+            .when_action(OrderAction::OrderPlaced {
+                order_id: order_id.clone(),
+                customer_id: customer_id.clone(),
+                items: items.clone(),
+                total,
+                timestamp: Utc::now(),
+            })
+            .then_state(move |state| {
+                // Event should be applied to state
+                assert_eq!(state.order_id, Some(order_id));
+                assert_eq!(state.customer_id, Some(customer_id));
+                assert_eq!(state.status, OrderStatus::Placed);
+                assert_eq!(state.total, total);
+                assert_eq!(state.version, Some(Version::new(1)));
+            })
+            .then_effects(assertions::assert_no_effects)
+            .run();
     }
 }
