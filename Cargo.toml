@@ -9,6 +9,7 @@ members = [
     "projections",
     "examples/counter",
     "examples/order-processing",
+    "examples/order-projection",
     "examples/checkout-saga",
     "examples/metrics-demo",
 ]
