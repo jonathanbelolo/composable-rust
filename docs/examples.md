@@ -1,34 +1,66 @@
 # Examples
 
-> **Note**: Example applications will be created in Phase 5.
+Complete, working examples demonstrating Composable Rust patterns.
 
-## Basic Examples
+## Available Examples
 
-### Simple Counter
+### ✅ Order Processing System
 
-Coming in Phase 1.
+**Location**: `examples/order-processing/`
 
-### Order Processing System
+**Features Demonstrated**:
+- Event sourcing with PostgreSQL event store
+- CQRS pattern (commands vs events)
+- `#[derive(Action)]` and `#[derive(State)]` macros
+- Event store operations with `append_events!` macro
+- Version tracking for optimistic concurrency
+- State reconstruction from events
+- ReducerTest for testing
 
-Coming in Phase 2.
+**Key Files**:
+- `src/types.rs` - Action and State definitions with derive macros
+- `src/reducer.rs` - Business logic with event sourcing
+- `tests/integration_tests.rs` - Full integration tests
+
+**Run the example**:
+```bash
+# Start PostgreSQL (via Docker)
+docker run -d --name postgres -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:15
+
+# Run migrations
+cargo run --example order-processing --bin setup-db
+
+# Run the example
+cargo run --example order-processing
+```
+
+---
+
+## Upcoming Examples
+
+### Counter (Simple)
+
+**Status**: Planned for Phase 5
+
+Basic counter demonstrating core concepts without event sourcing.
 
 ### Multi-Aggregate Saga
 
-Coming in Phase 3.
+**Status**: Planned for Phase 3
 
-## Advanced Examples
-
-### Event-Sourced Aggregate
-
-Coming in Phase 2.
-
-### Distributed Workflow
-
-Coming in Phase 3.
+Distributed workflow across multiple aggregates using saga pattern.
 
 ### Production Deployment
 
-Coming in Phase 4.
+**Status**: Planned for Phase 4
 
-For now, see the architecture specification for conceptual examples:
-- [Architecture Specification](../specs/architecture.md)
+Complete production setup with observability, metrics, and monitoring.
+
+---
+
+## See Also
+
+- **Tutorial**: [Getting Started](getting-started.md) - Step-by-step guide
+- **Concepts**: [Core Concepts](concepts.md) - Architecture deep dive
+- **Architecture**: [Architecture Specification](../specs/architecture.md) - Complete design
+- **Order Processing Code**: [`examples/order-processing/`](../examples/order-processing/)

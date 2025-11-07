@@ -79,6 +79,38 @@ pub struct CounterState {
 
 All domain knowledge lives in state. Don't duplicate state in the environment or effects.
 
+#### Developer Experience: Derive Macro
+
+**Section 3 adds `#[derive(State)]` for event-sourced state:**
+
+```rust
+use composable_rust_macros::State;
+use composable_rust_core::stream::Version;
+
+#[derive(State, Clone, Debug)]
+pub struct OrderState {
+    pub order_id: Option<String>,
+    pub items: Vec<OrderItem>,
+    pub status: OrderStatus,
+
+    // Mark version tracking field with #[version]
+    #[version]
+    pub version: Option<Version>,
+}
+
+// Auto-generated methods:
+let mut state = OrderState::default();
+assert_eq!(state.version(), None);  // ✅ Getter
+
+state.set_version(Version::new(5));  // ✅ Setter
+assert_eq!(state.version(), Some(Version::new(5)));
+```
+
+**Benefits**:
+- **Event sourcing support**: Automatic version tracking for optimistic concurrency
+- **Clean API**: No manual getter/setter boilerplate
+- **Type safety**: Version field must be `Option<Version>`
+
 #### Why `Clone`?
 
 1. **Snapshots**: Store can clone state for time-travel debugging
@@ -139,6 +171,45 @@ pub enum MyAction {
 - **Must be `Debug`**: Essential for logging and debugging
 - **Typically an enum**: Variants represent different event types
 - **Should be values**: Actions describe what happened, not what to do
+
+#### Developer Experience: Derive Macro
+
+**Section 3 adds `#[derive(Action)]` to reduce boilerplate:**
+
+```rust
+use composable_rust_macros::Action;
+
+#[derive(Action, Clone, Debug)]
+enum OrderAction {
+    // Mark commands with #[command]
+    #[command]
+    PlaceOrder { customer_id: String, items: Vec<LineItem> },
+
+    #[command]
+    CancelOrder { order_id: String, reason: String },
+
+    // Mark events with #[event]
+    #[event]
+    OrderPlaced { order_id: String, timestamp: DateTime<Utc> },
+
+    #[event]
+    OrderCancelled { order_id: String, reason: String },
+}
+
+// Auto-generated methods:
+let command = OrderAction::PlaceOrder { /* ... */ };
+assert!(command.is_command());  // ✅ true
+assert!(!command.is_event());   // ✅ false
+
+let event = OrderAction::OrderPlaced { /* ... */ };
+assert!(event.is_event());      // ✅ true
+assert_eq!(event.event_type(), "OrderPlaced.v1");  // ✅ Versioned event types
+```
+
+**Benefits**:
+- **Type safety**: Compile-time enforcement of command/event distinction
+- **Event sourcing**: Auto-generated `event_type()` for serialization
+- **Boilerplate reduction**: No manual `is_command()` / `is_event()` implementations
 
 #### Design Principles
 
@@ -254,9 +325,9 @@ impl Reducer for MyReducer {
         state: &mut Self::State,
         action: Self::Action,
         env: &Self::Environment,
-    ) -> Vec<Effect<Self::Action>> {
+    ) -> SmallVec<[Effect<Self::Action>; 4]> {
         // Business logic here
-        vec![Effect::None]
+        smallvec![Effect::None]
     }
 }
 ```
@@ -287,7 +358,7 @@ fn test_place_order() {
 
     // No async, no mocks, just assertions
     assert_eq!(state.status, OrderStatus::Placed);
-    assert!(matches!(effects[0], Effect::Database(_)));
+    assert!(matches!(effects[0], Effect::EventStore(_)));
 }
 ```
 
@@ -318,9 +389,9 @@ Performance. Copying large state structs on every action would be wasteful. But 
 
 ```rust
 // What the compiler sees (mutation for performance)
-fn reduce(&self, state: &mut State, action: Action) -> Vec<Effect> {
+fn reduce(&self, state: &mut State, action: Action) -> SmallVec<[Effect; 4]> {
     state.count += 1;
-    vec![Effect::None]
+    smallvec![Effect::None]
 }
 
 // What we reason about (pure function)
@@ -342,21 +413,21 @@ See `docs/implementation-decisions.md` for the full analysis.
 **Pattern 1: State machine**
 
 ```rust
-fn reduce(&self, state: &mut State, action: Action, env: &Env) -> Vec<Effect> {
+fn reduce(&self, state: &mut State, action: Action, env: &Env) -> SmallVec<[Effect; 4]> {
     match (state.status, action) {
         (Status::Draft, Action::Submit) => {
             state.status = Status::Pending;
-            vec![Effect::Database(SaveState)]
+            smallvec![Effect::EventStore(SaveState)]
         },
         (Status::Pending, Action::Approve) => {
             state.status = Status::Approved;
-            vec![Effect::PublishEvent(OrderApproved)]
+            smallvec![Effect::PublishEvent(OrderApproved)]
         },
         (Status::Pending, Action::Reject) => {
             state.status = Status::Rejected;
-            vec![Effect::PublishEvent(OrderRejected)]
+            smallvec![Effect::PublishEvent(OrderRejected)]
         },
-        _ => vec![Effect::None],  // Invalid transitions ignored
+        _ => smallvec![Effect::None],  // Invalid transitions ignored
     }
 }
 ```
@@ -364,15 +435,15 @@ fn reduce(&self, state: &mut State, action: Action, env: &Env) -> Vec<Effect> {
 **Pattern 2: Validation then mutation**
 
 ```rust
-fn reduce(&self, state: &mut State, action: Action, env: &Env) -> Vec<Effect> {
+fn reduce(&self, state: &mut State, action: Action, env: &Env) -> SmallVec<[Effect; 4]> {
     match action {
         Action::PlaceOrder { items } => {
             // 1. Validate
             if items.is_empty() {
-                return vec![Effect::None];  // Or return error action
+                return smallvec![Effect::None];  // Or return error action
             }
             if state.status != Status::Draft {
-                return vec![Effect::None];  // Can't place twice
+                return smallvec![Effect::None];  // Can't place twice
             }
 
             // 2. Mutate state
@@ -381,8 +452,8 @@ fn reduce(&self, state: &mut State, action: Action, env: &Env) -> Vec<Effect> {
             state.placed_at = env.clock.now();
 
             // 3. Return effects
-            vec![
-                Effect::Database(SaveOrder),
+            smallvec![
+                Effect::EventStore(SaveOrder),
                 Effect::PublishEvent(OrderPlaced),
             ]
         },
@@ -394,22 +465,22 @@ fn reduce(&self, state: &mut State, action: Action, env: &Env) -> Vec<Effect> {
 **Pattern 3: Effect composition**
 
 ```rust
-fn reduce(&self, state: &mut State, action: Action, env: &Env) -> Vec<Effect> {
+fn reduce(&self, state: &mut State, action: Action, env: &Env) -> SmallVec<[Effect; 4]> {
     match action {
         Action::PlaceOrder { items } => {
             state.status = Status::Placed;
 
             // Sequential: Save first, then publish event
-            vec![Effect::Sequential(vec![
-                Effect::Database(SaveOrder),
+            smallvec![Effect::Sequential(smallvec![
+                Effect::EventStore(SaveOrder),
                 Effect::PublishEvent(OrderPlaced),
             ])]
         },
         Action::NotifyCustomer => {
             // Parallel: Send email and SMS concurrently
-            vec![Effect::Parallel(vec![
-                Effect::Http { /* send email */ },
-                Effect::Http { /* send SMS */ },
+            smallvec![Effect::Parallel(smallvec![
+                Effect::Future(/* send email */),
+                Effect::Future(/* send SMS */),
             ])]
         },
         // ...
@@ -442,12 +513,12 @@ This is the most important concept in the architecture:
 ```rust
 // ❌ BAD: Executing side effect in reducer
 fn reduce(...) {
-    env.database.save(state).await;  // NO! This is I/O!
+    env.event_store.save(state).await;  // NO! This is I/O!
 }
 
 // ✅ GOOD: Returning effect description
-fn reduce(...) -> Vec<Effect> {
-    vec![Effect::Database(SaveState)]  // YES! Just data
+fn reduce(...) -> SmallVec<[Effect; 4]> {
+    smallvec![Effect::EventStore(SaveState)]  // YES! Just data
 }
 ```
 
@@ -456,7 +527,7 @@ fn reduce(...) -> Vec<Effect> {
 1. **Testing without mocks**: Assert on effect values
    ```rust
    let effects = reducer.reduce(...);
-   assert!(matches!(effects[0], Effect::Database(SaveOrder)));
+   assert!(matches!(effects[0], Effect::EventStore(_)));
    // No mocking, no I/O, just value comparison
    ```
 
@@ -491,7 +562,7 @@ No side effect. Used for pure state machines.
 ```rust
 CounterAction::Increment => {
     state.count += 1;
-    vec![Effect::None]
+    smallvec![Effect::None]
 }
 ```
 
@@ -519,10 +590,10 @@ Effect::Delay {
 Execute multiple effects concurrently.
 
 ```rust
-Effect::Parallel(vec![
-    Effect::Http { /* email */ },
-    Effect::Http { /* SMS */ },
-    Effect::Database(SaveLog),
+Effect::Parallel(smallvec![
+    Effect::Future(/* email */),
+    Effect::Future(/* SMS */),
+    Effect::EventStore(SaveLog),
 ])
 ```
 
@@ -530,12 +601,76 @@ Effect::Parallel(vec![
 Execute effects in order (next starts after previous completes).
 
 ```rust
-Effect::Sequential(vec![
-    Effect::Database(SaveOrder),      // First
-    Effect::PublishEvent(OrderPlaced), // Then
-    Effect::Http { /* notify */ },     // Finally
+Effect::Sequential(smallvec![
+    Effect::EventStore(SaveOrder),      // First
+    Effect::PublishEvent(OrderPlaced),  // Then
+    Effect::Future(/* notify */),       // Finally
 ])
 ```
+
+#### Developer Experience: Effect Helper Macros
+
+**Section 3 adds declarative macros for common effect patterns:**
+
+**`append_events!` - Event Store Operations (60% code reduction)**
+
+```rust
+use composable_rust_core::append_events;
+
+// Before (18 lines):
+Effect::EventStore(EventStoreOperation::AppendEvents {
+    event_store: Arc::clone(&env.event_store),
+    stream_id: StreamId::new("order-123"),
+    expected_version: Some(Version::new(5)),
+    events: vec![event],
+    on_success: Box::new(move |version| {
+        Some(OrderAction::EventsAppended { version })
+    }),
+    on_error: Box::new(|error| {
+        Some(OrderAction::AppendFailed { error: error.to_string() })
+    }),
+})
+
+// After (7 lines - 60% reduction):
+append_events! {
+    store: env.event_store,
+    stream: "order-123",
+    expected_version: Some(Version::new(5)),
+    events: vec![event],
+    on_success: |version| Some(OrderAction::EventsAppended { version }),
+    on_error: |err| Some(OrderAction::AppendFailed { error: err.to_string() })
+}
+```
+
+**`async_effect!` - Async Computations**
+
+```rust
+use composable_rust_core::async_effect;
+
+async_effect! {
+    let response = http_client.get("https://api.example.com").await?;
+    Some(OrderAction::ResponseReceived { response })
+}
+```
+
+**`delay!` - Scheduled Actions**
+
+```rust
+use composable_rust_core::delay;
+
+delay! {
+    duration: Duration::from_secs(30),
+    action: OrderAction::TimeoutExpired
+}
+```
+
+**Benefits**:
+- **40-60% less code**: Macros eliminate boilerplate
+- **Cleaner syntax**: Declarative style reads like configuration
+- **Type safety**: Full compile-time checking preserved
+- **No runtime cost**: Macros expand to same code as manual construction
+
+See [`core/src/effect_macros.rs`](../core/src/effect_macros.rs) for full documentation.
 
 #### Effect Composition
 
@@ -859,6 +994,54 @@ fn test_increment() {
 **Simple**: No mocking, no setup, just assertions
 **Comprehensive**: Can easily test thousands of scenarios
 
+#### Developer Experience: ReducerTest Builder
+
+**Section 3 adds a fluent Given-When-Then API for reducer testing:**
+
+```rust
+use composable_rust_testing::ReducerTest;
+
+#[test]
+fn test_place_order_with_builder() {
+    ReducerTest::new(OrderReducer, test_environment())
+        .given_state(OrderState::default())
+        .when_action(OrderAction::PlaceOrder {
+            customer_id: "cust-1".into(),
+            items: vec![test_item()],
+        })
+        .then_state(|state| {
+            assert_eq!(state.status, OrderStatus::Placed);
+            assert_eq!(state.items.len(), 1);
+        })
+        .assert_has_event_store_effect()
+        .run();
+}
+
+// Or test multiple actions:
+#[test]
+fn test_order_lifecycle() {
+    ReducerTest::new(OrderReducer, test_environment())
+        .given_state(OrderState::default())
+        .when_actions(vec![
+            OrderAction::PlaceOrder { /* ... */ },
+            OrderAction::ShipOrder { /* ... */ },
+        ])
+        .then_state(|state| {
+            assert_eq!(state.status, OrderStatus::Shipped);
+        })
+        .assert_effect_count(2)  // Two event store effects
+        .run();
+}
+```
+
+**Benefits**:
+- **Readable tests**: Given-When-Then makes intent clear
+- **Helper assertions**: `assert_has_event_store_effect()`, `assert_effect_count()`, etc.
+- **Composable**: Chain multiple actions and assertions
+- **Type-safe**: Full compile-time checking
+
+See [`testing/src/reducer_test.rs`](../testing/src/reducer_test.rs) for full API documentation.
+
 ### Integration Tests: Test Store
 
 **Store tests verify the full end-to-end flow:**
@@ -1004,24 +1187,38 @@ Based on Phase 1 benchmarks (`cargo bench -p composable-rust-runtime`):
 
 ---
 
-## Phase 1 Scope
+## Implementation Status
 
-Phase 1 implements the **core abstractions**:
+### ✅ Phase 1: Core Abstractions (Complete)
 
-✅ **Reducer trait**: Pure function for business logic
-✅ **Effect enum**: Five variants (None, Future, Delay, Parallel, Sequential)
-✅ **Store**: Runtime with effect execution and feedback loop
-✅ **Environment traits**: Clock (with SystemClock, FixedClock)
-✅ **TestStore**: Deterministic testing of effect chains
-✅ **Effect composition**: map, chain, merge methods
-✅ **Error handling**: Three-tier model with panic isolation
+- **Reducer trait**: Pure function for business logic
+- **Effect enum**: Five variants (None, Future, Delay, Parallel, Sequential)
+- **Store**: Runtime with effect execution and feedback loop
+- **Environment traits**: Clock (with SystemClock, FixedClock)
+- **TestStore**: Deterministic testing of effect chains
+- **Effect composition**: map, chain, merge methods
+- **Error handling**: Three-tier model with panic isolation
 
-**Not in Phase 1**:
-- ❌ Database effects (Phase 2)
-- ❌ HTTP effects (Phase 2)
-- ❌ Event publishing (Phase 3)
-- ❌ Saga pattern (Phase 3)
-- ❌ Event sourcing (Phase 2)
+### ✅ Phase 2: Event Sourcing & Persistence (Complete)
+
+- **EventStore trait**: PostgreSQL implementation with append/load operations
+- **Event sourcing**: State reconstruction from event streams
+- **Version tracking**: Optimistic concurrency control
+- **Snapshots**: Performance optimization for long event streams
+
+### ✅ Section 3: Developer Tools & Macros (Complete)
+
+- **`#[derive(Action)]`**: Auto-generate `is_command()`, `is_event()`, `event_type()`
+- **`#[derive(State)]`**: Auto-generate version tracking methods
+- **Effect macros**: `append_events!`, `load_events!`, `async_effect!`, `delay!` (40-60% code reduction)
+- **ReducerTest**: Fluent Given-When-Then testing API
+
+### 🚧 Future Phases
+
+- ❌ Event bus (Redpanda integration) - Phase 3
+- ❌ Saga pattern - Phase 3
+- ❌ Production hardening, observability - Phase 4
+- ❌ Additional examples and documentation - Phase 5
 
 See `plans/implementation-roadmap.md` for the full phased plan.
 

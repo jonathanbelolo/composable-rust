@@ -268,6 +268,42 @@ pub struct OrderPlacedEvent {
 fn default_version() -> u32 { 1 }
 ```
 
+### Section 3: Automatic Event Type Generation
+
+**Section 3 adds `#[derive(Action)]` to auto-generate versioned event types:**
+
+```rust
+use composable_rust_macros::Action;
+
+#[derive(Action, Clone, Serialize, Deserialize, Debug)]
+enum OrderAction {
+    // Commands
+    #[command]
+    PlaceOrder { customer_id: String, items: Vec<LineItem> },
+
+    // Events (marked with #[event])
+    #[event]
+    OrderPlaced { order_id: String, timestamp: DateTime<Utc> },
+
+    #[event]
+    OrderShipped { order_id: String, tracking: String },
+
+    #[event]
+    OrderCancelled { order_id: String, reason: String },
+}
+
+// Auto-generated method:
+let event = OrderAction::OrderPlaced { /* ... */ };
+assert_eq!(event.event_type(), "OrderPlaced.v1");  // ✅ Versioned by default!
+```
+
+**Benefits**:
+- **Automatic versioning**: `.v1` suffix added automatically for schema evolution
+- **CQRS enforcement**: Compile-time distinction between commands and events
+- **Zero boilerplate**: No manual event type string constants
+
+**See also**: [API Reference](api-reference.md#derive-macro-action) for full documentation.
+
 ---
 
 ## Data Inclusion Guidelines

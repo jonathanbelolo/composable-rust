@@ -23,7 +23,7 @@ pub trait Reducer: Clone + Send + Sync + 'static {
         state: &mut Self::State,
         action: Self::Action,
         env: &Self::Environment,
-    ) -> Vec<Effect<Self::Action>>;
+    ) -> SmallVec<[Effect<Self::Action>; 4]>;
 }
 ```
 
@@ -52,7 +52,7 @@ Pure function that processes actions.
 - `env: &Self::Environment` - Dependencies
 
 **Returns:**
-- `Vec<Effect<Self::Action>>` - Side effects to execute
+- `SmallVec<[Effect<Self::Action>; 4]>` - Side effects to execute (stack-allocated for ≤4 effects)
 
 **Guarantees:**
 - **Pure**: Same inputs always produce same outputs
@@ -77,19 +77,19 @@ impl Reducer for CounterReducer {
         state: &mut Self::State,
         action: Self::Action,
         _env: &Self::Environment,
-    ) -> Vec<Effect<Self::Action>> {
+    ) -> SmallVec<[Effect<Self::Action>; 4]> {
         match action {
             CounterAction::Increment => {
                 state.count += 1;
-                vec![Effect::None]
+                smallvec![Effect::None]
             },
             CounterAction::Decrement => {
                 state.count -= 1;
-                vec![Effect::None]
+                smallvec![Effect::None]
             },
             CounterAction::Reset => {
                 state.count = 0;
-                vec![Effect::None]
+                smallvec![Effect::None]
             },
         }
     }
@@ -107,8 +107,8 @@ pub enum Effect<Action> {
     None,
     Future(Pin<Box<dyn Future<Output = Option<Action>> + Send>>),
     Delay { duration: Duration, action: Box<Action> },
-    Parallel(Vec<Effect<Action>>),
-    Sequential(Vec<Effect<Action>>),
+    Parallel(SmallVec<[Effect<Action>; 4]>),
+    Sequential(SmallVec<[Effect<Action>; 4]>),
 }
 ```
 
@@ -157,7 +157,7 @@ Effect::Delay {
 Execute multiple effects concurrently.
 
 ```rust
-Effect::Parallel(vec![
+Effect::Parallel(smallvec![
     Effect::Future(Box::pin(send_email())),
     Effect::Future(Box::pin(send_sms())),
     Effect::Delay { /* ... */ },
@@ -174,7 +174,7 @@ Effect::Parallel(vec![
 Execute effects in order (next starts after previous completes).
 
 ```rust
-Effect::Sequential(vec![
+Effect::Sequential(smallvec![
     Effect::Future(Box::pin(save_to_db())),      // First
     Effect::Future(Box::pin(publish_event())),   // Then
     Effect::Delay { /* notify */ },              // Finally
@@ -747,6 +747,403 @@ let store = Store::new(initial_state, reducer, env);
 
 ---
 
+## Module: `composable_rust_macros`
+
+Procedural macros for reducing boilerplate (Section 3).
+
+### Derive Macro: `Action`
+
+Generates helper methods for action enums.
+
+```rust
+#[proc_macro_derive(Action, attributes(command, event))]
+pub fn derive_action(input: TokenStream) -> TokenStream
+```
+
+#### Attributes
+
+- `#[command]` - Mark a variant as a command
+- `#[event]` - Mark a variant as an event
+
+#### Generated Methods
+
+**`is_command() -> bool`**
+Returns `true` if the action is marked with `#[command]`.
+
+**`is_event() -> bool`**
+Returns `true` if the action is marked with `#[event]`.
+
+**`event_type() -> &'static str`**
+Returns the event type name for serialization (e.g., `"OrderPlaced.v1"`).
+Returns `"unknown"` for non-events.
+
+#### Example
+
+```rust
+use composable_rust_macros::Action;
+
+#[derive(Action, Clone, Debug)]
+enum OrderAction {
+    #[command]
+    PlaceOrder { customer_id: String, items: Vec<LineItem> },
+
+    #[command]
+    CancelOrder { order_id: String, reason: String },
+
+    #[event]
+    OrderPlaced { order_id: String, timestamp: DateTime<Utc> },
+
+    #[event]
+    OrderCancelled { order_id: String, reason: String },
+}
+
+// Usage:
+let command = OrderAction::PlaceOrder {
+    customer_id: "cust-1".into(),
+    items: vec![],
+};
+assert!(command.is_command());
+assert!(!command.is_event());
+
+let event = OrderAction::OrderPlaced {
+    order_id: "order-123".into(),
+    timestamp: Utc::now(),
+};
+assert!(event.is_event());
+assert_eq!(event.event_type(), "OrderPlaced.v1");  // Versioned for schema evolution
+```
+
+#### Benefits
+
+- **CQRS enforcement**: Compile-time distinction between commands and events
+- **Event sourcing**: Auto-generated event types for serialization
+- **Zero boilerplate**: No manual `match` statements
+
+---
+
+### Derive Macro: `State`
+
+Generates version tracking methods for event-sourced state.
+
+```rust
+#[proc_macro_derive(State, attributes(version))]
+pub fn derive_state(input: TokenStream) -> TokenStream
+```
+
+#### Attributes
+
+- `#[version]` - Mark a field as the version tracker (must be `Option<Version>`)
+
+#### Generated Methods
+
+**`version() -> Option<Version>`**
+Returns the current version of the state.
+
+**`set_version(&mut self, version: Version)`**
+Sets the version of the state.
+
+#### Example
+
+```rust
+use composable_rust_macros::State;
+use composable_rust_core::stream::Version;
+
+#[derive(State, Clone, Debug)]
+pub struct OrderState {
+    pub order_id: Option<String>,
+    pub items: Vec<OrderItem>,
+    pub status: OrderStatus,
+
+    #[version]
+    pub version: Option<Version>,
+}
+
+// Usage:
+let mut state = OrderState::default();
+assert_eq!(state.version(), None);
+
+state.set_version(Version::new(5));
+assert_eq!(state.version(), Some(Version::new(5)));
+```
+
+#### Benefits
+
+- **Optimistic concurrency**: Version tracking for event store operations
+- **Clean API**: No manual getter/setter boilerplate
+- **Type safety**: Compile-time enforcement of `Option<Version>` type
+
+---
+
+## Effect Helper Macros
+
+Declarative macros for common effect patterns (Section 3).
+
+### Macro: `append_events!`
+
+Creates `Effect::EventStore(AppendEvents)` with clean syntax.
+
+```rust
+append_events! {
+    store: $event_store,
+    stream: $stream_id,
+    expected_version: $expected_version,
+    events: $events,
+    on_success: |$version| $success_body,
+    on_error: |$error| $error_body
+}
+```
+
+#### Parameters
+
+- `store` - `Arc<dyn EventStore>` to use
+- `stream` - Stream ID (converted to `StreamId::new()`)
+- `expected_version` - `Option<Version>` for optimistic concurrency
+- `events` - `Vec<SerializedEvent>` to append
+- `on_success` - Closure receiving `Version`, returns `Option<Action>`
+- `on_error` - Closure receiving error, returns `Option<Action>`
+
+#### Example
+
+```rust
+use composable_rust_core::append_events;
+
+// Instead of 18 lines:
+Effect::EventStore(EventStoreOperation::AppendEvents {
+    event_store: Arc::clone(&env.event_store),
+    stream_id: StreamId::new("order-123"),
+    expected_version: Some(Version::new(5)),
+    events: vec![event],
+    on_success: Box::new(move |version| {
+        Some(OrderAction::EventsAppended { version })
+    }),
+    on_error: Box::new(|error| {
+        Some(OrderAction::AppendFailed { error: error.to_string() })
+    }),
+})
+
+// Write 7 lines (60% reduction):
+append_events! {
+    store: env.event_store,
+    stream: "order-123",
+    expected_version: Some(Version::new(5)),
+    events: vec![event],
+    on_success: |version| Some(OrderAction::EventsAppended { version }),
+    on_error: |err| Some(OrderAction::AppendFailed { error: err.to_string() })
+}
+```
+
+---
+
+### Macro: `load_events!`
+
+Creates `Effect::EventStore(LoadEvents)` with clean syntax.
+
+```rust
+load_events! {
+    store: $event_store,
+    stream: $stream_id,
+    from_version: $from_version,
+    on_success: |$events| $success_body,
+    on_error: |$error| $error_body
+}
+```
+
+#### Example
+
+```rust
+use composable_rust_core::load_events;
+
+load_events! {
+    store: env.event_store,
+    stream: "order-123",
+    from_version: None,
+    on_success: |events| Some(OrderAction::EventsLoaded { events }),
+    on_error: |err| Some(OrderAction::LoadFailed { error: err.to_string() })
+}
+```
+
+---
+
+### Macro: `async_effect!`
+
+Creates `Effect::Future` from async block.
+
+```rust
+async_effect! {
+    $body
+}
+```
+
+#### Example
+
+```rust
+use composable_rust_core::async_effect;
+
+async_effect! {
+    let response = http_client.get("https://api.example.com").await?;
+    Some(OrderAction::ResponseReceived { response })
+}
+```
+
+---
+
+### Macro: `delay!`
+
+Creates `Effect::Delay` with clean syntax.
+
+```rust
+delay! {
+    duration: $duration,
+    action: $action
+}
+```
+
+#### Example
+
+```rust
+use composable_rust_core::delay;
+use std::time::Duration;
+
+delay! {
+    duration: Duration::from_secs(30),
+    action: OrderAction::TimeoutExpired
+}
+```
+
+---
+
+### Struct: `ReducerTest<S, A, R, E>`
+
+Fluent builder for testing reducers (Section 3).
+
+```rust
+pub struct ReducerTest<S, A, R, E>
+where
+    S: Clone + Send + Sync + 'static,
+    A: Send + Clone + 'static,
+    R: Reducer<State = S, Action = A, Environment = E>,
+    E: Send + Sync + 'static,
+```
+
+**Purpose:** Given-When-Then style testing for reducers.
+
+#### Constructor: `new`
+
+```rust
+pub fn new(reducer: R, environment: E) -> Self
+```
+
+**Parameters:**
+- `reducer: R` - Reducer to test
+- `environment: E` - Test environment
+
+**Returns:**
+- `ReducerTest` - Builder instance
+
+#### Method: `given_state`
+
+Sets initial state for test.
+
+```rust
+pub fn given_state(self, state: S) -> Self
+```
+
+#### Method: `when_action`
+
+Specifies single action to dispatch.
+
+```rust
+pub fn when_action(self, action: A) -> Self
+```
+
+#### Method: `when_actions`
+
+Specifies multiple actions to dispatch sequentially.
+
+```rust
+pub fn when_actions(self, actions: Vec<A>) -> Self
+```
+
+#### Method: `then_state`
+
+Asserts on final state.
+
+```rust
+pub fn then_state<F>(self, assertion: F) -> Self
+where
+    F: FnOnce(&S),
+```
+
+#### Method: `assert_has_event_store_effect`
+
+Asserts at least one `Effect::EventStore` was returned.
+
+```rust
+pub fn assert_has_event_store_effect(self) -> Self
+```
+
+#### Method: `assert_effect_count`
+
+Asserts exact number of effects.
+
+```rust
+pub fn assert_effect_count(self, count: usize) -> Self
+```
+
+#### Method: `run`
+
+Executes the test (consumes builder).
+
+```rust
+pub fn run(self)
+```
+
+#### Example
+
+```rust
+use composable_rust_testing::ReducerTest;
+
+#[test]
+fn test_place_order() {
+    ReducerTest::new(OrderReducer, test_environment())
+        .given_state(OrderState::default())
+        .when_action(OrderAction::PlaceOrder {
+            customer_id: "cust-1".into(),
+            items: vec![test_item()],
+        })
+        .then_state(|state| {
+            assert_eq!(state.status, OrderStatus::Placed);
+            assert_eq!(state.items.len(), 1);
+        })
+        .assert_has_event_store_effect()
+        .run();
+}
+
+#[test]
+fn test_order_lifecycle() {
+    ReducerTest::new(OrderReducer, test_environment())
+        .given_state(OrderState::default())
+        .when_actions(vec![
+            OrderAction::PlaceOrder { /* ... */ },
+            OrderAction::ShipOrder { /* ... */ },
+        ])
+        .then_state(|state| {
+            assert_eq!(state.status, OrderStatus::Shipped);
+        })
+        .assert_effect_count(2)
+        .run();
+}
+```
+
+#### Benefits
+
+- **Readable tests**: Given-When-Then makes intent clear
+- **Composable**: Chain multiple assertions
+- **Type-safe**: Full compile-time checking
+- **No async**: Synchronous testing of pure reducers
+
+---
+
 ## Complete Example
 
 Putting it all together:
@@ -795,19 +1192,19 @@ impl<C: Clock> Reducer for CounterReducer {
         state: &mut Self::State,
         action: Self::Action,
         _env: &Self::Environment,
-    ) -> Vec<Effect<Self::Action>> {
+    ) -> SmallVec<[Effect<Self::Action>; 4]> {
         match action {
             CounterAction::Increment => {
                 state.count += 1;
-                vec![Effect::None]
+                smallvec![Effect::None]
             },
             CounterAction::Decrement => {
                 state.count -= 1;
-                vec![Effect::None]
+                smallvec![Effect::None]
             },
             CounterAction::Reset => {
                 state.count = 0;
-                vec![Effect::None]
+                smallvec![Effect::None]
             },
         }
     }
@@ -898,7 +1295,6 @@ pub enum TestStoreError {
 Currently no optional features. All APIs are always available.
 
 Future phases will add:
-- `event-sourcing` - Database and event store support (Phase 2)
 - `event-bus` - Redpanda/Kafka integration (Phase 3)
 - `observability` - Metrics and tracing (Phase 4)
 
@@ -909,12 +1305,17 @@ Future phases will add:
 - **Concepts**: [Core Concepts](concepts.md) - Deep dive into architecture
 - **Tutorial**: [Getting Started](getting-started.md) - Step-by-step guide
 - **Decisions**: [Implementation Decisions](implementation-decisions.md) - Design rationale
+- **Macro Reference**: Effect macros in [`core/src/effect_macros.rs`](../core/src/effect_macros.rs)
 - **Source Docs**: `cargo doc --open` - Full inline documentation
 
 ---
 
 ## Version
 
-This API reference documents **Phase 1** of Composable Rust.
+This API reference documents Composable Rust through **Phase 2** and **Section 3**:
+
+- ✅ **Phase 1**: Core abstractions (Reducer, Effect, Store, Environment)
+- ✅ **Phase 2**: Event sourcing & persistence (EventStore, Version tracking)
+- ✅ **Section 3**: Developer tools & macros (`#[derive(Action)]`, `#[derive(State)]`, effect macros, ReducerTest)
 
 **Stability:** APIs are subject to change before 1.0 release. Semantic versioning will be followed once published to crates.io.
