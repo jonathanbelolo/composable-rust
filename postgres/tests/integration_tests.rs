@@ -686,6 +686,8 @@ async fn test_append_batch_performance_vs_sequential() {
 
     for i in 0..num_streams {
         let stream_id = StreamId::new(format!("perf-stream-{i}"));
+        // Intentional cast for test data generation
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let events: Vec<_> = (0..events_per_stream)
             .map(|j| create_test_event(&format!("Event{j}"), vec![i as u8, j as u8]))
             .collect();
@@ -707,9 +709,9 @@ async fn test_append_batch_performance_vs_sequential() {
     let batch_duration = batch_start.elapsed();
 
     assert_eq!(batch_results.len(), num_streams);
-    assert!(batch_results.iter().all(|r| r.is_ok()));
+    assert!(batch_results.iter().all(Result::is_ok));
 
-    println!("Batch append ({} streams): {:?}", num_streams, batch_duration);
+    println!("Batch append ({num_streams} streams): {batch_duration:?}");
 
     // Measure sequential appends (different stream names)
     let sequential_start = Instant::now();
@@ -722,10 +724,7 @@ async fn test_append_batch_performance_vs_sequential() {
     }
     let sequential_duration = sequential_start.elapsed();
 
-    println!(
-        "Sequential append ({} streams): {:?}",
-        num_streams, sequential_duration
-    );
+    println!("Sequential append ({num_streams} streams): {sequential_duration:?}");
 
     // Batch should be faster (even with current implementation)
     // Note: With multi-row INSERT, this should be significantly faster

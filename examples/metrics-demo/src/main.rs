@@ -9,7 +9,7 @@
 //! ```
 //!
 //! Then visit:
-//! - Metrics endpoint: http://localhost:9000/metrics
+//! - Metrics endpoint: <http://localhost:9000/metrics>
 //!
 //! # Prometheus Configuration
 //!
@@ -60,6 +60,7 @@ impl Reducer for CounterReducer {
     type Action = CounterAction;
     type Environment = CounterEnv;
 
+    #[allow(clippy::cognitive_complexity)] // Demo example
     fn reduce(
         &self,
         state: &mut Self::State,

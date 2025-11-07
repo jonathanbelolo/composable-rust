@@ -30,7 +30,7 @@
 //! let value = store.state(|s| s.some_field).await;
 //! ```
 
-use composable_rust_core::{effect::Effect, reducer::Reducer, smallvec, SmallVec};
+use composable_rust_core::{effect::Effect, reducer::Reducer};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -272,10 +272,10 @@ impl RetryPolicy {
     /// Create a new retry policy with default settings
     ///
     /// Defaults:
-    /// - max_attempts: 5
-    /// - initial_delay: 1 second
-    /// - max_delay: 32 seconds
-    /// - backoff_multiplier: 2.0 (exponential)
+    /// - `max_attempts`: 5
+    /// - `initial_delay`: 1 second
+    /// - `max_delay`: 32 seconds
+    /// - `backoff_multiplier`: 2.0 (exponential)
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -317,7 +317,7 @@ impl RetryPolicy {
     /// Calculate delay for a given attempt number (0-indexed)
     ///
     /// Uses exponential backoff with jitter:
-    /// delay = min(initial_delay * multiplier^attempt, max_delay) * (0.5 + random(0.5))
+    /// `delay = min(initial_delay * multiplier^attempt, max_delay) * (0.5 + random(0.5))`
     ///
     /// Jitter prevents thundering herd problem.
     #[must_use]
@@ -325,6 +325,8 @@ impl RetryPolicy {
         use rand::Rng;
 
         // Calculate exponential backoff: initial * multiplier^attempt
+        // Note: Cast is safe since max_attempts defaults to 5 (well within i32 range)
+        #[allow(clippy::cast_possible_wrap)]
         let base_delay_secs = self.initial_delay.as_secs_f64()
             * self.backoff_multiplier.powi(attempt as i32);
 
@@ -393,7 +395,7 @@ pub enum CircuitBreakerError {
 ///
 /// - **Closed**: Normal operation, all requests go through
 /// - **Open**: Failing fast, rejecting all requests immediately
-/// - **HalfOpen**: Testing recovery with limited requests
+/// - **`HalfOpen`**: Testing recovery with limited requests
 ///
 /// # State Transitions
 ///
@@ -425,7 +427,7 @@ pub struct CircuitBreaker {
     /// Consecutive failure count
     failure_count: Arc<AtomicUsize>,
 
-    /// Success count in HalfOpen state
+    /// Success count in `HalfOpen` state
     success_count: Arc<AtomicUsize>,
 
     /// Timestamp when circuit was opened (nanoseconds since epoch)
@@ -434,10 +436,10 @@ pub struct CircuitBreaker {
     /// Number of consecutive failures before opening circuit
     failure_threshold: usize,
 
-    /// Duration to wait before attempting HalfOpen
+    /// Duration to wait before attempting `HalfOpen`
     timeout: Duration,
 
-    /// Number of consecutive successes in HalfOpen to close circuit
+    /// Number of consecutive successes in `HalfOpen` to close circuit
     success_threshold: usize,
 }
 
@@ -445,9 +447,9 @@ impl CircuitBreaker {
     /// Create a new circuit breaker with default settings
     ///
     /// Defaults:
-    /// - failure_threshold: 5
-    /// - timeout: 60 seconds
-    /// - success_threshold: 2
+    /// - `failure_threshold`: 5
+    /// - `timeout`: 60 seconds
+    /// - `success_threshold`: 2
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -465,25 +467,25 @@ impl CircuitBreaker {
     ///
     /// Number of consecutive failures before opening the circuit.
     #[must_use]
-    pub fn with_failure_threshold(mut self, threshold: usize) -> Self {
+    pub const fn with_failure_threshold(mut self, threshold: usize) -> Self {
         self.failure_threshold = threshold;
         self
     }
 
     /// Set the timeout duration
     ///
-    /// Duration to wait before attempting HalfOpen state.
+    /// Duration to wait before attempting `HalfOpen` state.
     #[must_use]
-    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+    pub const fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
     }
 
     /// Set the success threshold
     ///
-    /// Number of consecutive successes in HalfOpen to close circuit.
+    /// Number of consecutive successes in `HalfOpen` to close circuit.
     #[must_use]
-    pub fn with_success_threshold(mut self, threshold: usize) -> Self {
+    pub const fn with_success_threshold(mut self, threshold: usize) -> Self {
         self.success_threshold = threshold;
         self
     }
@@ -492,10 +494,9 @@ impl CircuitBreaker {
     #[must_use]
     pub fn state(&self) -> CircuitState {
         match self.state.load(Ordering::Acquire) {
-            0 => CircuitState::Closed,
             1 => CircuitState::Open,
             2 => CircuitState::HalfOpen,
-            _ => CircuitState::Closed, // Fallback
+            _ => CircuitState::Closed, // Includes 0 and any unexpected values
         }
     }
 
@@ -506,10 +507,11 @@ impl CircuitBreaker {
         let current_state = self.state();
 
         match current_state {
-            CircuitState::Closed => Ok(()),
             CircuitState::Open => {
                 // Check if timeout has elapsed
                 let opened_at_nanos = self.opened_at.load(Ordering::Acquire);
+                // Note: Truncation acceptable for nanosecond timestamps (wraps every ~584 years)
+                #[allow(clippy::cast_possible_truncation)]
                 let now_nanos = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or(Duration::ZERO)
@@ -531,7 +533,7 @@ impl CircuitBreaker {
                     Err(CircuitBreakerError::Open)
                 }
             },
-            CircuitState::HalfOpen => Ok(()),
+            CircuitState::Closed | CircuitState::HalfOpen => Ok(()),
         }
     }
 
@@ -576,6 +578,8 @@ impl CircuitBreaker {
                     // Open the circuit
                     self.state.store(CircuitState::Open as u8, Ordering::Release);
 
+                    // Note: Truncation acceptable for nanosecond timestamps (wraps every ~584 years)
+                    #[allow(clippy::cast_possible_truncation)]
                     let now_nanos = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or(Duration::ZERO)
@@ -596,6 +600,8 @@ impl CircuitBreaker {
                 self.state.store(CircuitState::Open as u8, Ordering::Release);
                 self.success_count.store(0, Ordering::Release);
 
+                // Note: Truncation acceptable for nanosecond timestamps (wraps every ~584 years)
+                #[allow(clippy::cast_possible_truncation)]
                 let now_nanos = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or(Duration::ZERO)
@@ -670,8 +676,8 @@ pub enum Either<L, R> {
 impl<L: std::fmt::Display, R: std::fmt::Display> std::fmt::Display for Either<L, R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Either::Left(l) => write!(f, "{}", l),
-            Either::Right(r) => write!(f, "{}", r),
+            Either::Left(l) => write!(f, "{l}"),
+            Either::Right(r) => write!(f, "{r}"),
         }
     }
 }
@@ -702,6 +708,8 @@ pub struct DeadLetter<T> {
 impl<T> DeadLetter<T> {
     /// Create a new dead letter entry
     fn new(payload: T, error_message: String, retry_count: usize) -> Self {
+        // Note: Truncation acceptable for nanosecond timestamps (wraps every ~584 years)
+        #[allow(clippy::cast_possible_truncation)]
         let now_nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or(Duration::ZERO)
@@ -716,15 +724,6 @@ impl<T> DeadLetter<T> {
         }
     }
 
-    /// Update the last failed timestamp and increment retry count
-    fn update_failure(&mut self, error_message: String) {
-        self.error_message = error_message;
-        self.retry_count += 1;
-        self.last_failed_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or(Duration::ZERO)
-            .as_nanos() as u64;
-    }
 }
 
 /// Dead Letter Queue for storing failed operations
@@ -794,7 +793,10 @@ impl<T> DeadLetterQueue<T> {
     /// - `error_message`: Description of the failure
     /// - `retry_count`: Number of times operation was retried
     pub fn push(&self, payload: T, error_message: String, retry_count: usize) {
-        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        let mut queue = self
+            .queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // Drop oldest if at capacity
         if queue.len() >= self.max_size {
@@ -809,6 +811,9 @@ impl<T> DeadLetterQueue<T> {
         let entry = DeadLetter::new(payload, error_message, retry_count);
         queue.push_back(entry);
 
+        // Intentional cast for metrics - queue size limited by max_size (usize) and f64 can
+        // represent all practical queue sizes (up to 2^53 exactly)
+        #[allow(clippy::cast_precision_loss)]
         metrics::gauge!("dlq.size").set(queue.len() as f64);
         metrics::counter!("dlq.pushed").increment(1);
 
@@ -822,7 +827,10 @@ impl<T> DeadLetterQueue<T> {
     /// Get the current queue size
     #[must_use]
     pub fn len(&self) -> usize {
-        self.queue.lock().unwrap_or_else(|e| e.into_inner()).len()
+        self.queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 
     /// Check if the queue is empty
@@ -835,7 +843,10 @@ impl<T> DeadLetterQueue<T> {
     ///
     /// Returns all entries and empties the queue.
     pub fn drain(&self) -> Vec<DeadLetter<T>> {
-        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        let mut queue = self
+            .queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let entries: Vec<_> = queue.drain(..).collect();
 
         metrics::gauge!("dlq.size").set(0.0);
@@ -854,7 +865,7 @@ impl<T> DeadLetterQueue<T> {
     {
         self.queue
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .front()
             .cloned()
     }
@@ -1400,14 +1411,19 @@ pub mod store {
         pub fn health(&self) -> HealthCheck {
             let dlq_size = self.dlq.len();
             let dlq_capacity = self.dlq.max_size();
+            // Note: Precision loss acceptable for health check percentage (queue sizes < 2^52)
+            #[allow(clippy::cast_precision_loss)]
             let dlq_usage = (dlq_size as f64 / dlq_capacity as f64) * 100.0;
 
             let mut check = if dlq_size >= dlq_capacity {
                 HealthCheck::unhealthy("store", "Dead letter queue is full")
             } else if dlq_usage > 50.0 {
+                // Note: Truncation intentional for display percentage
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let usage_pct = dlq_usage as u32;
                 HealthCheck::degraded(
                     "store",
-                    format!("Dead letter queue is {}% full", dlq_usage as u32),
+                    format!("Dead letter queue is {usage_pct}% full"),
                 )
             } else {
                 HealthCheck::healthy("store")
@@ -1416,7 +1432,7 @@ pub mod store {
             check = check
                 .with_metadata("dlq_size", dlq_size.to_string())
                 .with_metadata("dlq_capacity", dlq_capacity.to_string())
-                .with_metadata("dlq_usage_pct", format!("{:.1}", dlq_usage));
+                .with_metadata("dlq_usage_pct", format!("{dlq_usage:.1}"));
 
             check
         }
@@ -1437,12 +1453,18 @@ pub mod store {
         /// - `Ok(())` if all effects completed within timeout
         /// - `Err(StoreError::ShutdownTimeout)` if timeout expired with effects still running
         ///
+        /// # Errors
+        ///
+        /// Returns [`StoreError::ShutdownTimeout`] if the timeout expires before all
+        /// pending effects complete.
+        ///
         /// # Example
         ///
         /// ```ignore
         /// // Graceful shutdown with 30 second timeout
         /// store.shutdown(Duration::from_secs(30)).await?;
         /// ```
+        #[allow(clippy::cognitive_complexity)] // TODO: Refactor in Phase 5
         pub async fn shutdown(&self, timeout: Duration) -> Result<(), StoreError> {
             tracing::info!("Initiating graceful shutdown");
             metrics::counter!("store.shutdown.initiated").increment(1);
@@ -1598,6 +1620,8 @@ pub mod store {
                 tracing::trace!("Reducer completed, returned {} effects", effects.len());
 
                 // Metrics: Record number of effects produced
+                // Note: Precision loss acceptable for metrics (effect counts < 2^52)
+                #[allow(clippy::cast_precision_loss)]
                 metrics::histogram!("store.effects.count").record(effects.len() as f64);
 
                 effects
@@ -1643,7 +1667,7 @@ pub mod store {
         ///
         /// # Arguments
         ///
-        /// - `operation_name`: Name for logging/metrics (e.g., "append_events")
+        /// - `operation_name`: Name for logging/metrics (e.g., "`append_events`")
         /// - `f`: Async function to execute (will be called multiple times on failure)
         ///
         /// # Returns
@@ -1680,7 +1704,7 @@ pub mod store {
                         // Check if we should retry
                         if !self.retry_policy.should_retry(attempt + 1) {
                             // Exhausted retries - push to DLQ
-                            let error_msg = format!("{}", error);
+                            let error_msg = format!("{error}");
                             self.dlq.push(
                                 operation_name.to_string(),
                                 error_msg.clone(),
@@ -2443,6 +2467,7 @@ mod tests {
         use composable_rust_core::event::SerializedEvent;
         use composable_rust_core::event_store::EventStore;
         use composable_rust_core::stream::{StreamId, Version};
+        use composable_rust_core::{smallvec, SmallVec};
         use std::sync::Arc;
 
         // Test action for EventStore effects
@@ -2943,7 +2968,7 @@ mod tests {
         }
     }
 
-    /// Tests for RetryPolicy
+    /// Tests for `RetryPolicy`
     mod retry_policy_tests {
         use super::*;
 
@@ -3143,7 +3168,10 @@ mod tests {
                 .await;
 
             assert!(result.is_ok());
-            assert_eq!(result.unwrap(), 42);
+            #[allow(clippy::unwrap_used)] // Safe: just asserted is_ok()
+            {
+                assert_eq!(result.unwrap(), 42);
+            }
             assert_eq!(breaker.state(), CircuitState::Closed);
         }
 
@@ -3185,6 +3213,7 @@ mod tests {
                 }));
             }
 
+            #[allow(clippy::unwrap_used)] // Test code: tasks should not panic
             for handle in handles {
                 handle.await.unwrap();
             }
@@ -3255,6 +3284,7 @@ mod tests {
             );
 
             // Peek should return first entry without removing it
+            #[allow(clippy::unwrap_used)] // Test code: just pushed entries
             let entry = dlq.peek().unwrap();
             assert_eq!(entry.payload, "first");
             assert_eq!(entry.error_message, "error1");
@@ -3297,6 +3327,7 @@ mod tests {
             assert_eq!(dlq.len(), 3);
 
             // Peek should show op2 (op1 was dropped)
+            #[allow(clippy::unwrap_used)] // Test code: just pushed entries
             let entry = dlq.peek().unwrap();
             assert_eq!(entry.payload, "op2");
         }
@@ -3346,6 +3377,7 @@ mod tests {
                 5,
             );
 
+            #[allow(clippy::unwrap_used)] // Test code: just pushed entry
             let entry = dlq.peek().unwrap();
             assert_eq!(entry.retry_count, 5);
             assert_eq!(entry.error_message, "Connection timeout");
@@ -3365,13 +3397,14 @@ mod tests {
                 let dlq_clone = Arc::clone(&dlq);
                 handles.push(tokio::spawn(async move {
                     dlq_clone.push(
-                        format!("op{}", i),
+                        format!("op{i}"),
                         "error".to_string(),
                         1,
                     );
                 }));
             }
 
+            #[allow(clippy::unwrap_used)] // Test code: tasks should not panic
             for handle in handles {
                 handle.await.unwrap();
             }
@@ -3506,7 +3539,7 @@ mod tests {
 
             // Fill DLQ to 60% capacity (degraded threshold is 50%)
             for i in 0..600 {
-                store.dlq().push(format!("op_{}", i), "error".to_string(), 5);
+                store.dlq().push(format!("op_{i}"), "error".to_string(), 5);
             }
 
             let health = store.health();
@@ -3520,7 +3553,7 @@ mod tests {
 
             // Fill DLQ to capacity
             for i in 0..1000 {
-                store.dlq().push(format!("op_{}", i), "error".to_string(), 5);
+                store.dlq().push(format!("op_{i}"), "error".to_string(), 5);
             }
 
             let health = store.health();
@@ -3596,7 +3629,10 @@ mod tests {
             // Wait for shutdown to complete
             let result = shutdown_handle.await;
             assert!(result.is_ok());
-            assert!(result.unwrap().is_ok());
+            #[allow(clippy::unwrap_used)] // Test code: just asserted is_ok()
+            {
+                assert!(result.unwrap().is_ok());
+            }
 
             Ok(())
         }
@@ -3639,7 +3675,7 @@ mod tests {
             let result = store.shutdown(Duration::from_millis(50)).await;
 
             // Should timeout because the effect takes 200ms
-            assert!(matches!(result, Err(StoreError::ShutdownTimeout(_))), "Expected ShutdownTimeout, got: {:?}", result);
+            assert!(matches!(result, Err(StoreError::ShutdownTimeout(_))), "Expected ShutdownTimeout, got: {result:?}");
 
             if let Err(StoreError::ShutdownTimeout(pending)) = result {
                 assert!(pending > 0, "Should report pending effects");

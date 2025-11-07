@@ -558,13 +558,13 @@ pub mod mocks {
                 }
 
                 // Phase 2: Apply all validated changes atomically
-                for validated_op in validated_operations {
-                    if let Some((stream_id, mut events, _new_version)) = validated_op {
-                        let stream_events = store
-                            .entry(stream_id.as_str().to_string())
-                            .or_default();
-                        stream_events.append(&mut events);
-                    }
+                for (stream_id, mut events, _new_version) in
+                    validated_operations.into_iter().flatten()
+                {
+                    let stream_events = store
+                        .entry(stream_id.as_str().to_string())
+                        .or_default();
+                    stream_events.append(&mut events);
                 }
 
                 // Lock released here automatically when store is dropped

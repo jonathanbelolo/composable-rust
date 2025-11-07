@@ -570,6 +570,13 @@ impl EventStore for PostgresEventStore {
         Box<dyn std::future::Future<Output = Result<Vec<Result<Version, EventStoreError>>, EventStoreError>> + Send + '_>,
     > {
         Box::pin(async move {
+            // Helper struct for validated events (defined at scope start)
+            struct ValidatedEvent {
+                stream_id: String,
+                version: i64,
+                event: SerializedEvent,
+            }
+
             if batch.is_empty() {
                 return Ok(Vec::new());
             }
@@ -591,11 +598,6 @@ impl EventStore for PostgresEventStore {
             let mut results = Vec::with_capacity(batch.len());
 
             // Phase 1: Validate all streams and prepare events for bulk insert
-            struct ValidatedEvent {
-                stream_id: String,
-                version: i64,
-                event: SerializedEvent,
-            }
 
             let mut validated_events: Vec<ValidatedEvent> = Vec::new();
 

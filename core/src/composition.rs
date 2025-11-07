@@ -376,13 +376,10 @@ mod tests {
             action: Self::Action,
             _env: &Self::Environment,
         ) -> SmallVec<[Effect<Self::Action>; 4]> {
-            match action {
-                TestAction::SetName(name) => {
-                    state.name = name;
-                    smallvec![Effect::None]
-                },
-                _ => smallvec![Effect::None],
+            if let TestAction::SetName(name) = action {
+                state.name = name;
             }
+            smallvec![Effect::None]
         }
     }
 

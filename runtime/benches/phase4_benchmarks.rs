@@ -1,9 +1,9 @@
 //! Phase 4 Performance Benchmarks
 //!
 //! Benchmarks for production-hardening features:
-//! - RetryPolicy: overhead of retry logic
-//! - CircuitBreaker: overhead of circuit breaker checks
-//! - DeadLetterQueue: DLQ operation performance
+//! - `RetryPolicy`: overhead of retry logic
+//! - `CircuitBreaker`: overhead of circuit breaker checks
+//! - `DeadLetterQueue`: DLQ operation performance
 //! - Combined: realistic production scenarios
 //!
 //! Run with: `cargo bench --bench phase4_benchmarks`
@@ -15,7 +15,7 @@ use composable_rust_runtime::{CircuitBreaker, DeadLetterQueue, RetryPolicy};
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use std::time::Duration;
 
-/// Benchmark RetryPolicy overhead
+/// Benchmark `RetryPolicy` overhead
 fn benchmark_retry_policy(c: &mut Criterion) {
     let mut group = c.benchmark_group("retry_policy");
     group.throughput(Throughput::Elements(1));
@@ -55,7 +55,7 @@ fn benchmark_retry_policy(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark CircuitBreaker overhead
+/// Benchmark `CircuitBreaker` overhead
 fn benchmark_circuit_breaker(c: &mut Criterion) {
     let mut group = c.benchmark_group("circuit_breaker");
     group.throughput(Throughput::Elements(1));
@@ -104,11 +104,11 @@ fn benchmark_circuit_breaker(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark DeadLetterQueue operations
+/// Benchmark `DeadLetterQueue` operations
 fn benchmark_dlq(c: &mut Criterion) {
     let mut group = c.benchmark_group("dlq");
 
-    for size in [10, 100, 1000].iter() {
+    for size in &[10, 100, 1000] {
         group.throughput(Throughput::Elements(1));
 
         group.bench_with_input(BenchmarkId::new("push", size), size, |b, &size| {
@@ -117,7 +117,7 @@ fn benchmark_dlq(c: &mut Criterion) {
 
             b.iter(|| {
                 dlq.push(
-                    black_box(format!("operation_{}", counter)),
+                    black_box(format!("operation_{counter}")),
                     black_box("error".to_string()),
                     black_box(5),
                 );
@@ -129,7 +129,7 @@ fn benchmark_dlq(c: &mut Criterion) {
             let dlq = DeadLetterQueue::new(size);
             // Pre-fill with some entries
             for i in 0..size / 2 {
-                dlq.push(format!("op_{}", i), "err".to_string(), 1);
+                dlq.push(format!("op_{i}"), "err".to_string(), 1);
             }
 
             b.iter(|| {
@@ -153,7 +153,7 @@ fn benchmark_dlq(c: &mut Criterion) {
             || {
                 let dlq: DeadLetterQueue<String> = DeadLetterQueue::new(1000);
                 for i in 0..100 {
-                    dlq.push(format!("op_{}", i), "err".to_string(), 1);
+                    dlq.push(format!("op_{i}"), "err".to_string(), 1);
                 }
                 dlq
             },
@@ -206,7 +206,7 @@ fn benchmark_production_scenario(c: &mut Criterion) {
         b.iter(|| {
             // Simulate exhausted retries -> DLQ
             dlq.push(
-                black_box(format!("operation_{}", counter)),
+                black_box(format!("operation_{counter}")),
                 black_box("Connection timeout".to_string()),
                 black_box(5),
             );
@@ -236,7 +236,7 @@ fn benchmark_concurrent_dlq(c: &mut Criterion) {
                 .map(|i| {
                     let dlq = dlq.clone();
                     tokio::spawn(async move {
-                        dlq.push(format!("op_{}", i), "error".to_string(), 5);
+                        dlq.push(format!("op_{i}"), "error".to_string(), 5);
                     })
                 })
                 .collect();

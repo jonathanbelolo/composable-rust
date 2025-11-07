@@ -106,7 +106,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Send PlaceOrder command
-    let mut handle = store
+    let handle = store
         .send(OrderAction::PlaceOrder {
             order_id: order_id.clone(),
             customer_id: customer_id.clone(),
@@ -130,7 +130,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tracking = "TRACK-ABC123XYZ".to_string();
     info!("  Tracking number: {}", tracking);
 
-    let mut handle = store
+    let handle = store
         .send(OrderAction::ShipOrder {
             order_id: order_id.clone(),
             tracking: tracking.clone(),
@@ -176,7 +176,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             OrderAction::from_serialized(serialized_event).expect("Failed to deserialize event");
 
         // Send event through store (will apply via reducer)
-        let mut handle = new_store.send(event).await;
+        let handle = new_store.send(event).await;
         handle?.wait().await;
     }
 
@@ -213,7 +213,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Try to cancel an already-shipped order (should fail validation)
     info!("  Attempting to cancel an already-shipped order...");
 
-    let mut handle = new_store
+    let handle = new_store
         .send(OrderAction::CancelOrder {
             order_id: order_id.clone(),
             reason: "Customer changed mind".to_string(),

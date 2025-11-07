@@ -51,6 +51,13 @@ use thiserror::Error;
 /// Type alias for snapshot data: `(Version, Vec<u8>)`
 type SnapshotData = (Version, Vec<u8>);
 
+/// Type alias for batch append results: `Vec<Result<Version, EventStoreError>>`
+///
+/// Each element in the vector corresponds to one `BatchAppend` operation:
+/// - `Ok(Version)`: The new version after successful append
+/// - `Err(EventStoreError)`: The error that occurred for this specific append
+pub type BatchAppendResults = Vec<Result<Version, EventStoreError>>;
+
 /// A single append operation in a batch.
 ///
 /// Used with `append_batch()` to batch multiple append operations efficiently.
@@ -451,7 +458,7 @@ pub trait EventStore: Send + Sync {
     fn append_batch(
         &self,
         batch: Vec<BatchAppend>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Result<Version, EventStoreError>>, EventStoreError>> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = Result<BatchAppendResults, EventStoreError>> + Send + '_>>;
 }
 
 #[cfg(test)]
