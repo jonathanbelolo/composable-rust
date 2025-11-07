@@ -6,6 +6,7 @@ members = [
     "testing",
     "postgres",
     "redpanda",
+    "projections",
     "examples/counter",
     "examples/order-processing",
     "examples/checkout-saga",

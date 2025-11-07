@@ -1,0 +1,40 @@
+[package]
+name = "composable-rust-projections"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Projection implementations for Composable Rust (Postgres, Redis, etc.)"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Core
+composable-rust-core = { path = "../core" }
+
+# Async
+tokio = { workspace = true, features = ["full"] }
+futures = { workspace = true }
+
+# Database - Postgres
+sqlx = { workspace = true, features = ["postgres", "runtime-tokio-rustls", "chrono", "migrate"] }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+bincode = { workspace = true }
+
+# Logging/Tracing
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+testcontainers = { workspace = true }

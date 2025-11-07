@@ -73,6 +73,9 @@ pub mod event_bus;
 // Phase 3: Reducer composition utilities
 pub mod composition;
 
+// Phase 5: Projection system for read models (query side of CQRS)
+pub mod projection;
+
 /// Action module - Unified input type for reducers (commands, events, cross-aggregate events)
 ///
 /// # Phase 1 Implementation
