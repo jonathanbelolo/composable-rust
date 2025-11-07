@@ -32,6 +32,9 @@
 use chrono::{DateTime, Utc};
 use composable_rust_core::environment::Clock;
 
+// Projection testing utilities
+mod projection_mocks;
+
 /// Mock implementations of Environment traits
 ///
 /// # Phase 1 Implementation
@@ -1219,6 +1222,9 @@ pub mod test_store {
 
 // Re-export commonly used items
 pub use mocks::{FixedClock, test_clock};
+pub use projection_mocks::{
+    InMemoryProjectionCheckpoint, InMemoryProjectionStore, ProjectionTestHarness,
+};
 pub use test_store::{ExpectedActions, TestStore, TestStoreError};
 
 // Placeholder test module
