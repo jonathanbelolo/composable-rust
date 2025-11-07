@@ -1,0 +1,20 @@
+[package]
+name = "banking"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+composable-rust-core = { path = "../../core" }
+composable-rust-macros = { path = "../../macros" }
+composable-rust-runtime = { path = "../../runtime" }
+chrono = "0.4"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+composable-rust-testing = { path = "../../testing" }
+
+[lints]
+workspace = true

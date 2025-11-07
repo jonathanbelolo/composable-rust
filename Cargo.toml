@@ -13,6 +13,8 @@ members = [
     "examples/order-projection",
     "examples/checkout-saga",
     "examples/metrics-demo",
+    "examples/todo",
+    "examples/banking",
 ]
 
 [workspace.package]
