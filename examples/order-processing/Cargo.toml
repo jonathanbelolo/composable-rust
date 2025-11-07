@@ -15,6 +15,7 @@ workspace = true
 [dependencies]
 # Local dependencies
 composable-rust-core = { path = "../../core" }
+composable-rust-macros = { path = "../../macros" }
 composable-rust-runtime = { path = "../../runtime" }
 composable-rust-testing = { path = "../../testing" }
 composable-rust-postgres = { path = "../../postgres", optional = true }

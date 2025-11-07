@@ -54,7 +54,7 @@
 //!             Money::from_dollars(10),
 //!         )
 //!     ],
-//! }).await;
+//! }).await?;
 //!
 //! // Wait for effects to complete
 //! handle.wait().await;

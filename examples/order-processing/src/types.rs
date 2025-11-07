@@ -6,6 +6,7 @@
 use chrono::{DateTime, Utc};
 use composable_rust_core::event::SerializedEvent;
 use composable_rust_core::stream::Version;
+use composable_rust_macros::{Action, State};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -154,7 +155,7 @@ impl fmt::Display for OrderStatus {
 ///
 /// This represents the current state of an order, which is derived from
 /// replaying all events in the order's event stream.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(State, Clone, Debug, Serialize, Deserialize)]
 pub struct OrderState {
     /// Order identifier (None for new orders)
     pub order_id: Option<OrderId>,
@@ -167,6 +168,7 @@ pub struct OrderState {
     /// Total order value in cents
     pub total: Money,
     /// Current version in the event stream (None for new orders)
+    #[version]
     pub version: Option<Version>,
     /// Last validation error (if any)
     pub last_error: Option<String>,
@@ -216,10 +218,11 @@ impl Default for OrderState {
 /// (something that happened). Commands are validated by the reducer and
 /// produce events. Events are persisted to the event store and used to
 /// reconstruct state.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Action, Clone, Debug, Serialize, Deserialize)]
 pub enum OrderAction {
     // ========== Commands ==========
     /// Command: Place a new order
+    #[command]
     PlaceOrder {
         /// Unique order identifier
         order_id: OrderId,
@@ -230,6 +233,7 @@ pub enum OrderAction {
     },
 
     /// Command: Cancel an existing order
+    #[command]
     CancelOrder {
         /// Order to cancel
         order_id: OrderId,
@@ -238,6 +242,7 @@ pub enum OrderAction {
     },
 
     /// Command: Ship an order
+    #[command]
     ShipOrder {
         /// Order to ship
         order_id: OrderId,
@@ -247,6 +252,7 @@ pub enum OrderAction {
 
     // ========== Events ==========
     /// Event: Order was successfully placed
+    #[event]
     OrderPlaced {
         /// Order identifier
         order_id: OrderId,
@@ -261,6 +267,7 @@ pub enum OrderAction {
     },
 
     /// Event: Order was cancelled
+    #[event]
     OrderCancelled {
         /// Order identifier
         order_id: OrderId,
@@ -271,6 +278,7 @@ pub enum OrderAction {
     },
 
     /// Event: Order was shipped
+    #[event]
     OrderShipped {
         /// Order identifier
         order_id: OrderId,
@@ -281,6 +289,7 @@ pub enum OrderAction {
     },
 
     /// Event: Command validation failed
+    #[event]
     ValidationFailed {
         /// Error message
         error: String,
@@ -299,36 +308,6 @@ pub enum OrderAction {
 }
 
 impl OrderAction {
-    /// Returns the event type name for serialization
-    ///
-    /// This is used by the event store to identify event types during
-    /// deserialization. The version suffix allows for schema evolution.
-    #[must_use]
-    pub const fn event_type(&self) -> &'static str {
-        match self {
-            Self::PlaceOrder { .. } => "PlaceOrder.v1",
-            Self::CancelOrder { .. } => "CancelOrder.v1",
-            Self::ShipOrder { .. } => "ShipOrder.v1",
-            Self::OrderPlaced { .. } => "OrderPlaced.v1",
-            Self::OrderCancelled { .. } => "OrderCancelled.v1",
-            Self::OrderShipped { .. } => "OrderShipped.v1",
-            Self::ValidationFailed { .. } => "ValidationFailed.v1",
-            Self::EventPersisted { .. } => "EventPersisted.internal",
-        }
-    }
-
-    /// Checks if this action is an event (vs. a command)
-    #[must_use]
-    pub const fn is_event(&self) -> bool {
-        matches!(
-            self,
-            Self::OrderPlaced { .. }
-                | Self::OrderCancelled { .. }
-                | Self::OrderShipped { .. }
-                | Self::ValidationFailed { .. }
-        )
-    }
-
     /// Deserialize an event from a serialized event
     ///
     /// This is used during event replay to reconstruct aggregate state from
