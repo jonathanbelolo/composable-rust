@@ -592,59 +592,136 @@ Build `examples/production-ready/`:
 
 ---
 
-## Phase 5: Developer Experience (Weeks 10-11)
+## Phase 5: Developer Experience (Weeks 10-14)
 
-**Goal**: Make it easy and delightful to use.
+**Goal**: Make it easy and delightful to use, with critical projection system for queries.
+
+**Revised Duration**: 4-5 weeks (expanded from initial 1.5-2 weeks due to critical projection system)
 
 ### Deliverables
 
-1. **Documentation**
-   - Getting started guide
-   - Comprehensive API docs
-   - Pattern cookbook (common scenarios)
-   - Migration guides (from other architectures)
+1. **Projection/Read Model System** 🔥 **CRITICAL** (Week 1-2)
+   - Core Projection trait and ProjectionStore abstraction
+   - PostgreSQL projection store with separate database support (true CQRS)
+   - Redis projection store for caching hot data
+   - Cached projection store (Postgres + Redis layered)
+   - ProjectionManager for orchestrating updates from event bus
+   - Checkpoint mechanism for resumption and catch-up
+   - InMemoryProjectionStore for fast testing
+   - Example: Customer order history projection
+   - **Why Critical**: Real applications need queryable read models, not just event replay
 
-2. **Code Generation** (optional)
-   - Macro to derive reducer boilerplate?
-   - Event serialization helpers?
-   - **Decide**: Only if genuinely reduces friction
+2. **Consistency Patterns Documentation** 🔥 **CRITICAL** (Day 1-2)
+   - When to use projections vs event store (decision tree)
+   - Saga patterns that avoid querying projections
+   - Event design guidelines ("fat events" with all downstream data)
+   - Testing patterns for eventual consistency
+   - Common pitfalls and fixes
+   - Architecture Decision Records (ADRs)
+   - **Why Critical**: Prevents architectural misuse, essential before developers build sagas
 
-3. **Testing Utilities**
-   - Assertion helpers for reducers
-   - Fixture builders
+3. **Documentation Overhaul** (Week 3)
+   - Getting started guide (< 1 hour tutorial)
+   - Comprehensive API docs with examples
+   - Pattern cookbook (20+ common scenarios)
+   - Troubleshooting guide (15+ common issues)
+   - Migration guides (CRUD → Event Sourcing)
+   - Performance tuning guide
+
+4. **Developer Tooling & Macros** (Week 4)
+   - Derive macros for boilerplate reduction (Action, State, Aggregate)
+   - Builder pattern helpers for testing
+   - Event versioning helpers
+   - CLI scaffolding tool for aggregates and sagas
+
+5. **Testing Utilities Enhancement** (Week 4)
+   - Reducer assertion helpers (fluent API)
+   - Saga testing utilities
+   - Property-based testing helpers
    - Snapshot testing support
 
-4. **Examples & Templates**
-   - Project template (cookiecutter or similar)
-   - Multiple example domains:
-     - E-commerce (covered in earlier phases)
-     - Banking (accounts, transactions)
-     - Inventory management
-   - Each example fully documented
+6. **Examples & Templates** (Week 4)
+   - Todo example (simplest learning path)
+   - Banking example (accounts, transfers, saga)
+   - Inventory management (advanced multi-aggregate)
+   - E-commerce platform (complete reference)
+   - Project template with cargo-generate
 
-5. **Performance Tuning Guide**
-   - When to use what patterns
-   - Common bottlenecks
-   - Optimization techniques
+7. **Debugging & Observability Tools** (Week 5)
+   - Event replay debugger (CLI)
+   - Saga visualization
+   - Performance profiling guide
+
+8. **API Stability Audit** (Week 5)
+   - Prepare for 1.0 stable release
+   - Mark experimental APIs
+   - Document breaking change policy
+   - Semantic versioning policy
 
 ### Validation Criteria
 
 - [ ] New developer can build first aggregate in < 1 hour
-- [ ] Documentation is clear and comprehensive
+- [ ] New developer can build first saga in < 2 hours
+- [ ] Projections work with Postgres and Redis backends
+- [ ] Can use separate database for true CQRS separation
+- [ ] Documentation covers consistency patterns thoroughly
+- [ ] Pattern cookbook has 20+ solutions
 - [ ] Examples cover 80% of common use cases
-- [ ] Community feedback is positive (if open source)
+- [ ] Testing utilities reduce test boilerplate by 50%
+- [ ] All public APIs documented
+- [ ] Macros reduce boilerplate by 30-50% (optional)
 
 ### Key Decisions
 
-1. **API Stability**
-   - Commit to 1.0 API stability?
-   - **Decide**: Based on feedback from phases 1-4
+1. **Projection Backends**
+   - **Primary**: PostgreSQL (JSONB support, queryable, separate DB option)
+   - **Caching**: Redis (sub-millisecond reads, TTL support)
+   - **Future**: Elasticsearch (deferred to post-v1.0)
+   - **Testing**: InMemoryProjectionStore (completes testing trinity)
 
-2. **Open Source?**
-   - Release as open source or keep internal?
-   - **Decide**: Based on business requirements
+2. **Consistency Architecture** ✅
+   - **Decision**: Sagas MUST NOT query projections (carry state instead)
+   - Events should be "fat" (include all downstream data)
+   - Projections are for UI/reports only (eventual consistency acceptable)
+   - Strong consistency requires reading from event store
 
-**Duration**: 1.5-2 weeks
+3. **API Stability**
+   - Target 1.0 API stability after Phase 5
+   - Document breaking change policy
+   - Semantic versioning commitment
+
+4. **Open Source Strategy**
+   - Document extensibility points for community
+   - Contribution guide
+   - Plugin/extension system design
+
+### Reference Implementations
+
+Week 1-2 focus:
+- `examples/projections/` - Customer order history with Postgres + Redis
+- `docs/consistency-patterns.md` - Complete architectural guidance
+- `docs/saga-patterns.md` - How to design sagas correctly
+- `docs/event-design-guidelines.md` - Fat events for workflows
+
+Week 3-4 focus:
+- `examples/todo/` - Simplest learning path (< 30 min)
+- `examples/banking/` - Transfer saga with compensation
+- `composable-rust-macros` - Derive macros for boilerplate
+
+Week 5 focus:
+- `composable-rust-cli` - Scaffolding and debugging tools
+- API stability audit and 1.0 preparation
+
+**Success**: Developers can build production applications with confidence, understanding when to use projections vs event store, and having comprehensive examples and tooling.
+
+**Duration**: 4-5 weeks (22-26 days)
+
+**Breakdown**:
+- Projections: 8 days (CRITICAL)
+- Documentation: 7-8 days (includes consistency patterns)
+- Tooling & Macros: 3-4 days
+- Examples: 3-4 days
+- Polish & API Audit: 1-2 days
 
 ---
 
@@ -658,6 +735,8 @@ Build `examples/production-ready/`:
 | Performance doesn't meet targets | Medium | Benchmark continuously, optimize in Phase 4 |
 | Event schema evolution too rigid | Medium | Design versioning strategy in Phase 2 |
 | Saga pattern too difficult to use | High | Validate with complex example in Phase 3 |
+| Projection system too complex | High | Start with simple abstractions, validate with real examples in Phase 5 |
+| Developers misuse projections (query in sagas) | High | Document consistency patterns FIRST, before releasing projections |
 | Rust type system fights us | Low | Prototype tricky parts early |
 
 ### Project Risks
@@ -711,13 +790,19 @@ The implementation is successful when:
 | 2: Event Sourcing | 1.5-2 weeks | Week 5 | Order aggregate persists |
 | 3: Sagas | 1.5-2 weeks | Week 7 | Checkout workflow works |
 | 4: Production | 1.5-2 weeks | Week 9 | Can run distributed |
-| 5: DX | 1.5-2 weeks | Week 11 | Ready for production use |
+| 5: DX + Projections | 4-5 weeks | Week 14 | Projections + comprehensive docs |
 
-**Total**: ~11 weeks to production-ready framework
+**Total**: ~14 weeks to production-ready framework
 
 **Contingency**: Add 2-3 weeks buffer for learning, debugging, and refinement
 
-**Realistic Target**: 12-14 weeks to v1.0
+**Realistic Target**: 15-17 weeks to v1.0
+
+**Note**: Phase 5 expanded from 1.5-2 weeks to 4-5 weeks due to:
+- Critical projection/read model system (8 days)
+- Essential consistency patterns documentation (2 days)
+- Multiple storage backends (Postgres + Redis)
+- Comprehensive developer experience improvements
 
 ---
 
@@ -726,12 +811,13 @@ The implementation is successful when:
 These are important but deferred post-v1.0:
 
 1. **GraphQL/gRPC Integration** - Focus on core architecture first
-2. **Advanced Projections** - Basic read models in Phase 2, sophisticated projections later
+2. **Elasticsearch Projection Backend** - Postgres + Redis in v1.0, Elasticsearch later for advanced search
 3. **Multi-tenancy** - Can be layered on top later
 4. **Distributed Transactions** - Keep transactions at aggregate boundary
 5. **Hot Reload** - Nice to have, not essential
 6. **GUI Tools** - Command line / code first
 7. **Cloud-Specific Adapters** - Start with standard interfaces
+8. **Advanced Event Upcasting** - Basic versioning in v1.0, sophisticated upcasting later
 
 ---
 
