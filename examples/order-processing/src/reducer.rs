@@ -4,7 +4,8 @@
 //! persisted to the event store. Events are then replayed to reconstruct state.
 
 use crate::types::{LineItem, Money, OrderAction, OrderId, OrderState, OrderStatus};
-use composable_rust_core::effect::{Effect, EventStoreOperation};
+use composable_rust_core::append_events;
+use composable_rust_core::effect::Effect;
 use composable_rust_core::environment::Clock;
 use composable_rust_core::event::SerializedEvent;
 use composable_rust_core::event_store::EventStore;
@@ -184,24 +185,19 @@ impl OrderReducer {
             },
         };
 
-        Effect::EventStore(EventStoreOperation::AppendEvents {
-            event_store,
-            stream_id,
-            expected_version,
+        append_events! {
+            store: event_store,
+            stream: stream_id.as_str(),
+            expected_version: expected_version,
             events: vec![serialized_event],
-            on_success: Box::new(move |version| {
-                // Return EventPersisted with both the event and version
-                Some(OrderAction::EventPersisted {
-                    event: Box::new(event.clone()),
-                    version: version.value(),
-                })
+            on_success: |version| Some(OrderAction::EventPersisted {
+                event: Box::new(event.clone()),
+                version: version.value(),
             }),
-            on_error: Box::new(|error| {
-                Some(OrderAction::ValidationFailed {
-                    error: error.to_string(),
-                })
-            }),
-        })
+            on_error: |error| Some(OrderAction::ValidationFailed {
+                error: error.to_string(),
+            })
+        }
     }
 }
 

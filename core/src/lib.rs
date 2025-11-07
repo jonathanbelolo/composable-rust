@@ -76,6 +76,9 @@ pub mod composition;
 // Phase 5: Projection system for read models (query side of CQRS)
 pub mod projection;
 
+// Phase 5: Effect helper macros for ergonomic effect construction
+pub mod effect_macros;
+
 /// Action module - Unified input type for reducers (commands, events, cross-aggregate events)
 ///
 /// # Phase 1 Implementation
