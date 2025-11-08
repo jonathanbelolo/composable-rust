@@ -379,6 +379,171 @@ pub fn validate_platform(platform: &str) -> crate::error::Result<()> {
     Ok(())
 }
 
+/// Validate user agent string.
+///
+/// # Rules
+///
+/// - Length: 1-1000 characters
+/// - Must be ASCII (user agents are ASCII per HTTP spec)
+/// - No control characters
+///
+/// # Security
+///
+/// Limits length to prevent:
+/// - HTTP header injection attacks (e.g., `User-Agent: foo\r\nX-Malicious: bar`)
+/// - DoS via excessive memory usage
+/// - Log injection attacks
+///
+/// # Examples
+///
+/// ```
+/// use composable_rust_auth::utils::validate_user_agent;
+///
+/// assert!(validate_user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)").is_ok());
+/// assert!(validate_user_agent("curl/7.68.0").is_ok());
+/// assert!(validate_user_agent("").is_err()); // Empty
+/// assert!(validate_user_agent(&"A".repeat(1001)).is_err()); // Too long
+/// ```
+///
+/// # Errors
+///
+/// Returns `AuthError::InvalidInput` if validation fails.
+pub fn validate_user_agent(user_agent: &str) -> crate::error::Result<()> {
+    use crate::error::AuthError;
+
+    if user_agent.is_empty() {
+        return Err(AuthError::InvalidInput("User-Agent cannot be empty".into()));
+    }
+
+    if user_agent.len() > 1000 {
+        return Err(AuthError::InvalidInput(format!(
+            "User-Agent too long: {} > 1000 chars",
+            user_agent.len()
+        )));
+    }
+
+    // User-Agent should be ASCII (per HTTP spec)
+    if !user_agent.is_ascii() {
+        return Err(AuthError::InvalidInput(
+            "User-Agent must be ASCII".into(),
+        ));
+    }
+
+    // Check for control characters (especially \r, \n for header injection)
+    if user_agent.chars().any(|c| c.is_control()) {
+        return Err(AuthError::InvalidInput(
+            "User-Agent contains control characters (possible header injection)".into(),
+        ));
+    }
+
+    Ok(())
+}
+
+/// Validate IP address format.
+///
+/// # Rules
+///
+/// - Must be a valid IPv4 or IPv6 address
+/// - No leading/trailing whitespace
+/// - No malicious patterns (e.g., SQL injection)
+///
+/// # Examples
+///
+/// ```
+/// use composable_rust_auth::utils::validate_ip_address;
+///
+/// assert!(validate_ip_address("127.0.0.1").is_ok());
+/// assert!(validate_ip_address("192.168.1.1").is_ok());
+/// assert!(validate_ip_address("::1").is_ok());
+/// assert!(validate_ip_address("2001:0db8:85a3::8a2e:0370:7334").is_ok());
+/// assert!(validate_ip_address("invalid").is_err());
+/// assert!(validate_ip_address("999.999.999.999").is_err());
+/// ```
+///
+/// # Errors
+///
+/// Returns `AuthError::InvalidInput` if validation fails.
+pub fn validate_ip_address(ip: &str) -> crate::error::Result<()> {
+    use crate::error::AuthError;
+
+    if ip.is_empty() {
+        return Err(AuthError::InvalidInput("IP address cannot be empty".into()));
+    }
+
+    // Reject whitespace (prevents bypass attacks)
+    if ip.trim() != ip {
+        return Err(AuthError::InvalidInput(
+            "IP address contains leading/trailing whitespace".into(),
+        ));
+    }
+
+    // Length sanity check (prevent DoS)
+    // IPv4: max 15 chars (255.255.255.255)
+    // IPv6: max 45 chars (8 groups of 4 hex + 7 colons + potential IPv4 suffix)
+    if ip.len() > 45 {
+        return Err(AuthError::InvalidInput(format!(
+            "IP address too long: {} > 45 chars",
+            ip.len()
+        )));
+    }
+
+    // Check for SQL injection patterns (defense-in-depth)
+    const DANGEROUS_CHARS: &[char] = &['\'', '"', ';', '-', '\\', '\0'];
+    if ip.chars().any(|c| DANGEROUS_CHARS.contains(&c)) {
+        return Err(AuthError::InvalidInput(
+            "IP address contains invalid characters".into(),
+        ));
+    }
+
+    // Parse as IpAddr to validate format
+    // This handles both IPv4 and IPv6
+    ip.parse::<std::net::IpAddr>().map_err(|_| {
+        AuthError::InvalidInput(format!("Invalid IP address format: {ip}"))
+    })?;
+
+    Ok(())
+}
+
+/// Sanitize IP address for logging.
+///
+/// # Privacy
+///
+/// Truncates the last octet of IPv4 addresses or last 64 bits of IPv6
+/// addresses to protect user privacy while retaining useful geographic info.
+///
+/// # Examples
+///
+/// ```
+/// use composable_rust_auth::utils::sanitize_ip_for_logging;
+///
+/// assert_eq!(sanitize_ip_for_logging("192.168.1.100"), "192.168.1.0");
+/// assert_eq!(sanitize_ip_for_logging("2001:0db8:85a3::8a2e:0370:7334"), "2001:db8:85a3::");
+/// ```
+#[must_use]
+pub fn sanitize_ip_for_logging(ip: &str) -> String {
+    use std::net::IpAddr;
+
+    match ip.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ipv4)) => {
+            // Zero out last octet
+            let octets = ipv4.octets();
+            format!("{}.{}.{}.0", octets[0], octets[1], octets[2])
+        }
+        Ok(IpAddr::V6(ipv6)) => {
+            // Zero out last 64 bits (interface identifier)
+            let segments = ipv6.segments();
+            format!(
+                "{:x}:{:x}:{:x}:{:x}::",
+                segments[0], segments[1], segments[2], segments[3]
+            )
+        }
+        Err(_) => {
+            // Invalid IP - return masked version
+            "[invalid]".to_string()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -696,5 +861,146 @@ mod tests {
         assert!(!is_valid_email("@example.com"));
         assert!(!is_valid_email("user@"));
         assert!(!is_valid_email("user@@example.com"));
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // User-Agent Validation Tests
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_validate_user_agent_valid() {
+        // Valid user agents
+        assert!(validate_user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)").is_ok());
+        assert!(validate_user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)").is_ok());
+        assert!(validate_user_agent("curl/7.68.0").is_ok());
+        assert!(validate_user_agent("PostmanRuntime/7.26.8").is_ok());
+        assert!(validate_user_agent("a").is_ok()); // Minimum length
+        assert!(validate_user_agent(&"A".repeat(1000)).is_ok()); // Maximum length
+    }
+
+    #[test]
+    fn test_validate_user_agent_empty() {
+        let result = validate_user_agent("");
+        assert!(result.is_err());
+        assert!(matches!(result, Err(crate::error::AuthError::InvalidInput(_))));
+    }
+
+    #[test]
+    fn test_validate_user_agent_too_long() {
+        let result = validate_user_agent(&"A".repeat(1001));
+        assert!(result.is_err());
+        assert!(matches!(result, Err(crate::error::AuthError::InvalidInput(_))));
+    }
+
+    #[test]
+    fn test_validate_user_agent_non_ascii() {
+        assert!(validate_user_agent("Mozilla™").is_err()); // Non-ASCII character
+        assert!(validate_user_agent("браузер").is_err()); // Cyrillic
+        assert!(validate_user_agent("ブラウザ").is_err()); // Japanese
+    }
+
+    #[test]
+    fn test_validate_user_agent_header_injection() {
+        // HTTP header injection attacks
+        assert!(validate_user_agent("Mozilla/5.0\r\nX-Malicious: foo").is_err()); // CRLF injection
+        assert!(validate_user_agent("Mozilla/5.0\nX-Malicious: foo").is_err()); // LF injection
+        assert!(validate_user_agent("Mozilla/5.0\rX-Malicious: foo").is_err()); // CR injection
+        assert!(validate_user_agent("Mozilla\0WithNull").is_err()); // Null byte
+        assert!(validate_user_agent("Mozilla\tWithTab").is_err()); // Tab
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // IP Address Validation Tests
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_validate_ip_address_valid_ipv4() {
+        // Valid IPv4 addresses
+        assert!(validate_ip_address("127.0.0.1").is_ok());
+        assert!(validate_ip_address("192.168.1.1").is_ok());
+        assert!(validate_ip_address("10.0.0.1").is_ok());
+        assert!(validate_ip_address("255.255.255.255").is_ok());
+        assert!(validate_ip_address("0.0.0.0").is_ok());
+    }
+
+    #[test]
+    fn test_validate_ip_address_valid_ipv6() {
+        // Valid IPv6 addresses
+        assert!(validate_ip_address("::1").is_ok()); // Loopback
+        assert!(validate_ip_address("::").is_ok()); // All zeros
+        assert!(validate_ip_address("2001:0db8:85a3::8a2e:0370:7334").is_ok());
+        assert!(validate_ip_address("2001:db8::1").is_ok());
+        assert!(validate_ip_address("fe80::1").is_ok());
+        assert!(validate_ip_address("::ffff:192.168.1.1").is_ok()); // IPv4-mapped IPv6
+    }
+
+    #[test]
+    fn test_validate_ip_address_empty() {
+        let result = validate_ip_address("");
+        assert!(result.is_err());
+        assert!(matches!(result, Err(crate::error::AuthError::InvalidInput(_))));
+    }
+
+    #[test]
+    fn test_validate_ip_address_invalid_format() {
+        assert!(validate_ip_address("invalid").is_err());
+        assert!(validate_ip_address("999.999.999.999").is_err());
+        assert!(validate_ip_address("192.168.1").is_err()); // Missing octet
+        assert!(validate_ip_address("192.168.1.1.1").is_err()); // Too many octets
+        assert!(validate_ip_address("192.168.1.").is_err()); // Trailing dot
+        assert!(validate_ip_address(".192.168.1.1").is_err()); // Leading dot
+    }
+
+    #[test]
+    fn test_validate_ip_address_whitespace() {
+        assert!(validate_ip_address(" 192.168.1.1").is_err()); // Leading space
+        assert!(validate_ip_address("192.168.1.1 ").is_err()); // Trailing space
+        assert!(validate_ip_address("192.168. 1.1").is_err()); // Space in middle
+    }
+
+    #[test]
+    fn test_validate_ip_address_injection_prevention() {
+        // SQL injection patterns
+        assert!(validate_ip_address("192.168.1.1'; DROP TABLE--").is_err());
+        assert!(validate_ip_address("192.168.1.1'").is_err());
+        assert!(validate_ip_address("192.168.1.1\"").is_err());
+        assert!(validate_ip_address("192.168.1.1;").is_err());
+        assert!(validate_ip_address("192.168.1.1--").is_err());
+        assert!(validate_ip_address("192.168.1.1\\").is_err());
+        assert!(validate_ip_address("192.168.1.1\0").is_err());
+    }
+
+    #[test]
+    fn test_validate_ip_address_too_long() {
+        // DoS prevention
+        let long_ip = "1".repeat(50);
+        let result = validate_ip_address(&long_ip);
+        assert!(result.is_err());
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // IP Sanitization Tests (Privacy)
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_sanitize_ip_for_logging_ipv4() {
+        assert_eq!(sanitize_ip_for_logging("192.168.1.100"), "192.168.1.0");
+        assert_eq!(sanitize_ip_for_logging("10.0.0.255"), "10.0.0.0");
+        assert_eq!(sanitize_ip_for_logging("127.0.0.1"), "127.0.0.0");
+    }
+
+    #[test]
+    fn test_sanitize_ip_for_logging_ipv6() {
+        assert_eq!(sanitize_ip_for_logging("2001:0db8:85a3::8a2e:0370:7334"), "2001:db8:85a3:0::");
+        assert_eq!(sanitize_ip_for_logging("2001:db8::1"), "2001:db8:0:0::");
+        assert_eq!(sanitize_ip_for_logging("::1"), "0:0:0:0::");
+        assert_eq!(sanitize_ip_for_logging("fe80::1"), "fe80:0:0:0::");
+    }
+
+    #[test]
+    fn test_sanitize_ip_for_logging_invalid() {
+        assert_eq!(sanitize_ip_for_logging("invalid"), "[invalid]");
+        assert_eq!(sanitize_ip_for_logging("999.999.999.999"), "[invalid]");
+        assert_eq!(sanitize_ip_for_logging(""), "[invalid]");
     }
 }
