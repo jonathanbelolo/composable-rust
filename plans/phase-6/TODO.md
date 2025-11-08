@@ -2,7 +2,7 @@
 
 **Status**: Planning
 **Dependencies**: Phase 5 (Event-driven systems)
-**Estimated Duration**: 12 weeks
+**Estimated Duration**: 14 weeks (extended for proper WebAuthn implementation and security hardening)
 
 ---
 
@@ -150,7 +150,53 @@ Implement authentication and authorization as first-class composable primitives 
 
 ---
 
-## Phase 6B: Session Management (Weeks 3-4)
+## Phase 6B: WebAuthn & Session Management (Weeks 3-5)
+
+### Challenge Storage (Redis)
+
+- [ ] Implement challenge store (`auth/src/stores/challenge_store.rs`)
+  - [ ] `ChallengeStore` trait
+  - [ ] Redis implementation with TTL (~5 minutes)
+  - [ ] Challenge generation (cryptographically secure)
+  - [ ] Challenge validation and one-time-use enforcement
+  - [ ] Automatic expiration cleanup
+
+### WebAuthn/Passkeys Implementation (Extended Timeline)
+
+- [ ] WebAuthn provider (`auth/src/providers/webauthn.rs`)
+  - [ ] Challenge generation with Redis storage
+  - [ ] Credential registration flow
+  - [ ] Assertion verification with origin and rpId validation
+  - [ ] Credential storage (PostgreSQL)
+  - [ ] Device management
+  - [ ] Public key crypto verification (performance testing)
+
+- [ ] Passkey reducer (`auth/src/reducers/passkey.rs`)
+  - [ ] Handle `InitiatePasskeyLogin` action
+  - [ ] Handle `VerifyPasskey` action with timing-safe comparison
+  - [ ] Handle `RegisterPasskey` action
+  - [ ] Generate appropriate effects
+
+### Recovery Flows
+
+- [ ] Recovery code implementation (`auth/src/recovery/mod.rs`)
+  - [ ] Generate 10 single-use recovery codes
+  - [ ] Bcrypt hashing for recovery codes
+  - [ ] Recovery code validation (constant-time comparison)
+  - [ ] Mark recovery code as used after verification
+  - [ ] Display codes only once during generation
+
+- [ ] Backup email flow (`auth/src/recovery/backup_email.rs`)
+  - [ ] Backup email registration
+  - [ ] Backup email verification
+  - [ ] Recovery via backup email
+  - [ ] Rate limiting for recovery attempts
+
+- [ ] Device revocation (`auth/src/recovery/revocation.rs`)
+  - [ ] List all registered devices/passkeys
+  - [ ] Revoke specific device
+  - [ ] Revoke all devices (nuclear option)
+  - [ ] Audit logging for all revocations
 
 ### Session Store Trait
 
@@ -216,7 +262,23 @@ Implement authentication and authorization as first-class composable primitives 
 
 ---
 
-## Phase 6C: Authorization (Weeks 5-6)
+## Phase 6C: Authorization (Weeks 6-8)
+
+### Account Linking Strategy
+
+- [ ] Account linking implementation (`auth/src/linking/mod.rs`)
+  - [ ] Detect same email from multiple providers
+  - [ ] "Ask user" strategy (default, most secure)
+  - [ ] Re-authentication before linking
+  - [ ] User can decline and create separate account
+  - [ ] Email ownership verification for linking
+  - [ ] Audit events for all account linking operations
+
+- [ ] Alternative auto-link strategy (`auth/src/linking/auto_link.rs`)
+  - [ ] Configurable per-tenant
+  - [ ] Auto-link if email verified by both providers
+  - [ ] Audit event for security monitoring
+  - [ ] Can be disabled for stricter security
 
 ### Core Authorization Types
 
@@ -300,7 +362,7 @@ Implement authentication and authorization as first-class composable primitives 
 
 ---
 
-## Phase 6D: OAuth2 & OIDC (Weeks 7-8)
+## Phase 6D: OAuth2 & OIDC Deep Dive (Weeks 9-10)
 
 ### OAuth2 Provider
 
@@ -361,20 +423,7 @@ Implement authentication and authorization as first-class composable primitives 
 
 ---
 
-## Phase 6E: Enterprise Features (Weeks 9-10)
-
-### SAML Support
-
-- [ ] SAML provider (`auth/src/providers/saml/`)
-  - [ ] SP metadata generation
-  - [ ] Assertion parsing
-  - [ ] Signature validation
-  - [ ] Encryption support
-
-- [ ] SAML reducer
-  - [ ] SP-initiated SSO
-  - [ ] IdP-initiated SSO
-  - [ ] Single Logout (SLO)
+## Phase 6E: Multi-Tenancy & Delegation (Week 11)
 
 ### Multi-Tenancy
 
@@ -398,20 +447,20 @@ Implement authentication and authorization as first-class composable primitives 
 
 ### Testing
 
-- [ ] SAML integration tests
 - [ ] Multi-tenant isolation tests
 - [ ] Delegation tests
+- [ ] Impersonation security tests
 
 ### Documentation
 
 - [ ] Enterprise guide
-  - [ ] SAML setup
   - [ ] Multi-tenancy patterns
   - [ ] Delegation use cases
+  - [ ] Impersonation security
 
 ---
 
-## Phase 6F: Production Hardening (Weeks 11-12)
+## Phase 6F: Production Hardening (Weeks 12-14)
 
 ### Security
 
@@ -420,53 +469,109 @@ Implement authentication and authorization as first-class composable primitives 
   - [ ] Penetration testing
   - [ ] Fix identified vulnerabilities
 
-- [ ] Rate limiting
-  - [ ] Login attempt rate limiting
-  - [ ] Token refresh rate limiting
-  - [ ] Configurable limits
+- [ ] Rate limiting (tower-governor)
+  - [ ] Magic link requests: 5 per hour per email
+  - [ ] Login attempts: 10 per minute per IP
+  - [ ] Any auth attempt: 100 per minute per IP
+  - [ ] Configurable per-tenant limits
+  - [ ] Rate limit metrics
+
+- [ ] Security hardening
+  - [ ] Constant-time token comparison (constant_time_eq crate)
+  - [ ] OAuth state parameter entropy (256 bits, cryptographic random)
+  - [ ] Session ID regeneration on login (prevent session fixation)
+  - [ ] WebAuthn origin validation (explicit checks)
+  - [ ] WebAuthn rpId validation (explicit checks)
+  - [ ] No user enumeration (same response for magic links)
 
 - [ ] CSRF protection
   - [ ] CSRF token generation
   - [ ] Validation in state-changing endpoints
 
+### Security Testing Suite
+
+- [ ] Timing attack tests (`auth/tests/security/timing_attacks.rs`)
+  - [ ] Magic link token comparison timing
+  - [ ] Recovery code validation timing
+  - [ ] Property-based tests with proptest
+
+- [ ] Replay attack tests (`auth/tests/security/replay_attacks.rs`)
+  - [ ] Challenge reuse prevention
+  - [ ] Magic link reuse prevention
+  - [ ] OAuth state reuse prevention
+
+- [ ] Race condition tests (`auth/tests/security/race_conditions.rs`)
+  - [ ] Concurrent session creation
+  - [ ] Concurrent challenge validation
+  - [ ] Recovery code concurrent use
+
+- [ ] User enumeration tests (`auth/tests/security/enumeration.rs`)
+  - [ ] Magic link response uniformity
+  - [ ] Login failure response uniformity
+  - [ ] Timing consistency across user existence
+
+- [ ] WebAuthn security tests (`auth/tests/security/webauthn.rs`)
+  - [ ] Origin mismatch rejection
+  - [ ] RpId mismatch rejection
+  - [ ] Challenge expiration
+  - [ ] Virtual authenticator tests (fantoccini + Chrome DevTools Protocol)
+
 ### Performance
 
 - [ ] Caching
-  - [ ] Session caching
+  - [ ] Session caching (optional in-memory LRU)
   - [ ] Permission caching
   - [ ] Token validation caching
 
 - [ ] Benchmarks
-  - [ ] Token validation performance
-  - [ ] Session lookup performance
-  - [ ] Authorization check performance
+  - [ ] Token validation performance (<1ms target)
+  - [ ] Session lookup performance (<5ms Redis, <10ms PostgreSQL)
+  - [ ] Authorization check performance (<10ms)
+  - [ ] WebAuthn verification latency (public key crypto)
+  - [ ] Magic link generation performance
 
 ### Observability
 
-- [ ] Metrics
-  - [ ] Login attempts (success/failure)
+- [ ] Metrics (per-method granularity)
+  - [ ] Login attempts (success/failure, per auth method)
+  - [ ] Passkey-specific: verification duration, challenge generation/expiration
+  - [ ] Magic link-specific: sent, expired, invalid
+  - [ ] OAuth-specific: flow duration per provider
   - [ ] Active sessions
-  - [ ] Authorization checks
+  - [ ] Authorization checks (allow/deny, per resource type)
   - [ ] Token refresh rate
+  - [ ] Rate limit hits
 
-- [ ] Tracing
-  - [ ] Auth flow traces
-  - [ ] OAuth flow traces
-  - [ ] Error traces
+- [ ] Distributed tracing (OpenTelemetry)
+  - [ ] OAuth flow tracing across services (authorization → callback → token exchange → UserInfo → session)
+  - [ ] Trace ID propagation through auth flows
+  - [ ] Child spans for each flow step
+  - [ ] Tracing for passkey verification
+  - [ ] Tracing for magic link flow
 
 - [ ] Alerting
-  - [ ] Failed login spike
+  - [ ] Failed login spike (by method)
   - [ ] Unusual geographic access
   - [ ] Permission escalation attempts
+  - [ ] High rate limit hits
+  - [ ] Challenge expiration rate spike
 
 ### Documentation
 
 - [ ] Complete API documentation
 - [ ] Architecture diagrams
-- [ ] Sequence diagrams
-- [ ] Security best practices guide
-- [ ] Migration guide
-- [ ] Troubleshooting guide
+- [ ] Sequence diagrams (OAuth flow, WebAuthn flow, magic link flow)
+
+- [ ] Security documentation (`docs/security/`)
+  - [ ] `threat-model.md` - Comprehensive threat model for auth system
+  - [ ] `testing.md` - Security testing plan and procedures
+  - [ ] `best-practices.md` - Security best practices guide
+  - [ ] `incident-response.md` - Incident response plan for security events
+
+- [ ] User guides (`docs/guides/`)
+  - [ ] `migration/from-passwords.md` - Migration guide from password-based auth
+  - [ ] `accessibility.md` - Accessibility guide for auth UI components
+  - [ ] `troubleshooting.md` - Troubleshooting guide
 
 ### Examples
 
@@ -524,15 +629,19 @@ Implement authentication and authorization as first-class composable primitives 
 - `webauthn-rs` - WebAuthn/FIDO2 implementation
 - `oauth2` - OAuth2 flows
 - `openidconnect` - OIDC support
-- `samael` - SAML support
 - `axum` - Web framework
 - `tower` - Middleware
 - `tower-http` - HTTP middleware (CORS, compression, etc.)
-- `redis` - Session storage
+- `tower-governor` - Rate limiting middleware
+- `redis` - Session and challenge storage
 - `sqlx` - Database access
 - `lettre` - Email sending (for magic links)
 - `rand` - Cryptographic random numbers
 - `base64` - Encoding support
+- `constant_time_eq` - Timing-safe comparison for tokens
+- `proptest` - Property-based testing for crypto operations
+- `wiremock` - Mock HTTP servers for OAuth testing
+- `fantoccini` - Browser automation for WebAuthn testing
 
 ---
 
@@ -549,39 +658,64 @@ Implement authentication and authorization as first-class composable primitives 
 
 ## Future Enhancements (Phase 7)
 
-- [ ] Additional MFA options (beyond WebAuthn)
-  - TOTP (Time-based OTP) for backup auth
-  - SMS verification (with warnings about security)
-  - Email-based 2FA
+### SAML Support (Deferred from Phase 6)
 
-- [ ] Passkey advanced features
-  - Cross-device passkey syncing
-  - Passkey backup/recovery flows
-  - Device attestation verification
-  - Conditional UI (autofill)
+- [ ] SAML provider (`auth/src/providers/saml/`)
+  - [ ] SP metadata generation
+  - [ ] Assertion parsing
+  - [ ] Signature validation
+  - [ ] Encryption support
 
-- [ ] Advanced rate limiting
-  - Adaptive rate limiting
-  - Distributed rate limiting
-  - Per-user limits
+- [ ] SAML reducer
+  - [ ] SP-initiated SSO
+  - [ ] IdP-initiated SSO
+  - [ ] Single Logout (SLO)
 
-- [ ] API key management
-  - API key generation
-  - Scoped permissions
-  - Usage tracking
-  - Rotation policies
+- [ ] SAML testing and documentation
 
-- [ ] Audit log export
-  - SIEM integration (Splunk, DataDog, etc.)
-  - Custom formatters
-  - Retention policies
-  - Compliance reports (GDPR, SOC2, HIPAA)
+**Rationale**: SAML is enterprise-focused and complex. Phase 6 prioritizes modern passwordless auth (OAuth2, WebAuthn, magic links) which covers 90% of use cases. SAML can be added in Phase 7 once the core passwordless foundation is solid.
 
-- [ ] Social auth providers
-  - Apple Sign-In
-  - Twitter/X auth
-  - LinkedIn auth
-  - Discord auth
+### Additional MFA Options
+
+- [ ] TOTP (Time-based OTP) for backup auth
+  - Note: Passkeys already provide MFA (something you have + biometric)
+  - TOTP useful as fallback for users without passkey-capable devices
+- [ ] SMS verification (with security warnings about SIM swapping)
+- [ ] Email-based 2FA
+
+### Passkey Advanced Features
+
+- [ ] Cross-device passkey syncing (Apple/Google/1Password ecosystem integration)
+- [ ] Passkey backup/recovery flows
+- [ ] Device attestation verification
+- [ ] Conditional UI (autofill)
+
+### Advanced Rate Limiting
+
+- [ ] Adaptive rate limiting (adjust limits based on threat level)
+- [ ] Distributed rate limiting (shared state across instances)
+- [ ] Per-user limits (in addition to per-IP)
+
+### API Key Management
+
+- [ ] API key generation
+- [ ] Scoped permissions
+- [ ] Usage tracking
+- [ ] Rotation policies
+
+### Audit Log Export
+
+- [ ] SIEM integration (Splunk, DataDog, etc.)
+- [ ] Custom formatters
+- [ ] Retention policies
+- [ ] Compliance reports (GDPR, SOC2, HIPAA)
+
+### Social Auth Providers
+
+- [ ] Apple Sign-In
+- [ ] Twitter/X auth
+- [ ] LinkedIn auth
+- [ ] Discord auth
 
 ---
 

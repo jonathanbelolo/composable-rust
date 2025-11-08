@@ -2,7 +2,7 @@
 
 **Status**: Planning
 **Start Date**: TBD
-**Estimated Duration**: 6-8 weeks
+**Estimated Duration**: 14 weeks
 
 ---
 
@@ -94,6 +94,43 @@ enum AuthEffect {
     ValidateToken(String),
     RefreshTokens { refresh_token: String },
     RevokeSession { session_id: SessionId },
+}
+
+// Comprehensive error taxonomy
+enum AuthError {
+    // Authentication errors
+    InvalidCredentials,
+    PasskeyNotFound,
+    PasskeyVerificationFailed { reason: String },
+    MagicLinkExpired,
+    MagicLinkInvalid,
+    MagicLinkAlreadyUsed,
+    OAuthCodeInvalid,
+    OAuthStateInvalid,
+
+    // Authorization errors
+    InsufficientPermissions { required: Permission },
+    ResourceNotFound,
+
+    // Session errors
+    SessionExpired,
+    SessionNotFound,
+    SessionRevoked,
+    InvalidRefreshToken,
+
+    // Rate limiting
+    TooManyAttempts { retry_after: Duration },
+
+    // WebAuthn specific
+    ChallengeExpired,
+    ChallengeNotFound,
+    OriginMismatch,
+    RpIdMismatch,
+
+    // System errors
+    DatabaseError(String),
+    EmailDeliveryFailed,
+    InternalError,
 }
 ```
 
@@ -783,12 +820,54 @@ proptest! {
 
 - **WebAuthn/FIDO2**: Hardware-backed cryptographic authentication
 - **Public Key Crypto**: Private keys never leave the user's device
-- **Phishing Resistant**: Origin binding prevents phishing attacks
+- **Phishing Resistant**: Origin binding prevents phishing attacks (explicit origin and rpId validation)
 - **Biometric Support**: Built-in fingerprint/FaceID support
-- **Magic Link Security**: Time-limited, single-use tokens
-- **Rate Limiting**: Prevent brute force on magic links and passkey challenges
+- **Magic Link Security**:
+  - Time-limited (5-15 minutes), single-use tokens
+  - Constant-time token comparison (prevents timing attacks)
+  - No user enumeration (same response whether user exists or not)
+  - Cryptographically secure random tokens (256 bits entropy)
+- **Rate Limiting**: tower-governor middleware
+  - Magic link requests: 5 per hour per email
+  - Login attempts: 10 per minute per IP
+  - Any auth attempt: 100 per minute per IP
+- **Challenge Storage**: Redis-backed with TTL (~5 minutes)
+- **Recovery Flows**:
+  - Recovery codes (10 single-use codes, bcrypt hashed)
+  - Backup email verification
+  - Clear revocation paths for lost devices
 
-### 4. Audit Logging
+### 4. Account Linking Strategy
+
+When the same email appears from multiple auth providers (e.g., Google and GitHub):
+
+- **Default: Ask User** (most secure)
+  - "We found an existing account with this email from [Provider]. Link accounts?"
+  - Requires re-authentication of existing account before linking
+  - User can decline and create separate account
+- **Alternative: Auto-Link** (convenience over security)
+  - Automatically link if email is verified by both providers
+  - Emit audit event for security monitoring
+  - Can be disabled per-tenant for stricter security
+- **Email Ownership Verification**:
+  - Primary email must be verified before linking
+  - Send confirmation to both old and new provider emails
+
+### 5. Session State Lifecycle
+
+**Critical Architecture Decision**: How auth state integrates with the Store pattern.
+
+- **Session Persistence**: Redis/PostgreSQL stores session data
+- **Per-Request Reconstruction**: Auth state is reconstructed on each request from session token
+- **Store Pattern Integration**:
+  - Session middleware extracts token → loads session from Redis
+  - Reconstructs `AuthState` for the request
+  - Store operates on reconstructed state
+  - Session updates persisted back to Redis
+- **Performance**: Session lookup is <5ms (Redis) or <10ms (PostgreSQL)
+- **Caching**: Optional in-memory LRU cache for hot sessions
+
+### 6. Audit Logging
 
 - **Comprehensive**: All auth decisions logged
 - **Immutable**: Events stored in event store
@@ -802,20 +881,92 @@ proptest! {
 ### Authentication Metrics
 
 ```rust
-// Prometheus metrics
-metrics::counter!("auth_login_attempts_total", "result" => "success").increment(1);
-metrics::counter!("auth_login_attempts_total", "result" => "failure").increment(1);
-metrics::histogram!("auth_login_duration_seconds").record(duration.as_secs_f64());
+// Prometheus metrics with per-method granularity
+metrics::counter!("auth_login_attempts_total",
+    "method" => "passkey",
+    "result" => "success"
+).increment(1);
+metrics::counter!("auth_login_attempts_total",
+    "method" => "magic_link",
+    "result" => "failure"
+).increment(1);
+metrics::counter!("auth_login_attempts_total",
+    "method" => "oauth",
+    "provider" => "google",
+    "result" => "success"
+).increment(1);
+
+metrics::histogram!("auth_login_duration_seconds",
+    "method" => "passkey"
+).record(duration.as_secs_f64());
+
 metrics::gauge!("auth_active_sessions").set(session_count as f64);
+
+// WebAuthn-specific metrics
+metrics::histogram!("auth_passkey_verification_duration_seconds").record(duration.as_secs_f64());
+metrics::counter!("auth_challenge_generated_total").increment(1);
+metrics::counter!("auth_challenge_expired_total").increment(1);
+
+// Magic link metrics
+metrics::counter!("auth_magic_link_sent_total").increment(1);
+metrics::counter!("auth_magic_link_expired_total").increment(1);
+
+// OAuth metrics
+metrics::histogram!("auth_oauth_flow_duration_seconds",
+    "provider" => "google"
+).record(duration.as_secs_f64());
 ```
 
 ### Authorization Metrics
 
 ```rust
-metrics::counter!("auth_authorization_checks_total", "result" => "allow").increment(1);
-metrics::counter!("auth_authorization_checks_total", "result" => "deny").increment(1);
+metrics::counter!("auth_authorization_checks_total",
+    "result" => "allow",
+    "resource_type" => "order"
+).increment(1);
+metrics::counter!("auth_authorization_checks_total",
+    "result" => "deny",
+    "reason" => "insufficient_permissions"
+).increment(1);
 metrics::histogram!("auth_authorization_duration_seconds").record(duration.as_secs_f64());
 ```
+
+### Distributed Tracing
+
+```rust
+use tracing::{instrument, Span};
+
+#[instrument(skip(self), fields(
+    auth.method = ?method,
+    auth.user_id = tracing::field::Empty,
+))]
+async fn authenticate(&self, method: AuthMethod) -> Result<Session> {
+    let span = Span::current();
+
+    // OAuth flow spans multiple services
+    match method {
+        AuthMethod::OAuth { provider } => {
+            // Trace ID propagated across:
+            // 1. Authorization redirect
+            // 2. Provider callback
+            // 3. Token exchange
+            // 4. UserInfo fetch
+            // 5. Session creation
+
+            span.record("auth.provider", &provider.name());
+            span.record("auth.flow_step", "initiate");
+
+            // Each step creates child span
+            let auth_url = self.generate_auth_url().await?;
+
+            span.record("auth.flow_step", "callback");
+            // ...
+        }
+        _ => {}
+    }
+
+    Ok(session)
+}
 
 ### Alerting
 
@@ -916,53 +1067,85 @@ async fn migrate_users(
 ### Phase 6A: Foundation (Weeks 1-2)
 
 - Core traits and types
-- JWT authentication
+- OAuth2 authentication (simplest to start)
+- Magic link implementation
 - Axum middleware
 - Basic tests
 
-### Phase 6B: Session Management (Weeks 3-4)
+### Phase 6B: WebAuthn & Session Management (Weeks 3-5)
 
+- WebAuthn/Passkeys implementation (given proper time)
+- Challenge storage (Redis with TTL)
 - Session stores (Redis, PostgreSQL)
 - Token refresh flow
 - Multi-device support
+- Recovery flows (recovery codes, backup email)
 
-### Phase 6C: Authorization (Weeks 5-6)
+### Phase 6C: Authorization (Weeks 6-8)
 
 - RBAC implementation
 - Policy engine
 - Permission checks
+- Account linking strategy implementation
 
-### Phase 6D: OAuth/OIDC (Weeks 7-8)
+### Phase 6D: OAuth/OIDC Deep Dive (Weeks 9-10)
 
-- OAuth2 flows
+- Advanced OAuth2 flows (device code, PKCE)
 - OIDC integration
-- Provider implementations
+- Provider implementations (Google, GitHub, Microsoft)
+- UserInfo endpoint integration
 
-### Phase 6E: Enterprise (Weeks 9-10)
+### Phase 6E: Multi-Tenancy & Delegation (Week 11)
 
-- SAML support
-- Multi-tenancy
+- Multi-tenancy isolation
 - Delegation/impersonation
+- Tenant resolver strategies
 
-### Phase 6F: Production Hardening (Weeks 11-12)
+### Phase 6F: Production Hardening (Weeks 12-14)
 
-- Security audit
+- Security audit (third-party review)
+- Security testing suite (timing attacks, replay attacks)
+- Rate limiting implementation (tower-governor)
 - Performance optimization
-- Documentation
+- Documentation (threat model, security testing plan, migration guide, accessibility guide, incident response plan)
 - Examples
+
+**Note**: SAML support deferred to Phase 7 to focus on modern passwordless authentication first.
 
 ---
 
 ## Open Questions
 
-1. **WebAuthn Implementation**: Use `webauthn-rs` crate or build from scratch?
-2. **Passkey Sync**: Support for passkey syncing across devices (Apple/Google/1Password)?
-3. **MFA**: Include multi-factor authentication in Phase 6 or defer to Phase 7?
-4. **Rate Limiting**: Build into auth layer or separate middleware?
-5. **Audit Export**: Support for exporting auth logs to external SIEM systems?
-6. **Magic Link Delivery**: Support SMS in addition to email?
-7. **API Keys**: Include API key management or separate module?
-8. **Backup Auth**: What happens if user loses all passkeys? Recovery email only?
+### Resolved
+
+1. ✅ **WebAuthn Implementation**: Use `webauthn-rs` crate (battle-tested, well-maintained)
+2. ✅ **Rate Limiting**: tower-governor middleware (separate, composable)
+3. ✅ **Backup Auth**: Recovery codes + backup email (specified in Phase 6B)
+4. ✅ **Challenge Storage**: Redis with TTL (specified in security section)
+5. ✅ **Account Linking**: Default to "ask user" strategy (security-first)
+6. ✅ **Session State**: Per-request reconstruction from session token (specified in security section)
+
+### Still Open
+
+1. **Passkey Sync**: Support for passkey syncing across devices (Apple/Google/1Password ecosystem)?
+   - May require provider-specific integration
+   - Research needed for cross-platform compatibility
+2. **MFA Beyond Passkeys**: Include TOTP/SMS 2FA in Phase 6 or defer to Phase 7?
+   - Passkeys ARE MFA (something you have + biometric)
+   - TOTP might be redundant
+   - Decision: Defer TOTP to Phase 7 unless user requests
+3. **Audit Export**: Support for exporting auth logs to external SIEM systems?
+   - Could leverage existing event store exports
+   - Decision: Phase 7 (nice-to-have, not critical)
+4. **Magic Link Delivery**: Support SMS in addition to email?
+   - SMS has security concerns (SIM swapping)
+   - Decision: Email-only in Phase 6, SMS in Phase 7 with warnings
+5. **API Keys**: Include API key management or separate module?
+   - Important for service-to-service auth
+   - Decision: Phase 7 (separate concern from user auth)
+6. **WebAuthn Testing**: Virtual authenticator strategy?
+   - Chrome DevTools Protocol supports virtual authenticators
+   - Decision: Use fantoccini for browser automation tests
 
 ---
 
