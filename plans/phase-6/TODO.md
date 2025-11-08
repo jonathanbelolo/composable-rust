@@ -1,8 +1,15 @@
 # Phase 6 Implementation Plan: Composable Auth
 
-**Status**: Planning
+**Status**: 🚧 In Progress - Phase 6A Foundation
 **Dependencies**: Phase 5 (Event-driven systems)
 **Estimated Duration**: 14 weeks (extended for proper WebAuthn implementation and security hardening)
+
+**Current Progress**:
+- ✅ Core types, actions, and traits defined
+- ✅ OAuth2 reducer with real effects implemented
+- ✅ Mock providers for all traits (OAuth2, Email, WebAuthn, Session, User, Device, Risk)
+- ✅ OAuth2 integration tests (9 tests, all passing)
+- 🔄 Next: Magic link and WebAuthn reducers
 
 ---
 
@@ -14,85 +21,136 @@ Implement authentication and authorization as first-class composable primitives 
 
 ## Phase 6A: Foundation (Weeks 1-2)
 
-### Core Types & Traits
+### Core Types & Traits ✅ COMPLETED
 
-- [ ] Create `composable-rust-auth` crate
-  - [ ] Add to workspace
-  - [ ] Set up dependencies (webauthn-rs, oauth2, etc.)
-  - [ ] Configure lints and CI
+- [x] Create `composable-rust-auth` crate
+  - [x] Add to workspace
+  - [x] Set up dependencies (webauthn-rs, oauth2, etc.)
+  - [x] Configure lints and CI
 
-- [ ] Define core types (`auth/src/state.rs`)
-  - [ ] `AuthState` - Authentication state
-  - [ ] `Session` - User session type
-  - [ ] `TokenPair` - Access + refresh tokens
-  - [ ] `User` - Authenticated user type
-  - [ ] `Challenge` - WebAuthn challenge type
-  - [ ] `PublicKeyCredential` - Passkey credential
+- [x] Define core types (`auth/src/state.rs`)
+  - [x] `AuthState` - Authentication state
+  - [x] `Session` - User session type
+  - [x] `User` - User identifier types (UserId, DeviceId)
+  - [x] `OAuthState` - OAuth flow state with CSRF protection
+  - [x] `OAuthProvider` - Enum (Google, GitHub, Microsoft)
 
-- [ ] Define action types (`auth/src/actions.rs`)
-  - [ ] `AuthAction::InitiatePasskeyLogin` - Start passkey flow
-  - [ ] `AuthAction::VerifyPasskey` - Verify passkey credential
-  - [ ] `AuthAction::SendMagicLink` - Send passwordless email
-  - [ ] `AuthAction::VerifyMagicLink` - Verify magic link token
-  - [ ] `AuthAction::InitiateOAuth` - Start OAuth flow
-  - [ ] `AuthAction::OAuthCallback` - Handle OAuth callback
-  - [ ] `AuthAction::LoginSuccess`
-  - [ ] `AuthAction::LoginFailed`
-  - [ ] `AuthAction::RefreshToken`
-  - [ ] `AuthAction::Logout`
+- [x] Define action types (`auth/src/actions.rs`)
+  - [x] `AuthAction::InitiatePasskeyLogin` - Start passkey flow
+  - [x] `AuthAction::VerifyPasskey` - Verify passkey credential
+  - [x] `AuthAction::SendMagicLink` - Send passwordless email
+  - [x] `AuthAction::VerifyMagicLink` - Verify magic link token
+  - [x] `AuthAction::InitiateOAuth` - Start OAuth flow
+  - [x] `AuthAction::OAuthCallback` - Handle OAuth callback
+  - [x] `AuthAction::OAuthSuccess` - OAuth token exchange success
+  - [x] `AuthAction::OAuthFailed` - OAuth error handling
+  - [x] `AuthAction::SessionCreated` - Session creation event
+  - [x] `AuthAction::Logout`
+  - [x] `AuthLevel` - Progressive authentication levels (Basic, MultiFactor, HardwareBacked)
+  - [x] `DeviceTrust` - Device trust levels
 
-- [ ] Define effect types (`auth/src/effects.rs`)
-  - [ ] `AuthEffect::GenerateChallenge` - WebAuthn challenge
-  - [ ] `AuthEffect::VerifyAssertion` - Verify WebAuthn assertion
-  - [ ] `AuthEffect::StoreCredential` - Store passkey
-  - [ ] `AuthEffect::SendEmail` - Send magic link
-  - [ ] `AuthEffect::ValidateMagicToken` - Verify magic link
-  - [ ] `AuthEffect::RedirectToProvider` - OAuth redirect
-  - [ ] `AuthEffect::ExchangeCodeForToken` - OAuth token exchange
-  - [ ] `AuthEffect::GenerateTokens`
-  - [ ] `AuthEffect::RefreshTokens`
-  - [ ] `AuthEffect::RevokeSession`
-  - [ ] `AuthEffect::StoreSession`
+- [x] Define effect types (`auth/src/effects.rs`)
+  - [x] Effects now use core `Effect::Future` with async operations
+  - [x] No custom effect types needed - provider calls return `Effect<AuthAction>`
 
-- [ ] Define core traits (`auth/src/providers/mod.rs`)
-  - [ ] `AuthProvider` - Generic auth provider trait
-  - [ ] `PasskeyProvider` - WebAuthn/FIDO2 trait
-  - [ ] `MagicLinkProvider` - Email/SMS auth trait
-  - [ ] `OAuthProvider` - OAuth2 provider trait
-  - [ ] `TokenGenerator` - Token generation trait
-  - [ ] `SessionStore` - Session storage trait
+- [x] Define core traits (`auth/src/providers/mod.rs`)
+  - [x] `OAuth2Provider` - OAuth2/OIDC trait with RPITIT pattern
+  - [x] `WebAuthnProvider` - WebAuthn/FIDO2 trait
+  - [x] `EmailProvider` - Email delivery trait
+  - [x] `SessionStore` - Session storage trait
+  - [x] `UserRepository` - User persistence trait
+  - [x] `DeviceRepository` - Device tracking trait
+  - [x] `RiskCalculator` - Risk assessment trait
 
-### OAuth2 Implementation (Simplest to start)
+### OAuth2 Implementation (Simplest to start) ✅ REDUCER DONE
 
-- [ ] Implement OAuth2 provider (`auth/src/providers/oauth2.rs`)
-  - [ ] Generic OAuth2 provider
-  - [ ] Google provider
-  - [ ] GitHub provider
+- [x] Implement OAuth2 reducer (`auth/src/reducers/oauth.rs`)
+  - [x] Handle `InitiateOAuth` action with CSRF state generation
+  - [x] Handle `OAuthCallback` action with state validation
+  - [x] Handle `OAuthSuccess` action with session creation
+  - [x] Handle `OAuthFailed` action with error handling
+  - [x] State machine for OAuth flow (5-minute expiration)
+  - [x] Generate appropriate `Effect::Future` for async operations
+
+- [x] Mock Providers for Testing (`auth/src/mocks/`)
+  - [x] `MockOAuth2Provider` - Configurable success/failure
+  - [x] `MockUserRepository` - In-memory user storage
+  - [x] `MockDeviceRepository` - In-memory device tracking
+  - [x] `MockSessionStore` - In-memory session storage with TTL
+  - [x] `MockEmailProvider` - Email delivery stub
+  - [x] `MockWebAuthnProvider` - WebAuthn simulation
+  - [x] `MockRiskCalculator` - Configurable risk scores
+
+- [ ] Real OAuth2 Provider Implementation (deferred until after reducers)
+  - [ ] Generic OAuth2 provider with openidconnect crate
+  - [ ] Google provider configuration
+  - [ ] GitHub provider configuration
   - [ ] Authorization URL generation
   - [ ] Code exchange for tokens
   - [ ] Token refresh
 
-- [ ] Implement OAuth2 reducer (`auth/src/reducers/oauth.rs`)
-  - [ ] Handle `InitiateOAuth` action
-  - [ ] Handle `OAuthCallback` action
-  - [ ] State machine for OAuth flow
-  - [ ] Generate appropriate effects
+### OAuth2 Testing ✅ COMPLETED
 
-### Magic Link Implementation
+- [x] Integration tests (`auth/tests/oauth_integration.rs`)
+  - [x] Complete happy path (initiate → callback → success)
+  - [x] CSRF state validation (reject invalid state)
+  - [x] State expiration (5-minute TTL)
+  - [x] Security: prior initiation required
+  - [x] Error handling (OAuthFailed)
+  - [x] Multi-provider support (Google, GitHub, Microsoft)
+  - [x] Session metadata validation
+  - [x] CSRF state uniqueness
+  - [x] Session creation event
+  - [x] **9 tests passing** ✅
 
-- [ ] Magic link provider (`auth/src/providers/magic_link.rs`)
-  - [ ] Token generation (cryptographically secure)
-  - [ ] Token storage (Redis/PostgreSQL)
-  - [ ] Token expiration (5-15 minutes)
-  - [ ] Email template support
+### Magic Link Implementation 🔄 NEXT
 
 - [ ] Magic link reducer (`auth/src/reducers/magic_link.rs`)
   - [ ] Handle `SendMagicLink` action
   - [ ] Handle `VerifyMagicLink` action
-  - [ ] Rate limiting logic
-  - [ ] Generate appropriate effects
+  - [ ] Handle `MagicLinkSent` event
+  - [ ] Handle `MagicLinkVerified` event
+  - [ ] Handle `MagicLinkFailed` event
+  - [ ] Token generation with cryptographic randomness
+  - [ ] Token expiration logic (5-15 minutes)
+  - [ ] Rate limiting state tracking
+  - [ ] Generate appropriate `Effect::Future` for async operations
 
-### Axum Integration
+- [ ] Magic link integration tests
+  - [ ] Complete happy path (send → verify)
+  - [ ] Token expiration
+  - [ ] Invalid token rejection
+  - [ ] Rate limiting (5 per hour)
+  - [ ] Token single-use enforcement
+  - [ ] User enumeration prevention
+
+**Note**: Magic link provider trait already exists. Mock implementation already done. Real implementation deferred until after reducers.
+
+### WebAuthn/Passkeys Implementation 🔄 NEXT
+
+- [ ] Passkey reducer (`auth/src/reducers/passkey.rs`)
+  - [ ] Handle `InitiatePasskeyLogin` action
+  - [ ] Handle `InitiatePasskeyRegistration` action
+  - [ ] Handle `VerifyPasskey` action
+  - [ ] Handle `RegisterPasskey` action
+  - [ ] Handle `PasskeyVerified` event
+  - [ ] Handle `PasskeyRegistered` event
+  - [ ] Handle `PasskeyFailed` event
+  - [ ] Challenge generation and storage
+  - [ ] Challenge expiration (5 minutes)
+  - [ ] Generate appropriate `Effect::Future` for async operations
+
+- [ ] Passkey integration tests
+  - [ ] Registration flow (initiate → verify)
+  - [ ] Login flow (challenge → verify)
+  - [ ] Challenge expiration
+  - [ ] Invalid assertion rejection
+  - [ ] Credential storage
+  - [ ] Multi-device support
+
+**Note**: WebAuthn provider trait already exists. Mock implementation already done. Real implementation deferred until after reducers.
+
+### Axum Integration (Deferred to Phase 6B)
 
 - [ ] Middleware (`auth/src/middleware/axum.rs`)
   - [ ] `RequireAuth` layer
@@ -104,36 +162,23 @@ Implement authentication and authorization as first-class composable primitives 
   - [ ] `OptionalAuth` extractor
   - [ ] Error handling
 
-### WebAuthn/Passkeys Implementation (Advanced - Week 2)
+### Testing Status
 
-- [ ] WebAuthn provider (`auth/src/providers/webauthn.rs`)
-  - [ ] Challenge generation
-  - [ ] Credential registration flow
-  - [ ] Assertion verification
-  - [ ] Credential storage
-  - [ ] Device management
+- [x] OAuth2 integration tests (9 tests ✅)
+  - [x] OAuth2 flow state machine
+  - [x] Token expiration
+  - [x] Reducer logic
+  - [x] Full OAuth2 flow with mock provider
+  - [x] Invalid token handling
 
-- [ ] Passkey reducer (`auth/src/reducers/passkey.rs`)
-  - [ ] Handle `InitiatePasskeyLogin` action
-  - [ ] Handle `VerifyPasskey` action
-  - [ ] Handle `RegisterPasskey` action
-  - [ ] Generate appropriate effects
-
-### Testing
-
-- [ ] Unit tests
-  - [ ] OAuth2 flow state machine
+- [ ] Magic link integration tests (upcoming)
   - [ ] Magic link token generation/validation
-  - [ ] WebAuthn challenge/response
-  - [ ] Token expiration
-  - [ ] Reducer logic
+  - [ ] Full magic link flow
 
-- [ ] Integration tests
-  - [ ] Full OAuth2 flow with mock provider
-  - [ ] Magic link flow
+- [ ] WebAuthn integration tests (upcoming)
+  - [ ] WebAuthn challenge/response
   - [ ] WebAuthn registration and login
   - [ ] Token refresh
-  - [ ] Invalid token handling
 
 ### Documentation
 
