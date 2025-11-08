@@ -14,11 +14,13 @@ pub mod session_redis;
 pub mod oauth_token_redis;
 pub mod challenge_redis;
 pub mod token_redis;
+pub mod rate_limiter_redis;
 
 // Re-exports
 #[cfg(feature = "postgres")]
-pub use postgres::PostgresDeviceRepository;
+pub use postgres::{PostgresDeviceRepository, PostgresUserRepository};
 pub use session_redis::RedisSessionStore;
 pub use oauth_token_redis::RedisOAuthTokenStore;
 pub use challenge_redis::RedisChallengeStore;
 pub use token_redis::RedisTokenStore;
+pub use rate_limiter_redis::RedisRateLimiter;

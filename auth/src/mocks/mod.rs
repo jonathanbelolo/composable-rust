@@ -13,6 +13,7 @@ pub mod webauthn;
 pub mod risk;
 pub mod token_store;
 pub mod challenge_store;
+pub mod rate_limiter;
 
 pub use oauth::MockOAuth2Provider;
 pub use oauth_token_store::MockOAuthTokenStore;
@@ -24,3 +25,4 @@ pub use webauthn::MockWebAuthnProvider;
 pub use risk::MockRiskCalculator;
 pub use token_store::MockTokenStore;
 pub use challenge_store::MockChallengeStore;
+pub use rate_limiter::MockRateLimiter;
