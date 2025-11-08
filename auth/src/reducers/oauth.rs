@@ -412,6 +412,7 @@ where
                 let risk = env.risk.clone();
                 let oauth_tokens = env.oauth_tokens.clone();
                 let session_duration = self.config.session_duration;
+                let max_concurrent_sessions = self.config.max_concurrent_sessions;
                 let email_clone = email.clone();
                 let name_clone = name.clone();
                 let user_agent_clone = user_agent.clone();
@@ -526,7 +527,7 @@ where
                         Ok(_version) => {
                             // Events persisted successfully
                             // Now create ephemeral session in Redis
-                            if let Err(e) = sessions.create_session(&session, session_duration).await {
+                            if let Err(e) = sessions.create_session(&session, session_duration, max_concurrent_sessions).await {
                                 // ⚡ SECURITY FIX (BLOCKER #4): Don't leak internal error details
                                 tracing::error!("Failed to create OAuth session for user {} device {}: {}",
                                     final_user_id.0, device_id.0, e);

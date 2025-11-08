@@ -23,7 +23,7 @@
 use crate::error::{AuthError, Result};
 use crate::providers::SessionStore;
 use crate::state::{Session, SessionId, UserId};
-use chrono::Duration;
+use chrono::{DateTime, Duration, Utc};
 use redis::aio::ConnectionManager;
 use redis::{AsyncCommands, Client};
 
@@ -74,7 +74,7 @@ impl RedisSessionStore {
 }
 
 impl SessionStore for RedisSessionStore {
-    async fn create_session(&self, session: &Session, ttl: Duration) -> Result<()> {
+    async fn create_session(&self, session: &Session, ttl: Duration, max_concurrent_sessions: usize) -> Result<()> {
         let mut conn = self.conn_manager.clone();
         let session_key = Self::session_key(&session.session_id);
         let user_sessions_key = Self::user_sessions_key(&session.user_id);
@@ -96,6 +96,60 @@ impl SessionStore for RedisSessionStore {
             return Err(AuthError::InternalError(
                 "Session ID already exists (session fixation prevention)".into(),
             ));
+        }
+
+        // ✅ SECURITY FIX (MEDIUM): Enforce concurrent session limits
+        //
+        // VULNERABILITY PREVENTED: Session proliferation attacks
+        //
+        // Without limits:
+        // - Attacker can create unlimited sessions to exhaust resources
+        // - Large attack surface (many valid tokens exist simultaneously)
+        // - Stolen tokens remain valid alongside legitimate sessions
+        //
+        // With limits (default: 5 sessions per user):
+        // - Resource exhaustion prevented
+        // - Smaller attack surface
+        // - Attackers must compete with legitimate sessions (older sessions get revoked)
+        //
+        // When limit is reached, we automatically revoke the OLDEST session (by created_at).
+        // This ensures active users aren't logged out, but inactive sessions are cleaned up.
+        let active_sessions = self.get_user_sessions(session.user_id).await?;
+
+        if active_sessions.len() >= max_concurrent_sessions {
+            // Find the oldest session by fetching all sessions and comparing created_at
+            let mut oldest_session_id: Option<SessionId> = None;
+            let mut oldest_created_at: Option<DateTime<Utc>> = None;
+
+            for session_id in &active_sessions {
+                // Get the session to check its created_at timestamp
+                if let Ok(s) = self.get_session(*session_id).await {
+                    if oldest_created_at.is_none() || s.created_at < oldest_created_at.unwrap() {
+                        oldest_created_at = Some(s.created_at);
+                        oldest_session_id = Some(*session_id);
+                    }
+                }
+            }
+
+            // Delete the oldest session to make room for the new one
+            if let Some(oldest_id) = oldest_session_id {
+                tracing::info!(
+                    user_id = %session.user_id.0,
+                    oldest_session_id = %oldest_id.0,
+                    active_session_count = active_sessions.len(),
+                    max_concurrent_sessions = max_concurrent_sessions,
+                    "Revoking oldest session (concurrent session limit reached)"
+                );
+
+                if let Err(e) = self.delete_session(oldest_id).await {
+                    tracing::error!(
+                        error = %e,
+                        session_id = %oldest_id.0,
+                        "Failed to delete oldest session (continuing with new session creation)"
+                    );
+                    // Don't fail the entire operation - just log the error
+                }
+            }
         }
 
         // Serialize session
@@ -153,8 +207,10 @@ impl SessionStore for RedisSessionStore {
 
         match session_bytes {
             Some(bytes) => {
-                let session: Session = bincode::deserialize(&bytes)
+                let mut session: Session = bincode::deserialize(&bytes)
                     .map_err(|e| AuthError::SerializationError(e.to_string()))?;
+
+                let now = chrono::Utc::now();
 
                 // ✅ SECURITY FIX: Validate session expiration
                 //
@@ -164,14 +220,73 @@ impl SessionStore for RedisSessionStore {
                 // - Manual Redis TTL manipulation (PERSIST command)
                 // - Redis configuration issues (maxmemory-policy noeviction)
                 // - Redis bugs or edge cases
-                if session.expires_at < chrono::Utc::now() {
+                if session.expires_at < now {
                     tracing::warn!(
                         session_id = %session_id.0,
                         expires_at = %session.expires_at,
-                        now = %chrono::Utc::now(),
+                        now = %now,
                         "Session expired (TTL should have cleaned this up)"
                     );
                     return Err(AuthError::SessionExpired);
+                }
+
+                // ✅ SECURITY FIX (CRITICAL): Idle timeout enforcement
+                //
+                // VULNERABILITY PREVENTED: Session hijacking via stolen tokens
+                //
+                // Without idle timeout, a stolen session token remains valid for the
+                // full 24-hour session duration, even if the legitimate user stopped
+                // using the application hours ago. This gives attackers a wide window.
+                //
+                // With idle timeout (default: 30 minutes), sessions expire after
+                // inactivity, dramatically reducing the attack window.
+                //
+                // NOTE: This is configurable per authentication method. The idle_timeout
+                // value is stored in the session's config (not in the Session struct itself).
+                // For now, we use a hardcoded 30-minute default, but this should be
+                // passed in from the reducer's config in a future enhancement.
+                //
+                // TODO (Phase 7): Store idle_timeout in Session struct or pass from config
+                let idle_timeout = Duration::minutes(30); // Default for now
+                let idle_duration = now.signed_duration_since(session.last_active);
+
+                if idle_duration > idle_timeout {
+                    tracing::warn!(
+                        session_id = %session_id.0,
+                        last_active = %session.last_active,
+                        idle_duration_minutes = idle_duration.num_minutes(),
+                        idle_timeout_minutes = idle_timeout.num_minutes(),
+                        "Session idle timeout exceeded"
+                    );
+                    return Err(AuthError::SessionExpired);
+                }
+
+                // ✅ SECURITY FIX: Update last_active timestamp (sliding window)
+                //
+                // Update last_active on every access to implement sliding window
+                // idle timeout. This keeps active sessions alive while expiring
+                // abandoned sessions.
+                session.last_active = now;
+
+                // Persist updated last_active to Redis
+                // This is a trade-off: write on every read for security vs. performance.
+                // For high-traffic applications, consider rate-limiting these updates
+                // (e.g., only update if last_active is > 1 minute old).
+                let updated_bytes = bincode::serialize(&session)
+                    .map_err(|e| AuthError::SerializationError(e.to_string()))?;
+
+                // Get remaining TTL and preserve it
+                let ttl_seconds: i64 = conn.ttl(&session_key).await.map_err(|e| {
+                    AuthError::InternalError(format!("Failed to get session TTL: {e}"))
+                })?;
+
+                if ttl_seconds > 0 {
+                    let _: () = conn
+                        .set_ex(&session_key, updated_bytes, ttl_seconds as u64)
+                        .await
+                        .map_err(|e| {
+                            AuthError::InternalError(format!("Failed to update last_active: {e}"))
+                        })?;
                 }
 
                 Ok(session)
@@ -471,6 +586,109 @@ impl SessionStore for RedisSessionStore {
 
         Ok(valid_sessions)
     }
+
+    async fn rotate_session(&self, old_session_id: SessionId) -> Result<SessionId> {
+        // ✅ SECURITY FIX (LOW): Session ID rotation
+        //
+        // VULNERABILITY PREVENTED: Long-lived session token theft
+        //
+        // Without rotation:
+        // - A stolen session token remains valid for the full session duration
+        // - If stolen early, attacker has 24 hours of access
+        //
+        // With rotation (typically done every 15-30 minutes):
+        // - Old session tokens become invalid
+        // - Reduces the window for token reuse attacks
+        // - Limits impact of token leakage
+        //
+        // IMPORTANT: Application should call this method periodically (e.g., on
+        // sensitive operations or every N minutes of activity).
+
+        // Get the existing session
+        let mut session = self.get_session(old_session_id).await?;
+
+        // Generate new session ID
+        let new_session_id = SessionId::new();
+
+        // Update session with new ID
+        session.session_id = new_session_id;
+
+        // Get TTL from old session to preserve it
+        let remaining_ttl = self.get_ttl(old_session_id).await?;
+
+        let ttl = remaining_ttl.unwrap_or_else(|| Duration::hours(24));
+
+        // Use atomic Lua script to delete old session and create new one
+        // This prevents race conditions where both sessions could exist temporarily
+        let old_key = Self::session_key(&old_session_id);
+        let new_key = Self::session_key(&new_session_id);
+        let user_sessions_key = Self::user_sessions_key(&session.user_id);
+
+        // Serialize the new session
+        let session_bytes =
+            bincode::serialize(&session).map_err(|e| AuthError::SerializationError(e.to_string()))?;
+
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let ttl_seconds = ttl.num_seconds().max(0) as u64;
+
+        // Atomic rotation using Lua script
+        let lua_script = r#"
+            local old_key = KEYS[1]
+            local new_key = KEYS[2]
+            local user_set_key = KEYS[3]
+            local old_session_id = ARGV[1]
+            local new_session_id = ARGV[2]
+            local session_data = ARGV[3]
+            local ttl = tonumber(ARGV[4])
+
+            -- Check if old session exists
+            if redis.call('EXISTS', old_key) == 0 then
+                return redis.error_reply('Session not found')
+            end
+
+            -- Delete old session
+            redis.call('DEL', old_key)
+
+            -- Create new session
+            redis.call('SETEX', new_key, ttl, session_data)
+
+            -- Update user sessions set (remove old, add new)
+            redis.call('SREM', user_set_key, old_session_id)
+            redis.call('SADD', user_set_key, new_session_id)
+
+            return 'OK'
+        "#;
+
+        let mut conn = self.conn_manager.clone();
+        let script = redis::Script::new(lua_script);
+
+        script
+            .key(&old_key)
+            .key(&new_key)
+            .key(&user_sessions_key)
+            .arg(old_session_id.0.to_string())
+            .arg(new_session_id.0.to_string())
+            .arg(session_bytes)
+            .arg(ttl_seconds)
+            .invoke_async::<String>(&mut conn)
+            .await
+            .map_err(|e| {
+                if e.to_string().contains("Session not found") {
+                    AuthError::SessionNotFound
+                } else {
+                    AuthError::InternalError(format!("Failed to rotate session: {e}"))
+                }
+            })?;
+
+        tracing::info!(
+            old_session_id = %old_session_id.0,
+            new_session_id = %new_session_id.0,
+            user_id = %session.user_id.0,
+            "Session ID rotated"
+        );
+
+        Ok(new_session_id)
+    }
 }
 
 #[cfg(test)]
@@ -508,7 +726,7 @@ mod tests {
 
         // Create
         store
-            .create_session(&session, Duration::hours(24))
+            .create_session(&session, Duration::hours(24), 5)
             .await
             .unwrap();
 
@@ -558,7 +776,7 @@ mod tests {
         // Store with a short TTL (Redis will still allow storage)
         // We're testing the application-level expiration check, not Redis TTL
         store
-            .create_session(&session, Duration::seconds(60))
+            .create_session(&session, Duration::seconds(60), 5)
             .await
             .unwrap();
 
@@ -605,7 +823,7 @@ mod tests {
         };
 
         store
-            .create_session(&session, Duration::hours(24))
+            .create_session(&session, Duration::hours(24), 5)
             .await
             .unwrap();
 
@@ -643,7 +861,7 @@ mod tests {
         };
 
         store
-            .create_session(&session1, Duration::hours(24))
+            .create_session(&session1, Duration::hours(24), 5)
             .await
             .unwrap();
 
@@ -662,7 +880,7 @@ mod tests {
             login_risk_score: 0.9,
         };
 
-        let result = store.create_session(&session2, Duration::hours(24)).await;
+        let result = store.create_session(&session2, Duration::hours(24), 5).await;
 
         // Should fail with InternalError (session fixation prevention)
         match result {
@@ -714,8 +932,8 @@ mod tests {
         // Try to create the same session concurrently from two tasks
         let store_clone = store.clone();
         let (result1, result2) = tokio::join!(
-            store.create_session(&session, Duration::hours(1)),
-            store_clone.create_session(&session_clone, Duration::hours(1))
+            store.create_session(&session, Duration::hours(1), 5),
+            store_clone.create_session(&session_clone, Duration::hours(1), 5)
         );
 
         // Exactly ONE should succeed, the other should fail
@@ -767,7 +985,7 @@ mod tests {
         };
 
         store
-            .create_session(&session, Duration::hours(24))
+            .create_session(&session, Duration::hours(24), 5)
             .await
             .unwrap();
 
@@ -872,7 +1090,7 @@ mod tests {
 
         // Create session with 10 second TTL
         store
-            .create_session(&session, Duration::seconds(10))
+            .create_session(&session, Duration::seconds(10), 5)
             .await
             .unwrap();
 
@@ -940,7 +1158,7 @@ mod tests {
 
         for session in &sessions {
             store
-                .create_session(session, Duration::hours(24))
+                .create_session(session, Duration::hours(24), 5)
                 .await
                 .unwrap();
         }
@@ -978,7 +1196,7 @@ mod tests {
         };
 
         store
-            .create_session(&new_session, Duration::hours(24))
+            .create_session(&new_session, Duration::hours(24), 5)
             .await
             .unwrap();
 
@@ -1012,7 +1230,7 @@ mod tests {
 
         // Create session with 1 hour TTL
         store
-            .create_session(&session, Duration::hours(1))
+            .create_session(&session, Duration::hours(1), 5)
             .await
             .unwrap();
 
@@ -1064,7 +1282,7 @@ mod tests {
 
         for session in &sessions {
             store
-                .create_session(session, Duration::hours(24))
+                .create_session(session, Duration::hours(24), 5)
                 .await
                 .unwrap();
         }

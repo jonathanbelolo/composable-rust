@@ -20,6 +20,7 @@ pub trait SessionStore: Send + Sync {
     ///
     /// - `session`: Session to create
     /// - `ttl`: Time to live (typically 24 hours)
+    /// - `max_concurrent_sessions`: Maximum sessions per user (if exceeded, oldest is revoked)
     ///
     /// # Errors
     ///
@@ -30,6 +31,7 @@ pub trait SessionStore: Send + Sync {
         &self,
         session: &Session,
         ttl: Duration,
+        max_concurrent_sessions: usize,
     ) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// Get session.
@@ -127,4 +129,30 @@ pub trait SessionStore: Send + Sync {
         &self,
         user_id: UserId,
     ) -> impl std::future::Future<Output = Result<Vec<SessionId>>> + Send;
+
+    /// Rotate session ID (create new ID for existing session).
+    ///
+    /// # Security
+    ///
+    /// Session rotation reduces the window for session hijacking attacks.
+    /// By periodically creating a new session ID, stolen tokens become
+    /// invalid faster.
+    ///
+    /// # Arguments
+    ///
+    /// * `old_session_id` - Current session ID to rotate
+    ///
+    /// # Returns
+    ///
+    /// New session ID (old session is deleted atomically).
+    ///
+    /// # Errors
+    ///
+    /// Returns error if:
+    /// - Session not found
+    /// - Network request fails
+    fn rotate_session(
+        &self,
+        old_session_id: SessionId,
+    ) -> impl std::future::Future<Output = Result<SessionId>> + Send;
 }

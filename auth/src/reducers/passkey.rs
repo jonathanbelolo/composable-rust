@@ -762,6 +762,7 @@ where
                 let email_clone = email.clone();
                 let user_agent_clone = user_agent.clone();
                 let session_duration = self.config.session_duration;
+                let max_concurrent_sessions = self.config.max_concurrent_sessions;
 
                 smallvec![Effect::Future(Box::pin(async move {
                     // Calculate login risk
@@ -848,7 +849,7 @@ where
                         Ok(_version) => {
                             // Events persisted successfully
                             // Now create ephemeral session in Redis
-                            if let Err(e) = sessions.create_session(&session, session_duration).await {
+                            if let Err(e) = sessions.create_session(&session, session_duration, max_concurrent_sessions).await {
                                 tracing::error!("Failed to create passkey session for user {} device {}: {}",
                                     user_id.0, device_id.0, e);
                                 return Some(AuthAction::SessionCreationFailed {

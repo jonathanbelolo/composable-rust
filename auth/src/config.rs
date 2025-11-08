@@ -22,6 +22,30 @@ pub struct MagicLinkConfig {
     ///
     /// Default: 24 hours
     pub session_duration: Duration,
+
+    /// Idle timeout - max time between activity before session expires.
+    ///
+    /// Default: 30 minutes
+    ///
+    /// # Security
+    ///
+    /// Sessions idle longer than this will be rejected even if not expired.
+    /// This prevents session hijacking attacks where an attacker steals
+    /// a session token but doesn't use it immediately.
+    pub idle_timeout: Duration,
+
+    /// Maximum concurrent sessions per user.
+    ///
+    /// Default: 5
+    ///
+    /// # Security
+    ///
+    /// Limits the number of active sessions per user. When exceeded, the
+    /// oldest session is automatically revoked. This prevents:
+    /// - Session proliferation attacks (creating many sessions to exhaust resources)
+    /// - Reduces attack surface (fewer valid tokens exist at any time)
+    /// - Forces attackers to compete with legitimate sessions
+    pub max_concurrent_sessions: usize,
 }
 
 impl MagicLinkConfig {
@@ -36,6 +60,8 @@ impl MagicLinkConfig {
             base_url,
             token_ttl_minutes: 10,
             session_duration: Duration::hours(24),
+            idle_timeout: Duration::minutes(30),
+            max_concurrent_sessions: 5,
         }
     }
 
@@ -52,6 +78,20 @@ impl MagicLinkConfig {
         self.session_duration = duration;
         self
     }
+
+    /// Set idle timeout.
+    #[must_use]
+    pub const fn with_idle_timeout(mut self, duration: Duration) -> Self {
+        self.idle_timeout = duration;
+        self
+    }
+
+    /// Set maximum concurrent sessions.
+    #[must_use]
+    pub const fn with_max_concurrent_sessions(mut self, max: usize) -> Self {
+        self.max_concurrent_sessions = max;
+        self
+    }
 }
 
 impl Default for MagicLinkConfig {
@@ -60,6 +100,8 @@ impl Default for MagicLinkConfig {
             base_url: "http://localhost:3000".to_string(),
             token_ttl_minutes: 10,
             session_duration: Duration::hours(24),
+            idle_timeout: Duration::minutes(30),
+            max_concurrent_sessions: 5,
         }
     }
 }
@@ -81,6 +123,27 @@ pub struct OAuthConfig {
     ///
     /// Default: 24 hours
     pub session_duration: Duration,
+
+    /// Idle timeout - max time between activity before session expires.
+    ///
+    /// Default: 30 minutes
+    ///
+    /// # Security
+    ///
+    /// Sessions idle longer than this will be rejected even if not expired.
+    /// This prevents session hijacking attacks where an attacker steals
+    /// a session token but doesn't use it immediately.
+    pub idle_timeout: Duration,
+
+    /// Maximum concurrent sessions per user.
+    ///
+    /// Default: 5
+    ///
+    /// # Security
+    ///
+    /// Limits the number of active sessions per user. When exceeded, the
+    /// oldest session is automatically revoked.
+    pub max_concurrent_sessions: usize,
 }
 
 impl OAuthConfig {
@@ -95,6 +158,8 @@ impl OAuthConfig {
             base_url,
             state_ttl_minutes: 5,
             session_duration: Duration::hours(24),
+            idle_timeout: Duration::minutes(30),
+            max_concurrent_sessions: 5,
         }
     }
 
@@ -111,6 +176,20 @@ impl OAuthConfig {
         self.session_duration = duration;
         self
     }
+
+    /// Set idle timeout.
+    #[must_use]
+    pub const fn with_idle_timeout(mut self, duration: Duration) -> Self {
+        self.idle_timeout = duration;
+        self
+    }
+
+    /// Set maximum concurrent sessions.
+    #[must_use]
+    pub const fn with_max_concurrent_sessions(mut self, max: usize) -> Self {
+        self.max_concurrent_sessions = max;
+        self
+    }
 }
 
 impl Default for OAuthConfig {
@@ -119,6 +198,8 @@ impl Default for OAuthConfig {
             base_url: "http://localhost:3000".to_string(),
             state_ttl_minutes: 5,
             session_duration: Duration::hours(24),
+            idle_timeout: Duration::minutes(30),
+            max_concurrent_sessions: 5,
         }
     }
 }
@@ -145,6 +226,27 @@ pub struct PasskeyConfig {
     ///
     /// Default: 24 hours
     pub session_duration: Duration,
+
+    /// Idle timeout - max time between activity before session expires.
+    ///
+    /// Default: 30 minutes
+    ///
+    /// # Security
+    ///
+    /// Sessions idle longer than this will be rejected even if not expired.
+    /// This prevents session hijacking attacks where an attacker steals
+    /// a session token but doesn't use it immediately.
+    pub idle_timeout: Duration,
+
+    /// Maximum concurrent sessions per user.
+    ///
+    /// Default: 5
+    ///
+    /// # Security
+    ///
+    /// Limits the number of active sessions per user. When exceeded, the
+    /// oldest session is automatically revoked.
+    pub max_concurrent_sessions: usize,
 }
 
 impl PasskeyConfig {
@@ -161,6 +263,8 @@ impl PasskeyConfig {
             rp_id,
             challenge_ttl_minutes: 5,
             session_duration: Duration::hours(24),
+            idle_timeout: Duration::minutes(30),
+            max_concurrent_sessions: 5,
         }
     }
 
@@ -177,6 +281,20 @@ impl PasskeyConfig {
         self.session_duration = duration;
         self
     }
+
+    /// Set idle timeout.
+    #[must_use]
+    pub const fn with_idle_timeout(mut self, duration: Duration) -> Self {
+        self.idle_timeout = duration;
+        self
+    }
+
+    /// Set maximum concurrent sessions.
+    #[must_use]
+    pub const fn with_max_concurrent_sessions(mut self, max: usize) -> Self {
+        self.max_concurrent_sessions = max;
+        self
+    }
 }
 
 impl Default for PasskeyConfig {
@@ -186,6 +304,8 @@ impl Default for PasskeyConfig {
             rp_id: "localhost".to_string(),
             challenge_ttl_minutes: 5,
             session_duration: Duration::hours(24),
+            idle_timeout: Duration::minutes(30),
+            max_concurrent_sessions: 5,
         }
     }
 }
