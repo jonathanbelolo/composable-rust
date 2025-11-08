@@ -155,13 +155,25 @@ pub fn validate_email(email: &str) -> crate::error::Result<()> {
         ));
     }
 
-    // Basic character validation
+    // Character whitelist for local part (before @)
+    // ✅ SECURITY: Restrict to ASCII alphanumeric only (no Unicode)
+    //
+    // Why ASCII-only?
+    // - Prevents homograph attacks (e.g., Cyrillic 'а' vs Latin 'a')
+    // - Prevents normalization issues (ùser vs user vs USER)
+    // - Prevents display issues (emojis, control characters)
+    // - Ensures consistent database collation behavior
+    //
+    // Allows: ASCII a-z, A-Z, 0-9, dot, hyphen, plus, underscore
     let valid_local_chars = |c: char| {
-        c.is_alphanumeric() || c == '.' || c == '-' || c == '+' || c == '_'
+        c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '+' || c == '_'
     };
 
+    // Character whitelist for domain part (after @)
+    // ✅ SECURITY: Restrict to ASCII alphanumeric only (no internationalized domains)
+    // Allows: ASCII a-z, A-Z, 0-9, dot, hyphen
     let valid_domain_chars = |c: char| {
-        c.is_alphanumeric() || c == '.' || c == '-'
+        c.is_ascii_alphanumeric() || c == '.' || c == '-'
     };
 
     if !local.chars().all(valid_local_chars) {
@@ -645,6 +657,34 @@ mod tests {
         assert!(validate_email("user+tag@example.com").is_ok()); // Plus in local
         assert!(validate_email("user_name@example.com").is_ok()); // Underscore in local
         assert!(validate_email("user@example-domain.com").is_ok()); // Hyphen in domain
+    }
+
+    #[test]
+    fn test_validate_email_reject_unicode() {
+        // ✅ SECURITY: Reject Unicode characters to prevent homograph attacks
+
+        // Cyrillic 'а' (U+0430) looks like Latin 'a' (U+0061)
+        assert!(validate_email("аdmin@example.com").is_err(), "Should reject Cyrillic characters");
+
+        // Greek letter 'α' (U+03B1)
+        assert!(validate_email("αlpha@example.com").is_err(), "Should reject Greek characters");
+
+        // Chinese characters
+        assert!(validate_email("用户@example.com").is_err(), "Should reject Chinese characters");
+
+        // Emoji (considered alphanumeric by Unicode)
+        assert!(validate_email("user😀@example.com").is_err(), "Should reject emojis");
+
+        // Accented characters
+        assert!(validate_email("üser@example.com").is_err(), "Should reject accented characters");
+        assert!(validate_email("user@éxample.com").is_err(), "Should reject accented domains");
+
+        // Mixed Unicode and ASCII (more subtle attack)
+        assert!(validate_email("usеr@example.com").is_err(), "Should reject mixed Cyrillic/ASCII");
+
+        // Ensure ASCII is still allowed
+        assert!(validate_email("user@example.com").is_ok(), "Should allow pure ASCII");
+        assert!(validate_email("USER123@EXAMPLE.COM").is_ok(), "Should allow uppercase ASCII");
     }
 
     #[test]
