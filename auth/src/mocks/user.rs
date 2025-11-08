@@ -279,3 +279,186 @@ impl UserRepository for MockUserRepository {
         async move { Ok(()) }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::DeviceId;
+
+    #[tokio::test]
+    async fn test_atomic_counter_update_exactly_once_semantics() {
+        // This test validates that update_passkey_counter_atomic() provides
+        // exactly-once semantics under concurrent authentication attempts.
+        //
+        // SECURITY RATIONALE:
+        // Without atomic updates, cloned authenticators could bypass detection
+        // by authenticating concurrently before either updates the counter.
+
+        let repo = MockUserRepository::new();
+        let user_id = UserId::new();
+        let device_id = DeviceId::new();
+        let credential_id = "test_credential_concurrent".to_string();
+
+        // Create initial credential with counter=100
+        let credential = PasskeyCredential {
+            credential_id: credential_id.clone(),
+            user_id,
+            device_id,
+            public_key: vec![1, 2, 3, 4],
+            counter: 100,
+            created_at: chrono::Utc::now(),
+            last_used: None,
+        };
+        repo.create_passkey_credential(&credential).await.unwrap();
+
+        // Spawn 10 concurrent authentication attempts
+        // All try to update counter from 100 → 101
+        let mut handles = vec![];
+        for _ in 0..10 {
+            let repo_clone = repo.clone();
+            let cred_id = credential_id.clone();
+            let handle = tokio::spawn(async move {
+                repo_clone
+                    .update_passkey_counter_atomic(&cred_id, 100, 101)
+                    .await
+            });
+            handles.push(handle);
+        }
+
+        // Collect results
+        let mut successful_updates = 0;
+        let mut failed_updates = 0;
+
+        for handle in handles {
+            match handle.await.unwrap() {
+                Ok(true) => successful_updates += 1,  // CAS succeeded
+                Ok(false) => failed_updates += 1,     // CAS failed (concurrent modification)
+                Err(_) => panic!("Unexpected error during concurrent update"),
+            }
+        }
+
+        // ✅ CRITICAL ASSERTION: Exactly ONE update should succeed
+        assert_eq!(
+            successful_updates, 1,
+            "Expected exactly 1 successful atomic update, got {}",
+            successful_updates
+        );
+        assert_eq!(
+            failed_updates, 9,
+            "Expected 9 failed updates due to concurrent modification, got {}",
+            failed_updates
+        );
+
+        // Verify final counter value is 101 (not 100 or corrupted)
+        let final_credential = repo.get_passkey_credential(&credential_id).await.unwrap();
+        assert_eq!(
+            final_credential.counter, 101,
+            "Final counter should be 101 (exactly one increment)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_atomic_counter_update_sequential_success() {
+        // This test validates that sequential atomic updates work correctly.
+
+        let repo = MockUserRepository::new();
+        let user_id = UserId::new();
+        let device_id = DeviceId::new();
+        let credential_id = "test_credential_sequential".to_string();
+
+        // Create initial credential with counter=100
+        let credential = PasskeyCredential {
+            credential_id: credential_id.clone(),
+            user_id,
+            device_id,
+            public_key: vec![1, 2, 3, 4],
+            counter: 100,
+            created_at: chrono::Utc::now(),
+            last_used: None,
+        };
+        repo.create_passkey_credential(&credential).await.unwrap();
+
+        // First update: 100 → 101
+        let result = repo
+            .update_passkey_counter_atomic(&credential_id, 100, 101)
+            .await
+            .unwrap();
+        assert!(result, "First atomic update should succeed");
+
+        // Second update: 101 → 102
+        let result = repo
+            .update_passkey_counter_atomic(&credential_id, 101, 102)
+            .await
+            .unwrap();
+        assert!(result, "Second atomic update should succeed");
+
+        // Third update: 102 → 103
+        let result = repo
+            .update_passkey_counter_atomic(&credential_id, 102, 103)
+            .await
+            .unwrap();
+        assert!(result, "Third atomic update should succeed");
+
+        // Verify final counter
+        let final_credential = repo.get_passkey_credential(&credential_id).await.unwrap();
+        assert_eq!(final_credential.counter, 103);
+    }
+
+    #[tokio::test]
+    async fn test_atomic_counter_update_detects_stale_counter() {
+        // This test validates that stale counter values are rejected.
+
+        let repo = MockUserRepository::new();
+        let user_id = UserId::new();
+        let device_id = DeviceId::new();
+        let credential_id = "test_credential_stale".to_string();
+
+        // Create initial credential with counter=100
+        let credential = PasskeyCredential {
+            credential_id: credential_id.clone(),
+            user_id,
+            device_id,
+            public_key: vec![1, 2, 3, 4],
+            counter: 100,
+            created_at: chrono::Utc::now(),
+            last_used: None,
+        };
+        repo.create_passkey_credential(&credential).await.unwrap();
+
+        // Update counter to 105
+        let result = repo
+            .update_passkey_counter_atomic(&credential_id, 100, 105)
+            .await
+            .unwrap();
+        assert!(result, "Initial update should succeed");
+
+        // Attempt to update with stale counter (expects 100, but actual is 105)
+        let result = repo
+            .update_passkey_counter_atomic(&credential_id, 100, 106)
+            .await
+            .unwrap();
+        assert!(!result, "Update with stale counter should fail (CAS rejection)");
+
+        // Verify counter unchanged (still 105)
+        let final_credential = repo.get_passkey_credential(&credential_id).await.unwrap();
+        assert_eq!(final_credential.counter, 105);
+    }
+
+    #[tokio::test]
+    async fn test_atomic_counter_update_nonexistent_credential() {
+        // This test validates proper error handling for nonexistent credentials.
+
+        let repo = MockUserRepository::new();
+
+        // Attempt to update counter for credential that doesn't exist
+        let result = repo
+            .update_passkey_counter_atomic("nonexistent_credential", 100, 101)
+            .await;
+
+        assert!(
+            matches!(result, Err(AuthError::PasskeyNotFound)),
+            "Expected PasskeyNotFound error, got {:?}",
+            result
+        );
+    }
+}
