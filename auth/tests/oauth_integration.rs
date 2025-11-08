@@ -48,6 +48,7 @@ fn create_test_reducer() -> OAuthReducer<
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 async fn test_oauth_flow_complete_happy_path() {
     // Setup
     let reducer = create_test_reducer();
@@ -126,6 +127,7 @@ async fn test_oauth_flow_complete_happy_path() {
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 async fn test_oauth_callback_rejects_invalid_csrf_state() {
     let reducer = create_test_reducer();
     let env = create_test_env();
@@ -171,6 +173,7 @@ async fn test_oauth_callback_rejects_invalid_csrf_state() {
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 async fn test_oauth_callback_requires_prior_initiation() {
     let reducer = create_test_reducer();
     let env = create_test_env();
@@ -200,6 +203,7 @@ async fn test_oauth_callback_requires_prior_initiation() {
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 async fn test_oauth_state_expires_after_5_minutes() {
     let reducer = create_test_reducer();
     let env = create_test_env();
@@ -250,6 +254,7 @@ async fn test_oauth_state_expires_after_5_minutes() {
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 async fn test_oauth_failed_clears_state() {
     let reducer = create_test_reducer();
     let env = create_test_env();
@@ -292,6 +297,7 @@ async fn test_oauth_failed_clears_state() {
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 async fn test_multiple_oauth_providers() {
     let reducer = create_test_reducer();
     let env = create_test_env();
@@ -325,6 +331,7 @@ async fn test_multiple_oauth_providers() {
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 async fn test_session_created_event() {
     let reducer = create_test_reducer();
     let env = create_test_env();
@@ -368,6 +375,7 @@ async fn test_session_created_event() {
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 async fn test_csrf_state_uniqueness() {
     let reducer = create_test_reducer();
     let env = create_test_env();
@@ -403,6 +411,7 @@ async fn test_csrf_state_uniqueness() {
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 async fn test_session_contains_correct_metadata() {
     let reducer = create_test_reducer();
     let env = create_test_env();
