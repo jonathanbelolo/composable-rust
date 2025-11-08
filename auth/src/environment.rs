@@ -6,6 +6,7 @@
 use crate::providers::{
     OAuth2Provider, EmailProvider, WebAuthnProvider, SessionStore,
     UserRepository, DeviceRepository, RiskCalculator, TokenStore,
+    OAuthTokenStore,
 };
 use composable_rust_core::event_store::EventStore;
 use std::sync::Arc;
@@ -24,7 +25,8 @@ use std::sync::Arc;
 /// - `U`: User repository
 /// - `D`: Device repository
 /// - `R`: Risk calculator
-pub struct AuthEnvironment<O, E, W, S, T, U, D, R>
+/// - `OT`: OAuth token store
+pub struct AuthEnvironment<O, E, W, S, T, U, D, R, OT>
 where
     O: OAuth2Provider,
     E: EmailProvider,
@@ -34,6 +36,7 @@ where
     U: UserRepository,
     D: DeviceRepository,
     R: RiskCalculator,
+    OT: OAuthTokenStore,
 {
     /// OAuth2 provider.
     pub oauth: O,
@@ -59,11 +62,14 @@ where
     /// Risk calculator.
     pub risk: R,
 
+    /// OAuth token store (PostgreSQL - encrypted access/refresh tokens).
+    pub oauth_tokens: OT,
+
     /// Event store for event sourcing (PostgreSQL).
     pub event_store: Arc<dyn EventStore>,
 }
 
-impl<O, E, W, S, T, U, D, R> AuthEnvironment<O, E, W, S, T, U, D, R>
+impl<O, E, W, S, T, U, D, R, OT> AuthEnvironment<O, E, W, S, T, U, D, R, OT>
 where
     O: OAuth2Provider,
     E: EmailProvider,
@@ -73,6 +79,7 @@ where
     U: UserRepository,
     D: DeviceRepository,
     R: RiskCalculator,
+    OT: OAuthTokenStore,
 {
     /// Create a new authentication environment.
     #[must_use]
@@ -85,6 +92,7 @@ where
         users: U,
         devices: D,
         risk: R,
+        oauth_tokens: OT,
         event_store: Arc<dyn EventStore>,
     ) -> Self {
         Self {
@@ -96,6 +104,7 @@ where
             users,
             devices,
             risk,
+            oauth_tokens,
             event_store,
         }
     }

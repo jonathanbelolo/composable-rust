@@ -24,7 +24,7 @@ use crate::config::OAuthConfig;
 use crate::constants::login_methods;
 use crate::environment::AuthEnvironment;
 use crate::events::AuthEvent;
-use crate::providers::{OAuth2Provider, UserRepository, DeviceRepository, SessionStore, TokenStore, RiskCalculator, EmailProvider, WebAuthnProvider};
+use crate::providers::{OAuth2Provider, UserRepository, DeviceRepository, SessionStore, TokenStore, RiskCalculator, EmailProvider, WebAuthnProvider, OAuthTokenStore, OAuthTokenData};
 use crate::state::{AuthState, DeviceId, OAuthState, Session, SessionId, UserId};
 use composable_rust_core::effect::Effect;
 use composable_rust_core::reducer::Reducer;
@@ -37,7 +37,7 @@ use std::sync::Arc;
 ///
 /// Handles OAuth2/OIDC authentication flow with CSRF protection.
 #[derive(Debug, Clone)]
-pub struct OAuthReducer<O, E, W, S, T, U, D, R>
+pub struct OAuthReducer<O, E, W, S, T, U, D, R, OT>
 where
     O: OAuth2Provider + Clone + 'static,
     E: EmailProvider + Clone + 'static,
@@ -47,15 +47,16 @@ where
     U: UserRepository + Clone + 'static,
     D: DeviceRepository + Clone + 'static,
     R: RiskCalculator + Clone + 'static,
+    OT: OAuthTokenStore + Clone + 'static,
 {
     /// Configuration for OAuth authentication.
     config: OAuthConfig,
 
     /// Phantom data to hold type parameters.
-    _phantom: std::marker::PhantomData<(O, E, W, S, T, U, D, R)>,
+    _phantom: std::marker::PhantomData<(O, E, W, S, T, U, D, R, OT)>,
 }
 
-impl<O, E, W, S, T, U, D, R> OAuthReducer<O, E, W, S, T, U, D, R>
+impl<O, E, W, S, T, U, D, R, OT> OAuthReducer<O, E, W, S, T, U, D, R, OT>
 where
     O: OAuth2Provider + Clone + 'static,
     E: EmailProvider + Clone + 'static,
@@ -65,6 +66,7 @@ where
     U: UserRepository + Clone + 'static,
     D: DeviceRepository + Clone + 'static,
     R: RiskCalculator + Clone + 'static,
+    OT: OAuthTokenStore + Clone + 'static,
 {
     /// Create a new OAuth reducer with default configuration.
     ///
@@ -141,7 +143,7 @@ where
     }
 }
 
-impl<O, E, W, S, T, U, D, R> Reducer for OAuthReducer<O, E, W, S, T, U, D, R>
+impl<O, E, W, S, T, U, D, R, OT> Reducer for OAuthReducer<O, E, W, S, T, U, D, R, OT>
 where
     O: OAuth2Provider + Clone + 'static,
     E: EmailProvider + Clone + 'static,
@@ -151,10 +153,11 @@ where
     U: UserRepository + Clone + 'static,
     D: DeviceRepository + Clone + 'static,
     R: RiskCalculator + Clone + 'static,
+    OT: OAuthTokenStore + Clone + 'static,
 {
     type State = AuthState;
     type Action = AuthAction;
-    type Environment = AuthEnvironment<O, E, W, S, T, U, D, R>;
+    type Environment = AuthEnvironment<O, E, W, S, T, U, D, R, OT>;
 
     fn reduce(
         &self,
@@ -401,6 +404,7 @@ where
                 let event_store = Arc::clone(&env.event_store);
                 let sessions = env.sessions.clone();
                 let risk = env.risk.clone();
+                let oauth_tokens = env.oauth_tokens.clone();
                 let session_duration = self.config.session_duration;
                 let email_clone = email.clone();
                 let name_clone = name.clone();
@@ -526,8 +530,25 @@ where
                                 });
                             }
 
-                            // TODO: Store OAuth access_token and refresh_token
-                            let _ = (access_token, refresh_token);
+                            // Store OAuth tokens for future refresh (non-fatal if it fails)
+                            let token_data = OAuthTokenData {
+                                user_id: final_user_id,
+                                provider,
+                                access_token: access_token.clone(),
+                                refresh_token: refresh_token.clone(),
+                                expires_at: Some(now + Duration::hours(1)), // Standard OAuth token expiry
+                                stored_at: now,
+                            };
+
+                            if let Err(e) = oauth_tokens.store_tokens(&token_data).await {
+                                tracing::error!(
+                                    "Failed to store OAuth tokens for user {} provider {}: {}",
+                                    final_user_id.0,
+                                    provider.as_str(),
+                                    e
+                                );
+                                // Non-fatal - session still created, user can re-authenticate
+                            }
 
                             // Emit SessionCreated event
                             Some(AuthAction::SessionCreated { session })

@@ -51,6 +51,7 @@ use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 
 pub mod oauth;
+pub mod oauth_token_store;
 pub mod email;
 pub mod webauthn;
 pub mod session;
@@ -61,6 +62,7 @@ pub mod token_store;
 
 // Re-export provider traits
 pub use oauth::OAuth2Provider;
+pub use oauth_token_store::{OAuthTokenStore, OAuthTokenData};
 pub use email::EmailProvider;
 pub use webauthn::WebAuthnProvider;
 pub use session::SessionStore;

@@ -5,8 +5,9 @@ use composable_rust_auth::{
     config::OAuthConfig,
     environment::AuthEnvironment,
     mocks::{
-        MockDeviceRepository, MockEmailProvider, MockOAuth2Provider, MockRiskCalculator,
-        MockSessionStore, MockTokenStore, MockUserRepository, MockWebAuthnProvider,
+        MockDeviceRepository, MockEmailProvider, MockOAuth2Provider, MockOAuthTokenStore,
+        MockRiskCalculator, MockSessionStore, MockTokenStore, MockUserRepository,
+        MockWebAuthnProvider,
     },
     reducers::oauth::OAuthReducer,
     state::{AuthState, OAuthProvider},
@@ -26,6 +27,7 @@ fn create_test_env() -> AuthEnvironment<
     MockUserRepository,
     MockDeviceRepository,
     MockRiskCalculator,
+    MockOAuthTokenStore,
 > {
     AuthEnvironment::new(
         MockOAuth2Provider::new(),
@@ -36,6 +38,7 @@ fn create_test_env() -> AuthEnvironment<
         MockUserRepository::new(),
         MockDeviceRepository::new(),
         MockRiskCalculator::new(),
+        MockOAuthTokenStore::new(),
         Arc::new(InMemoryEventStore::new()),
     )
 }
@@ -50,6 +53,7 @@ fn create_test_reducer() -> OAuthReducer<
     MockUserRepository,
     MockDeviceRepository,
     MockRiskCalculator,
+    MockOAuthTokenStore,
 > {
     let config = OAuthConfig::new("https://app.example.com".to_string());
     OAuthReducer::with_config(config)

@@ -4,6 +4,7 @@
 //! for use in unit and integration tests.
 
 pub mod oauth;
+pub mod oauth_token_store;
 pub mod session;
 pub mod user;
 pub mod device;
@@ -13,6 +14,7 @@ pub mod risk;
 pub mod token_store;
 
 pub use oauth::MockOAuth2Provider;
+pub use oauth_token_store::MockOAuthTokenStore;
 pub use session::MockSessionStore;
 pub use user::MockUserRepository;
 pub use device::MockDeviceRepository;
