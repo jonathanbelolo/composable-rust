@@ -117,16 +117,35 @@ impl SessionStore for RedisSessionStore {
         let active_sessions = self.get_user_sessions(session.user_id).await?;
 
         if active_sessions.len() >= max_concurrent_sessions {
-            // Find the oldest session by fetching all sessions and comparing created_at
+            // ⚡ PERFORMANCE OPTIMIZATION: Use MGET to fetch all sessions in one operation
+            // instead of N individual GET operations (5-25ms savings for max_concurrent_sessions=5)
+
+            let mut conn = self.conn_manager.clone();
+
+            // Build session keys for MGET
+            let session_keys: Vec<String> = active_sessions
+                .iter()
+                .map(|id| Self::session_key(id))
+                .collect();
+
+            // Fetch all sessions in a single MGET operation
+            let session_bytes_list: Vec<Option<Vec<u8>>> = conn
+                .mget(&session_keys)
+                .await
+                .map_err(|e| AuthError::DatabaseError(format!("Failed to fetch sessions: {e}")))?;
+
+            // Find the oldest session by comparing created_at
             let mut oldest_session_id: Option<SessionId> = None;
             let mut oldest_created_at: Option<DateTime<Utc>> = None;
 
-            for session_id in &active_sessions {
-                // Get the session to check its created_at timestamp
-                if let Ok(s) = self.get_session(*session_id).await {
-                    if oldest_created_at.is_none() || s.created_at < oldest_created_at.unwrap() {
-                        oldest_created_at = Some(s.created_at);
-                        oldest_session_id = Some(*session_id);
+            for (i, session_bytes_opt) in session_bytes_list.iter().enumerate() {
+                if let Some(session_bytes) = session_bytes_opt {
+                    // Deserialize the session
+                    if let Ok(s) = bincode::deserialize::<Session>(session_bytes) {
+                        if oldest_created_at.is_none() || s.created_at < oldest_created_at.unwrap() {
+                            oldest_created_at = Some(s.created_at);
+                            oldest_session_id = Some(active_sessions[i]);
+                        }
                     }
                 }
             }
@@ -238,16 +257,14 @@ impl SessionStore for RedisSessionStore {
                 // full 24-hour session duration, even if the legitimate user stopped
                 // using the application hours ago. This gives attackers a wide window.
                 //
-                // With idle timeout (default: 30 minutes), sessions expire after
+                // With idle timeout (configurable per session), sessions expire after
                 // inactivity, dramatically reducing the attack window.
                 //
-                // NOTE: This is configurable per authentication method. The idle_timeout
-                // value is stored in the session's config (not in the Session struct itself).
-                // For now, we use a hardcoded 30-minute default, but this should be
-                // passed in from the reducer's config in a future enhancement.
-                //
-                // TODO (Phase 7): Store idle_timeout in Session struct or pass from config
-                let idle_timeout = Duration::minutes(30); // Default for now
+                // NOTE: Each session carries its own idle_timeout policy (set from
+                // config during session creation). This allows different authentication
+                // methods to have different timeout policies (e.g., passkeys may have
+                // longer timeouts than magic links).
+                let idle_timeout = session.idle_timeout;
                 let idle_duration = now.signed_duration_since(session.last_active);
 
                 if idle_duration > idle_timeout {
@@ -702,6 +719,24 @@ mod tests {
     // Run with: docker run -d -p 6379:6379 redis:7-alpine
     // Or skip with: cargo test --lib (excludes integration tests)
 
+    /// Helper function to create a test session with all required fields.
+    fn create_test_session(user_id: UserId) -> Session {
+        Session {
+            session_id: SessionId::new(),
+            user_id,
+            device_id: DeviceId::new(),
+            email: "test@example.com".to_string(),
+            created_at: Utc::now(),
+            last_active: Utc::now(),
+            expires_at: Utc::now() + Duration::hours(24),
+            ip_address: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            user_agent: "Test".to_string(),
+            oauth_provider: None,
+            login_risk_score: 0.1,
+            idle_timeout: Duration::minutes(30),
+        }
+    }
+
     #[tokio::test]
     #[ignore] // Requires Redis running
     #[allow(clippy::unwrap_used)]
@@ -710,19 +745,8 @@ mod tests {
             .await
             .unwrap();
 
-        let session = Session {
-            session_id: SessionId::new(),
-            user_id: UserId::new(),
-            device_id: DeviceId::new(),
-            email: "test@example.com".to_string(),
-            created_at: Utc::now(),
-            last_active: Utc::now(),
-            expires_at: Utc::now() + Duration::hours(24),
-            ip_address: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-            user_agent: "Test".to_string(),
-            oauth_provider: Some(OAuthProvider::Google),
-            login_risk_score: 0.1,
-        };
+        let mut session = create_test_session(UserId::new());
+        session.oauth_provider = Some(OAuthProvider::Google);
 
         // Create
         store
@@ -771,6 +795,7 @@ mod tests {
             user_agent: "Test".to_string(),
             oauth_provider: None,
             login_risk_score: 0.1,
+            idle_timeout: Duration::minutes(30),
         };
 
         // Store with a short TTL (Redis will still allow storage)
@@ -820,6 +845,7 @@ mod tests {
             user_agent: "Test".to_string(),
             oauth_provider: None,
             login_risk_score: 0.1,
+            idle_timeout: Duration::minutes(30),
         };
 
         store
@@ -858,6 +884,7 @@ mod tests {
             user_agent: "Browser1".to_string(),
             oauth_provider: None,
             login_risk_score: 0.1,
+            idle_timeout: Duration::minutes(30),
         };
 
         store
@@ -878,6 +905,7 @@ mod tests {
             user_agent: "AttackerBrowser".to_string(),
             oauth_provider: None,
             login_risk_score: 0.9,
+            idle_timeout: Duration::minutes(30),
         };
 
         let result = store.create_session(&session2, Duration::hours(24), 5).await;
@@ -925,6 +953,7 @@ mod tests {
             user_agent: "Test".to_string(),
             oauth_provider: None,
             login_risk_score: 0.1,
+            idle_timeout: Duration::minutes(30),
         };
 
         let session_clone = session.clone();
@@ -982,6 +1011,7 @@ mod tests {
             user_agent: "Test".to_string(),
             oauth_provider: original_oauth_provider,
             login_risk_score: original_risk_score,
+            idle_timeout: Duration::minutes(30),
         };
 
         store
@@ -1086,6 +1116,7 @@ mod tests {
             user_agent: "Test".to_string(),
             oauth_provider: None,
             login_risk_score: 0.1,
+            idle_timeout: Duration::minutes(30),
         };
 
         // Create session with 10 second TTL
@@ -1153,6 +1184,7 @@ mod tests {
                 user_agent: format!("Browser{}", i),
                 oauth_provider: None,
                 login_risk_score: 0.1,
+                idle_timeout: Duration::minutes(30),
             })
             .collect();
 
@@ -1193,6 +1225,7 @@ mod tests {
             user_agent: "NewBrowser".to_string(),
             oauth_provider: None,
             login_risk_score: 0.1,
+            idle_timeout: Duration::minutes(30),
         };
 
         store
@@ -1226,6 +1259,7 @@ mod tests {
             user_agent: "Test".to_string(),
             oauth_provider: None,
             login_risk_score: 0.1,
+            idle_timeout: Duration::minutes(30),
         };
 
         // Create session with 1 hour TTL
@@ -1277,6 +1311,7 @@ mod tests {
                 user_agent: format!("Browser{}", i),
                 oauth_provider: None,
                 login_risk_score: 0.1,
+                idle_timeout: Duration::minutes(30),
             })
             .collect();
 

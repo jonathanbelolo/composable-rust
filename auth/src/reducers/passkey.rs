@@ -749,6 +749,7 @@ where
                     user_agent: user_agent.clone(),
                     oauth_provider: None,
                     login_risk_score: 0.05, // Placeholder - will be updated via SessionCreated
+                    idle_timeout: self.config.idle_timeout,
                 };
 
                 // Update state immediately (sessions are ephemeral, not event-sourced)
@@ -763,6 +764,7 @@ where
                 let user_agent_clone = user_agent.clone();
                 let session_duration = self.config.session_duration;
                 let max_concurrent_sessions = self.config.max_concurrent_sessions;
+                let idle_timeout = self.config.idle_timeout;
 
                 smallvec![Effect::Future(Box::pin(async move {
                     // Calculate login risk
@@ -840,6 +842,7 @@ where
                         user_agent: user_agent_clone,
                         oauth_provider: None,
                         login_risk_score,
+                        idle_timeout,
                     };
 
                     // Batch append all events to the user stream

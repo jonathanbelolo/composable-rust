@@ -136,6 +136,13 @@ pub struct Session {
 
     /// Risk assessment at login time.
     pub login_risk_score: f32,
+
+    /// Idle timeout - max time between activity before session expires.
+    ///
+    /// This allows different authentication methods to have different
+    /// idle timeout policies (e.g., passkeys might have longer timeouts
+    /// than magic links).
+    pub idle_timeout: chrono::Duration,
 }
 
 /// Token pair for JWT-based authentication (optional feature).

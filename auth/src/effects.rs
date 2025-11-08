@@ -676,6 +676,7 @@ mod tests {
                 user_agent: "test".to_string(),
                 oauth_provider: None,
                 login_risk_score: 0.1,
+                idle_timeout: chrono::Duration::minutes(30),
             },
             ttl_seconds: 86400,
         };

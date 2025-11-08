@@ -126,9 +126,9 @@ impl SessionStore for MockSessionStore {
 
             // ✅ SECURITY FIX (CRITICAL): Idle timeout enforcement
             //
-            // Check if session has been idle too long (default: 30 minutes).
+            // Check if session has been idle too long (configured per session).
             // This matches the Redis implementation.
-            let idle_timeout = chrono::Duration::minutes(30);
+            let idle_timeout = session.idle_timeout;
             let idle_duration = now.signed_duration_since(session.last_active);
 
             if idle_duration > idle_timeout {
@@ -158,10 +158,67 @@ impl SessionStore for MockSessionStore {
         async move {
             let mut sessions_guard = sessions.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
 
-            if !sessions_guard.contains_key(&session.session_id) {
-                return Err(AuthError::SessionNotFound);
+            // Get existing session for validation
+            let existing_session = sessions_guard
+                .get(&session.session_id)
+                .cloned()
+                .ok_or(AuthError::SessionNotFound)?;
+
+            // ✅ SECURITY: Validate immutable fields haven't changed
+            // This matches the RedisSessionStore validation logic
+            if existing_session.user_id != session.user_id {
+                tracing::error!(
+                    session_id = %session.session_id.0,
+                    existing_user_id = %existing_session.user_id.0,
+                    new_user_id = %session.user_id.0,
+                    "Mock: Attempt to change immutable user_id (privilege escalation attempt)"
+                );
+                return Err(AuthError::InternalError(
+                    "Cannot change session user_id (immutable)".into(),
+                ));
             }
 
+            if existing_session.device_id != session.device_id {
+                tracing::error!(
+                    session_id = %session.session_id.0,
+                    "Mock: Attempt to change immutable device_id"
+                );
+                return Err(AuthError::InternalError(
+                    "Cannot change session device_id (immutable)".into(),
+                ));
+            }
+
+            if existing_session.ip_address != session.ip_address {
+                tracing::error!(
+                    session_id = %session.session_id.0,
+                    "Mock: Attempt to change immutable ip_address"
+                );
+                return Err(AuthError::InternalError(
+                    "Cannot change session ip_address (immutable)".into(),
+                ));
+            }
+
+            if existing_session.oauth_provider != session.oauth_provider {
+                tracing::error!(
+                    session_id = %session.session_id.0,
+                    "Mock: Attempt to change immutable oauth_provider"
+                );
+                return Err(AuthError::InternalError(
+                    "Cannot change session oauth_provider (immutable)".into(),
+                ));
+            }
+
+            if existing_session.login_risk_score != session.login_risk_score {
+                tracing::error!(
+                    session_id = %session.session_id.0,
+                    "Mock: Attempt to change immutable login_risk_score"
+                );
+                return Err(AuthError::InternalError(
+                    "Cannot change session login_risk_score (immutable)".into(),
+                ));
+            }
+
+            // All validations passed - update the session
             sessions_guard.insert(session.session_id, session);
             Ok(())
         }
