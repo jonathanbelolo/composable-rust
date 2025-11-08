@@ -9,10 +9,40 @@
 //! Providers are **interfaces**, not implementations. The reducer depends
 //! on these traits, and the runtime provides concrete implementations.
 //!
+//! ## Query-Only Repositories
+//!
+//! **Important**: `UserRepository` and `DeviceRepository` are **query-only** interfaces.
+//! They read from projections (read models) built from events. All writes happen
+//! via event emission in reducers.
+//!
+//! ```text
+//! Write Path (Command):              Read Path (Query):
+//! ┌──────────────────┐              ┌──────────────────┐
+//! │ Reducer          │              │ UserRepository   │
+//! │ - Validates      │              │ (Query-Only)     │
+//! │ - Emits Events   │              │                  │
+//! │   • UserReg'd    │              │ Reads from:      │
+//! │   • DeviceReg'd  │              │   users_proj.    │
+//! └────────┬─────────┘              │   devices_proj.  │
+//!          │                         └──────────────────┘
+//!          ▼                                  ▲
+//! ┌──────────────────┐                       │
+//! │ Event Store      │                       │
+//! │ (Source of Truth)│                       │
+//! └────────┬─────────┘                       │
+//!          │                                  │
+//!          ▼                                  │
+//! ┌──────────────────┐                       │
+//! │ Projection       │───────────────────────┘
+//! │ (Event Handler)  │  Updates projections
+//! └──────────────────┘
+//! ```
+//!
 //! This enables:
 //! - **Testing**: Use mocks (in-memory, deterministic)
 //! - **Production**: Use real services (PostgreSQL, Redis, SendGrid, etc.)
 //! - **Development**: Use instrumented versions (logging, tracing)
+//! - **CQRS**: Clear separation between write (events) and read (projections)
 
 use crate::actions::{AuthLevel, DeviceTrustLevel};
 use crate::state::{DeviceId, OAuthProvider, UserId};
@@ -27,6 +57,7 @@ pub mod session;
 pub mod user;
 pub mod device;
 pub mod risk;
+pub mod token_store;
 
 // Re-export provider traits
 pub use oauth::OAuth2Provider;
@@ -36,6 +67,7 @@ pub use session::SessionStore;
 pub use user::UserRepository;
 pub use device::DeviceRepository;
 pub use risk::RiskCalculator;
+pub use token_store::{TokenStore, TokenData, TokenType};
 
 /// User data model.
 ///

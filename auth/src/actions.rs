@@ -350,6 +350,45 @@ pub enum AuthAction {
     },
 
     // ═══════════════════════════════════════════════════════════════════════
+    // Error Actions
+    // ═══════════════════════════════════════════════════════════════════════
+    /// Magic link email failed to send.
+    ///
+    /// Triggered when the email provider returns an error.
+    MagicLinkFailed {
+        /// Email that failed.
+        email: String,
+
+        /// Error message from email provider.
+        error: String,
+    },
+
+    /// Session creation failed.
+    ///
+    /// Triggered when Redis session store fails to create a session.
+    SessionCreationFailed {
+        /// User ID for which session creation failed.
+        user_id: UserId,
+
+        /// Device ID.
+        device_id: DeviceId,
+
+        /// Error message.
+        error: String,
+    },
+
+    /// Event persistence failed.
+    ///
+    /// Triggered when event store fails to append events.
+    EventPersistenceFailed {
+        /// Stream ID that failed.
+        stream_id: String,
+
+        /// Error message.
+        error: String,
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════
     // Advanced Features (Phase 6B/6C)
     // ═══════════════════════════════════════════════════════════════════════
     /// Request step-up authentication.
@@ -390,6 +429,21 @@ pub enum AuthAction {
 
         /// Reason for change.
         reason: String,
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Event Sourcing
+    // ═══════════════════════════════════════════════════════════════════════
+    /// Event was persisted to the event store.
+    ///
+    /// This action is dispatched after successfully appending events to the event store.
+    /// It triggers state updates by applying the event to the current state.
+    EventPersisted {
+        /// The event that was persisted.
+        event: crate::events::AuthEvent,
+
+        /// Version of the stream after persistence.
+        version: u64,
     },
 }
 

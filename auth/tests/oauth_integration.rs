@@ -2,16 +2,19 @@
 
 use composable_rust_auth::{
     actions::AuthAction,
+    config::OAuthConfig,
     environment::AuthEnvironment,
     mocks::{
         MockDeviceRepository, MockEmailProvider, MockOAuth2Provider, MockRiskCalculator,
-        MockSessionStore, MockUserRepository, MockWebAuthnProvider,
+        MockSessionStore, MockTokenStore, MockUserRepository, MockWebAuthnProvider,
     },
     reducers::oauth::OAuthReducer,
     state::{AuthState, OAuthProvider},
 };
 use composable_rust_core::reducer::Reducer;
+use composable_rust_testing::mocks::InMemoryEventStore;
 use std::net::{IpAddr, Ipv4Addr};
+use std::sync::Arc;
 
 /// Create a test environment with mock providers.
 fn create_test_env() -> AuthEnvironment<
@@ -19,6 +22,7 @@ fn create_test_env() -> AuthEnvironment<
     MockEmailProvider,
     MockWebAuthnProvider,
     MockSessionStore,
+    MockTokenStore,
     MockUserRepository,
     MockDeviceRepository,
     MockRiskCalculator,
@@ -28,9 +32,11 @@ fn create_test_env() -> AuthEnvironment<
         MockEmailProvider::new(),
         MockWebAuthnProvider::new(),
         MockSessionStore::new(),
+        MockTokenStore::new(),
         MockUserRepository::new(),
         MockDeviceRepository::new(),
         MockRiskCalculator::new(),
+        Arc::new(InMemoryEventStore::new()),
     )
 }
 
@@ -40,11 +46,13 @@ fn create_test_reducer() -> OAuthReducer<
     MockEmailProvider,
     MockWebAuthnProvider,
     MockSessionStore,
+    MockTokenStore,
     MockUserRepository,
     MockDeviceRepository,
     MockRiskCalculator,
 > {
-    OAuthReducer::new("https://app.example.com".to_string())
+    let config = OAuthConfig::new("https://app.example.com".to_string());
+    OAuthReducer::with_config(config)
 }
 
 #[tokio::test]
@@ -75,8 +83,8 @@ async fn test_oauth_flow_complete_happy_path() {
     assert_eq!(oauth_state.provider, OAuthProvider::Google);
     assert!(!oauth_state.state_param.is_empty());
 
-    // Should return effect to build authorization URL
-    assert_eq!(effects.len(), 1);
+    // Should return 2 effects: store state + build authorization URL
+    assert_eq!(effects.len(), 2);
 
     // Simulate executing the effect (in real code, Store would do this)
     // For now, we just verify the state was set
@@ -326,7 +334,7 @@ async fn test_multiple_oauth_providers() {
         // Should store correct provider
         assert!(state.oauth_state.is_some());
         assert_eq!(state.oauth_state.as_ref().unwrap().provider, provider);
-        assert_eq!(effects.len(), 1);
+        assert_eq!(effects.len(), 2); // Store state + build URL
     }
 }
 

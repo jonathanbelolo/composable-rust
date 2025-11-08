@@ -42,6 +42,10 @@ pub enum AuthError {
     #[error("Magic link has already been used")]
     MagicLinkAlreadyUsed,
 
+    /// Token has been consumed by another request (race condition).
+    #[error("Token consumed: {0}")]
+    TokenConsumed(String),
+
     /// OAuth authorization code is invalid.
     #[error("Invalid OAuth authorization code")]
     OAuthCodeInvalid,

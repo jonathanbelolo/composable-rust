@@ -2,16 +2,19 @@
 
 use composable_rust_auth::{
     actions::AuthAction,
+    config::PasskeyConfig,
     environment::AuthEnvironment,
     mocks::{
         MockDeviceRepository, MockEmailProvider, MockOAuth2Provider, MockRiskCalculator,
-        MockSessionStore, MockUserRepository, MockWebAuthnProvider,
+        MockSessionStore, MockTokenStore, MockUserRepository, MockWebAuthnProvider,
     },
     reducers::PasskeyReducer,
     state::{AuthState, DeviceId, UserId},
 };
 use composable_rust_core::reducer::Reducer;
+use composable_rust_testing::mocks::InMemoryEventStore;
 use std::net::{IpAddr, Ipv4Addr};
+use std::sync::Arc;
 
 /// Create a test environment with mock providers.
 fn create_test_env() -> AuthEnvironment<
@@ -19,6 +22,7 @@ fn create_test_env() -> AuthEnvironment<
     MockEmailProvider,
     MockWebAuthnProvider,
     MockSessionStore,
+    MockTokenStore,
     MockUserRepository,
     MockDeviceRepository,
     MockRiskCalculator,
@@ -28,9 +32,11 @@ fn create_test_env() -> AuthEnvironment<
         MockEmailProvider::new(),
         MockWebAuthnProvider::new(),
         MockSessionStore::new(),
+        MockTokenStore::new(),
         MockUserRepository::new(),
         MockDeviceRepository::new(),
         MockRiskCalculator::new(),
+        Arc::new(InMemoryEventStore::new()),
     )
 }
 
@@ -40,6 +46,7 @@ fn create_test_reducer() -> PasskeyReducer<
     MockEmailProvider,
     MockWebAuthnProvider,
     MockSessionStore,
+    MockTokenStore,
     MockUserRepository,
     MockDeviceRepository,
     MockRiskCalculator,
@@ -251,10 +258,11 @@ async fn test_session_contains_correct_metadata() {
 #[tokio::test]
 #[allow(clippy::unwrap_used)]
 async fn test_custom_webauthn_config() {
-    let reducer = PasskeyReducer::with_config(
+    let config = PasskeyConfig::new(
         "https://app.example.com".to_string(),
         "app.example.com".to_string(),
     );
+    let reducer = PasskeyReducer::with_config(config);
     let env = create_test_env();
     let mut state = AuthState::default();
 

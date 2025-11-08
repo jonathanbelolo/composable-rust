@@ -1,12 +1,26 @@
 //! User repository trait.
+//!
+//! # Query-Only Repository (Event Sourced)
+//!
+//! This repository reads from projections (read models) built from events.
+//! All writes happen via event emission in reducers.
+//!
+//! **Architecture**:
+//! - ✅ Queries: Read from `users_projection` table
+//! - ❌ Writes: Use event emission (reducers emit `UserRegistered`, `UserUpdated` events)
+//! - 🔄 Projections: `AuthProjection` listens to events and updates read models
 
 use crate::error::Result;
 use crate::state::{OAuthProvider, UserId};
 use super::{User, OAuthLink, MagicLinkToken, PasskeyCredential};
 
-/// User repository.
+/// User repository (query-only).
 ///
-/// This trait abstracts over user database operations (PostgreSQL).
+/// This trait provides read access to user data from projections.
+///
+/// **Event Sourcing Note**: This repository reads from `users_projection` table,
+/// which is updated by the `AuthProjection` event handler. All user state changes
+/// happen via event emission in reducers (e.g., `UserRegistered`, `UserUpdated` events).
 pub trait UserRepository: Send + Sync {
     /// Get user by ID.
     ///

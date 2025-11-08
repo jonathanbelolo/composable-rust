@@ -1,19 +1,33 @@
 //! Device repository trait.
+//!
+//! # Query-Only Repository (Event Sourced)
+//!
+//! This repository reads from projections (read models) built from events.
+//! All writes happen via event emission in reducers.
+//!
+//! **Architecture**:
+//! - ✅ Queries: Read from `devices_projection` table
+//! - ❌ Writes: Use event emission (reducers emit `DeviceRegistered`, `DeviceAccessed` events)
+//! - 🔄 Projections: `AuthProjection` listens to events and updates read models
 
 use crate::error::Result;
 use crate::actions::DeviceTrustLevel;
 use crate::state::{DeviceId, UserId};
 use super::Device;
 
-/// Device repository.
+/// Device repository (query-only).
 ///
-/// This trait abstracts over device database operations (PostgreSQL).
+/// This trait provides read access to device data from projections.
+///
+/// **Event Sourcing Note**: This repository reads from `devices_projection` table,
+/// which is updated by the `AuthProjection` event handler. All device state changes
+/// happen via event emission in reducers (e.g., `DeviceRegistered`, `DeviceAccessed` events).
 ///
 /// # Implementation Notes
 ///
-/// - Devices are permanent (audit trail)
-/// - Track first seen, last seen, trust level
-/// - Link to passkey credentials
+/// - Devices are permanent (audit trail via events)
+/// - Track first seen, last seen, trust level (from events)
+/// - Link to passkey credentials (via `PasskeyRegistered` events)
 pub trait DeviceRepository: Send + Sync {
     /// Get device by ID.
     ///

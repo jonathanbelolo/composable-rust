@@ -1,6 +1,6 @@
 # Phase 6 Implementation Plan: Composable Auth
 
-**Status**: 🚧 In Progress - Phase 6A Foundation
+**Status**: 🔍 In-Depth Review Phase
 **Dependencies**: Phase 5 (Event-driven systems)
 **Estimated Duration**: 14 weeks (extended for proper WebAuthn implementation and security hardening)
 
@@ -10,8 +10,24 @@
 - ✅ Magic link reducer with cryptographic token generation
 - ✅ WebAuthn/passkey reducer with challenge flows
 - ✅ Mock providers for all traits (OAuth2, Email, WebAuthn, Session, User, Device, Risk)
-- ✅ All Phase 6A integration tests passing (37 total: 12 lib + 9 OAuth + 8 magic link + 8 passkey)
-- 🔄 Next: Phase 6B (Session Management) or real provider implementations
+- ✅ **Event Sourcing Implementation Complete**:
+  - ✅ AuthEvent enum with 15 domain events
+  - ✅ All reducers emit events (batch appending)
+  - ✅ AuthProjection system implemented
+  - ✅ Database migrations for projections
+  - ✅ All tests passing (40 tests: 15 lib + 8 magic link + 9 OAuth + 8 passkey)
+- 🔍 **Current Phase**: In-depth code review (TODOs, hardcoded values, security)
+- 🔄 **Next**: Phase 6B (Session Management) after review completion
+
+**Review Status**:
+- [ ] Phase 1: Magic Link Reducer review
+- [ ] Phase 1: OAuth Reducer review
+- [ ] Phase 1: Passkey Reducer review
+- [ ] Phase 2: Events & Projection review
+- [ ] Phase 3: Mock Providers & Stores review
+- [ ] Phase 4: Traits, State, Errors review
+
+See `REVIEW-PLAN.md` for detailed review process and checklist.
 
 ---
 
@@ -204,6 +220,254 @@ Implement authentication and authorization as first-class composable primitives 
   - [ ] Magic link setup
   - [ ] Passkey implementation guide
   - [ ] Configuration guide
+
+---
+
+## Phase 6A-Review: In-Depth Code Review (Before 6B)
+
+**Status**: 🔍 Ready to Begin
+**Purpose**: Comprehensive review of Phase 6A implementation
+**Goal**: Ensure code quality, security, and completeness before proceeding
+**See**: `REVIEW-PLAN.md` for detailed checklist and process
+
+### Phase 1: Core Business Logic Review (Highest Priority)
+
+#### Magic Link Reducer Review
+- [ ] Scan for TODOs and hardcoded values
+  - [ ] Magic link base URL configuration
+  - [ ] Device name parsing from user agent
+  - [ ] Rate limiting implementation (5 per hour)
+  - [ ] Token expiration TTL configuration
+- [ ] Security audit
+  - [ ] Verify constant-time token comparison
+  - [ ] Verify 256-bit token generation
+  - [ ] Token single-use enforcement
+  - [ ] Email address validation
+- [ ] Event sourcing verification
+  - [ ] All events emitted properly (UserRegistered, DeviceRegistered, UserLoggedIn)
+  - [ ] Projection alignment verified
+  - [ ] Event fields complete
+- [ ] Error handling completeness
+  - [ ] Email sending failures
+  - [ ] Database failures
+  - [ ] Race condition handling
+- [ ] Test coverage analysis
+  - [ ] Happy path ✅
+  - [ ] Error paths
+  - [ ] Security properties (timing attacks, token reuse)
+  - [ ] Rate limiting (deferred?)
+
+#### OAuth Reducer Review
+- [ ] Scan for TODOs and hardcoded values
+  - [ ] OAuth access token storage
+  - [ ] OAuth refresh token handling
+  - [ ] Provider user ID extraction (currently placeholder)
+  - [ ] Provider configuration (client ID/secret)
+  - [ ] CSRF state expiration (5 minutes)
+- [ ] Security audit
+  - [ ] CSRF state generation (entropy, uniqueness)
+  - [ ] Constant-time state comparison
+  - [ ] State single-use enforcement
+  - [ ] Redirect URI validation
+  - [ ] Token storage security
+- [ ] Event sourcing verification
+  - [ ] All events emitted (UserRegistered, OAuthAccountLinked, DeviceRegistered, UserLoggedIn)
+  - [ ] Provider user ID correctly captured
+  - [ ] OAuth token storage decisions documented
+- [ ] Error handling completeness
+  - [ ] Token exchange failures
+  - [ ] Provider API errors
+  - [ ] Network timeouts
+  - [ ] Invalid state handling
+- [ ] Test coverage analysis
+  - [ ] Happy path ✅
+  - [ ] CSRF validation ✅
+  - [ ] State expiration ✅
+  - [ ] Error paths
+  - [ ] Multiple providers ✅
+
+#### Passkey Reducer Review
+- [ ] Scan for TODOs and hardcoded values
+  - [ ] Challenge storage mechanism (currently "mock_challenge_id")
+  - [ ] WebAuthn origin configuration
+  - [ ] RP ID configuration
+  - [ ] Challenge expiration (5 minutes)
+  - [ ] User verification requirements
+- [ ] Security audit (**CRITICAL**)
+  - [ ] Counter rollback protection implementation
+  - [ ] Challenge generation (WebAuthn-compliant)
+  - [ ] Challenge single-use enforcement
+  - [ ] Origin validation
+  - [ ] RP ID validation
+  - [ ] Public key format (COSE)
+  - [ ] Authenticator selection criteria
+- [ ] Event sourcing verification
+  - [ ] PasskeyUsed event emission (currently missing?)
+  - [ ] Counter updates via projections
+  - [ ] DeviceAccessed event
+  - [ ] UserLoggedIn event
+- [ ] Error handling completeness
+  - [ ] Verification failures
+  - [ ] Counter rollback detection
+  - [ ] Invalid credential handling
+- [ ] Test coverage analysis
+  - [ ] Happy path ✅
+  - [ ] Security properties (counter rollback)
+  - [ ] Invalid credentials
+  - [ ] Origin/RP ID validation
+
+### Phase 2: Event Sourcing Infrastructure Review
+
+#### Events Review
+- [ ] Event completeness check
+  - [ ] All necessary fields present
+  - [ ] Consistent event versioning (all .v1)
+  - [ ] Proper domain types (UserId, not strings)
+  - [ ] Timestamps on all events
+- [ ] Missing events identification
+  - [ ] LoginFailed for audit trail?
+  - [ ] MagicLinkSent for analytics?
+  - [ ] SessionExpired?
+  - [ ] PasswordReset (future)?
+- [ ] Serialization strategy
+  - [ ] Bincode appropriate for production?
+  - [ ] Migration strategy documented?
+  - [ ] Schema evolution plan?
+- [ ] Privacy considerations
+  - [ ] IP address logging documented
+  - [ ] PII handling compliant
+  - [ ] GDPR considerations
+
+#### Projection System Review
+- [ ] Event handler completeness
+  - [ ] All events handled (9 implemented, 6 audit ignored)
+  - [ ] Handler logic correct for each event
+  - [ ] SQL queries match schema
+- [ ] Idempotency verification
+  - [ ] ON CONFLICT behavior correct
+  - [ ] Can events be replayed safely?
+  - [ ] No data corruption on duplicate events
+- [ ] Error handling
+  - [ ] Database failures handled gracefully
+  - [ ] Transaction boundaries correct
+  - [ ] Retry strategy (if any)
+- [ ] Schema alignment
+  - [ ] Queries match migration 002
+  - [ ] Enum string values correct (device_type, trust_level)
+  - [ ] Foreign key constraints respected
+- [ ] Missing functionality
+  - [ ] Checkpoint tracking (deferred?)
+  - [ ] Progressive trust level calculation
+  - [ ] updated_at trigger usage
+
+### Phase 3: Provider Implementations Review
+
+#### Mock Providers Review
+- [ ] MockOAuth2Provider
+  - [ ] Realistic token generation
+  - [ ] Error simulation capabilities
+  - [ ] State management correctness
+- [ ] MockEmailProvider
+  - [ ] Email tracking for assertions
+  - [ ] Error simulation
+- [ ] MockWebAuthnProvider
+  - [ ] Challenge/response simulation correct
+  - [ ] Proper WebAuthn types
+- [ ] MockUserRepository
+  - [ ] Thread-safety (HashMap + Mutex)
+  - [ ] Race condition testing
+  - [ ] All methods implemented
+- [ ] MockDeviceRepository
+  - [ ] Complete implementation
+  - [ ] Trust level calculations
+- [ ] MockSessionStore
+  - [ ] TTL expiration working
+  - [ ] Redis-like behavior
+- [ ] MockRiskCalculator
+  - [ ] Configurable scenarios
+  - [ ] Realistic risk scores
+
+#### Store Implementations Review
+- [ ] RedisSessionStore (`stores/session_redis.rs`)
+  - [ ] Connection pooling strategy
+  - [ ] Session serialization format
+  - [ ] TTL commands correct
+  - [ ] Error handling and retries
+  - [ ] Test coverage
+- [ ] PostgresDeviceRepository (if exists)
+  - [ ] **CRITICAL**: Remove direct CRUD operations
+  - [ ] Verify query-only access
+  - [ ] Schema matches projections
+
+### Phase 4: Supporting Infrastructure Review
+
+#### Provider Traits Review
+- [ ] OAuth2Provider trait (`providers/oauth.rs`)
+  - [ ] Method completeness
+  - [ ] Return types appropriate
+  - [ ] Documentation complete
+- [ ] EmailProvider trait (`providers/email.rs`)
+  - [ ] Methods sufficient
+  - [ ] Email security considerations documented
+- [ ] WebAuthnProvider trait (`providers/webauthn.rs`)
+  - [ ] WebAuthn spec compliance
+  - [ ] Configuration parameters
+- [ ] SessionStore trait (`providers/session.rs`)
+  - [ ] TTL handling clear
+  - [ ] Serialization abstracted
+- [ ] UserRepository trait (`providers/user.rs`)
+  - [ ] Query-only documented ✅
+  - [ ] No write methods (verify)
+  - [ ] Passkey methods present
+- [ ] DeviceRepository trait (`providers/device.rs`)
+  - [ ] Query-only documented ✅
+  - [ ] No write methods (verify)
+  - [ ] Trust level queries
+- [ ] RiskCalculator trait (`providers/risk.rs`)
+  - [ ] Inputs sufficient
+  - [ ] Output format clear
+
+#### State & Actions Review
+- [ ] State types (`state.rs`)
+  - [ ] Missing fields identified
+  - [ ] NewType pattern used correctly
+  - [ ] Serialization correct
+  - [ ] Documentation complete
+- [ ] Actions (`actions.rs`)
+  - [ ] All actions have events counterpart
+  - [ ] EventPersisted action complete
+  - [ ] Action composition clear
+  - [ ] Documentation complete
+
+#### Error Handling Review
+- [ ] Error types (`error.rs`)
+  - [ ] All error cases covered
+  - [ ] User-facing vs internal separation
+  - [ ] Error context sufficient
+  - [ ] No sensitive data leakage
+  - [ ] From implementations complete
+
+### Review Deliverables
+
+- [ ] TODO audit report (list all found TODOs with decisions)
+- [ ] Security audit report (critical issues must be fixed)
+- [ ] Hardcoded values extraction list (with proposed config structure)
+- [ ] Test coverage gaps document
+- [ ] Event sourcing alignment verification
+- [ ] Provider implementation checklist
+- [ ] Updated documentation (TODOs -> decisions)
+- [ ] GitHub issues for deferred items
+
+### Success Criteria
+
+- [ ] Zero TODOs remaining (or documented as deferred)
+- [ ] Zero hardcoded values (all in constants/config)
+- [ ] No critical or high security issues
+- [ ] All error paths handled properly
+- [ ] Test coverage documented (gaps acceptable if documented)
+- [ ] All public APIs documented
+- [ ] `cargo clippy --all-targets --all-features -- -D warnings` passes
+- [ ] `cargo test --all-features` passes (currently 40/40 ✅)
 
 ---
 

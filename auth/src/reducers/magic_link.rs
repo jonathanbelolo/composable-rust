@@ -1,6 +1,7 @@
-//! Magic link authentication reducer.
+//! Magic link authentication reducer with event sourcing.
 //!
-//! This reducer implements passwordless email authentication via "magic links".
+//! This reducer implements passwordless email authentication via "magic links" using
+//! the composable-rust event sourcing pattern.
 //!
 //! # Flow
 //!
@@ -10,7 +11,10 @@
 //! 4. Send email with link containing token
 //! 5. User clicks link, submits token
 //! 6. Verify token (not expired, not used)
-//! 7. Create session
+//! 7. Emit UserRegistered event (if new user)
+//! 8. Emit DeviceRegistered event
+//! 9. Emit UserLoggedIn event (audit trail)
+//! 10. Create session in Redis (ephemeral, not event-sourced)
 //!
 //! # Security
 //!
@@ -18,54 +22,81 @@
 //! - Tokens expire after 5-15 minutes (configurable)
 //! - Tokens are single-use (invalidated after verification)
 //! - Constant-time comparison for tokens (timing attack prevention)
-//! - Rate limiting: 5 magic links per hour per email
 //!
-//! # Example
+//! # Event Sourcing
 //!
-//! ```no_run
-//! use composable_rust_auth::{AuthState, AuthAction};
-//! use composable_rust_auth::reducers::MagicLinkReducer;
-//! use composable_rust_core::reducer::Reducer;
-//! use std::net::{IpAddr, Ipv4Addr};
-//!
-//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! // Note: MagicLinkReducer is generic - needs type annotations in real usage
-//! // See integration tests for complete examples
-//! # Ok(())
-//! # }
-//! ```
+//! - All user and device state changes are event-sourced
+//! - Events are persisted to PostgreSQL event store
+//! - Projections are rebuilt from events for queries
+//! - Sessions are ephemeral (Redis only, not event-sourced)
 
-use crate::actions::AuthAction;
+use crate::actions::{AuthAction, AuthLevel};
+use crate::config::MagicLinkConfig;
+use crate::constants::login_methods;
 use crate::environment::AuthEnvironment;
+use crate::events::AuthEvent;
 use crate::providers::{
     DeviceRepository, EmailProvider, OAuth2Provider, RiskCalculator, SessionStore,
-    UserRepository, WebAuthnProvider,
+    TokenStore, UserRepository, WebAuthnProvider,
 };
 use crate::state::{AuthState, DeviceId, MagicLinkState, Session, SessionId, UserId};
 use chrono::Utc;
 use composable_rust_core::effect::Effect;
 use composable_rust_core::reducer::Reducer;
+use composable_rust_core::stream::StreamId;
 use composable_rust_core::{smallvec, SmallVec};
+use std::sync::Arc;
 
 /// Magic link authentication reducer.
 ///
-/// Handles passwordless email authentication flows.
+/// Handles passwordless email authentication flows with event sourcing.
 #[derive(Debug, Clone)]
-pub struct MagicLinkReducer<O, E, W, S, U, D, R> {
-    /// Token expiration duration in minutes (default: 10 minutes).
-    token_ttl_minutes: i64,
+pub struct MagicLinkReducer<O, E, W, S, T, U, D, R> {
+    /// Configuration for magic link authentication.
+    config: MagicLinkConfig,
     /// Phantom data to hold type parameters.
-    _phantom: std::marker::PhantomData<(O, E, W, S, U, D, R)>,
+    _phantom: std::marker::PhantomData<(O, E, W, S, T, U, D, R)>,
 }
 
-impl<O, E, W, S, U, D, R> MagicLinkReducer<O, E, W, S, U, D, R> {
+impl<O, E, W, S, T, U, D, R> MagicLinkReducer<O, E, W, S, T, U, D, R> {
     /// Create a new magic link reducer with default settings.
     ///
-    /// Default token TTL is 10 minutes.
+    /// Default configuration:
+    /// - Base URL: http://localhost:3000
+    /// - Token TTL: 10 minutes
+    /// - Session duration: 24 hours
+    ///
+    /// For production, use `with_config()` to provide proper configuration.
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
-            token_ttl_minutes: 10,
+            config: MagicLinkConfig::default(),
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    /// Create a reducer with custom configuration.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Magic link configuration
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use composable_rust_auth::config::MagicLinkConfig;
+    /// use composable_rust_auth::reducers::MagicLinkReducer;
+    ///
+    /// let config = MagicLinkConfig::new("https://app.example.com".to_string())
+    ///     .with_token_ttl(15);
+    ///
+    /// let reducer: MagicLinkReducer<_, _, _, _, _, _, _, _> =
+    ///     MagicLinkReducer::with_config(config);
+    /// ```
+    #[must_use]
+    pub fn with_config(config: MagicLinkConfig) -> Self {
+        Self {
+            config,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -75,10 +106,14 @@ impl<O, E, W, S, U, D, R> MagicLinkReducer<O, E, W, S, U, D, R> {
     /// # Arguments
     ///
     /// * `ttl_minutes` - Token expiration time in minutes (recommended: 5-15)
+    ///
+    /// # Deprecated
+    ///
+    /// Use `with_config()` instead for full configuration.
     #[must_use]
-    pub const fn with_ttl(ttl_minutes: i64) -> Self {
+    pub fn with_ttl(ttl_minutes: i64) -> Self {
         Self {
-            token_ttl_minutes: ttl_minutes,
+            config: MagicLinkConfig::default().with_token_ttl(ttl_minutes),
             _phantom: std::marker::PhantomData,
         }
     }
@@ -95,27 +130,48 @@ impl<O, E, W, S, U, D, R> MagicLinkReducer<O, E, W, S, U, D, R> {
         rng.fill_bytes(&mut random_bytes);
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(random_bytes)
     }
+
+    /// Apply an event to state (for event replay and EventPersisted handling).
+    fn apply_event(&self, _state: &mut AuthState, event: &AuthEvent) {
+        match event {
+            AuthEvent::UserRegistered { user_id, .. } => {
+                // Update state to reflect user registration
+                tracing::info!("Applied UserRegistered event for user {}", user_id.0);
+                // State updates will happen when session is created
+            }
+            AuthEvent::DeviceRegistered { device_id, .. } => {
+                tracing::info!("Applied DeviceRegistered event for device {}", device_id.0);
+            }
+            AuthEvent::UserLoggedIn { user_id, .. } => {
+                tracing::info!("Applied UserLoggedIn event for user {}", user_id.0);
+            }
+            _ => {
+                // Other events not handled by magic link reducer
+            }
+        }
+    }
 }
 
-impl<O, E, W, S, U, D, R> Default for MagicLinkReducer<O, E, W, S, U, D, R> {
+impl<O, E, W, S, T, U, D, R> Default for MagicLinkReducer<O, E, W, S, T, U, D, R> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<O, E, W, S, U, D, R> Reducer for MagicLinkReducer<O, E, W, S, U, D, R>
+impl<O, E, W, S, T, U, D, R> Reducer for MagicLinkReducer<O, E, W, S, T, U, D, R>
 where
     O: OAuth2Provider + Clone + 'static,
     E: EmailProvider + Clone + 'static,
     W: WebAuthnProvider + Clone + 'static,
     S: SessionStore + Clone + 'static,
+    T: TokenStore + Clone + 'static,
     U: UserRepository + Clone + 'static,
     D: DeviceRepository + Clone + 'static,
     R: RiskCalculator + Clone + 'static,
 {
     type State = AuthState;
     type Action = AuthAction;
-    type Environment = AuthEnvironment<O, E, W, S, U, D, R>;
+    type Environment = AuthEnvironment<O, E, W, S, T, U, D, R>;
 
     fn reduce(
         &self,
@@ -132,40 +188,79 @@ where
                 ip_address: _,
                 user_agent: _,
             } => {
+                // Validate email format
+                if !crate::utils::is_valid_email(&email) {
+                    tracing::warn!("Invalid email format: {}", email);
+                    return smallvec![Effect::None];
+                }
+
                 // Generate cryptographically secure token
                 let token = self.generate_token();
-                let expires_at = Utc::now() + chrono::Duration::minutes(self.token_ttl_minutes);
+                let expires_at = Utc::now() + chrono::Duration::minutes(self.config.token_ttl_minutes);
 
-                // Store magic link state
+                // Store magic link state (keep for backward compatibility during migration)
                 state.magic_link_state = Some(MagicLinkState {
                     email: email.clone(),
                     token: token.clone(),
                     expires_at,
                 });
 
+                // Store token in TokenStore for atomic single-use semantics
+                let token_store = env.tokens.clone();
+                let token_for_store = token.clone();
+                let email_for_store = email.clone();
+                let token_data = crate::providers::TokenData::new(
+                    crate::providers::TokenType::MagicLink,
+                    token.clone(),
+                    serde_json::json!({"email": email}),
+                    expires_at,
+                );
+
                 // Send email with magic link
                 let email_provider = env.email.clone();
-                let token_clone = token.clone();
-                let email_clone = email.clone();
-                let base_url = "https://app.example.com".to_string(); // TODO: Make configurable
+                let token_for_email = token.clone();
+                let email_for_email = email.clone();
+                let base_url = self.config.base_url.clone();
                 let expires_at_clone = expires_at;
 
-                smallvec![Effect::Future(Box::pin(async move {
-                    match email_provider
-                        .send_magic_link(&email_clone, &token_clone, &base_url, expires_at_clone)
-                        .await
-                    {
-                        Ok(()) => Some(AuthAction::MagicLinkSent {
-                            email: email_clone,
-                            token: token_clone,
-                            expires_at: expires_at_clone,
-                        }),
-                        Err(_) => {
-                            // TODO: Add MagicLinkFailed action
-                            None
+                smallvec![
+                    // Effect 1: Store token atomically
+                    Effect::Future(Box::pin(async move {
+                        match token_store.store_token(&token_for_store, token_data).await {
+                            Ok(()) => {
+                                tracing::debug!("Magic link token stored for {}", email_for_store);
+                                None
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to store magic link token: {}", e);
+                                Some(AuthAction::MagicLinkFailed {
+                                    email: email_for_store,
+                                    error: e.to_string(),
+                                })
+                            }
                         }
-                    }
-                }))]
+                    })),
+                    // Effect 2: Send email
+                    Effect::Future(Box::pin(async move {
+                        match email_provider
+                            .send_magic_link(&email_for_email, &token_for_email, &base_url, expires_at_clone)
+                            .await
+                        {
+                            Ok(()) => Some(AuthAction::MagicLinkSent {
+                                email: email_for_email.clone(),
+                                token: token_for_email,
+                                expires_at: expires_at_clone,
+                            }),
+                            Err(e) => {
+                                tracing::error!("Failed to send magic link to {}: {}", email_for_email, e);
+                                Some(AuthAction::MagicLinkFailed {
+                                    email: email_for_email,
+                                    error: e.to_string(),
+                                })
+                            }
+                        }
+                    }))
+                ]
             }
 
             // ═══════════════════════════════════════════════════════════════
@@ -177,163 +272,240 @@ where
             }
 
             // ═══════════════════════════════════════════════════════════════
-            // VerifyMagicLink: Validate token
+            // MagicLinkFailed: Email sending failed
+            // ═══════════════════════════════════════════════════════════════
+            AuthAction::MagicLinkFailed { .. } => {
+                // Clear magic link state on failure
+                state.magic_link_state = None;
+                smallvec![Effect::None]
+            }
+
+            // ═══════════════════════════════════════════════════════════════
+            // VerifyMagicLink: Validate token (ATOMIC CONSUMPTION)
             // ═══════════════════════════════════════════════════════════════
             AuthAction::VerifyMagicLink {
                 token,
                 ip_address,
                 user_agent,
             } => {
-                // Check if we have magic link state
-                let Some(ref magic_link_state) = state.magic_link_state else {
-                    tracing::warn!("VerifyMagicLink without prior SendMagicLink");
-                    state.magic_link_state = None;
-                    return smallvec![Effect::None];
-                };
+                // ⚡ SECURITY FIX (BLOCKER #1): Atomic token consumption
+                // Use TokenStore.consume_token() to atomically verify and delete
+                // This prevents race conditions where two concurrent requests
+                // both pass validation before either deletes the token.
 
-                // Check token match (constant-time comparison for timing attack prevention)
-                if !constant_time_eq::constant_time_eq(
-                    token.as_bytes(),
-                    magic_link_state.token.as_bytes(),
-                ) {
-                    tracing::warn!("Invalid magic link token");
-                    state.magic_link_state = None;
-                    return smallvec![Effect::None];
-                }
+                let token_store = env.tokens.clone();
+                let token_for_consume = token.clone();
+                let ip_clone = ip_address;
+                let ua_clone = user_agent.clone();
 
-                // Check expiration
-                if Utc::now() > magic_link_state.expires_at {
-                    tracing::warn!("Magic link token expired");
-                    state.magic_link_state = None;
-                    return smallvec![Effect::None];
-                }
+                smallvec![Effect::Future(Box::pin(async move {
+                    // Atomically consume token (check + delete in one operation)
+                    match token_store.consume_token(&token_for_consume, &token_for_consume).await {
+                        Ok(Some(token_data)) => {
+                            // Token was valid, not expired, and has been consumed
+                            // Extract email from token data
+                            let email = token_data.data["email"]
+                                .as_str()
+                                .unwrap_or("")
+                                .to_string();
 
-                // Token is valid - emit verified event
-                let email = magic_link_state.email.clone();
-                state.magic_link_state = None;
+                            if email.is_empty() {
+                                tracing::error!("Magic link token missing email data");
+                                return None;
+                            }
 
-                // Emit MagicLinkVerified event to trigger session creation
-                // Note: In the real flow, this would be dispatched to the store
-                // which would then call reduce() again with MagicLinkVerified
-                tracing::info!("Magic link verified for {}", email);
+                            tracing::info!("Magic link verified for {}", email);
 
-                // For now, transition to MagicLinkVerified handler
-                // The Store will execute this and dispatch the resulting action
-                self.reduce(
-                    state,
-                    AuthAction::MagicLinkVerified {
-                        email,
-                        ip_address,
-                        user_agent,
-                    },
-                    env,
-                )
+                            // Transition to verified handler
+                            Some(AuthAction::MagicLinkVerified {
+                                email,
+                                ip_address: ip_clone,
+                                user_agent: ua_clone,
+                            })
+                        }
+                        Ok(None) => {
+                            // Token not found, already used, or expired
+                            // Don't leak which one (information disclosure prevention)
+                            tracing::warn!("Magic link verification failed");
+                            None
+                        }
+                        Err(e) => {
+                            tracing::error!("Magic link token consumption failed: {}", e);
+                            None
+                        }
+                    }
+                }))]
             }
 
             // ═══════════════════════════════════════════════════════════════
-            // MagicLinkVerified: Create user, device, and session
+            // MagicLinkVerified: Emit domain events (batch)
             // ═══════════════════════════════════════════════════════════════
             AuthAction::MagicLinkVerified {
                 email,
                 ip_address,
                 user_agent,
             } => {
-                // Generate IDs for new user/device/session
+                // Generate IDs upfront
                 let user_id = UserId::new();
                 let device_id = DeviceId::new();
                 let session_id = SessionId::new();
                 let now = Utc::now();
-                let expires_at = now + chrono::Duration::hours(24);
 
+                // Build session (optimistically set in state since sessions are ephemeral)
                 let session = Session {
                     session_id,
-                    user_id,
+                    user_id, // Will be updated with actual user_id from projection
                     device_id,
                     email: email.clone(),
                     created_at: now,
                     last_active: now,
-                    expires_at,
+                    expires_at: now + self.config.session_duration,
                     ip_address,
                     user_agent: user_agent.clone(),
                     oauth_provider: None,
-                    login_risk_score: 0.1, // Will be calculated by effect
+                    login_risk_score: 0.1,
                 };
 
-                // Update state
+                // Update state immediately (sessions are ephemeral, not event-sourced)
                 state.session = Some(session.clone());
 
-                // Execute effects to persist user, device, and session
+                // Query projection to check if user exists
                 let users = env.users.clone();
-                let devices = env.devices.clone();
+                let event_store = Arc::clone(&env.event_store);
                 let sessions = env.sessions.clone();
-                let session_clone = session.clone();
-                let session_ttl = chrono::Duration::hours(24);
+                let risk = env.risk.clone();
+                let email_clone = email.clone();
+                let user_agent_clone = user_agent.clone();
+                let session_duration = self.config.session_duration;
 
                 smallvec![Effect::Future(Box::pin(async move {
-                    use crate::actions::DeviceTrustLevel;
-                    use crate::providers::{Device as ProviderDevice, User as ProviderUser};
+                    // Check if user exists in projection
+                    let existing_user = users.get_user_by_email(&email_clone).await.ok();
+                    let final_user_id = existing_user.as_ref().map_or(user_id, |u| u.user_id);
 
-                    // 1. Create or get user
-                    let final_user = match users.get_user_by_email(&email).await {
-                        Ok(existing_user) => {
-                            // User exists - use their ID
-                            existing_user
+                    // Calculate login risk
+                    let risk_assessment = risk.calculate_login_risk(&crate::providers::LoginContext {
+                        user_id: Some(final_user_id),
+                        email: email_clone.clone(),
+                        ip_address,
+                        user_agent: user_agent_clone.clone(),
+                        device_id: Some(device_id),
+                        last_login_location: None,
+                        last_login_at: None,
+                    }).await.unwrap_or_else(|_| {
+                        // Fall back to safe default on error
+                        crate::providers::RiskAssessment {
+                            score: 0.1,
+                            level: crate::providers::RiskLevel::Low,
+                            factors: vec![],
+                            recommended_auth_level: AuthLevel::Basic,
                         }
-                        Err(_) => {
-                            // User doesn't exist - create new user
-                            let new_user = ProviderUser {
-                                user_id,
-                                email: email.clone(),
-                                name: None,
-                                email_verified: true, // Magic link implies email verification
-                                created_at: Utc::now(),
-                                updated_at: Utc::now(),
-                            };
+                    });
 
-                            match users.create_user(&new_user).await {
-                                Ok(created_user) => created_user,
-                                Err(_) => {
-                                    // TODO: Return MagicLinkFailed action
-                                    return None;
-                                }
-                            }
-                        }
-                    };
+                    let login_risk_score = risk_assessment.score;
 
-                    // 2. Create device
-                    let new_device = ProviderDevice {
+                    // Build events to emit (all independent, can be batched)
+                    let mut events = Vec::new();
+
+                    // 1. UserRegistered event (only if new user)
+                    if existing_user.is_none() {
+                        events.push(AuthEvent::UserRegistered {
+                            user_id: final_user_id,
+                            email: email_clone.clone(),
+                            name: None,
+                            email_verified: true,
+                            timestamp: now,
+                        });
+                    }
+
+                    // 2. DeviceRegistered event (always)
+                    events.push(AuthEvent::DeviceRegistered {
                         device_id,
-                        user_id: final_user.user_id,
-                        name: "Web Browser".to_string(), // TODO: Parse from user agent
-                        device_type: crate::providers::DeviceType::Desktop,
-                        platform: user_agent.clone(),
-                        first_seen: Utc::now(),
-                        last_seen: Utc::now(),
-                        trust_level: DeviceTrustLevel::Unknown,
-                        passkey_credential_id: None,
-                        public_key: None,
+                        user_id: final_user_id,
+                        name: crate::utils::parse_device_name(&user_agent_clone),
+                        device_type: crate::utils::parse_device_type(&user_agent_clone).to_string(),
+                        platform: user_agent_clone.clone(),
+                        ip_address,
+                        timestamp: now,
+                    });
+
+                    // 3. UserLoggedIn event (audit trail, always)
+                    events.push(AuthEvent::UserLoggedIn {
+                        user_id: final_user_id,
+                        device_id,
+                        session_id,
+                        method: login_methods::MAGIC_LINK.to_string(),
+                        auth_level: AuthLevel::Basic,
+                        ip_address,
+                        user_agent: user_agent_clone.clone(),
+                        risk_score: login_risk_score as f64,
+                        timestamp: now,
+                    });
+
+                    // Serialize all events
+                    let serialized_events: Vec<_> = events
+                        .iter()
+                        .filter_map(|e| e.to_serialized().ok())
+                        .collect();
+
+                    if serialized_events.is_empty() {
+                        tracing::error!("No events to persist");
+                        return None;
+                    }
+
+                    // Build session (to pass to EventPersisted handler)
+                    let session = Session {
+                        session_id,
+                        user_id: final_user_id,
+                        device_id,
+                        email: email_clone.clone(),
+                        created_at: now,
+                        last_active: now,
+                        expires_at: now + session_duration,
+                        ip_address,
+                        user_agent: user_agent_clone.clone(),
+                        oauth_provider: None,
+                        login_risk_score,
                     };
 
-                    if devices.create_device(&new_device).await.is_err() {
-                        // TODO: Return MagicLinkFailed action
-                        return None;
-                    }
+                    // Batch append all events to the user stream
+                    let stream_id = StreamId::new(format!("user-{}", final_user_id.0));
 
-                    // 3. Create session in Redis
-                    if sessions
-                        .create_session(&session_clone, session_ttl)
-                        .await
-                        .is_err()
-                    {
-                        // TODO: Return MagicLinkFailed action
-                        return None;
-                    }
+                    // We need to execute the append ourselves here since we're in a Future
+                    // The append_events! macro is designed to be used in the reducer directly
+                    match event_store.append_events(stream_id, None, serialized_events).await {
+                        Ok(_version) => {
+                            // Events persisted successfully
+                            // Now create ephemeral session in Redis
+                            if let Err(e) = sessions.create_session(&session, session_duration).await {
+                                tracing::error!("Failed to create session in Redis for user {}: {}", final_user_id.0, e);
+                                return Some(AuthAction::SessionCreationFailed {
+                                    user_id: final_user_id,
+                                    device_id,
+                                    error: e.to_string(),
+                                });
+                            }
 
-                    // 4. Emit session created event
-                    Some(AuthAction::SessionCreated {
-                        session: session_clone,
-                    })
+                            // Emit SessionCreated event
+                            Some(AuthAction::SessionCreated { session })
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to persist events: {e}");
+                            Some(AuthAction::EventPersistenceFailed {
+                                stream_id: format!("user-{}", final_user_id.0),
+                                error: e.to_string(),
+                            })
+                        }
+                    }
                 }))]
+            }
+
+            // ═══════════════════════════════════════════════════════════════
+            // EventPersisted: Apply event to state
+            // ═══════════════════════════════════════════════════════════════
+            AuthAction::EventPersisted { event, version: _ } => {
+                self.apply_event(state, &event);
+                smallvec![Effect::None]
             }
 
             // Other actions are not handled by this reducer
@@ -348,7 +520,7 @@ mod tests {
 
     #[test]
     fn test_generate_token() {
-        type TestReducer = MagicLinkReducer<(), (), (), (), (), (), ()>;
+        type TestReducer = MagicLinkReducer<(), (), (), (), (), (), (), ()>;
         let reducer = TestReducer::new();
         let token1 = reducer.generate_token();
         let token2 = reducer.generate_token();
@@ -366,8 +538,8 @@ mod tests {
 
     #[test]
     fn test_custom_ttl() {
-        type TestReducer = MagicLinkReducer<(), (), (), (), (), (), ()>;
+        type TestReducer = MagicLinkReducer<(), (), (), (), (), (), (), ()>;
         let reducer = TestReducer::with_ttl(15);
-        assert_eq!(reducer.token_ttl_minutes, 15);
+        assert_eq!(reducer.config.token_ttl_minutes, 15);
     }
 }

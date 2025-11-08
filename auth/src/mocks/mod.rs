@@ -10,6 +10,7 @@ pub mod device;
 pub mod email;
 pub mod webauthn;
 pub mod risk;
+pub mod token_store;
 
 pub use oauth::MockOAuth2Provider;
 pub use session::MockSessionStore;
@@ -18,3 +19,4 @@ pub use device::MockDeviceRepository;
 pub use email::MockEmailProvider;
 pub use webauthn::MockWebAuthnProvider;
 pub use risk::MockRiskCalculator;
+pub use token_store::MockTokenStore;

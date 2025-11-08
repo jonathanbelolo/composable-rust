@@ -52,13 +52,21 @@
 
 // Public modules
 pub mod actions;
+pub mod config;
+pub mod constants;
 pub mod effects;
 pub mod environment;
 pub mod error;
+pub mod events;
 pub mod providers;
 pub mod reducers;
 pub mod state;
 pub mod stores;
+pub mod utils;
+
+// Projection system (optional, requires postgres feature)
+#[cfg(feature = "postgres")]
+pub mod projection;
 
 // Mock providers for testing
 #[cfg(any(test, feature = "test-utils"))]

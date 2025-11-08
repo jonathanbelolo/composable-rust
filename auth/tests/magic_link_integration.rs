@@ -5,13 +5,15 @@ use composable_rust_auth::{
     environment::AuthEnvironment,
     mocks::{
         MockDeviceRepository, MockEmailProvider, MockOAuth2Provider, MockRiskCalculator,
-        MockSessionStore, MockUserRepository, MockWebAuthnProvider,
+        MockSessionStore, MockTokenStore, MockUserRepository, MockWebAuthnProvider,
     },
     reducers::MagicLinkReducer,
     state::AuthState,
 };
 use composable_rust_core::reducer::Reducer;
+use composable_rust_testing::mocks::InMemoryEventStore;
 use std::net::{IpAddr, Ipv4Addr};
+use std::sync::Arc;
 
 /// Create a test environment with mock providers.
 fn create_test_env() -> AuthEnvironment<
@@ -19,6 +21,7 @@ fn create_test_env() -> AuthEnvironment<
     MockEmailProvider,
     MockWebAuthnProvider,
     MockSessionStore,
+    MockTokenStore,
     MockUserRepository,
     MockDeviceRepository,
     MockRiskCalculator,
@@ -28,9 +31,11 @@ fn create_test_env() -> AuthEnvironment<
         MockEmailProvider::new(),
         MockWebAuthnProvider::new(),
         MockSessionStore::new(),
+        MockTokenStore::new(),
         MockUserRepository::new(),
         MockDeviceRepository::new(),
         MockRiskCalculator::new(),
+        Arc::new(InMemoryEventStore::new()),
     )
 }
 
@@ -40,6 +45,7 @@ fn create_test_reducer() -> MagicLinkReducer<
     MockEmailProvider,
     MockWebAuthnProvider,
     MockSessionStore,
+    MockTokenStore,
     MockUserRepository,
     MockDeviceRepository,
     MockRiskCalculator,

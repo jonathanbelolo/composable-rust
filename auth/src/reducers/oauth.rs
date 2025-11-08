@@ -8,59 +8,119 @@
 //! 1. InitiateOAuth → Generate CSRF state → RedirectToOAuthProvider effect
 //! 2. User authorizes at provider
 //! 3. OAuthCallback → Validate state → ExchangeOAuthCode effect
-//! 4. OAuthSuccess → Create user/device/session → CreateSession effect
+//! 4. OAuthSuccess → Emit events (batch) → CreateSession effect
 //! ```
+//!
+//! # Event Sourcing
+//!
+//! The OAuth flow emits these events:
+//! - UserRegistered (if new user)
+//! - OAuthAccountLinked
+//! - DeviceRegistered
+//! - UserLoggedIn (audit trail)
 
-use crate::actions::AuthAction;
+use crate::actions::{AuthAction, AuthLevel};
+use crate::config::OAuthConfig;
+use crate::constants::login_methods;
 use crate::environment::AuthEnvironment;
-use crate::providers::{OAuth2Provider, UserRepository, DeviceRepository, SessionStore, RiskCalculator, EmailProvider, WebAuthnProvider};
+use crate::events::AuthEvent;
+use crate::providers::{OAuth2Provider, UserRepository, DeviceRepository, SessionStore, TokenStore, RiskCalculator, EmailProvider, WebAuthnProvider};
 use crate::state::{AuthState, DeviceId, OAuthState, Session, SessionId, UserId};
 use composable_rust_core::effect::Effect;
 use composable_rust_core::reducer::Reducer;
+use composable_rust_core::stream::StreamId;
 use composable_rust_core::{smallvec, SmallVec};
 use chrono::{Duration, Utc};
-use std::net::IpAddr;
+use std::sync::Arc;
 
 /// OAuth2 reducer.
 ///
 /// Handles OAuth2/OIDC authentication flow with CSRF protection.
 #[derive(Debug, Clone)]
-pub struct OAuthReducer<O, E, W, S, U, D, R>
+pub struct OAuthReducer<O, E, W, S, T, U, D, R>
 where
     O: OAuth2Provider + Clone + 'static,
     E: EmailProvider + Clone + 'static,
     W: WebAuthnProvider + Clone + 'static,
     S: SessionStore + Clone + 'static,
+    T: TokenStore + Clone + 'static,
     U: UserRepository + Clone + 'static,
     D: DeviceRepository + Clone + 'static,
     R: RiskCalculator + Clone + 'static,
 {
-    /// Base URL for OAuth redirects (e.g., "https://app.example.com").
-    pub base_url: String,
-
-    /// Session TTL in hours (default: 24).
-    pub session_ttl_hours: i64,
+    /// Configuration for OAuth authentication.
+    config: OAuthConfig,
 
     /// Phantom data to hold type parameters.
-    _phantom: std::marker::PhantomData<(O, E, W, S, U, D, R)>,
+    _phantom: std::marker::PhantomData<(O, E, W, S, T, U, D, R)>,
 }
 
-impl<O, E, W, S, U, D, R> OAuthReducer<O, E, W, S, U, D, R>
+impl<O, E, W, S, T, U, D, R> OAuthReducer<O, E, W, S, T, U, D, R>
 where
     O: OAuth2Provider + Clone + 'static,
     E: EmailProvider + Clone + 'static,
     W: WebAuthnProvider + Clone + 'static,
     S: SessionStore + Clone + 'static,
+    T: TokenStore + Clone + 'static,
     U: UserRepository + Clone + 'static,
     D: DeviceRepository + Clone + 'static,
     R: RiskCalculator + Clone + 'static,
 {
-    /// Create a new OAuth reducer.
+    /// Create a new OAuth reducer with default configuration.
+    ///
+    /// Default configuration:
+    /// - Base URL: http://localhost:3000
+    /// - State TTL: 5 minutes
+    /// - Session duration: 24 hours
+    ///
+    /// For production, use `with_config()` to provide proper configuration.
     #[must_use]
-    pub fn new(base_url: String) -> Self {
+    pub fn new() -> Self {
         Self {
-            base_url,
-            session_ttl_hours: 24,
+            config: OAuthConfig::default(),
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    /// Create a reducer with custom configuration.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - OAuth configuration
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use composable_rust_auth::config::OAuthConfig;
+    /// use composable_rust_auth::reducers::OAuthReducer;
+    ///
+    /// let config = OAuthConfig::new("https://app.example.com".to_string())
+    ///     .with_state_ttl(10);
+    ///
+    /// let reducer: OAuthReducer<_, _, _, _, _, _, _, _> =
+    ///     OAuthReducer::with_config(config);
+    /// ```
+    #[must_use]
+    pub fn with_config(config: OAuthConfig) -> Self {
+        Self {
+            config,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    /// Create a reducer with custom base URL (legacy).
+    ///
+    /// # Arguments
+    ///
+    /// * `base_url` - Base URL for OAuth redirects
+    ///
+    /// # Deprecated
+    ///
+    /// Use `with_config()` instead for full configuration.
+    #[must_use]
+    pub fn with_base_url(base_url: String) -> Self {
+        Self {
+            config: OAuthConfig::new(base_url),
             _phantom: std::marker::PhantomData,
         }
     }
@@ -77,38 +137,24 @@ where
     /// Build redirect URI for OAuth callback.
     #[allow(dead_code)] // Will be used in Phase 6B for effect execution
     fn redirect_uri(&self) -> String {
-        format!("{}/auth/oauth/callback", self.base_url)
-    }
-
-    /// Calculate risk score based on context.
-    ///
-    /// # Risk Factors
-    ///
-    /// - New device: +0.3
-    /// - VPN/Proxy: +0.2
-    /// - New location: +0.1
-    ///
-    /// TODO: Move to RiskCalculator provider (Phase 6B).
-    fn calculate_basic_risk(&self, _ip_address: IpAddr, _user_agent: &str) -> f32 {
-        // Placeholder - just return low risk for now
-        // In Phase 6B, we'll use the RiskCalculator provider
-        0.1
+        format!("{}/auth/oauth/callback", self.config.base_url)
     }
 }
 
-impl<O, E, W, S, U, D, R> Reducer for OAuthReducer<O, E, W, S, U, D, R>
+impl<O, E, W, S, T, U, D, R> Reducer for OAuthReducer<O, E, W, S, T, U, D, R>
 where
     O: OAuth2Provider + Clone + 'static,
     E: EmailProvider + Clone + 'static,
     W: WebAuthnProvider + Clone + 'static,
     S: SessionStore + Clone + 'static,
+    T: TokenStore + Clone + 'static,
     U: UserRepository + Clone + 'static,
     D: DeviceRepository + Clone + 'static,
     R: RiskCalculator + Clone + 'static,
 {
     type State = AuthState;
     type Action = AuthAction;
-    type Environment = AuthEnvironment<O, E, W, S, U, D, R>;
+    type Environment = AuthEnvironment<O, E, W, S, T, U, D, R>;
 
     fn reduce(
         &self,
@@ -127,35 +173,70 @@ where
             } => {
                 // Generate CSRF state parameter
                 let state_param = Self::generate_csrf_state();
+                let expires_at = Utc::now() + Duration::minutes(self.config.state_ttl_minutes);
 
-                // Store OAuth state (for validation in callback)
+                // Store OAuth state (keep for backward compatibility during migration)
                 state.oauth_state = Some(OAuthState {
                     state_param: state_param.clone(),
                     provider,
                     initiated_at: Utc::now(),
                 });
 
+                // Store state in TokenStore for atomic single-use semantics
+                let token_store = env.tokens.clone();
+                let state_for_store = state_param.clone();
+                let token_data = crate::providers::TokenData::new(
+                    crate::providers::TokenType::OAuthState,
+                    state_param.clone(),
+                    serde_json::json!({
+                        "provider": format!("{:?}", provider),
+                    }),
+                    expires_at,
+                );
+
                 // Build redirect URL and redirect user to OAuth provider
                 let redirect_uri = self.redirect_uri();
                 let oauth_provider = env.oauth.clone();
 
-                smallvec![Effect::Future(Box::pin(async move {
-                    // Build authorization URL
-                    match oauth_provider.build_authorization_url(provider, &state_param, &redirect_uri).await {
-                        Ok(_auth_url) => {
-                            // In a real implementation, this would trigger an HTTP redirect
-                            // For now, we'll emit a "redirect ready" action
-                            // The web framework integration will handle the actual redirect
-                            None // TODO: Return action with redirect URL when we have HTTP effects
+                smallvec![
+                    // Effect 1: Store OAuth state atomically
+                    Effect::Future(Box::pin(async move {
+                        match token_store.store_token(&state_for_store, token_data).await {
+                            Ok(()) => {
+                                tracing::debug!("OAuth state stored");
+                                None
+                            }
+                            Err(e) => {
+                                // ⚡ SECURITY FIX (BLOCKER #4): Don't leak internal error details
+                                tracing::error!("Failed to store OAuth state: {}", e);
+                                Some(AuthAction::OAuthFailed {
+                                    error: "authentication_failed".to_string(),
+                                    error_description: Some("OAuth authentication failed".to_string()),
+                                })
+                            }
                         }
-                        Err(_) => {
-                            Some(AuthAction::OAuthFailed {
-                                error: "url_generation_failed".to_string(),
-                                error_description: Some("Failed to generate OAuth authorization URL".to_string()),
-                            })
+                    })),
+                    // Effect 2: Build authorization URL
+                    Effect::Future(Box::pin(async move {
+                        // Build authorization URL
+                        match oauth_provider.build_authorization_url(provider, &state_param, &redirect_uri).await {
+                            Ok(_auth_url) => {
+                                // In a real implementation, this would trigger an HTTP redirect
+                                // For now, we'll emit a "redirect ready" action
+                                // The web framework integration will handle the actual redirect
+                                None // TODO: Return action with redirect URL when we have HTTP effects
+                            }
+                            Err(e) => {
+                                // ⚡ SECURITY FIX (BLOCKER #4): Don't leak internal error details
+                                tracing::error!("Failed to generate OAuth authorization URL: {}", e);
+                                Some(AuthAction::OAuthFailed {
+                                    error: "authentication_failed".to_string(),
+                                    error_description: Some("OAuth authentication failed".to_string()),
+                                })
+                            }
                         }
-                    }
-                }))]
+                    }))
+                ]
             }
 
             // ═══════════════════════════════════════════════════════════════════
@@ -167,79 +248,100 @@ where
                 ip_address,
                 user_agent,
             } => {
-                // Validate CSRF state parameter
-                let Some(oauth_state) = &state.oauth_state else {
-                    // No OAuth state → CSRF attack or expired session
-                    return smallvec![Effect::Future(Box::pin(async move {
-                        Some(AuthAction::OAuthFailed {
-                            error: "no_state".to_string(),
-                            error_description: Some("No OAuth state found".to_string()),
-                        })
-                    }))];
-                };
+                // Clear OAuth state immediately (one-time use)
+                // This ensures tests see the state cleared synchronously
+                state.oauth_state = None;
 
-                if oauth_state.state_param != state_param {
-                    // State mismatch → CSRF attack
-                    state.oauth_state = None; // Clear state
-                    return smallvec![Effect::Future(Box::pin(async move {
-                        Some(AuthAction::OAuthFailed {
-                            error: "invalid_state".to_string(),
-                            error_description: Some("CSRF state validation failed".to_string()),
-                        })
-                    }))];
-                }
+                // ⚡ SECURITY FIX (BLOCKER #2): Atomic OAuth state consumption
+                // Use TokenStore.consume_token() to atomically verify and delete
+                // This prevents race conditions where two concurrent callbacks
+                // both pass validation before either deletes the state.
 
-                // Check if OAuth state is expired (5 minutes)
-                let now = Utc::now();
-                let age = now.signed_duration_since(oauth_state.initiated_at);
-                if age > Duration::minutes(5) {
-                    // State expired
-                    state.oauth_state = None;
-                    return smallvec![Effect::Future(Box::pin(async move {
-                        Some(AuthAction::OAuthFailed {
-                            error: "state_expired".to_string(),
-                            error_description: Some("OAuth state has expired".to_string()),
-                        })
-                    }))];
-                }
-
-                // State is valid - exchange code for access token
-                let provider = oauth_state.provider;
-                state.oauth_state = None; // Clear state (one-time use)
-
-                // Exchange authorization code for access token
+                let token_store = env.tokens.clone();
+                let state_for_consume = state_param.clone();
+                let code_clone = code.clone();
+                let ip_clone = ip_address;
+                let ua_clone = user_agent.clone();
                 let redirect_uri = self.redirect_uri();
                 let oauth_provider = env.oauth.clone();
 
                 smallvec![Effect::Future(Box::pin(async move {
-                    // Exchange code for token
-                    match oauth_provider.exchange_code(provider, &code, &redirect_uri).await {
-                        Ok(token_response) => {
-                            // Fetch user info with access token
-                            match oauth_provider.fetch_user_info(provider, &token_response.access_token).await {
-                                Ok(user_info) => {
-                                    Some(AuthAction::OAuthSuccess {
-                                        email: user_info.email,
-                                        name: user_info.name,
-                                        provider,
-                                        access_token: token_response.access_token,
-                                        refresh_token: token_response.refresh_token,
-                                        ip_address,
-                                        user_agent,
-                                    })
+                    // Atomically consume OAuth state (check + delete in one operation)
+                    match token_store.consume_token(&state_for_consume, &state_for_consume).await {
+                        Ok(Some(token_data)) => {
+                            // State was valid, not expired, and has been consumed
+                            // Extract provider from token data
+                            let provider_str = token_data.data["provider"]
+                                .as_str()
+                                .unwrap_or("");
+
+                            // Parse provider (this is a simplified version - production needs proper parsing)
+                            let provider = if provider_str.contains("Google") {
+                                crate::state::OAuthProvider::Google
+                            } else if provider_str.contains("GitHub") {
+                                crate::state::OAuthProvider::GitHub
+                            } else {
+                                // ⚡ SECURITY FIX (BLOCKER #4): Don't leak provider details
+                                tracing::error!("Unknown OAuth provider: {}", provider_str);
+                                return Some(AuthAction::OAuthFailed {
+                                    error: "authentication_failed".to_string(),
+                                    error_description: Some("OAuth authentication failed".to_string()),
+                                });
+                            };
+
+                            tracing::info!("OAuth state verified for provider: {:?}", provider);
+
+                            // Exchange authorization code for access token
+                            match oauth_provider.exchange_code(provider, &code_clone, &redirect_uri).await {
+                                Ok(token_response) => {
+                                    // Fetch user info with access token
+                                    match oauth_provider.fetch_user_info(provider, &token_response.access_token).await {
+                                        Ok(user_info) => {
+                                            Some(AuthAction::OAuthSuccess {
+                                                email: user_info.email,
+                                                name: user_info.name,
+                                                provider,
+                                                access_token: token_response.access_token,
+                                                refresh_token: token_response.refresh_token,
+                                                ip_address: ip_clone,
+                                                user_agent: ua_clone,
+                                            })
+                                        }
+                                        Err(e) => {
+                                            // ⚡ SECURITY FIX (BLOCKER #4): Don't leak error details
+                                            tracing::error!("Failed to fetch user info: {e}");
+                                            Some(AuthAction::OAuthFailed {
+                                                error: "authentication_failed".to_string(),
+                                                error_description: Some("OAuth authentication failed".to_string()),
+                                            })
+                                        }
+                                    }
                                 }
                                 Err(e) => {
+                                    // ⚡ SECURITY FIX (BLOCKER #4): Don't leak error details
+                                    tracing::error!("Failed to exchange code for token: {e}");
                                     Some(AuthAction::OAuthFailed {
-                                        error: "user_info_failed".to_string(),
-                                        error_description: Some(format!("Failed to fetch user info: {e}")),
+                                        error: "authentication_failed".to_string(),
+                                        error_description: Some("OAuth authentication failed".to_string()),
                                     })
                                 }
                             }
                         }
-                        Err(e) => {
+                        Ok(None) => {
+                            // State not found, already used, or expired
+                            // ⚡ SECURITY FIX (BLOCKER #4): Don't leak which failure mode
+                            tracing::warn!("OAuth callback validation failed");
                             Some(AuthAction::OAuthFailed {
-                                error: "token_exchange_failed".to_string(),
-                                error_description: Some(format!("Failed to exchange code for token: {e}")),
+                                error: "authentication_failed".to_string(),
+                                error_description: Some("OAuth authentication failed".to_string()),
+                            })
+                        }
+                        Err(e) => {
+                            // ⚡ SECURITY FIX (BLOCKER #4): Don't leak internal error details
+                            tracing::error!("OAuth state consumption failed: {}", e);
+                            Some(AuthAction::OAuthFailed {
+                                error: "authentication_failed".to_string(),
+                                error_description: Some("OAuth authentication failed".to_string()),
                             })
                         }
                     }
@@ -247,119 +349,197 @@ where
             }
 
             // ═══════════════════════════════════════════════════════════════════
-            // OAuth Success (Token Exchange Complete)
+            // OAuth Success (Token Exchange Complete) - Emit events (batch)
             // ═══════════════════════════════════════════════════════════════════
             AuthAction::OAuthSuccess {
                 email,
                 name,
                 provider,
-                access_token: _,  // TODO: Store OAuth access token
-                refresh_token: _,  // TODO: Store OAuth refresh token
+                access_token,
+                refresh_token,
                 ip_address,
                 user_agent,
             } => {
-                // Generate IDs
+                // Validate email format from OAuth provider
+                if !crate::utils::is_valid_email(&email) {
+                    tracing::warn!("Invalid email from OAuth provider {}: {}", provider.as_str(), email);
+                    return smallvec![Effect::Future(Box::pin(async move {
+                        Some(AuthAction::OAuthFailed {
+                            error: "invalid_email".to_string(),
+                            error_description: Some(format!("Invalid email from OAuth provider: {email}")),
+                        })
+                    }))];
+                }
+
+                // Generate IDs upfront
                 let user_id = UserId::new();
                 let device_id = DeviceId::new();
                 let session_id = SessionId::new();
-
-                // Calculate risk score
-                let login_risk_score = self.calculate_basic_risk(ip_address, &user_agent);
-
-                // Create session
                 let now = Utc::now();
-                let expires_at = now + Duration::hours(self.session_ttl_hours);
 
+                // Build session (optimistically set in state since sessions are ephemeral)
+                // Risk score will be placeholder until calculated in async block
                 let session = Session {
                     session_id,
-                    user_id,
+                    user_id, // Will be updated with actual user_id from projection
                     device_id,
                     email: email.clone(),
                     created_at: now,
                     last_active: now,
-                    expires_at,
+                    expires_at: now + self.config.session_duration,
                     ip_address,
                     user_agent: user_agent.clone(),
                     oauth_provider: Some(provider),
-                    login_risk_score,
+                    login_risk_score: 0.1, // Placeholder, calculated below
                 };
 
-                // Update state
+                // Update state immediately (sessions are ephemeral, not event-sourced)
                 state.session = Some(session.clone());
 
-                // Execute effects to persist user, device, and session
+                // Query projection and emit events
                 let users = env.users.clone();
-                let devices = env.devices.clone();
+                let event_store = Arc::clone(&env.event_store);
                 let sessions = env.sessions.clone();
-                let session_clone = session.clone();
-                let session_ttl = Duration::hours(self.session_ttl_hours);
+                let risk = env.risk.clone();
+                let session_duration = self.config.session_duration;
+                let email_clone = email.clone();
+                let name_clone = name.clone();
+                let user_agent_clone = user_agent.clone();
 
                 smallvec![Effect::Future(Box::pin(async move {
-                    use crate::providers::{User as ProviderUser, Device as ProviderDevice};
-                    use crate::actions::DeviceTrustLevel;
+                    // Check if user exists in projection
+                    let existing_user = users.get_user_by_email(&email_clone).await.ok();
+                    let final_user_id = existing_user.as_ref().map_or(user_id, |u| u.user_id);
 
-                    // 1. Create or get user
-                    let final_user = match users.get_user_by_email(&email).await {
-                        Ok(existing_user) => {
-                            // User exists - use their ID
-                            existing_user
+                    // Calculate login risk
+                    let risk_assessment = risk.calculate_login_risk(&crate::providers::LoginContext {
+                        user_id: Some(final_user_id),
+                        email: email_clone.clone(),
+                        ip_address,
+                        user_agent: user_agent_clone.clone(),
+                        device_id: Some(device_id),
+                        last_login_location: None,
+                        last_login_at: None,
+                    }).await.unwrap_or_else(|_| {
+                        // Fall back to safe default on error
+                        crate::providers::RiskAssessment {
+                            score: 0.1,
+                            level: crate::providers::RiskLevel::Low,
+                            factors: vec![],
+                            recommended_auth_level: crate::actions::AuthLevel::Basic,
                         }
-                        Err(_) => {
-                            // User doesn't exist - create new user
-                            let new_user = ProviderUser {
-                                user_id,
-                                email: email.clone(),
-                                name: name.clone(),
-                                email_verified: true,  // OAuth emails are verified
-                                created_at: Utc::now(),
-                                updated_at: Utc::now(),
-                            };
+                    });
 
-                            match users.create_user(&new_user).await {
-                                Ok(created_user) => created_user,
-                                Err(_) => {
-                                    return Some(AuthAction::OAuthFailed {
-                                        error: "user_creation_failed".to_string(),
-                                        error_description: Some("Failed to create user".to_string()),
-                                    });
-                                }
-                            }
-                        }
-                    };
+                    let login_risk_score = risk_assessment.score;
 
-                    // 2. Create device
-                    let new_device = ProviderDevice {
+                    // Build events to emit (all independent, can be batched)
+                    let mut events = Vec::new();
+
+                    // 1. UserRegistered event (only if new user)
+                    if existing_user.is_none() {
+                        events.push(AuthEvent::UserRegistered {
+                            user_id: final_user_id,
+                            email: email_clone.clone(),
+                            name: name_clone.clone(),
+                            email_verified: true, // OAuth emails are verified
+                            timestamp: now,
+                        });
+                    }
+
+                    // 2. OAuthAccountLinked event (always)
+                    events.push(AuthEvent::OAuthAccountLinked {
+                        user_id: final_user_id,
+                        provider,
+                        provider_user_id: format!("oauth-{}", final_user_id.0), // TODO: Get actual provider user ID
+                        provider_email: email_clone.clone(),
+                        timestamp: now,
+                    });
+
+                    // 3. DeviceRegistered event (always)
+                    events.push(AuthEvent::DeviceRegistered {
                         device_id,
-                        user_id: final_user.user_id,
-                        name: "Web Browser".to_string(),  // TODO: Parse from user agent
-                        device_type: crate::providers::DeviceType::Desktop,
-                        platform: user_agent.clone(),
-                        first_seen: Utc::now(),
-                        last_seen: Utc::now(),
-                        trust_level: DeviceTrustLevel::Unknown,
-                        passkey_credential_id: None,
-                        public_key: None,
+                        user_id: final_user_id,
+                        name: crate::utils::parse_device_name(&user_agent_clone),
+                        device_type: crate::utils::parse_device_type(&user_agent_clone).to_string(),
+                        platform: user_agent_clone.clone(),
+                        ip_address,
+                        timestamp: now,
+                    });
+
+                    // 4. UserLoggedIn event (audit trail, always)
+                    events.push(AuthEvent::UserLoggedIn {
+                        user_id: final_user_id,
+                        device_id,
+                        session_id,
+                        method: format!("{}{}", login_methods::OAUTH_PREFIX, provider.as_str()),
+                        auth_level: AuthLevel::Basic,
+                        ip_address,
+                        user_agent: user_agent_clone.clone(),
+                        risk_score: login_risk_score as f64,
+                        timestamp: now,
+                    });
+
+                    // Serialize all events
+                    let serialized_events: Vec<_> = events
+                        .iter()
+                        .filter_map(|e| e.to_serialized().ok())
+                        .collect();
+
+                    if serialized_events.is_empty() {
+                        // ⚡ SECURITY FIX (BLOCKER #4): Don't leak internal error details
+                        tracing::error!("No events to persist");
+                        return Some(AuthAction::OAuthFailed {
+                            error: "authentication_failed".to_string(),
+                            error_description: Some("OAuth authentication failed".to_string()),
+                        });
+                    }
+
+                    // Build session
+                    let session = Session {
+                        session_id,
+                        user_id: final_user_id,
+                        device_id,
+                        email: email_clone.clone(),
+                        created_at: now,
+                        last_active: now,
+                        expires_at: now + session_duration,
+                        ip_address,
+                        user_agent: user_agent_clone,
+                        oauth_provider: Some(provider),
+                        login_risk_score,
                     };
 
-                    if let Err(_) = devices.create_device(&new_device).await {
-                        return Some(AuthAction::OAuthFailed {
-                            error: "device_creation_failed".to_string(),
-                            error_description: Some("Failed to create device".to_string()),
-                        });
-                    }
+                    // Batch append all events to the user stream
+                    let stream_id = StreamId::new(format!("user-{}", final_user_id.0));
 
-                    // 3. Create session in Redis
-                    if let Err(_) = sessions.create_session(&session_clone, session_ttl).await {
-                        return Some(AuthAction::OAuthFailed {
-                            error: "session_creation_failed".to_string(),
-                            error_description: Some("Failed to create session".to_string()),
-                        });
-                    }
+                    match event_store.append_events(stream_id, None, serialized_events).await {
+                        Ok(_version) => {
+                            // Events persisted successfully
+                            // Now create ephemeral session in Redis
+                            if let Err(e) = sessions.create_session(&session, session_duration).await {
+                                // ⚡ SECURITY FIX (BLOCKER #4): Don't leak internal error details
+                                tracing::error!("Failed to create OAuth session for user {} device {}: {}",
+                                    final_user_id.0, device_id.0, e);
+                                return Some(AuthAction::OAuthFailed {
+                                    error: "authentication_failed".to_string(),
+                                    error_description: Some("OAuth authentication failed".to_string()),
+                                });
+                            }
 
-                    // 4. Emit session created event
-                    Some(AuthAction::SessionCreated {
-                        session: session_clone,
-                    })
+                            // TODO: Store OAuth access_token and refresh_token
+                            let _ = (access_token, refresh_token);
+
+                            // Emit SessionCreated event
+                            Some(AuthAction::SessionCreated { session })
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to persist OAuth events for user {}: {}", final_user_id.0, e);
+                            Some(AuthAction::OAuthFailed {
+                                error: "event_persistence_failed".to_string(),
+                                error_description: Some(format!("Failed to persist events: {e}")),
+                            })
+                        }
+                    }
                 }))]
             }
 
