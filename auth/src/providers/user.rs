@@ -230,6 +230,53 @@ pub trait UserRepository: Send + Sync {
         counter: u32,
     ) -> impl std::future::Future<Output = Result<()>> + Send;
 
+    /// Update passkey counter atomically with compare-and-swap.
+    ///
+    /// This method prevents race conditions in concurrent authentication attempts
+    /// by using database-level atomicity to ensure the counter only updates if
+    /// it matches the expected old value.
+    ///
+    /// # Security
+    ///
+    /// **CRITICAL**: This method prevents cloned authenticator detection bypass.
+    ///
+    /// Without atomic updates, two concurrent authentication attempts with the
+    /// same credential and counter could both pass verification:
+    ///
+    /// ```text
+    /// Request A: Read counter=100, verify counter=101, update to 101 ✓
+    /// Request B: Read counter=100, verify counter=101, update to 101 ✓  (SHOULD FAIL!)
+    /// ```
+    ///
+    /// With atomic compare-and-swap, only one request succeeds:
+    ///
+    /// ```text
+    /// Request A: Read counter=100, verify counter=101, CAS(100→101) ✓
+    /// Request B: Read counter=100, verify counter=101, CAS(100→101) ✗ (counter changed)
+    /// ```
+    ///
+    /// # Arguments
+    ///
+    /// * `credential_id` - The passkey credential ID
+    /// * `expected_old_counter` - The counter value we expect (from verification)
+    /// * `new_counter` - The new counter value to set
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(true)` - Update succeeded (counter matched expected value)
+    /// * `Ok(false)` - Update failed (counter was changed by concurrent request)
+    /// * `Err(_)` - Database error
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database query fails.
+    fn update_passkey_counter_atomic(
+        &self,
+        credential_id: &str,
+        expected_old_counter: u32,
+        new_counter: u32,
+    ) -> impl std::future::Future<Output = Result<bool>> + Send;
+
     /// Delete passkey credential.
     ///
     /// # Errors

@@ -567,23 +567,70 @@ where
                         return None;
                     }
 
-                    // Counter is valid - update it
-                    match users.update_passkey_counter(&credential_id, result.counter).await {
-                        Ok(()) => {
+                    // ✅ SECURITY FIX (BLOCKER #6): Atomic counter update with compare-and-swap
+                    //
+                    // VULNERABILITY PREVENTED: Race condition in concurrent authentication
+                    //
+                    // Without atomic update:
+                    // - Request A: Read counter=100, verify counter=101, update to 101 ✓
+                    // - Request B: Read counter=100, verify counter=101, update to 101 ✓ (SHOULD FAIL!)
+                    //
+                    // With atomic compare-and-swap:
+                    // - Request A: Read counter=100, verify counter=101, CAS(100→101) ✓
+                    // - Request B: Read counter=100, verify counter=101, CAS(100→101) ✗ (counter changed)
+                    //
+                    // This prevents cloned authenticators from bypassing detection by authenticating
+                    // concurrently before either updates the stored counter value.
+                    match users
+                        .update_passkey_counter_atomic(
+                            &credential_id,
+                            credential.counter,  // Expected old value
+                            result.counter,      // New value
+                        )
+                        .await
+                    {
+                        Ok(true) => {
+                            // ✅ Counter update succeeded - authentication allowed
                             tracing::info!(
-                                "Passkey counter updated: {} -> {} (credential: {})",
+                                "Passkey counter updated atomically: {} -> {} (credential: {})",
                                 credential.counter,
                                 result.counter,
                                 credential_id
                             );
                         }
+                        Ok(false) => {
+                            // ❌ Counter was changed by concurrent request - authentication REJECTED
+                            tracing::error!(
+                                "🚨 SECURITY ALERT: Concurrent passkey authentication detected!\n\
+                                 Credential ID: {}\n\
+                                 Expected counter: {}\n\
+                                 Attempted counter: {}\n\
+                                 This indicates CONCURRENT AUTHENTICATION ATTEMPT with same credential.",
+                                credential_id,
+                                credential.counter,
+                                result.counter
+                            );
+
+                            tracing::warn!(
+                                concurrent_authentication_detected = true,
+                                credential_id = %credential_id,
+                                user_id = %credential.user_id.0,
+                                device_id = %credential.device_id.0,
+                                expected_counter = credential.counter,
+                                attempted_counter = result.counter,
+                                "Concurrent authentication blocked by atomic counter update"
+                            );
+
+                            // REJECT the authentication - counter was modified by concurrent request
+                            return None;
+                        }
                         Err(e) => {
                             tracing::error!(
-                                "CRITICAL: Failed to update passkey counter for {}: {}",
+                                "CRITICAL: Database error during atomic counter update for {}: {}",
                                 credential_id,
                                 e
                             );
-                            // Counter update failure is serious - don't allow auth
+                            // Database failure is serious - don't allow auth
                             return None;
                         }
                     }

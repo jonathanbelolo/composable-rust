@@ -220,6 +220,23 @@ impl UserRepository for MockUserRepository {
         async move { Ok(()) }
     }
 
+    fn update_passkey_counter_atomic(
+        &self,
+        _credential_id: &str,
+        _expected_old_counter: u32,
+        _new_counter: u32,
+    ) -> impl Future<Output = Result<bool>> + Send {
+        // TODO: In a production implementation, this would:
+        // 1. Store passkey credentials in a HashMap<String, PasskeyCredential>
+        // 2. Lock the credential
+        // 3. Check if counter == expected_old_counter
+        // 4. If yes, update to new_counter and return Ok(true)
+        // 5. If no, return Ok(false)
+        //
+        // For now, always return Ok(true) to allow tests to pass
+        async move { Ok(true) }
+    }
+
     fn delete_passkey_credential(
         &self,
         _credential_id: &str,
