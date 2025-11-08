@@ -99,6 +99,8 @@ pub struct Device {
 
 /// Device type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "postgres", derive(sqlx::Type))]
+#[cfg_attr(feature = "postgres", sqlx(type_name = "device_type", rename_all = "lowercase"))]
 pub enum DeviceType {
     /// Mobile device (phone, tablet).
     Mobile,
@@ -110,6 +112,7 @@ pub enum DeviceType {
     Tablet,
 
     /// Other/unknown.
+    #[cfg_attr(feature = "postgres", sqlx(rename = "unknown"))]
     Other,
 }
 
