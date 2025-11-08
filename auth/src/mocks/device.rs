@@ -42,7 +42,7 @@ impl DeviceRepository for MockDeviceRepository {
         async move {
             devices
                 .lock()
-                .map_err(|_| AuthError::InternalError)?
+                .map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?
                 .get(&device_id)
                 .cloned()
                 .ok_or(AuthError::ResourceNotFound)
@@ -56,7 +56,7 @@ impl DeviceRepository for MockDeviceRepository {
         let devices = Arc::clone(&self.devices);
 
         async move {
-            let devices_guard = devices.lock().map_err(|_| AuthError::InternalError)?;
+            let devices_guard = devices.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
             let user_devices: Vec<Device> = devices_guard
                 .values()
                 .filter(|d| d.user_id == user_id)
@@ -74,7 +74,7 @@ impl DeviceRepository for MockDeviceRepository {
         let device = device.clone();
 
         async move {
-            let mut devices_guard = devices.lock().map_err(|_| AuthError::InternalError)?;
+            let mut devices_guard = devices.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
 
             if devices_guard.contains_key(&device.device_id) {
                 return Err(AuthError::DatabaseError("Device ID already exists".to_string()));
@@ -93,7 +93,7 @@ impl DeviceRepository for MockDeviceRepository {
         let device = device.clone();
 
         async move {
-            let mut devices_guard = devices.lock().map_err(|_| AuthError::InternalError)?;
+            let mut devices_guard = devices.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
 
             if !devices_guard.contains_key(&device.device_id) {
                 return Err(AuthError::ResourceNotFound);
@@ -112,7 +112,7 @@ impl DeviceRepository for MockDeviceRepository {
         let devices = Arc::clone(&self.devices);
 
         async move {
-            let mut devices_guard = devices.lock().map_err(|_| AuthError::InternalError)?;
+            let mut devices_guard = devices.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
 
             if let Some(device) = devices_guard.get_mut(&device_id) {
                 device.trust_level = trust_level;
@@ -131,7 +131,7 @@ impl DeviceRepository for MockDeviceRepository {
         let devices = Arc::clone(&self.devices);
 
         async move {
-            let mut devices_guard = devices.lock().map_err(|_| AuthError::InternalError)?;
+            let mut devices_guard = devices.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
 
             if let Some(device) = devices_guard.get_mut(&device_id) {
                 device.last_seen = last_seen;
@@ -151,7 +151,7 @@ impl DeviceRepository for MockDeviceRepository {
         async move {
             devices
                 .lock()
-                .map_err(|_| AuthError::InternalError)?
+                .map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?
                 .remove(&device_id);
             Ok(())
         }
@@ -168,7 +168,7 @@ impl DeviceRepository for MockDeviceRepository {
         let platform = platform.to_string();
 
         async move {
-            let devices_guard = devices.lock().map_err(|_| AuthError::InternalError)?;
+            let devices_guard = devices.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
 
             let found_device = devices_guard
                 .values()

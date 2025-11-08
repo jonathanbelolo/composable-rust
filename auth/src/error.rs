@@ -128,9 +128,13 @@ pub enum AuthError {
     #[error("Failed to send email")]
     EmailDeliveryFailed,
 
+    /// Serialization/deserialization error.
+    #[error("Serialization error: {0}")]
+    SerializationError(String),
+
     /// Internal server error (should not be exposed to users).
-    #[error("Internal error")]
-    InternalError,
+    #[error("Internal error: {0}")]
+    InternalError(String),
 }
 
 impl AuthError {
@@ -141,7 +145,7 @@ impl AuthError {
     /// ```
     /// # use composable_rust_auth::AuthError;
     /// assert!(AuthError::InvalidCredentials.is_user_error());
-    /// assert!(!AuthError::InternalError.is_user_error());
+    /// assert!(!AuthError::InternalError("test".to_string()).is_user_error());
     /// ```
     pub const fn is_user_error(&self) -> bool {
         matches!(

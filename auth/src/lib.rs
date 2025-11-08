@@ -58,6 +58,7 @@ pub mod error;
 pub mod providers;
 pub mod reducers;
 pub mod state;
+pub mod stores;
 
 // Mock providers for testing
 #[cfg(any(test, feature = "test-utils"))]

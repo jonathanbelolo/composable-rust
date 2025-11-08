@@ -43,7 +43,7 @@ impl UserRepository for MockUserRepository {
         async move {
             users
                 .lock()
-                .map_err(|_| AuthError::InternalError)?
+                .map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?
                 .get(&user_id)
                 .cloned()
                 .ok_or(AuthError::ResourceNotFound)
@@ -60,7 +60,7 @@ impl UserRepository for MockUserRepository {
         async move {
             users_by_email
                 .lock()
-                .map_err(|_| AuthError::InternalError)?
+                .map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?
                 .get(&email)
                 .cloned()
                 .ok_or(AuthError::ResourceNotFound)
@@ -76,8 +76,8 @@ impl UserRepository for MockUserRepository {
         let user = user.clone();
 
         async move {
-            let mut users_guard = users.lock().map_err(|_| AuthError::InternalError)?;
-            let mut email_guard = users_by_email.lock().map_err(|_| AuthError::InternalError)?;
+            let mut users_guard = users.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
+            let mut email_guard = users_by_email.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
 
             // Check if email already exists
             if email_guard.contains_key(&user.email) {
@@ -100,8 +100,8 @@ impl UserRepository for MockUserRepository {
         let user = user.clone();
 
         async move {
-            let mut users_guard = users.lock().map_err(|_| AuthError::InternalError)?;
-            let mut email_guard = users_by_email.lock().map_err(|_| AuthError::InternalError)?;
+            let mut users_guard = users.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
+            let mut email_guard = users_by_email.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
 
             if !users_guard.contains_key(&user.user_id) {
                 return Err(AuthError::ResourceNotFound);
@@ -124,7 +124,7 @@ impl UserRepository for MockUserRepository {
         async move {
             Ok(users_by_email
                 .lock()
-                .map_err(|_| AuthError::InternalError)?
+                .map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?
                 .contains_key(&email))
         }
     }
