@@ -154,24 +154,36 @@ impl RateLimiter for RedisRateLimiter {
         // This prevents race conditions where two concurrent requests could both
         // pass the check before either records, bypassing the rate limit.
         //
-        // Pipeline ensures:
-        // 1. Remove old entries
-        // 2. Count current entries
-        // 3. Add new entry
-        // All happen atomically on Redis server.
+        // Pipeline ensures (atomically):
+        // 1. Remove old entries outside the window
+        // 2. Count current entries in window
+        // 3. Add new entry for this attempt
+        // 4. Set TTL for automatic cleanup
+        //
+        // IMPORTANT: Pipeline is atomic - either ALL operations succeed or ALL fail.
+        // If expire() fails, the entire pipeline fails → safe default (deny access).
+        //
+        // Note: .ignore() means "don't return this value", NOT "ignore errors".
+        // All operations are still executed and errors still propagate.
 
         let (count,): (u64,) = redis::pipe()
             .atomic()
             .zrembyscore(&rate_key, 0, window_start as isize)
-            .ignore() // Don't return count of removed items
-            .zcard(&rate_key)
+            .ignore() // Don't return count of removed items (not needed)
+            .zcard(&rate_key) // Return: current count in window
             .zadd(&rate_key, now_ms, now_ms)
-            .ignore() // Don't return zadd result
-            .expire(&rate_key, 3600) // 1 hour cleanup
-            .ignore()
+            .ignore() // Don't return zadd result (not needed)
+            .expire(&rate_key, 3600) // 1 hour cleanup (prevent memory leak)
+            .ignore() // Don't return expire result (not needed)
             .query_async(&mut conn)
             .await
             .map_err(|e| {
+                // Pipeline failed - safe default: deny access
+                tracing::error!(
+                    error = %e,
+                    key = %key,
+                    "Redis pipeline failed during rate limit check (safe default: deny)"
+                );
                 AuthError::InternalError(format!("Failed to check and record rate limit: {e}"))
             })?;
 

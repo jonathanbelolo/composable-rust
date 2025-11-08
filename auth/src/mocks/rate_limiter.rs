@@ -9,6 +9,27 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// In-memory rate limiter for testing.
 ///
 /// Uses in-memory storage with sliding window algorithm.
+///
+/// # Memory Management
+///
+/// ⚠️ **WARNING**: This mock does not implement automatic background cleanup.
+/// Old entries are only removed during `check_and_record()` calls for that specific key.
+///
+/// **For long-running tests**, call `reset(key)` periodically to prevent memory leaks:
+///
+/// ```rust
+/// # use composable_rust_auth::mocks::MockRateLimiter;
+/// # use composable_rust_auth::providers::RateLimiter;
+/// # async fn example() {
+/// let limiter = MockRateLimiter::new();
+///
+/// // After many attempts with different keys:
+/// limiter.reset("test@example.com").await.unwrap();
+/// // Or clear all keys by creating a new instance
+/// # }
+/// ```
+///
+/// **Production**: Use `RedisRateLimiter` which has automatic TTL-based cleanup.
 #[derive(Debug, Clone)]
 pub struct MockRateLimiter {
     /// Map of key -> Vec<timestamp_ms>
