@@ -64,21 +64,23 @@ impl PostgresDeviceRepository {
 }
 
 impl DeviceRepository for PostgresDeviceRepository {
-    async fn get_device(&self, device_id: DeviceId) -> Result<Device> {
+    async fn get_device(&self, user_id: UserId, device_id: DeviceId) -> Result<Device> {
+        // ✅ Authorization: Filter by both user_id AND device_id
         let row = sqlx::query!(
             r#"
             SELECT device_id, user_id, name, device_type AS "device_type: DeviceType",
                    platform, first_seen, last_seen, user_marked_trusted,
                    requires_mfa, passkey_credential_id, public_key, login_count
             FROM registered_devices
-            WHERE device_id = $1
+            WHERE device_id = $1 AND user_id = $2
             "#,
-            device_id.0
+            device_id.0,
+            user_id.0
         )
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| AuthError::DatabaseError(format!("Failed to get device: {e}")))?
-        .ok_or(AuthError::ResourceNotFound)?;
+        .ok_or(AuthError::ResourceNotFound)?; // Returns ResourceNotFound for both missing and unauthorized
 
         let trust_level = calculate_trust_level(
             row.user_marked_trusted,
@@ -177,7 +179,7 @@ impl DeviceRepository for PostgresDeviceRepository {
         Ok(device.clone())
     }
 
-    async fn update_device(&self, device: &Device) -> Result<Device> {
+    async fn update_device(&self, user_id: UserId, device: &Device) -> Result<Device> {
         let device_type_str = match device.device_type {
             DeviceType::Mobile => "mobile",
             DeviceType::Desktop => "desktop",
@@ -185,6 +187,8 @@ impl DeviceRepository for PostgresDeviceRepository {
             DeviceType::Other => "unknown",
         };
 
+        // ✅ Authorization: Filter by both device_id AND user_id
+        // Also verify device.user_id == user_id (prevent device transfer)
         let result = sqlx::query!(
             r#"
             UPDATE registered_devices
@@ -194,7 +198,7 @@ impl DeviceRepository for PostgresDeviceRepository {
                 last_seen = $5,
                 passkey_credential_id = $6,
                 public_key = $7
-            WHERE device_id = $1
+            WHERE device_id = $1 AND user_id = $8
             "#,
             device.device_id.0,
             device.name,
@@ -203,12 +207,18 @@ impl DeviceRepository for PostgresDeviceRepository {
             device.last_seen,
             device.passkey_credential_id,
             device.public_key,
+            user_id.0, // ✅ Authorization check
         )
         .execute(&self.pool)
         .await
         .map_err(|e| AuthError::DatabaseError(format!("Failed to update device: {e}")))?;
 
         if result.rows_affected() == 0 {
+            return Err(AuthError::ResourceNotFound); // Device not found or unauthorized
+        }
+
+        // ✅ Additional check: Verify device.user_id matches user_id (prevent transfer)
+        if device.user_id != user_id {
             return Err(AuthError::ResourceNotFound);
         }
 
@@ -217,27 +227,30 @@ impl DeviceRepository for PostgresDeviceRepository {
 
     async fn update_device_trust_level(
         &self,
+        user_id: UserId,
         device_id: DeviceId,
         trust_level: DeviceTrustLevel,
     ) -> Result<()> {
         // Store user marking as trusted (all other trust levels are calculated)
         let user_marked = matches!(trust_level, DeviceTrustLevel::Trusted | DeviceTrustLevel::HighlyTrusted);
 
+        // ✅ Authorization: Filter by both device_id AND user_id
         let result = sqlx::query!(
             r#"
             UPDATE registered_devices
             SET user_marked_trusted = $2
-            WHERE device_id = $1
+            WHERE device_id = $1 AND user_id = $3
             "#,
             device_id.0,
             user_marked,
+            user_id.0, // ✅ Authorization check
         )
         .execute(&self.pool)
         .await
         .map_err(|e| AuthError::DatabaseError(format!("Failed to update device trust level: {e}")))?;
 
         if result.rows_affected() == 0 {
-            return Err(AuthError::ResourceNotFound);
+            return Err(AuthError::ResourceNotFound); // Device not found or unauthorized
         }
 
         Ok(())
@@ -245,41 +258,50 @@ impl DeviceRepository for PostgresDeviceRepository {
 
     async fn update_device_last_seen(
         &self,
+        user_id: UserId,
         device_id: DeviceId,
         last_seen: DateTime<Utc>,
     ) -> Result<()> {
+        // ✅ Authorization: Filter by both device_id AND user_id
         let result = sqlx::query!(
             r#"
             UPDATE registered_devices
             SET last_seen = $2,
                 login_count = login_count + 1
-            WHERE device_id = $1
+            WHERE device_id = $1 AND user_id = $3
             "#,
             device_id.0,
             last_seen,
+            user_id.0, // ✅ Authorization check
         )
         .execute(&self.pool)
         .await
         .map_err(|e| AuthError::DatabaseError(format!("Failed to update device last seen: {e}")))?;
 
         if result.rows_affected() == 0 {
-            return Err(AuthError::ResourceNotFound);
+            return Err(AuthError::ResourceNotFound); // Device not found or unauthorized
         }
 
         Ok(())
     }
 
-    async fn delete_device(&self, device_id: DeviceId) -> Result<()> {
-        sqlx::query!(
+    async fn delete_device(&self, user_id: UserId, device_id: DeviceId) -> Result<()> {
+        // ✅ Authorization: Filter by both device_id AND user_id
+        let result = sqlx::query!(
             r#"
             DELETE FROM registered_devices
-            WHERE device_id = $1
+            WHERE device_id = $1 AND user_id = $2
             "#,
             device_id.0,
+            user_id.0, // ✅ Authorization check
         )
         .execute(&self.pool)
         .await
         .map_err(|e| AuthError::DatabaseError(format!("Failed to delete device: {e}")))?;
+
+        if result.rows_affected() == 0 {
+            return Err(AuthError::ResourceNotFound); // Device not found or unauthorized
+        }
 
         Ok(())
     }

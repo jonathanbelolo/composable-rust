@@ -29,15 +29,23 @@ use super::Device;
 /// - Track first seen, last seen, trust level (from events)
 /// - Link to passkey credentials (via `PasskeyRegistered` events)
 pub trait DeviceRepository: Send + Sync {
-    /// Get device by ID.
+    /// Get device by ID with authorization.
+    ///
+    /// # Authorization
+    ///
+    /// This method MUST verify that `device_id` belongs to `user_id`.
+    /// If the device belongs to a different user, return `AuthError::ResourceNotFound`
+    /// (not `Unauthorized` to avoid information leakage).
     ///
     /// # Errors
     ///
     /// Returns error if:
     /// - Database query fails
     /// - Device not found → `AuthError::ResourceNotFound`
+    /// - Device belongs to different user → `AuthError::ResourceNotFound`
     fn get_device(
         &self,
+        user_id: UserId,
         device_id: DeviceId,
     ) -> impl std::future::Future<Output = Result<Device>> + Send;
 
@@ -63,47 +71,80 @@ pub trait DeviceRepository: Send + Sync {
         device: &Device,
     ) -> impl std::future::Future<Output = Result<Device>> + Send;
 
-    /// Update device.
+    /// Update device with authorization.
+    ///
+    /// # Authorization
+    ///
+    /// This method MUST verify that:
+    /// 1. `device.device_id` belongs to `user_id`
+    /// 2. `device.user_id == user_id` (prevent device transfer between accounts)
     ///
     /// # Errors
     ///
     /// Returns error if:
     /// - Database query fails
-    /// - Device not found
+    /// - Device not found → `AuthError::ResourceNotFound`
+    /// - Device belongs to different user → `AuthError::ResourceNotFound`
+    /// - Attempt to change device.user_id → `AuthError::ResourceNotFound`
     fn update_device(
         &self,
+        user_id: UserId,
         device: &Device,
     ) -> impl std::future::Future<Output = Result<Device>> + Send;
 
-    /// Update device trust level.
+    /// Update device trust level with authorization.
+    ///
+    /// # Authorization
+    ///
+    /// This method MUST verify that `device_id` belongs to `user_id`.
     ///
     /// # Errors
     ///
-    /// Returns error if database query fails.
+    /// Returns error if:
+    /// - Database query fails
+    /// - Device not found → `AuthError::ResourceNotFound`
+    /// - Device belongs to different user → `AuthError::ResourceNotFound`
     fn update_device_trust_level(
         &self,
+        user_id: UserId,
         device_id: DeviceId,
         trust_level: DeviceTrustLevel,
     ) -> impl std::future::Future<Output = Result<()>> + Send;
 
-    /// Update device last seen.
+    /// Update device last seen with authorization.
+    ///
+    /// # Authorization
+    ///
+    /// This method MUST verify that `device_id` belongs to `user_id`.
     ///
     /// # Errors
     ///
-    /// Returns error if database query fails.
+    /// Returns error if:
+    /// - Database query fails
+    /// - Device not found → `AuthError::ResourceNotFound`
+    /// - Device belongs to different user → `AuthError::ResourceNotFound`
     fn update_device_last_seen(
         &self,
+        user_id: UserId,
         device_id: DeviceId,
         last_seen: chrono::DateTime<chrono::Utc>,
     ) -> impl std::future::Future<Output = Result<()>> + Send;
 
-    /// Delete device.
+    /// Delete device with authorization.
+    ///
+    /// # Authorization
+    ///
+    /// This method MUST verify that `device_id` belongs to `user_id`.
     ///
     /// # Errors
     ///
-    /// Returns error if database query fails.
+    /// Returns error if:
+    /// - Database query fails
+    /// - Device not found → `AuthError::ResourceNotFound`
+    /// - Device belongs to different user → `AuthError::ResourceNotFound`
     fn delete_device(
         &self,
+        user_id: UserId,
         device_id: DeviceId,
     ) -> impl std::future::Future<Output = Result<()>> + Send;
 
