@@ -133,6 +133,18 @@ pub struct Device {
 
     /// Public key (if passkey registered).
     pub public_key: Option<Vec<u8>>,
+
+    /// Device fingerprint (for enhanced recognition).
+    ///
+    /// Stored as JSON to support evolving fingerprinting techniques.
+    /// Use `fingerprint_hash` for quick comparisons.
+    pub fingerprint: Option<DeviceFingerprint>,
+
+    /// SHA-256 hash of the fingerprint (for quick matching).
+    ///
+    /// This is a deterministic hash of the canonicalized fingerprint,
+    /// allowing fast device recognition without comparing all fields.
+    pub fingerprint_hash: Option<String>,
 }
 
 /// Device type.
@@ -152,6 +164,94 @@ pub enum DeviceType {
     /// Other/unknown.
     #[cfg_attr(feature = "postgres", sqlx(rename = "unknown"))]
     Other,
+}
+
+/// Device fingerprint for enhanced device recognition.
+///
+/// This struct stores browser/device fingerprinting data collected on the client
+/// side (e.g., via FingerprintJS, ClientJS, or custom fingerprinting logic).
+///
+/// # Purpose
+///
+/// - **Device Recognition**: Identify returning devices even without cookies
+/// - **Risk Assessment**: Detect suspicious device changes or anomalies
+/// - **Security**: Flag potential account takeover attempts
+///
+/// # Privacy Considerations
+///
+/// Fingerprinting can be privacy-invasive. Best practices:
+/// - Only collect fingerprints for authenticated users (post-login)
+/// - Store hashed fingerprints, not raw values
+/// - Allow users to view/delete their device fingerprints
+/// - Comply with GDPR/privacy regulations
+///
+/// # Client-Side Collection
+///
+/// This is a backend library - fingerprints must be collected client-side.
+/// Example libraries:
+/// - FingerprintJS (commercial, high accuracy)
+/// - ClientJS (open source, basic)
+/// - Custom canvas/WebGL/audio fingerprinting
+///
+/// # Fields
+///
+/// All fields are optional to support partial fingerprints and evolving techniques.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct DeviceFingerprint {
+    /// Canvas fingerprint (rendering variations).
+    pub canvas: Option<String>,
+
+    /// WebGL fingerprint (GPU/driver variations).
+    pub webgl: Option<String>,
+
+    /// Audio context fingerprint (audio processing variations).
+    pub audio: Option<String>,
+
+    /// Screen resolution (width x height).
+    pub screen_resolution: Option<String>,
+
+    /// Timezone offset from UTC (minutes).
+    pub timezone_offset: Option<i32>,
+
+    /// Browser plugins (semicolon-separated list).
+    pub plugins: Option<String>,
+
+    /// Fonts installed (comma-separated list).
+    pub fonts: Option<String>,
+
+    /// CPU architecture/cores.
+    pub cpu_cores: Option<u8>,
+
+    /// Device memory (GB).
+    pub device_memory: Option<u8>,
+
+    /// Hardware concurrency (logical processors).
+    pub hardware_concurrency: Option<u8>,
+
+    /// Color depth (bits per pixel).
+    pub color_depth: Option<u8>,
+
+    /// Platform (navigator.platform).
+    pub platform: Option<String>,
+
+    /// Language preferences (navigator.languages).
+    pub languages: Option<Vec<String>>,
+
+    /// Do Not Track setting.
+    pub do_not_track: Option<bool>,
+
+    /// Touch support (max touch points).
+    pub max_touch_points: Option<u8>,
+
+    /// Vendor (navigator.vendor).
+    pub vendor: Option<String>,
+
+    /// Renderer (WebGL renderer string).
+    pub renderer: Option<String>,
+
+    /// Additional custom fields (extensibility).
+    #[serde(flatten)]
+    pub custom: std::collections::HashMap<String, serde_json::Value>,
 }
 
 /// OAuth link (user ↔ provider).
@@ -319,4 +419,13 @@ pub struct LoginContext {
 
     /// Last login timestamp.
     pub last_login_at: Option<DateTime<Utc>>,
+
+    /// Device fingerprint (if provided by client).
+    ///
+    /// Used for enhanced device recognition and risk assessment.
+    /// If provided, the risk calculator can:
+    /// - Match against known devices for this user
+    /// - Detect device changes/anomalies
+    /// - Calculate fingerprint similarity scores
+    pub fingerprint: Option<DeviceFingerprint>,
 }

@@ -544,6 +544,264 @@ pub fn sanitize_ip_for_logging(ip: &str) -> String {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// Device Fingerprinting
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Calculate SHA-256 hash of a device fingerprint.
+///
+/// This creates a deterministic hash of the fingerprint for fast comparison.
+/// The hash is calculated from a canonicalized JSON representation to ensure
+/// consistency regardless of field order.
+///
+/// # Arguments
+///
+/// * `fingerprint` - The device fingerprint to hash
+///
+/// # Returns
+///
+/// Hexadecimal SHA-256 hash string (64 characters)
+///
+/// # Examples
+///
+/// ```
+/// use composable_rust_auth::providers::DeviceFingerprint;
+/// use composable_rust_auth::utils::hash_fingerprint;
+///
+/// let fingerprint = DeviceFingerprint {
+///     canvas: Some("abc123".to_string()),
+///     webgl: Some("def456".to_string()),
+///     ..Default::default()
+/// };
+///
+/// let hash = hash_fingerprint(&fingerprint);
+/// assert_eq!(hash.len(), 64); // SHA-256 produces 64 hex characters
+/// ```
+#[must_use]
+pub fn hash_fingerprint(fingerprint: &crate::providers::DeviceFingerprint) -> String {
+    use sha2::{Digest, Sha256};
+
+    // Serialize to JSON with sorted keys for deterministic hashing
+    let json = serde_json::to_string(fingerprint).unwrap_or_default();
+
+    // Calculate SHA-256 hash
+    let mut hasher = Sha256::new();
+    hasher.update(json.as_bytes());
+    let result = hasher.finalize();
+
+    // Convert to hex string
+    format!("{:x}", result)
+}
+
+/// Compare two device fingerprints and calculate similarity score.
+///
+/// This function performs fuzzy matching between fingerprints, assigning
+/// weights to different attributes based on their uniqueness and stability.
+///
+/// # Similarity Scoring
+///
+/// - **1.0**: Identical fingerprints
+/// - **0.8-0.99**: Very similar (likely same device, minor changes)
+/// - **0.6-0.79**: Similar (possibly same device with updates)
+/// - **0.4-0.59**: Somewhat similar (different device, same user?)
+/// - **0.0-0.39**: Different devices
+///
+/// # Weights
+///
+/// Attributes are weighted by uniqueness:
+/// - High uniqueness (0.15): canvas, webgl, audio (hard to change)
+/// - Medium uniqueness (0.10): fonts, plugins, renderer (can change)
+/// - Low uniqueness (0.05): screen, timezone, languages (common values)
+///
+/// # Arguments
+///
+/// * `a` - First fingerprint
+/// * `b` - Second fingerprint
+///
+/// # Returns
+///
+/// Similarity score from 0.0 (completely different) to 1.0 (identical)
+///
+/// # Examples
+///
+/// ```
+/// use composable_rust_auth::providers::DeviceFingerprint;
+/// use composable_rust_auth::utils::fingerprint_similarity;
+///
+/// let fp1 = DeviceFingerprint {
+///     canvas: Some("abc123".to_string()),
+///     webgl: Some("def456".to_string()),
+///     screen_resolution: Some("1920x1080".to_string()),
+///     ..Default::default()
+/// };
+///
+/// let fp2 = fp1.clone();
+/// assert_eq!(fingerprint_similarity(&fp1, &fp2), 1.0);
+///
+/// let fp3 = DeviceFingerprint {
+///     canvas: Some("xyz789".to_string()), // Different canvas
+///     webgl: Some("def456".to_string()),  // Same WebGL
+///     screen_resolution: Some("1920x1080".to_string()),
+///     ..Default::default()
+/// };
+/// let score = fingerprint_similarity(&fp1, &fp3);
+/// assert!(score < 1.0 && score > 0.5); // Similar but not identical
+/// ```
+#[must_use]
+#[allow(clippy::too_many_lines)] // Complex scoring logic is intentional
+pub fn fingerprint_similarity(
+    a: &crate::providers::DeviceFingerprint,
+    b: &crate::providers::DeviceFingerprint,
+) -> f32 {
+    let mut total_weight = 0.0;
+    let mut matched_weight = 0.0;
+
+    // High uniqueness attributes (0.15 each)
+    if a.canvas.is_some() || b.canvas.is_some() {
+        total_weight += 0.15;
+        if a.canvas == b.canvas && a.canvas.is_some() {
+            matched_weight += 0.15;
+        }
+    }
+
+    if a.webgl.is_some() || b.webgl.is_some() {
+        total_weight += 0.15;
+        if a.webgl == b.webgl && a.webgl.is_some() {
+            matched_weight += 0.15;
+        }
+    }
+
+    if a.audio.is_some() || b.audio.is_some() {
+        total_weight += 0.15;
+        if a.audio == b.audio && a.audio.is_some() {
+            matched_weight += 0.15;
+        }
+    }
+
+    // Medium uniqueness attributes (0.10 each)
+    if a.fonts.is_some() || b.fonts.is_some() {
+        total_weight += 0.10;
+        if a.fonts == b.fonts && a.fonts.is_some() {
+            matched_weight += 0.10;
+        }
+    }
+
+    if a.plugins.is_some() || b.plugins.is_some() {
+        total_weight += 0.10;
+        if a.plugins == b.plugins && a.plugins.is_some() {
+            matched_weight += 0.10;
+        }
+    }
+
+    if a.renderer.is_some() || b.renderer.is_some() {
+        total_weight += 0.10;
+        if a.renderer == b.renderer && a.renderer.is_some() {
+            matched_weight += 0.10;
+        }
+    }
+
+    // Low uniqueness attributes (0.05 each)
+    if a.screen_resolution.is_some() || b.screen_resolution.is_some() {
+        total_weight += 0.05;
+        if a.screen_resolution == b.screen_resolution && a.screen_resolution.is_some() {
+            matched_weight += 0.05;
+        }
+    }
+
+    if a.timezone_offset.is_some() || b.timezone_offset.is_some() {
+        total_weight += 0.05;
+        if a.timezone_offset == b.timezone_offset && a.timezone_offset.is_some() {
+            matched_weight += 0.05;
+        }
+    }
+
+    if a.languages.is_some() || b.languages.is_some() {
+        total_weight += 0.05;
+        if a.languages == b.languages && a.languages.is_some() {
+            matched_weight += 0.05;
+        }
+    }
+
+    if a.color_depth.is_some() || b.color_depth.is_some() {
+        total_weight += 0.03;
+        if a.color_depth == b.color_depth && a.color_depth.is_some() {
+            matched_weight += 0.03;
+        }
+    }
+
+    if a.cpu_cores.is_some() || b.cpu_cores.is_some() {
+        total_weight += 0.03;
+        if a.cpu_cores == b.cpu_cores && a.cpu_cores.is_some() {
+            matched_weight += 0.03;
+        }
+    }
+
+    if a.device_memory.is_some() || b.device_memory.is_some() {
+        total_weight += 0.02;
+        if a.device_memory == b.device_memory && a.device_memory.is_some() {
+            matched_weight += 0.02;
+        }
+    }
+
+    if a.hardware_concurrency.is_some() || b.hardware_concurrency.is_some() {
+        total_weight += 0.02;
+        if a.hardware_concurrency == b.hardware_concurrency && a.hardware_concurrency.is_some() {
+            matched_weight += 0.02;
+        }
+    }
+
+    // If no common attributes, return 0.0
+    if total_weight == 0.0 {
+        return 0.0;
+    }
+
+    // Calculate normalized similarity score
+    matched_weight / total_weight
+}
+
+/// Check if two fingerprints likely belong to the same device.
+///
+/// This is a convenience function that returns `true` if the similarity
+/// score is above a threshold (0.75 by default).
+///
+/// # Arguments
+///
+/// * `a` - First fingerprint
+/// * `b` - Second fingerprint
+/// * `threshold` - Minimum similarity score to consider a match (default: 0.75)
+///
+/// # Returns
+///
+/// `true` if fingerprints are similar enough to be the same device
+///
+/// # Examples
+///
+/// ```
+/// use composable_rust_auth::providers::DeviceFingerprint;
+/// use composable_rust_auth::utils::fingerprints_match;
+///
+/// let fp1 = DeviceFingerprint {
+///     canvas: Some("abc123".to_string()),
+///     webgl: Some("def456".to_string()),
+///     ..Default::default()
+/// };
+///
+/// let fp2 = fp1.clone();
+/// assert!(fingerprints_match(&fp1, &fp2, None)); // Should match (100% similar)
+///
+/// let fp3 = DeviceFingerprint::default();
+/// assert!(!fingerprints_match(&fp1, &fp3, None)); // Should not match (different)
+/// ```
+#[must_use]
+pub fn fingerprints_match(
+    a: &crate::providers::DeviceFingerprint,
+    b: &crate::providers::DeviceFingerprint,
+    threshold: Option<f32>,
+) -> bool {
+    let threshold = threshold.unwrap_or(0.75);
+    fingerprint_similarity(a, b) >= threshold
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

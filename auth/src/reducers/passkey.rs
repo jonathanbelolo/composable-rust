@@ -808,6 +808,7 @@ where
                         device_id: Some(device_id),
                         last_login_location: None,
                         last_login_at: None,
+                        fingerprint: None, // TODO: Pass from client
                     }).await.unwrap_or_else(|_| {
                         // Fall back to safe default on error
                         crate::providers::RiskAssessment {

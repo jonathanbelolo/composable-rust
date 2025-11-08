@@ -271,6 +271,8 @@ mod tests {
             trust_level: DeviceTrustLevel::Unknown,
             passkey_credential_id: None,
             public_key: None,
+            fingerprint: None,
+            fingerprint_hash: None,
         }
     }
 
@@ -435,6 +437,8 @@ mod tests {
                 trust_level: DeviceTrustLevel::Unknown,
                 passkey_credential_id: None,
                 public_key: None,
+            fingerprint: None,
+            fingerprint_hash: None,
             };
             repo.create_device(&device).await.unwrap();
         }
@@ -462,6 +466,8 @@ mod tests {
                 trust_level: DeviceTrustLevel::Unknown,
                 passkey_credential_id: None,
                 public_key: None,
+            fingerprint: None,
+            fingerprint_hash: None,
             };
             repo.create_device(&device).await.unwrap();
         }
@@ -489,6 +495,8 @@ mod tests {
                 trust_level: DeviceTrustLevel::Unknown,
                 passkey_credential_id: None,
                 public_key: None,
+            fingerprint: None,
+            fingerprint_hash: None,
             };
             repo.create_device(&device).await.unwrap();
         }
@@ -520,6 +528,8 @@ mod tests {
                 trust_level: DeviceTrustLevel::Unknown,
                 passkey_credential_id: None,
                 public_key: None,
+            fingerprint: None,
+            fingerprint_hash: None,
             };
             repo.create_device(&device).await.unwrap();
         }
@@ -565,6 +575,8 @@ mod tests {
                 trust_level: DeviceTrustLevel::Unknown,
                 passkey_credential_id: None,
                 public_key: None,
+            fingerprint: None,
+            fingerprint_hash: None,
             };
             repo.create_device(&device).await.unwrap();
         }
