@@ -232,6 +232,33 @@ pub enum AuthEvent {
         timestamp: DateTime<Utc>,
     },
 
+    /// Passkey counter rollback detected (SECURITY EVENT).
+    ///
+    /// Triggered by: Counter rollback detection during passkey authentication
+    ///
+    /// This indicates either:
+    /// - Cloned authenticator (security compromise)
+    /// - Replay attack attempt
+    /// - Hardware malfunction (rare)
+    ///
+    /// **CRITICAL**: This should trigger security alerts and monitoring.
+    CounterRollbackDetected {
+        /// Credential identifier
+        credential_id: String,
+        /// User identifier
+        user_id: UserId,
+        /// Device identifier
+        device_id: DeviceId,
+        /// Stored counter value
+        stored_counter: u32,
+        /// Received counter value (from authenticator)
+        received_counter: u32,
+        /// IP address of attempt
+        ip_address: IpAddr,
+        /// When the rollback was detected
+        timestamp: DateTime<Utc>,
+    },
+
     // ═══════════════════════════════════════════════════════════════════════
     // Login Events (Audit Trail)
     // ═══════════════════════════════════════════════════════════════════════
@@ -312,6 +339,7 @@ impl AuthEvent {
             Self::PasskeyRegistered { .. } => "PasskeyRegistered.v1",
             Self::PasskeyUsed { .. } => "PasskeyUsed.v1",
             Self::PasskeyRevoked { .. } => "PasskeyRevoked.v1",
+            Self::CounterRollbackDetected { .. } => "CounterRollbackDetected.v1",
             Self::LoginAttempted { .. } => "LoginAttempted.v1",
             Self::UserLoggedIn { .. } => "UserLoggedIn.v1",
             Self::UserLoggedOut { .. } => "UserLoggedOut.v1",
