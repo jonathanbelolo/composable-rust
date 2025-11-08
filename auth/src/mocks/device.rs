@@ -83,6 +83,10 @@ impl DeviceRepository for MockDeviceRepository {
         let device = device.clone();
 
         async move {
+            // ✅ Validate inputs before storage (XSS/injection prevention)
+            crate::utils::validate_device_name(&device.name)?;
+            crate::utils::validate_platform(&device.platform)?;
+
             let mut devices_guard = devices.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
 
             if devices_guard.contains_key(&device.device_id) {

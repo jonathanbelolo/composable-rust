@@ -146,6 +146,10 @@ impl DeviceRepository for PostgresDeviceRepository {
     }
 
     async fn create_device(&self, device: &Device) -> Result<Device> {
+        // ✅ Validate inputs before database insertion (XSS/injection prevention)
+        crate::utils::validate_device_name(&device.name)?;
+        crate::utils::validate_platform(&device.platform)?;
+
         let device_type_str = match device.device_type {
             DeviceType::Mobile => "mobile",
             DeviceType::Desktop => "desktop",

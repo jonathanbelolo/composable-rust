@@ -139,6 +139,105 @@ pub fn is_valid_email(email: &str) -> bool {
     true
 }
 
+/// Validate device name.
+///
+/// # Rules
+///
+/// - Length: 1-255 characters
+/// - No control characters (`\0`, `\r`, `\n`, etc.)
+/// - No script injection characters (`<`, `>`, `"`, `'`, `&`)
+///
+/// # Examples
+///
+/// ```
+/// use composable_rust_auth::utils::validate_device_name;
+///
+/// assert!(validate_device_name("iPhone 15 Pro").is_ok());
+/// assert!(validate_device_name("Work Laptop").is_ok());
+/// assert!(validate_device_name("").is_err()); // Empty
+/// assert!(validate_device_name(&"A".repeat(256)).is_err()); // Too long
+/// ```
+///
+/// # Errors
+///
+/// Returns `AuthError::InvalidInput` if validation fails.
+pub fn validate_device_name(name: &str) -> crate::error::Result<()> {
+    use crate::error::AuthError;
+
+    if name.is_empty() {
+        return Err(AuthError::InvalidInput("Device name cannot be empty".into()));
+    }
+
+    if name.len() > 255 {
+        return Err(AuthError::InvalidInput(format!(
+            "Device name too long: {} > 255 chars",
+            name.len()
+        )));
+    }
+
+    // Check for control characters
+    if name.chars().any(|c| c.is_control()) {
+        return Err(AuthError::InvalidInput(
+            "Device name contains control characters".into(),
+        ));
+    }
+
+    // Check for injection characters (stored XSS prevention)
+    const DANGEROUS_CHARS: &[char] = &['<', '>', '"', '\'', '&', '\0'];
+    if name.chars().any(|c| DANGEROUS_CHARS.contains(&c)) {
+        return Err(AuthError::InvalidInput(
+            "Device name contains invalid characters".into(),
+        ));
+    }
+
+    Ok(())
+}
+
+/// Validate platform string.
+///
+/// # Rules
+///
+/// - Length: 1-500 characters
+/// - Must be ASCII (user agents are ASCII)
+///
+/// # Examples
+///
+/// ```
+/// use composable_rust_auth::utils::validate_platform;
+///
+/// assert!(validate_platform("Mozilla/5.0 (Windows NT 10.0; Win64; x64)").is_ok());
+/// assert!(validate_platform("Linux").is_ok());
+/// assert!(validate_platform("").is_err()); // Empty
+/// assert!(validate_platform(&"A".repeat(501)).is_err()); // Too long
+/// ```
+///
+/// # Errors
+///
+/// Returns `AuthError::InvalidInput` if validation fails.
+pub fn validate_platform(platform: &str) -> crate::error::Result<()> {
+    use crate::error::AuthError;
+
+    if platform.is_empty() {
+        return Err(AuthError::InvalidInput("Platform cannot be empty".into()));
+    }
+
+    if platform.len() > 500 {
+        return Err(AuthError::InvalidInput(format!(
+            "Platform string too long: {} > 500 chars",
+            platform.len()
+        )));
+    }
+
+    // Platform should be ASCII (user agents are ASCII)
+    if !platform.is_ascii() {
+        return Err(AuthError::InvalidInput(
+            "Platform must be ASCII".into(),
+        ));
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,5 +311,78 @@ mod tests {
         // Too long (>255 chars)
         let long_email = format!("{}@example.com", "a".repeat(250));
         assert!(!is_valid_email(&long_email));
+    }
+
+    #[test]
+    fn test_device_name_validation_valid() {
+        // Valid device names
+        assert!(validate_device_name("iPhone 15 Pro").is_ok());
+        assert!(validate_device_name("Work Laptop").is_ok());
+        assert!(validate_device_name("My Device").is_ok());
+        assert!(validate_device_name("a").is_ok()); // Minimum length
+        assert!(validate_device_name(&"A".repeat(255)).is_ok()); // Maximum length
+    }
+
+    #[test]
+    fn test_device_name_validation_empty() {
+        let result = validate_device_name("");
+        assert!(result.is_err());
+        assert!(matches!(result, Err(crate::error::AuthError::InvalidInput(_))));
+    }
+
+    #[test]
+    fn test_device_name_validation_too_long() {
+        let result = validate_device_name(&"A".repeat(256));
+        assert!(result.is_err());
+        assert!(matches!(result, Err(crate::error::AuthError::InvalidInput(_))));
+    }
+
+    #[test]
+    fn test_device_name_validation_control_chars() {
+        assert!(validate_device_name("Name\0WithNull").is_err()); // Null byte
+        assert!(validate_device_name("Name\nWithNewline").is_err()); // Newline
+        assert!(validate_device_name("Name\rWithCarriage").is_err()); // Carriage return
+        assert!(validate_device_name("Name\tWithTab").is_err()); // Tab
+    }
+
+    #[test]
+    fn test_device_name_validation_xss_prevention() {
+        // XSS attack vectors
+        assert!(validate_device_name("<script>alert(1)</script>").is_err());
+        assert!(validate_device_name("Name<img src=x>").is_err());
+        assert!(validate_device_name("Name\"onclick=\"alert(1)\"").is_err());
+        assert!(validate_device_name("Name'onclick='alert(1)'").is_err());
+        assert!(validate_device_name("Name&amp;Test").is_err());
+    }
+
+    #[test]
+    fn test_platform_validation_valid() {
+        // Valid platforms
+        assert!(validate_platform("Mozilla/5.0 (Windows NT 10.0; Win64; x64)").is_ok());
+        assert!(validate_platform("Linux").is_ok());
+        assert!(validate_platform("Darwin").is_ok());
+        assert!(validate_platform("a").is_ok()); // Minimum length
+        assert!(validate_platform(&"A".repeat(500)).is_ok()); // Maximum length
+    }
+
+    #[test]
+    fn test_platform_validation_empty() {
+        let result = validate_platform("");
+        assert!(result.is_err());
+        assert!(matches!(result, Err(crate::error::AuthError::InvalidInput(_))));
+    }
+
+    #[test]
+    fn test_platform_validation_too_long() {
+        let result = validate_platform(&"A".repeat(501));
+        assert!(result.is_err());
+        assert!(matches!(result, Err(crate::error::AuthError::InvalidInput(_))));
+    }
+
+    #[test]
+    fn test_platform_validation_non_ascii() {
+        assert!(validate_platform("Platform™").is_err()); // Non-ASCII character
+        assert!(validate_platform("платформа").is_err()); // Cyrillic
+        assert!(validate_platform("プラットフォーム").is_err()); // Japanese
     }
 }
