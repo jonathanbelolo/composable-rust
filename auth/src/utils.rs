@@ -66,7 +66,129 @@ pub fn parse_device_type(user_agent: &str) -> &'static str {
     "desktop"
 }
 
-/// Validate email address format.
+/// Validate email address format (returns Result).
+///
+/// # Rules
+///
+/// - Length: 3-255 characters
+/// - Must contain exactly one `@`
+/// - Non-empty local and domain parts
+/// - Domain must contain at least one `.`
+/// - Only alphanumeric, dots, hyphens, plus, underscore allowed
+/// - No control characters or dangerous characters
+///
+/// # Examples
+///
+/// ```
+/// use composable_rust_auth::utils::validate_email;
+///
+/// assert!(validate_email("user@example.com").is_ok());
+/// assert!(validate_email("user+tag@subdomain.example.com").is_ok());
+/// assert!(validate_email("invalid").is_err());
+/// assert!(validate_email("@example.com").is_err());
+/// ```
+///
+/// # Errors
+///
+/// Returns `AuthError::InvalidInput` if validation fails.
+pub fn validate_email(email: &str) -> crate::error::Result<()> {
+    use crate::error::AuthError;
+
+    // Length validation
+    if email.is_empty() {
+        return Err(AuthError::InvalidInput("Email cannot be empty".into()));
+    }
+
+    if email.len() < 3 {
+        return Err(AuthError::InvalidInput(format!(
+            "Email too short: {} < 3 chars",
+            email.len()
+        )));
+    }
+
+    if email.len() > 255 {
+        return Err(AuthError::InvalidInput(format!(
+            "Email too long: {} > 255 chars",
+            email.len()
+        )));
+    }
+
+    // Must contain exactly one @
+    let parts: Vec<&str> = email.split('@').collect();
+    if parts.len() != 2 {
+        return Err(AuthError::InvalidInput(
+            "Email must contain exactly one '@'".into(),
+        ));
+    }
+
+    let local = parts[0];
+    let domain = parts[1];
+
+    // Local and domain parts must be non-empty
+    if local.is_empty() {
+        return Err(AuthError::InvalidInput("Email local part cannot be empty".into()));
+    }
+
+    if domain.is_empty() {
+        return Err(AuthError::InvalidInput("Email domain cannot be empty".into()));
+    }
+
+    // Domain must contain at least one dot
+    if !domain.contains('.') {
+        return Err(AuthError::InvalidInput(
+            "Email domain must contain at least one '.'".into(),
+        ));
+    }
+
+    // Check for control characters (security)
+    if email.chars().any(|c| c.is_control()) {
+        return Err(AuthError::InvalidInput(
+            "Email contains control characters".into(),
+        ));
+    }
+
+    // Check for dangerous characters (XSS/injection prevention)
+    const DANGEROUS_CHARS: &[char] = &['<', '>', '"', '\'', '&', '\\', '\0'];
+    if email.chars().any(|c| DANGEROUS_CHARS.contains(&c)) {
+        return Err(AuthError::InvalidInput(
+            "Email contains invalid characters".into(),
+        ));
+    }
+
+    // Basic character validation
+    let valid_local_chars = |c: char| {
+        c.is_alphanumeric() || c == '.' || c == '-' || c == '+' || c == '_'
+    };
+
+    let valid_domain_chars = |c: char| {
+        c.is_alphanumeric() || c == '.' || c == '-'
+    };
+
+    if !local.chars().all(valid_local_chars) {
+        return Err(AuthError::InvalidInput(
+            "Email local part contains invalid characters".into(),
+        ));
+    }
+
+    if !domain.chars().all(valid_domain_chars) {
+        return Err(AuthError::InvalidInput(
+            "Email domain contains invalid characters".into(),
+        ));
+    }
+
+    // Domain parts between dots must be non-empty
+    for part in domain.split('.') {
+        if part.is_empty() {
+            return Err(AuthError::InvalidInput(
+                "Email domain has empty parts between dots".into(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate email address format (returns bool).
 ///
 /// This performs basic RFC 5322 validation:
 /// - Must contain exactly one `@`
@@ -88,6 +210,13 @@ pub fn parse_device_type(user_agent: &str) -> &'static str {
 /// ```
 #[must_use]
 pub fn is_valid_email(email: &str) -> bool {
+    validate_email(email).is_ok()
+}
+
+/// Legacy email validation (kept for backward compatibility).
+#[must_use]
+#[allow(dead_code)]
+fn is_valid_email_legacy(email: &str) -> bool {
     // Basic validation
     if email.len() < 3 || email.len() > 255 {
         return false;
@@ -384,5 +513,148 @@ mod tests {
         assert!(validate_platform("Platform™").is_err()); // Non-ASCII character
         assert!(validate_platform("платформа").is_err()); // Cyrillic
         assert!(validate_platform("プラットフォーム").is_err()); // Japanese
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Email Validation Tests (validate_email)
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_validate_email_valid() {
+        // Valid email addresses
+        assert!(validate_email("user@example.com").is_ok());
+        assert!(validate_email("user.name@example.com").is_ok());
+        assert!(validate_email("user+tag@example.com").is_ok());
+        assert!(validate_email("user_name@subdomain.example.com").is_ok());
+        assert!(validate_email("user-name@example.co.uk").is_ok());
+        assert!(validate_email("a@b.c").is_ok()); // Minimum valid length
+    }
+
+    #[test]
+    fn test_validate_email_empty() {
+        let result = validate_email("");
+        assert!(result.is_err());
+        assert!(matches!(result, Err(crate::error::AuthError::InvalidInput(_))));
+    }
+
+    #[test]
+    fn test_validate_email_too_short() {
+        assert!(validate_email("a@").is_err()); // Too short
+        assert!(validate_email("ab").is_err()); // No @
+    }
+
+    #[test]
+    fn test_validate_email_too_long() {
+        let long_email = format!("{}@example.com", "a".repeat(250));
+        let result = validate_email(&long_email);
+        assert!(result.is_err());
+        assert!(matches!(result, Err(crate::error::AuthError::InvalidInput(_))));
+    }
+
+    #[test]
+    fn test_validate_email_no_at_sign() {
+        assert!(validate_email("invalid").is_err());
+        assert!(validate_email("invalid.example.com").is_err());
+    }
+
+    #[test]
+    fn test_validate_email_multiple_at_signs() {
+        assert!(validate_email("user@@example.com").is_err());
+        assert!(validate_email("user@domain@example.com").is_err());
+    }
+
+    #[test]
+    fn test_validate_email_empty_local_part() {
+        assert!(validate_email("@example.com").is_err());
+    }
+
+    #[test]
+    fn test_validate_email_empty_domain() {
+        assert!(validate_email("user@").is_err());
+    }
+
+    #[test]
+    fn test_validate_email_no_dot_in_domain() {
+        assert!(validate_email("user@example").is_err());
+        assert!(validate_email("a@b").is_err());
+    }
+
+    #[test]
+    fn test_validate_email_empty_domain_parts() {
+        assert!(validate_email("user@example.").is_err()); // Empty part after dot
+        assert!(validate_email("user@.example.com").is_err()); // Empty part before dot
+        assert!(validate_email("user@example..com").is_err()); // Empty part between dots
+    }
+
+    #[test]
+    fn test_validate_email_control_characters() {
+        assert!(validate_email("user\0@example.com").is_err()); // Null byte
+        assert!(validate_email("user\n@example.com").is_err()); // Newline
+        assert!(validate_email("user\r@example.com").is_err()); // Carriage return
+        assert!(validate_email("user\t@example.com").is_err()); // Tab
+        assert!(validate_email("user@example.com\n").is_err()); // Newline at end
+    }
+
+    #[test]
+    fn test_validate_email_xss_prevention() {
+        // XSS attack vectors
+        assert!(validate_email("user<script>@example.com").is_err());
+        assert!(validate_email("user@example.com<img>").is_err());
+        assert!(validate_email("user\"onclick\"@example.com").is_err());
+        assert!(validate_email("user'onclick'@example.com").is_err());
+        assert!(validate_email("user&amp;@example.com").is_err());
+        assert!(validate_email("user\\@example.com").is_err()); // Backslash
+    }
+
+    #[test]
+    fn test_validate_email_injection_prevention() {
+        // SQL injection patterns
+        assert!(validate_email("user';DROP TABLE users--@example.com").is_err());
+        assert!(validate_email("admin'--@example.com").is_err());
+
+        // Command injection patterns
+        assert!(validate_email("user@example.com;rm -rf /").is_err());
+        assert!(validate_email("user@example.com`whoami`").is_err());
+    }
+
+    #[test]
+    fn test_validate_email_invalid_local_chars() {
+        assert!(validate_email("user*@example.com").is_err()); // Asterisk
+        assert!(validate_email("user!@example.com").is_err()); // Exclamation
+        assert!(validate_email("user#@example.com").is_err()); // Hash
+        assert!(validate_email("user$@example.com").is_err()); // Dollar
+        assert!(validate_email("user%@example.com").is_err()); // Percent
+        assert!(validate_email("user^@example.com").is_err()); // Caret
+        assert!(validate_email("user(@example.com").is_err()); // Parenthesis
+        assert!(validate_email("user)@example.com").is_err()); // Parenthesis
+    }
+
+    #[test]
+    fn test_validate_email_invalid_domain_chars() {
+        assert!(validate_email("user@exam_ple.com").is_err()); // Underscore in domain
+        assert!(validate_email("user@exam+ple.com").is_err()); // Plus in domain
+        assert!(validate_email("user@exam*ple.com").is_err()); // Asterisk in domain
+        assert!(validate_email("user@exam ple.com").is_err()); // Space in domain
+    }
+
+    #[test]
+    fn test_validate_email_valid_special_chars() {
+        // These should be ALLOWED (RFC 5322 compliant)
+        assert!(validate_email("user.name@example.com").is_ok()); // Dot in local
+        assert!(validate_email("user-name@example.com").is_ok()); // Hyphen in local
+        assert!(validate_email("user+tag@example.com").is_ok()); // Plus in local
+        assert!(validate_email("user_name@example.com").is_ok()); // Underscore in local
+        assert!(validate_email("user@example-domain.com").is_ok()); // Hyphen in domain
+    }
+
+    #[test]
+    fn test_is_valid_email_backward_compatibility() {
+        // Ensure is_valid_email() still works for backward compatibility
+        assert!(is_valid_email("user@example.com"));
+        assert!(is_valid_email("user.name@example.com"));
+        assert!(!is_valid_email("invalid"));
+        assert!(!is_valid_email("@example.com"));
+        assert!(!is_valid_email("user@"));
+        assert!(!is_valid_email("user@@example.com"));
     }
 }
