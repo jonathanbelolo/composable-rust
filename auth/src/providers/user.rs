@@ -15,10 +15,10 @@ pub trait UserRepository: Send + Sync {
     /// Returns error if:
     /// - Database query fails
     /// - User not found → `AuthError::ResourceNotFound`
-    async fn get_user_by_id(
+    fn get_user_by_id(
         &self,
         user_id: UserId,
-    ) -> Result<User>;
+    ) -> impl std::future::Future<Output = Result<User>> + Send;
 
     /// Get user by email.
     ///
@@ -27,10 +27,10 @@ pub trait UserRepository: Send + Sync {
     /// Returns error if:
     /// - Database query fails
     /// - User not found → `AuthError::ResourceNotFound`
-    async fn get_user_by_email(
+    fn get_user_by_email(
         &self,
         email: &str,
-    ) -> Result<User>;
+    ) -> impl std::future::Future<Output = Result<User>> + Send;
 
     /// Create user.
     ///
@@ -39,10 +39,10 @@ pub trait UserRepository: Send + Sync {
     /// Returns error if:
     /// - Database query fails
     /// - Email already exists
-    async fn create_user(
+    fn create_user(
         &self,
         user: &User,
-    ) -> Result<User>;
+    ) -> impl std::future::Future<Output = Result<User>> + Send;
 
     /// Update user.
     ///
@@ -51,10 +51,10 @@ pub trait UserRepository: Send + Sync {
     /// Returns error if:
     /// - Database query fails
     /// - User not found
-    async fn update_user(
+    fn update_user(
         &self,
         user: &User,
-    ) -> Result<User>;
+    ) -> impl std::future::Future<Output = Result<User>> + Send;
 
     /// Check if email exists.
     ///
@@ -65,10 +65,10 @@ pub trait UserRepository: Send + Sync {
     /// # Errors
     ///
     /// Returns error if database query fails.
-    async fn email_exists(
+    fn email_exists(
         &self,
         email: &str,
-    ) -> Result<bool>;
+    ) -> impl std::future::Future<Output = Result<bool>> + Send;
 
     // ═══════════════════════════════════════════════════════════════════════
     // OAuth Links
@@ -80,11 +80,11 @@ pub trait UserRepository: Send + Sync {
     /// Returns error if:
     /// - Database query fails
     /// - Link not found → `AuthError::ResourceNotFound`
-    async fn get_oauth_link(
+    fn get_oauth_link(
         &self,
         user_id: UserId,
         provider: OAuthProvider,
-    ) -> Result<OAuthLink>;
+    ) -> impl std::future::Future<Output = Result<OAuthLink>> + Send;
 
     /// Get OAuth link by provider user ID.
     ///
@@ -93,32 +93,32 @@ pub trait UserRepository: Send + Sync {
     /// Returns error if:
     /// - Database query fails
     /// - Link not found → `AuthError::ResourceNotFound`
-    async fn get_oauth_link_by_provider_id(
+    fn get_oauth_link_by_provider_id(
         &self,
         provider: OAuthProvider,
         provider_user_id: &str,
-    ) -> Result<OAuthLink>;
+    ) -> impl std::future::Future<Output = Result<OAuthLink>> + Send;
 
     /// Create or update OAuth link.
     ///
     /// # Errors
     ///
     /// Returns error if database query fails.
-    async fn upsert_oauth_link(
+    fn upsert_oauth_link(
         &self,
         link: &OAuthLink,
-    ) -> Result<OAuthLink>;
+    ) -> impl std::future::Future<Output = Result<OAuthLink>> + Send;
 
     /// Delete OAuth link.
     ///
     /// # Errors
     ///
     /// Returns error if database query fails.
-    async fn delete_oauth_link(
+    fn delete_oauth_link(
         &self,
         user_id: UserId,
         provider: OAuthProvider,
-    ) -> Result<()>;
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
 
     // ═══════════════════════════════════════════════════════════════════════
     // Magic Link Tokens
@@ -128,10 +128,10 @@ pub trait UserRepository: Send + Sync {
     /// # Errors
     ///
     /// Returns error if database query fails.
-    async fn create_magic_link_token(
+    fn create_magic_link_token(
         &self,
         token: &MagicLinkToken,
-    ) -> Result<()>;
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// Get magic link token.
     ///
@@ -142,20 +142,20 @@ pub trait UserRepository: Send + Sync {
     /// - Token not found → `AuthError::MagicLinkInvalid`
     /// - Token expired → `AuthError::MagicLinkExpired`
     /// - Token already used → `AuthError::MagicLinkAlreadyUsed`
-    async fn get_magic_link_token(
+    fn get_magic_link_token(
         &self,
         token_hash: &str,
-    ) -> Result<MagicLinkToken>;
+    ) -> impl std::future::Future<Output = Result<MagicLinkToken>> + Send;
 
     /// Mark magic link token as used.
     ///
     /// # Errors
     ///
     /// Returns error if database query fails.
-    async fn mark_magic_link_used(
+    fn mark_magic_link_used(
         &self,
         token_hash: &str,
-    ) -> Result<()>;
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// Delete expired magic link tokens.
     ///
@@ -166,9 +166,9 @@ pub trait UserRepository: Send + Sync {
     /// # Errors
     ///
     /// Returns error if database query fails.
-    async fn delete_expired_magic_links(
+    fn delete_expired_magic_links(
         &self,
-    ) -> Result<usize>;
+    ) -> impl std::future::Future<Output = Result<usize>> + Send;
 
     // ═══════════════════════════════════════════════════════════════════════
     // Passkey Credentials
@@ -180,49 +180,49 @@ pub trait UserRepository: Send + Sync {
     /// Returns error if:
     /// - Database query fails
     /// - Credential not found → `AuthError::PasskeyNotFound`
-    async fn get_passkey_credential(
+    fn get_passkey_credential(
         &self,
         credential_id: &str,
-    ) -> Result<PasskeyCredential>;
+    ) -> impl std::future::Future<Output = Result<PasskeyCredential>> + Send;
 
     /// Get all passkey credentials for a user.
     ///
     /// # Errors
     ///
     /// Returns error if database query fails.
-    async fn get_user_passkey_credentials(
+    fn get_user_passkey_credentials(
         &self,
         user_id: UserId,
-    ) -> Result<Vec<PasskeyCredential>>;
+    ) -> impl std::future::Future<Output = Result<Vec<PasskeyCredential>>> + Send;
 
     /// Create passkey credential.
     ///
     /// # Errors
     ///
     /// Returns error if database query fails.
-    async fn create_passkey_credential(
+    fn create_passkey_credential(
         &self,
         credential: &PasskeyCredential,
-    ) -> Result<()>;
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// Update passkey counter.
     ///
     /// # Errors
     ///
     /// Returns error if database query fails.
-    async fn update_passkey_counter(
+    fn update_passkey_counter(
         &self,
         credential_id: &str,
         counter: u32,
-    ) -> Result<()>;
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// Delete passkey credential.
     ///
     /// # Errors
     ///
     /// Returns error if database query fails.
-    async fn delete_passkey_credential(
+    fn delete_passkey_credential(
         &self,
         credential_id: &str,
-    ) -> Result<()>;
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
 }

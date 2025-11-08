@@ -26,11 +26,11 @@ pub trait SessionStore: Send + Sync {
     /// Returns error if:
     /// - Network request fails
     /// - Session ID already exists
-    async fn create_session(
+    fn create_session(
         &self,
         session: &Session,
         ttl: Duration,
-    ) -> Result<()>;
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// Get session.
     ///
@@ -44,10 +44,10 @@ pub trait SessionStore: Send + Sync {
     /// - Network request fails
     /// - Session not found → `AuthError::SessionNotFound`
     /// - Session expired → `AuthError::SessionExpired`
-    async fn get_session(
+    fn get_session(
         &self,
         session_id: SessionId,
-    ) -> Result<Session>;
+    ) -> impl std::future::Future<Output = Result<Session>> + Send;
 
     /// Update session.
     ///
@@ -58,30 +58,30 @@ pub trait SessionStore: Send + Sync {
     /// Returns error if:
     /// - Network request fails
     /// - Session not found
-    async fn update_session(
+    fn update_session(
         &self,
         session: &Session,
-    ) -> Result<()>;
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// Delete session.
     ///
     /// # Errors
     ///
     /// Returns error if network request fails.
-    async fn delete_session(
+    fn delete_session(
         &self,
         session_id: SessionId,
-    ) -> Result<()>;
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// Delete all sessions for a user.
     ///
     /// # Errors
     ///
     /// Returns error if network request fails.
-    async fn delete_user_sessions(
+    fn delete_user_sessions(
         &self,
         user_id: UserId,
-    ) -> Result<usize>;
+    ) -> impl std::future::Future<Output = Result<usize>> + Send;
 
     /// Check if session exists.
     ///
@@ -92,10 +92,10 @@ pub trait SessionStore: Send + Sync {
     /// # Errors
     ///
     /// Returns error if network request fails.
-    async fn exists(
+    fn exists(
         &self,
         session_id: SessionId,
-    ) -> Result<bool>;
+    ) -> impl std::future::Future<Output = Result<bool>> + Send;
 
     /// Get remaining TTL for session.
     ///
@@ -106,8 +106,8 @@ pub trait SessionStore: Send + Sync {
     /// # Errors
     ///
     /// Returns error if network request fails.
-    async fn get_ttl(
+    fn get_ttl(
         &self,
         session_id: SessionId,
-    ) -> Result<Option<Duration>>;
+    ) -> impl std::future::Future<Output = Result<Option<Duration>>> + Send;
 }

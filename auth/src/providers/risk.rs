@@ -31,10 +31,10 @@ pub trait RiskCalculator: Send + Sync {
     /// Returns error if:
     /// - Network request fails (IP geolocation, etc.)
     /// - Database query fails
-    async fn calculate_login_risk(
+    fn calculate_login_risk(
         &self,
         context: &LoginContext,
-    ) -> Result<RiskAssessment>;
+    ) -> impl std::future::Future<Output = Result<RiskAssessment>> + Send;
 
     /// Check if IP address is suspicious.
     ///
@@ -45,10 +45,10 @@ pub trait RiskCalculator: Send + Sync {
     /// # Errors
     ///
     /// Returns error if network request fails.
-    async fn is_ip_suspicious(
+    fn is_ip_suspicious(
         &self,
         ip_address: std::net::IpAddr,
-    ) -> Result<bool>;
+    ) -> impl std::future::Future<Output = Result<bool>> + Send;
 
     /// Get IP geolocation.
     ///
@@ -59,10 +59,10 @@ pub trait RiskCalculator: Send + Sync {
     /// # Errors
     ///
     /// Returns error if network request fails.
-    async fn get_ip_location(
+    fn get_ip_location(
         &self,
         ip_address: std::net::IpAddr,
-    ) -> Result<IpLocation>;
+    ) -> impl std::future::Future<Output = Result<IpLocation>> + Send;
 
     /// Detect impossible travel.
     ///
@@ -76,12 +76,12 @@ pub trait RiskCalculator: Send + Sync {
     /// # Errors
     ///
     /// Returns error if calculation fails.
-    async fn detect_impossible_travel(
+    fn detect_impossible_travel(
         &self,
         from_location: &str,
         to_location: &str,
         time_delta: chrono::Duration,
-    ) -> Result<bool>;
+    ) -> impl std::future::Future<Output = Result<bool>> + Send;
 
     /// Check if credentials have been leaked.
     ///
@@ -94,10 +94,10 @@ pub trait RiskCalculator: Send + Sync {
     /// # Errors
     ///
     /// Returns error if network request fails.
-    async fn check_credential_breach(
+    fn check_credential_breach(
         &self,
         email: &str,
-    ) -> Result<bool>;
+    ) -> impl std::future::Future<Output = Result<bool>> + Send;
 }
 
 /// IP geolocation information.

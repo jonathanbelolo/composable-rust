@@ -22,20 +22,20 @@ pub trait DeviceRepository: Send + Sync {
     /// Returns error if:
     /// - Database query fails
     /// - Device not found → `AuthError::ResourceNotFound`
-    async fn get_device(
+    fn get_device(
         &self,
         device_id: DeviceId,
-    ) -> Result<Device>;
+    ) -> impl std::future::Future<Output = Result<Device>> + Send;
 
     /// Get all devices for a user.
     ///
     /// # Errors
     ///
     /// Returns error if database query fails.
-    async fn get_user_devices(
+    fn get_user_devices(
         &self,
         user_id: UserId,
-    ) -> Result<Vec<Device>>;
+    ) -> impl std::future::Future<Output = Result<Vec<Device>>> + Send;
 
     /// Create device.
     ///
@@ -44,10 +44,10 @@ pub trait DeviceRepository: Send + Sync {
     /// Returns error if:
     /// - Database query fails
     /// - Device ID already exists
-    async fn create_device(
+    fn create_device(
         &self,
         device: &Device,
-    ) -> Result<Device>;
+    ) -> impl std::future::Future<Output = Result<Device>> + Send;
 
     /// Update device.
     ///
@@ -56,42 +56,42 @@ pub trait DeviceRepository: Send + Sync {
     /// Returns error if:
     /// - Database query fails
     /// - Device not found
-    async fn update_device(
+    fn update_device(
         &self,
         device: &Device,
-    ) -> Result<Device>;
+    ) -> impl std::future::Future<Output = Result<Device>> + Send;
 
     /// Update device trust level.
     ///
     /// # Errors
     ///
     /// Returns error if database query fails.
-    async fn update_device_trust_level(
+    fn update_device_trust_level(
         &self,
         device_id: DeviceId,
         trust_level: DeviceTrustLevel,
-    ) -> Result<()>;
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// Update device last seen.
     ///
     /// # Errors
     ///
     /// Returns error if database query fails.
-    async fn update_device_last_seen(
+    fn update_device_last_seen(
         &self,
         device_id: DeviceId,
         last_seen: chrono::DateTime<chrono::Utc>,
-    ) -> Result<()>;
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// Delete device.
     ///
     /// # Errors
     ///
     /// Returns error if database query fails.
-    async fn delete_device(
+    fn delete_device(
         &self,
         device_id: DeviceId,
-    ) -> Result<()>;
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// Find device by fingerprint.
     ///
@@ -105,10 +105,10 @@ pub trait DeviceRepository: Send + Sync {
     /// # Errors
     ///
     /// Returns error if database query fails.
-    async fn find_device_by_fingerprint(
+    fn find_device_by_fingerprint(
         &self,
         user_id: UserId,
         user_agent: &str,
         platform: &str,
-    ) -> Result<Option<Device>>;
+    ) -> impl std::future::Future<Output = Result<Option<Device>>> + Send;
 }

@@ -24,12 +24,12 @@ pub trait OAuth2Provider: Send + Sync {
     /// # Errors
     ///
     /// Returns error if URL construction fails.
-    async fn build_authorization_url(
+    fn build_authorization_url(
         &self,
         provider: OAuthProvider,
         state: &str,
         redirect_uri: &str,
-    ) -> Result<String>;
+    ) -> impl std::future::Future<Output = Result<String>> + Send;
 
     /// Exchange authorization code for access token.
     ///
@@ -43,12 +43,12 @@ pub trait OAuth2Provider: Send + Sync {
     /// - Network request fails
     /// - Provider rejects the code
     /// - Response is malformed
-    async fn exchange_code(
+    fn exchange_code(
         &self,
         provider: OAuthProvider,
         code: &str,
         redirect_uri: &str,
-    ) -> Result<OAuthTokenResponse>;
+    ) -> impl std::future::Future<Output = Result<OAuthTokenResponse>> + Send;
 
     /// Fetch user info from provider.
     ///
@@ -62,11 +62,11 @@ pub trait OAuth2Provider: Send + Sync {
     /// - Network request fails
     /// - Token is invalid
     /// - Response is malformed
-    async fn fetch_user_info(
+    fn fetch_user_info(
         &self,
         provider: OAuthProvider,
         access_token: &str,
-    ) -> Result<OAuthUserInfo>;
+    ) -> impl std::future::Future<Output = Result<OAuthUserInfo>> + Send;
 
     /// Refresh access token.
     ///
@@ -80,11 +80,11 @@ pub trait OAuth2Provider: Send + Sync {
     /// - Network request fails
     /// - Refresh token is invalid
     /// - Response is malformed
-    async fn refresh_token(
+    fn refresh_token(
         &self,
         provider: OAuthProvider,
         refresh_token: &str,
-    ) -> Result<OAuthTokenResponse>;
+    ) -> impl std::future::Future<Output = Result<OAuthTokenResponse>> + Send;
 }
 
 /// OAuth token response.

@@ -24,12 +24,12 @@ pub trait WebAuthnProvider: Send + Sync {
     /// # Errors
     ///
     /// Returns error if challenge generation fails.
-    async fn generate_registration_challenge(
+    fn generate_registration_challenge(
         &self,
         user_id: UserId,
         username: &str,
         display_name: &str,
-    ) -> Result<WebAuthnChallenge>;
+    ) -> impl std::future::Future<Output = Result<WebAuthnChallenge>> + Send;
 
     /// Verify registration response.
     ///
@@ -43,13 +43,13 @@ pub trait WebAuthnProvider: Send + Sync {
     /// - Challenge is invalid or expired
     /// - Attestation verification fails
     /// - Origin or RP ID mismatch
-    async fn verify_registration(
+    fn verify_registration(
         &self,
         challenge_id: &str,
         attestation_response: &str,
         expected_origin: &str,
         expected_rp_id: &str,
-    ) -> Result<WebAuthnRegistrationResult>;
+    ) -> impl std::future::Future<Output = Result<WebAuthnRegistrationResult>> + Send;
 
     /// Generate authentication challenge.
     ///
@@ -62,11 +62,11 @@ pub trait WebAuthnProvider: Send + Sync {
     /// Returns error if:
     /// - User has no credentials
     /// - Challenge generation fails
-    async fn generate_authentication_challenge(
+    fn generate_authentication_challenge(
         &self,
         user_id: UserId,
         credentials: Vec<PasskeyCredential>,
-    ) -> Result<WebAuthnChallenge>;
+    ) -> impl std::future::Future<Output = Result<WebAuthnChallenge>> + Send;
 
     /// Verify authentication response.
     ///
@@ -81,14 +81,14 @@ pub trait WebAuthnProvider: Send + Sync {
     /// - Assertion verification fails
     /// - Signature is invalid
     /// - Counter rollback detected
-    async fn verify_authentication(
+    fn verify_authentication(
         &self,
         challenge_id: &str,
         assertion_response: &str,
         credential: &PasskeyCredential,
         expected_origin: &str,
         expected_rp_id: &str,
-    ) -> Result<WebAuthnAuthenticationResult>;
+    ) -> impl std::future::Future<Output = Result<WebAuthnAuthenticationResult>> + Send;
 }
 
 /// WebAuthn challenge.

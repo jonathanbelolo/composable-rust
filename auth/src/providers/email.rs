@@ -23,24 +23,24 @@ pub trait EmailProvider: Send + Sync {
     /// - Network request fails
     /// - Email provider rejects the request
     /// - Email is invalid
-    async fn send_magic_link(
+    fn send_magic_link(
         &self,
         to: &str,
         token: &str,
         base_url: &str,
         expires_at: DateTime<Utc>,
-    ) -> Result<()>;
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// Send password reset email (future).
     ///
     /// Not implemented in Phase 6 (passwordless-first).
-    async fn send_password_reset(
+    fn send_password_reset(
         &self,
         to: &str,
         token: &str,
         base_url: &str,
         expires_at: DateTime<Utc>,
-    ) -> Result<()>;
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// Send account verification email.
     ///
@@ -55,12 +55,12 @@ pub trait EmailProvider: Send + Sync {
     /// Returns error if:
     /// - Network request fails
     /// - Email provider rejects the request
-    async fn send_verification_email(
+    fn send_verification_email(
         &self,
         to: &str,
         token: &str,
         base_url: &str,
-    ) -> Result<()>;
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// Send security alert email.
     ///
@@ -75,10 +75,10 @@ pub trait EmailProvider: Send + Sync {
     /// Returns error if:
     /// - Network request fails
     /// - Email provider rejects the request
-    async fn send_security_alert(
+    fn send_security_alert(
         &self,
         to: &str,
         subject: &str,
         message: &str,
-    ) -> Result<()>;
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
 }
