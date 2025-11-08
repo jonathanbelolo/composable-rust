@@ -236,6 +236,31 @@ Implement authentication and authorization as first-class composable primitives 
   - [ ] Revoke all devices (nuclear option)
   - [ ] Audit logging for all revocations
 
+### Device Trust Levels (Progressive Trust)
+
+**See**: `plans/phase-6/advanced-features.md` for detailed specification
+
+- [ ] Trust level calculation (`auth/src/devices/trust.rs`)
+  - [ ] `DeviceTrustLevel` enum (Unknown, Recognized, Familiar, Trusted, HighlyTrusted)
+  - [ ] Calculate trust based on age, login count, user marking
+  - [ ] Allow actions per trust level
+  - [ ] Risk modifier for integration with risk-based auth
+
+- [ ] Add metrics to RegisteredDevice
+  - [ ] `login_count` field
+  - [ ] `user_marked_trusted` field (replaces boolean `trusted`)
+  - [ ] Update schema migration
+
+- [ ] Auto-promotion suggestions (`auth/src/devices/promotion.rs`)
+  - [ ] Check promotion eligibility (30 days, 20+ logins)
+  - [ ] Generate promotion suggestions
+  - [ ] User acceptance/rejection tracking
+
+- [ ] Integration
+  - [ ] Use trust level in risk calculation
+  - [ ] UI for device management with trust levels
+  - [ ] Metrics for devices by trust level
+
 ### Session Store Trait (Redis - Ephemeral)
 
 **Critical**: Sessions are ephemeral (TTL-based) and stored in Redis. They reference devices from PostgreSQL.
@@ -318,6 +343,79 @@ Implement authentication and authorization as first-class composable primitives 
   - [ ] Auto-link if email verified by both providers
   - [ ] Audit event for security monitoring
   - [ ] Can be disabled for stricter security
+
+### Risk-Based Adaptive Authentication
+
+**See**: `plans/phase-6/advanced-features.md` for detailed specification
+
+- [ ] Risk calculator service (`auth/src/risk/calculator.rs`)
+  - [ ] `RiskCalculator` with GeoIP and breach database integration
+  - [ ] Calculate login risk from context (device, location, time, patterns)
+  - [ ] Risk factors: new device, new location, impossible travel, unusual time, breach database
+  - [ ] Risk levels: Low, Medium, High, Critical
+  - [ ] Select required challenges based on risk level
+
+- [ ] Add risk fields to data models
+  - [ ] `RegisteredDevice`: risk_score, usual_ip_ranges, usual_login_hours, failed_attempts
+  - [ ] `Session`: login_risk_score, current_risk_level, requires_step_up
+
+- [ ] Integration
+  - [ ] GeoIP database (MaxMind GeoLite2)
+  - [ ] HaveIBeenPwned API integration
+  - [ ] Device location tracking (PostgreSQL)
+  - [ ] Impossible travel detection algorithm
+  - [ ] Security alerting for critical risk events
+  - [ ] Metrics: risk score distribution, risk factors, blocked logins
+
+### Granular Permission Caching
+
+**See**: `plans/phase-6/advanced-features.md` for detailed specification
+
+- [ ] Permission cache service (`auth/src/permissions/cache.rs`)
+  - [ ] `PermissionCache` with Redis hash storage
+  - [ ] Lazy-load permissions on-demand (not in session)
+  - [ ] Per-permission TTL based on criticality (1 min to 1 hour)
+  - [ ] Invalidation API (single permission or all)
+
+- [ ] Remove permissions from Session
+  - [ ] Sessions store only session_id, user_id, device_id
+  - [ ] Permissions loaded from Redis hash on each check
+
+- [ ] Redis hash structure
+  - [ ] Key: `permission:{user_id}`
+  - [ ] Hash: `{permission_name -> expiry_timestamp}`
+  - [ ] TTL: Critical=1min, High=5min, Medium=15min, Low=1hour
+
+- [ ] Integration
+  - [ ] Axum middleware for permission checks
+  - [ ] Batch permission loading
+  - [ ] Request-level caching
+  - [ ] Metrics: cache hits/misses, check duration
+
+### Step-Up Authentication
+
+**See**: `plans/phase-6/advanced-features.md` for detailed specification
+
+- [ ] Elevation scope enum (`auth/src/elevation/mod.rs`)
+  - [ ] `ElevationScope`: DeleteAccount, TransferMoney, ChangeEmail, ManageUsers, ViewSensitiveData
+  - [ ] Duration per scope (1-10 minutes)
+  - [ ] Required challenge per scope
+
+- [ ] Add elevation fields to Session
+  - [ ] `elevated_until: Option<DateTime>`
+  - [ ] `elevation_scope: Option<ElevationScope>`
+
+- [ ] Step-up challenge flow
+  - [ ] Initiate step-up (generate challenge)
+  - [ ] Verify step-up (validate challenge)
+  - [ ] Grant elevation (update session with expiry)
+  - [ ] Require elevation middleware
+
+- [ ] Integration
+  - [ ] Axum middleware: `require_elevation()`
+  - [ ] Step-up challenge endpoints
+  - [ ] Audit logging for all elevation grants
+  - [ ] Metrics: elevation requests, grants, by scope
 
 ### Core Authorization Types
 
