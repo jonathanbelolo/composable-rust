@@ -14,6 +14,8 @@ use std::sync::{Arc, Mutex};
 pub struct MockUserRepository {
     users: Arc<Mutex<HashMap<UserId, User>>>,
     users_by_email: Arc<Mutex<HashMap<String, User>>>,
+    /// Passkey credentials storage for atomic counter update testing
+    passkey_credentials: Arc<Mutex<HashMap<String, PasskeyCredential>>>,
 }
 
 impl MockUserRepository {
@@ -23,6 +25,7 @@ impl MockUserRepository {
         Self {
             users: Arc::new(Mutex::new(HashMap::new())),
             users_by_email: Arc::new(Mutex::new(HashMap::new())),
+            passkey_credentials: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -193,9 +196,19 @@ impl UserRepository for MockUserRepository {
     // Passkey credentials - simplified implementations
     fn get_passkey_credential(
         &self,
-        _credential_id: &str,
+        credential_id: &str,
     ) -> impl Future<Output = Result<PasskeyCredential>> + Send {
-        async move { Err(AuthError::PasskeyNotFound) }
+        let credentials = Arc::clone(&self.passkey_credentials);
+        let credential_id = credential_id.to_string();
+
+        async move {
+            credentials
+                .lock()
+                .map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?
+                .get(&credential_id)
+                .cloned()
+                .ok_or(AuthError::PasskeyNotFound)
+        }
     }
 
     fn get_user_passkey_credentials(
@@ -207,9 +220,19 @@ impl UserRepository for MockUserRepository {
 
     fn create_passkey_credential(
         &self,
-        _credential: &PasskeyCredential,
+        credential: &PasskeyCredential,
     ) -> impl Future<Output = Result<()>> + Send {
-        async move { Ok(()) }
+        let credentials = Arc::clone(&self.passkey_credentials);
+        let credential = credential.clone();
+
+        async move {
+            let mut credentials_guard = credentials
+                .lock()
+                .map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
+
+            credentials_guard.insert(credential.credential_id.clone(), credential);
+            Ok(())
+        }
     }
 
     fn update_passkey_counter(
@@ -222,19 +245,31 @@ impl UserRepository for MockUserRepository {
 
     fn update_passkey_counter_atomic(
         &self,
-        _credential_id: &str,
-        _expected_old_counter: u32,
-        _new_counter: u32,
+        credential_id: &str,
+        expected_old_counter: u32,
+        new_counter: u32,
     ) -> impl Future<Output = Result<bool>> + Send {
-        // TODO: In a production implementation, this would:
-        // 1. Store passkey credentials in a HashMap<String, PasskeyCredential>
-        // 2. Lock the credential
-        // 3. Check if counter == expected_old_counter
-        // 4. If yes, update to new_counter and return Ok(true)
-        // 5. If no, return Ok(false)
-        //
-        // For now, always return Ok(true) to allow tests to pass
-        async move { Ok(true) }
+        let credentials = Arc::clone(&self.passkey_credentials);
+        let credential_id = credential_id.to_string();
+
+        async move {
+            let mut credentials_guard = credentials
+                .lock()
+                .map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
+
+            // Get mutable reference to credential
+            let credential = credentials_guard
+                .get_mut(&credential_id)
+                .ok_or(AuthError::PasskeyNotFound)?;
+
+            // Atomic compare-and-swap: only update if counter matches expected value
+            if credential.counter == expected_old_counter {
+                credential.counter = new_counter;
+                Ok(true) // CAS succeeded
+            } else {
+                Ok(false) // CAS failed - counter was changed by concurrent request
+            }
+        }
     }
 
     fn delete_passkey_credential(

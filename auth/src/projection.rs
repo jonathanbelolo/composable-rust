@@ -381,7 +381,8 @@ impl Projection for AuthProjection {
             | AuthEvent::UserLoggedOut { .. }
             | AuthEvent::DeviceRevoked { .. }
             | AuthEvent::OAuthAccountUnlinked { .. }
-            | AuthEvent::PasskeyRevoked { .. } => Ok(()),
+            | AuthEvent::PasskeyRevoked { .. }
+            | AuthEvent::CounterRollbackDetected { .. } => Ok(()),
         }
     }
 

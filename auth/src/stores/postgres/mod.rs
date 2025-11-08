@@ -8,6 +8,8 @@
 //! - Magic link tokens
 
 pub mod device;
+pub mod user;
 
 // Re-exports
 pub use device::PostgresDeviceRepository;
+pub use user::PostgresUserRepository;

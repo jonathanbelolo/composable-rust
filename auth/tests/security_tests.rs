@@ -805,17 +805,13 @@ async fn test_blocker_6_normal_counter_increment_accepted() {
     let stored_counter: u32 = 100;
     let new_counter: u32 = 101;
 
-    // Simulate the reducer's wraparound logic
+    // Simulate the reducer's wraparound logic (CORRECTED to match implementation)
+    // Implementation uses wrapping_sub for half-space algorithm
     let is_rollback = if new_counter == stored_counter {
         true
-    } else if new_counter > stored_counter {
-        let diff = new_counter - stored_counter;
-        diff > HALF_SPACE
     } else {
-        let stored_from_max = u32::MAX - stored_counter;
-        let is_near_max = stored_from_max < HALF_SPACE;
-        let new_is_small = new_counter < HALF_SPACE;
-        !(is_near_max && new_is_small)
+        let forward_diff = new_counter.wrapping_sub(stored_counter);
+        forward_diff > HALF_SPACE
     };
 
     assert!(
@@ -840,17 +836,13 @@ async fn test_blocker_6_counter_rollback_rejected() {
     let stored_counter: u32 = 100;
     let new_counter: u32 = 50;
 
-    // Simulate the reducer's wraparound logic
+    // Simulate the reducer's wraparound logic (CORRECTED to match implementation)
+    // Implementation uses wrapping_sub for half-space algorithm
     let is_rollback = if new_counter == stored_counter {
         true
-    } else if new_counter > stored_counter {
-        let diff = new_counter - stored_counter;
-        diff > HALF_SPACE
     } else {
-        let stored_from_max = u32::MAX - stored_counter;
-        let is_near_max = stored_from_max < HALF_SPACE;
-        let new_is_small = new_counter < HALF_SPACE;
-        !(is_near_max && new_is_small)
+        let forward_diff = new_counter.wrapping_sub(stored_counter);
+        forward_diff > HALF_SPACE
     };
 
     assert!(
