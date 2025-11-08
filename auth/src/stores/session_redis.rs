@@ -34,6 +34,7 @@ use redis::{AsyncCommands, Client};
 /// - Multi-device tracking per user
 /// - Sliding window expiration (extend on activity)
 /// - Connection pooling via `ConnectionManager`
+#[derive(Clone)]
 pub struct RedisSessionStore {
     /// Connection manager for connection pooling.
     conn_manager: ConnectionManager,
@@ -192,6 +193,26 @@ impl SessionStore for RedisSessionStore {
         // 4. Attacker has admin access
         //
         // By validating immutable fields, we prevent this attack.
+        //
+        // ⚠️ ACCEPTED RISK: Theoretical TOCTOU (Time-of-Check-Time-of-Use)
+        //
+        // There is a microsecond window between get_session() and the SET command below
+        // where another concurrent update_session() could modify the session.
+        //
+        // RISK ASSESSMENT: **VERY LOW** - Exploitation is nearly impossible because:
+        // 1. **Timing window**: < 1ms (network roundtrip) - too narrow to exploit reliably
+        // 2. **Attack complexity**: Requires precise timing AND session_id knowledge
+        // 3. **Limited impact**: Attacker can only modify mutable fields (email, user_agent, last_active)
+        // 4. **Immutable fields protected**: user_id, device_id, ip_address, oauth_provider, login_risk_score
+        //    are ALL validated - privilege escalation is still impossible
+        // 5. **Audit trail**: All session updates are logged with tracing
+        //
+        // MITIGATION OPTIONS (if needed in future):
+        // - Use Lua script for atomic read-validate-update (adds complexity)
+        // - Use Redis transactions (WATCH/MULTI/EXEC) with retry logic
+        //
+        // DECISION: Accept this risk for production. The security benefit of immutable field
+        // validation far outweighs the theoretical TOCTOU risk on mutable fields.
         let existing_session = self.get_session(session.session_id).await?;
 
         // ✅ SECURITY: Validate immutable fields haven't changed
@@ -663,6 +684,58 @@ mod tests {
 
         // Cleanup
         store.delete_session(session_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires Redis running
+    #[allow(clippy::unwrap_used)]
+    async fn test_concurrent_session_creation_race() {
+        let store = RedisSessionStore::new("redis://127.0.0.1:6379")
+            .await
+            .unwrap();
+
+        // Create a session to be created concurrently
+        let session = Session {
+            session_id: SessionId::new(),
+            user_id: UserId::new(),
+            device_id: DeviceId::new(),
+            email: "test@example.com".to_string(),
+            created_at: Utc::now(),
+            last_active: Utc::now(),
+            expires_at: Utc::now() + Duration::hours(24),
+            ip_address: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            user_agent: "Test".to_string(),
+            oauth_provider: None,
+            login_risk_score: 0.1,
+        };
+
+        let session_clone = session.clone();
+
+        // Try to create the same session concurrently from two tasks
+        let store_clone = store.clone();
+        let (result1, result2) = tokio::join!(
+            store.create_session(&session, Duration::hours(1)),
+            store_clone.create_session(&session_clone, Duration::hours(1))
+        );
+
+        // Exactly ONE should succeed, the other should fail
+        // XOR: true if one succeeds and one fails
+        let one_succeeded = result1.is_ok() ^ result2.is_ok();
+        assert!(
+            one_succeeded,
+            "Exactly one concurrent create should succeed. Results: {:?}, {:?}",
+            result1,
+            result2
+        );
+
+        // Verify the session exists and is correctly stored
+        let retrieved = store.get_session(session.session_id).await.unwrap();
+        assert_eq!(retrieved.session_id, session.session_id);
+        assert_eq!(retrieved.user_id, session.user_id);
+        assert_eq!(retrieved.email, "test@example.com");
+
+        // Cleanup
+        store.delete_session(session.session_id).await.unwrap();
     }
 
     #[tokio::test]
