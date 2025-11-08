@@ -737,7 +737,7 @@ where
                 if let Err(e) = crate::utils::validate_ip_address(&ip_address.to_string()) {
                     tracing::warn!(
                         error = %e,
-                        ip_address = %ip_address,
+                        ip_address = %crate::utils::sanitize_ip_for_logging(&ip_address.to_string()),
                         user_id = %user_id.0,
                         "Invalid IP address during passkey login"
                     );

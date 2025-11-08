@@ -296,7 +296,7 @@ where
                 if let Err(e) = crate::utils::validate_ip_address(&ip_address.to_string()) {
                     tracing::warn!(
                         error = %e,
-                        ip_address = %ip_address,
+                        ip_address = %crate::utils::sanitize_ip_for_logging(&ip_address.to_string()),
                         "Invalid IP address during magic link verification"
                     );
                     return smallvec![async_effect! {
