@@ -88,4 +88,28 @@ impl WebAuthnProvider for MockWebAuthnProvider {
             })
         }
     }
+
+    fn extract_challenge_from_attestation(
+        &self,
+        _attestation_response: &str,
+    ) -> impl Future<Output = Result<String>> + Send {
+        async move {
+            // In a real implementation, this would parse the attestation response
+            // and extract the challenge that was embedded by the client.
+            // For testing, we return the mock challenge_id.
+            Ok("mock_challenge_id".to_string())
+        }
+    }
+
+    fn extract_challenge_from_assertion(
+        &self,
+        _assertion_response: &str,
+    ) -> impl Future<Output = Result<String>> + Send {
+        async move {
+            // In a real implementation, this would parse the assertion response
+            // and extract the challenge that was embedded by the client.
+            // For testing, we return the mock auth challenge_id.
+            Ok("mock_auth_challenge_id".to_string())
+        }
+    }
 }

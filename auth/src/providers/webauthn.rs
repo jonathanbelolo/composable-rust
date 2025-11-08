@@ -89,6 +89,38 @@ pub trait WebAuthnProvider: Send + Sync {
         expected_origin: &str,
         expected_rp_id: &str,
     ) -> impl std::future::Future<Output = Result<WebAuthnAuthenticationResult>> + Send;
+
+    /// Extract challenge from attestation response.
+    ///
+    /// # Returns
+    ///
+    /// The challenge string that was embedded in the attestation response.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if:
+    /// - Attestation response is malformed
+    /// - Challenge cannot be extracted
+    fn extract_challenge_from_attestation(
+        &self,
+        attestation_response: &str,
+    ) -> impl std::future::Future<Output = Result<String>> + Send;
+
+    /// Extract challenge from assertion response.
+    ///
+    /// # Returns
+    ///
+    /// The challenge string that was embedded in the assertion response.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if:
+    /// - Assertion response is malformed
+    /// - Challenge cannot be extracted
+    fn extract_challenge_from_assertion(
+        &self,
+        assertion_response: &str,
+    ) -> impl std::future::Future<Output = Result<String>> + Send;
 }
 
 /// WebAuthn challenge.

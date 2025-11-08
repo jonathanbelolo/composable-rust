@@ -166,12 +166,13 @@ where
                 user_id,
                 device_name: _,
             } => {
-                // ⚡ SECURITY FIX (BLOCKER #3): Store challenge with expiration
-                // Generate a unique challenge ID and store in TokenStore with TTL
+                // ✅ SECURITY: Store challenge with expiration using ChallengeStore
+                // Challenges are single-use, time-limited, and isolated per user
 
                 let webauthn = env.webauthn.clone();
                 let users = env.users.clone();
-                let token_store = env.tokens.clone();
+                let challenges = env.challenges.clone();
+                let challenge_ttl = chrono::Duration::minutes(self.config.challenge_ttl_minutes);
 
                 smallvec![Effect::Future(Box::pin(async move {
                     // Get user info for WebAuthn
@@ -190,32 +191,21 @@ where
                         .await
                     {
                         Ok(challenge) => {
-                            // Use challenge_id from WebAuthn provider
-                            let challenge_id = challenge.challenge_id.clone();
-                            let challenge_bytes = challenge.challenge.clone();
+                            // Use challenge_id from WebAuthn provider as the challenge string
+                            let challenge_string = challenge.challenge_id.clone();
 
-                            // Store challenge in TokenStore with expiration
-                            let expires_at = challenge.expires_at;
-                            let token_data = crate::providers::TokenData::new(
-                                crate::providers::TokenType::PasskeyRegistrationChallenge,
-                                challenge_id.clone(),
-                                serde_json::json!({
-                                    "user_id": user_id.0,
-                                    "challenge": challenge_bytes,
-                                }),
-                                expires_at,
-                            );
-
-                            match token_store.store_token(&challenge_id, token_data).await {
+                            // Store challenge in ChallengeStore with TTL
+                            match challenges.store_challenge(user_id, challenge_string.clone(), challenge_ttl).await {
                                 Ok(()) => {
                                     tracing::info!(
-                                        "Generated WebAuthn registration challenge for user {}",
-                                        user_id.0
+                                        "Generated WebAuthn registration challenge for user {} (expires in {} minutes)",
+                                        user_id.0,
+                                        challenge_ttl.num_minutes()
                                     );
-                                    None // TODO: Return challenge_id to client
+                                    None // TODO: Return challenge_string to client
                                 }
                                 Err(e) => {
-                                    tracing::error!("Failed to store passkey challenge: {}", e);
+                                    tracing::error!("Failed to store passkey registration challenge: {}", e);
                                     None
                                 }
                             }
@@ -235,41 +225,57 @@ where
                 public_key: _,
                 attestation_response,
             } => {
-                // ⚡ SECURITY FIX (BLOCKER #3 & #7): Atomic challenge consumption
-                //
-                // TODO: Add challenge_id field to CompletePasskeyRegistration action
-                // The client should pass back the challenge_id received from InitiatePasskeyRegistration
-                //
-                // Proper implementation:
-                // ```rust
-                // match token_store.consume_token(&challenge_id, &challenge_id).await {
-                //     Ok(Some(token_data)) => {
-                //         // Challenge valid, not expired, and consumed atomically
-                //         let challenge = token_data.data["challenge"].as_str().unwrap();
-                //         webauthn.verify_registration(challenge, &attestation_response, ...)
-                //     }
-                //     Ok(None) => {
-                //         // Challenge expired, already used, or invalid
-                //         return None;
-                //     }
-                // }
-                // ```
-                //
-                // For now, using mock challenge_id as placeholder
+                // ✅ SECURITY: Atomic challenge consumption from ChallengeStore
+                // The attestation_response contains the challenge that was sent to the client
+                // We extract it, consume it atomically, and verify it matches
 
                 let webauthn = env.webauthn.clone();
                 let users = env.users.clone();
-                let challenge_id = "mock_challenge_id".to_string(); // TODO: Get from client
+                let challenges = env.challenges.clone();
                 let origin = self.config.origin.clone();
                 let rp_id = self.config.rp_id.clone();
 
                 smallvec![Effect::Future(Box::pin(async move {
-                    // NOTE: In production, challenge would be retrieved from TokenStore here
-                    // and atomically consumed to prevent replay attacks
+                    // Extract challenge from attestation response
+                    // Note: In a real implementation, the WebAuthn library would extract this
+                    // For now, we're using a simplified approach where the challenge is the challenge_id
+                    let challenge_string = match webauthn.extract_challenge_from_attestation(&attestation_response).await {
+                        Ok(c) => c,
+                        Err(_) => {
+                            tracing::warn!("Failed to extract challenge from attestation response");
+                            return None;
+                        }
+                    };
 
-                    // Verify attestation
+                    // Atomically consume challenge (prevents replay attacks)
+                    let challenge_data = match challenges.consume_challenge(user_id, &challenge_string).await {
+                        Ok(Some(data)) => data,
+                        Ok(None) => {
+                            tracing::warn!(
+                                "Invalid or expired registration challenge for user {} (challenge may have been already used)",
+                                user_id.0
+                            );
+                            return None;
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to consume registration challenge: {}", e);
+                            return None;
+                        }
+                    };
+
+                    // Verify challenge matches expected user
+                    if challenge_data.user_id != user_id {
+                        tracing::error!(
+                            "🚨 SECURITY ALERT: Challenge user_id mismatch! Expected {}, got {}",
+                            user_id.0,
+                            challenge_data.user_id.0
+                        );
+                        return None;
+                    }
+
+                    // Verify attestation with the consumed challenge
                     let result = match webauthn
-                        .verify_registration(&challenge_id, &attestation_response, &origin, &rp_id)
+                        .verify_registration(&challenge_data.challenge, &attestation_response, &origin, &rp_id)
                         .await
                     {
                         Ok(r) => r,
@@ -289,7 +295,11 @@ where
 
                     match users.create_passkey_credential(&credential).await {
                         Ok(()) => {
-                            tracing::info!("Passkey registered successfully");
+                            tracing::info!(
+                                "Passkey registered successfully for user {} (credential: {})",
+                                user_id.0,
+                                credential.credential_id
+                            );
                             None // TODO: Return success event
                         }
                         Err(_) => None,
@@ -305,11 +315,13 @@ where
                 ip_address: _,
                 user_agent: _,
             } => {
-                // ⚡ SECURITY FIX (BLOCKER #3): Store authentication challenge with expiration
+                // ✅ SECURITY: Store authentication challenge with expiration using ChallengeStore
+                // Challenges are single-use, time-limited, and isolated per user
 
                 let webauthn = env.webauthn.clone();
                 let users = env.users.clone();
-                let token_store = env.tokens.clone();
+                let challenges = env.challenges.clone();
+                let challenge_ttl = chrono::Duration::minutes(self.config.challenge_ttl_minutes);
 
                 smallvec![Effect::Future(Box::pin(async move {
                     // Get user by email
@@ -341,29 +353,18 @@ where
                         .await
                     {
                         Ok(challenge) => {
-                            // Use challenge_id from WebAuthn provider
-                            let challenge_id = challenge.challenge_id.clone();
-                            let challenge_bytes = challenge.challenge.clone();
+                            // Use challenge_id from WebAuthn provider as the challenge string
+                            let challenge_string = challenge.challenge_id.clone();
 
-                            // Store challenge in TokenStore with expiration
-                            let expires_at = challenge.expires_at;
-                            let token_data = crate::providers::TokenData::new(
-                                crate::providers::TokenType::PasskeyAuthenticationChallenge,
-                                challenge_id.clone(),
-                                serde_json::json!({
-                                    "user_id": user.user_id.0,
-                                    "challenge": challenge_bytes,
-                                }),
-                                expires_at,
-                            );
-
-                            match token_store.store_token(&challenge_id, token_data).await {
+                            // Store challenge in ChallengeStore with TTL
+                            match challenges.store_challenge(user.user_id, challenge_string.clone(), challenge_ttl).await {
                                 Ok(()) => {
                                     tracing::info!(
-                                        "Generated WebAuthn authentication challenge for user {}",
-                                        user.user_id.0
+                                        "Generated WebAuthn authentication challenge for user {} (expires in {} minutes)",
+                                        user.user_id.0,
+                                        challenge_ttl.num_minutes()
                                     );
-                                    None // TODO: Return challenge_id to client
+                                    None // TODO: Return challenge_string to client
                                 }
                                 Err(e) => {
                                     tracing::error!("Failed to store passkey authentication challenge: {}", e);
@@ -385,36 +386,18 @@ where
                 ip_address,
                 user_agent,
             } => {
-                // ⚡ SECURITY FIX (BLOCKER #3 & #7): Atomic challenge consumption
-                //
-                // TODO: Add challenge_id field to CompletePasskeyLogin action
-                // The client should pass back the challenge_id received from InitiatePasskeyLogin
-                //
-                // Proper implementation:
-                // ```rust
-                // match token_store.consume_token(&challenge_id, &challenge_id).await {
-                //     Ok(Some(token_data)) => {
-                //         // Challenge valid, not expired, and consumed atomically
-                //         let challenge = token_data.data["challenge"].as_str().unwrap();
-                //         webauthn.verify_authentication(challenge, &assertion_response, ...)
-                //     }
-                //     Ok(None) => {
-                //         // Challenge expired, already used, or invalid
-                //         return None;
-                //     }
-                // }
-                // ```
-                //
-                // For now, using mock challenge_id as placeholder
+                // ✅ SECURITY: Atomic challenge consumption from ChallengeStore
+                // The assertion_response contains the challenge that was sent to the client
+                // We extract it, consume it atomically, and verify it matches
 
                 let webauthn = env.webauthn.clone();
                 let users = env.users.clone();
-                let challenge_id = "mock_challenge_id".to_string(); // TODO: Get from client
+                let challenges = env.challenges.clone();
                 let origin = self.config.origin.clone();
                 let rp_id = self.config.rp_id.clone();
 
                 smallvec![Effect::Future(Box::pin(async move {
-                    // Get credential
+                    // Get credential first (to get user_id for challenge lookup)
                     let credential = match users.get_passkey_credential(&credential_id).await {
                         Ok(c) => c,
                         Err(_) => {
@@ -423,10 +406,47 @@ where
                         }
                     };
 
-                    // Verify assertion
+                    // Extract challenge from assertion response
+                    // Note: In a real implementation, the WebAuthn library would extract this
+                    // For now, we're using a simplified approach where the challenge is the challenge_id
+                    let challenge_string = match webauthn.extract_challenge_from_assertion(&assertion_response).await {
+                        Ok(c) => c,
+                        Err(_) => {
+                            tracing::warn!("Failed to extract challenge from assertion response");
+                            return None;
+                        }
+                    };
+
+                    // Atomically consume challenge (prevents replay attacks)
+                    let challenge_data = match challenges.consume_challenge(credential.user_id, &challenge_string).await {
+                        Ok(Some(data)) => data,
+                        Ok(None) => {
+                            tracing::warn!(
+                                "Invalid or expired login challenge for user {} (challenge may have been already used)",
+                                credential.user_id.0
+                            );
+                            return None;
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to consume login challenge: {}", e);
+                            return None;
+                        }
+                    };
+
+                    // Verify challenge matches expected user
+                    if challenge_data.user_id != credential.user_id {
+                        tracing::error!(
+                            "🚨 SECURITY ALERT: Challenge user_id mismatch! Expected {}, got {}",
+                            credential.user_id.0,
+                            challenge_data.user_id.0
+                        );
+                        return None;
+                    }
+
+                    // Verify assertion with the consumed challenge
                     let result = match webauthn
                         .verify_authentication(
-                            &challenge_id,
+                            &challenge_data.challenge,
                             &assertion_response,
                             &credential,
                             &origin,
