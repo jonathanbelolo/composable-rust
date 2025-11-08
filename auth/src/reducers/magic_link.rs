@@ -51,14 +51,14 @@ use std::sync::Arc;
 ///
 /// Handles passwordless email authentication flows with event sourcing.
 #[derive(Debug, Clone)]
-pub struct MagicLinkReducer<O, E, W, S, T, U, D, R, OT, C> {
+pub struct MagicLinkReducer<O, E, W, S, T, U, D, R, OT, C, RL> {
     /// Configuration for magic link authentication.
     config: MagicLinkConfig,
     /// Phantom data to hold type parameters.
-    _phantom: std::marker::PhantomData<(O, E, W, S, T, U, D, R, OT, C)>,
+    _phantom: std::marker::PhantomData<(O, E, W, S, T, U, D, R, OT, C, RL)>,
 }
 
-impl<O, E, W, S, T, U, D, R, OT, C> MagicLinkReducer<O, E, W, S, T, U, D, R, OT, C> {
+impl<O, E, W, S, T, U, D, R, OT, C, RL> MagicLinkReducer<O, E, W, S, T, U, D, R, OT, C, RL> {
     /// Create a new magic link reducer with default settings.
     ///
     /// Default configuration:
@@ -152,13 +152,13 @@ impl<O, E, W, S, T, U, D, R, OT, C> MagicLinkReducer<O, E, W, S, T, U, D, R, OT,
     }
 }
 
-impl<O, E, W, S, T, U, D, R, OT, C> Default for MagicLinkReducer<O, E, W, S, T, U, D, R, OT, C> {
+impl<O, E, W, S, T, U, D, R, OT, C, RL> Default for MagicLinkReducer<O, E, W, S, T, U, D, R, OT, C, RL> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<O, E, W, S, T, U, D, R, OT, C> Reducer for MagicLinkReducer<O, E, W, S, T, U, D, R, OT, C>
+impl<O, E, W, S, T, U, D, R, OT, C, RL> Reducer for MagicLinkReducer<O, E, W, S, T, U, D, R, OT, C, RL>
 where
     O: OAuth2Provider + Clone + 'static,
     E: EmailProvider + Clone + 'static,
@@ -170,10 +170,11 @@ where
     R: RiskCalculator + Clone + 'static,
     OT: OAuthTokenStore + Clone + 'static,
     C: ChallengeStore + Clone + 'static,
+    RL: crate::providers::RateLimiter + Clone + 'static,
 {
     type State = AuthState;
     type Action = AuthAction;
-    type Environment = AuthEnvironment<O, E, W, S, T, U, D, R, OT, C>;
+    type Environment = AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>;
 
     fn reduce(
         &self,
@@ -535,7 +536,7 @@ mod tests {
 
     #[test]
     fn test_generate_token() {
-        type TestReducer = MagicLinkReducer<(), (), (), (), (), (), (), (), (), ()>;
+        type TestReducer = MagicLinkReducer<(), (), (), (), (), (), (), (), (), (), ()>;
         let reducer = TestReducer::new();
         let token1 = reducer.generate_token();
         let token2 = reducer.generate_token();
@@ -553,7 +554,7 @@ mod tests {
 
     #[test]
     fn test_custom_ttl() {
-        type TestReducer = MagicLinkReducer<(), (), (), (), (), (), (), (), (), ()>;
+        type TestReducer = MagicLinkReducer<(), (), (), (), (), (), (), (), (), (), ()>;
         let reducer = TestReducer::with_ttl(15);
         assert_eq!(reducer.config.token_ttl_minutes, 15);
     }

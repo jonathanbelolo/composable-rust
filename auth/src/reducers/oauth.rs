@@ -37,7 +37,7 @@ use std::sync::Arc;
 ///
 /// Handles OAuth2/OIDC authentication flow with CSRF protection.
 #[derive(Debug, Clone)]
-pub struct OAuthReducer<O, E, W, S, T, U, D, R, OT, C>
+pub struct OAuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>
 where
     O: OAuth2Provider + Clone + 'static,
     E: EmailProvider + Clone + 'static,
@@ -49,15 +49,16 @@ where
     R: RiskCalculator + Clone + 'static,
     OT: OAuthTokenStore + Clone + 'static,
     C: ChallengeStore + Clone + 'static,
+    RL: crate::providers::RateLimiter + Clone + 'static,
 {
     /// Configuration for OAuth authentication.
     config: OAuthConfig,
 
     /// Phantom data to hold type parameters.
-    _phantom: std::marker::PhantomData<(O, E, W, S, T, U, D, R, OT, C)>,
+    _phantom: std::marker::PhantomData<(O, E, W, S, T, U, D, R, OT, C, RL)>,
 }
 
-impl<O, E, W, S, T, U, D, R, OT, C> OAuthReducer<O, E, W, S, T, U, D, R, OT, C>
+impl<O, E, W, S, T, U, D, R, OT, C, RL> OAuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>
 where
     O: OAuth2Provider + Clone + 'static,
     E: EmailProvider + Clone + 'static,
@@ -69,6 +70,7 @@ where
     R: RiskCalculator + Clone + 'static,
     OT: OAuthTokenStore + Clone + 'static,
     C: ChallengeStore + Clone + 'static,
+    RL: crate::providers::RateLimiter + Clone + 'static,
 {
     /// Create a new OAuth reducer with default configuration.
     ///
@@ -145,7 +147,7 @@ where
     }
 }
 
-impl<O, E, W, S, T, U, D, R, OT, C> Reducer for OAuthReducer<O, E, W, S, T, U, D, R, OT, C>
+impl<O, E, W, S, T, U, D, R, OT, C, RL> Reducer for OAuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>
 where
     O: OAuth2Provider + Clone + 'static,
     E: EmailProvider + Clone + 'static,
@@ -157,10 +159,11 @@ where
     R: RiskCalculator + Clone + 'static,
     OT: OAuthTokenStore + Clone + 'static,
     C: ChallengeStore + Clone + 'static,
+    RL: crate::providers::RateLimiter + Clone + 'static,
 {
     type State = AuthState;
     type Action = AuthAction;
-    type Environment = AuthEnvironment<O, E, W, S, T, U, D, R, OT, C>;
+    type Environment = AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>;
 
     fn reduce(
         &self,

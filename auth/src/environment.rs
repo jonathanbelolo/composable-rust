@@ -6,7 +6,7 @@
 use crate::providers::{
     ChallengeStore, OAuth2Provider, EmailProvider, WebAuthnProvider, SessionStore,
     UserRepository, DeviceRepository, RiskCalculator, TokenStore,
-    OAuthTokenStore,
+    OAuthTokenStore, RateLimiter,
 };
 use composable_rust_core::event_store::EventStore;
 use std::sync::Arc;
@@ -27,7 +27,8 @@ use std::sync::Arc;
 /// - `R`: Risk calculator
 /// - `OT`: OAuth token store
 /// - `C`: Challenge store
-pub struct AuthEnvironment<O, E, W, S, T, U, D, R, OT, C>
+/// - `RL`: Rate limiter
+pub struct AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>
 where
     O: OAuth2Provider,
     E: EmailProvider,
@@ -39,6 +40,7 @@ where
     R: RiskCalculator,
     OT: OAuthTokenStore,
     C: ChallengeStore,
+    RL: RateLimiter,
 {
     /// OAuth2 provider.
     pub oauth: O,
@@ -70,11 +72,14 @@ where
     /// Challenge store (Redis - WebAuthn challenges with atomic consumption).
     pub challenges: C,
 
+    /// Rate limiter (Redis - brute force protection).
+    pub rate_limiter: RL,
+
     /// Event store for event sourcing (PostgreSQL).
     pub event_store: Arc<dyn EventStore>,
 }
 
-impl<O, E, W, S, T, U, D, R, OT, C> AuthEnvironment<O, E, W, S, T, U, D, R, OT, C>
+impl<O, E, W, S, T, U, D, R, OT, C, RL> AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>
 where
     O: OAuth2Provider,
     E: EmailProvider,
@@ -86,9 +91,11 @@ where
     R: RiskCalculator,
     OT: OAuthTokenStore,
     C: ChallengeStore,
+    RL: RateLimiter,
 {
     /// Create a new authentication environment.
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         oauth: O,
         email: E,
@@ -100,6 +107,7 @@ where
         risk: R,
         oauth_tokens: OT,
         challenges: C,
+        rate_limiter: RL,
         event_store: Arc<dyn EventStore>,
     ) -> Self {
         Self {
@@ -113,6 +121,7 @@ where
             risk,
             oauth_tokens,
             challenges,
+            rate_limiter,
             event_store,
         }
     }

@@ -74,14 +74,14 @@ use std::sync::Arc;
 ///
 /// Handles passkey registration and login flows.
 #[derive(Debug, Clone)]
-pub struct PasskeyReducer<O, E, W, S, T, U, D, R, OT, C> {
+pub struct PasskeyReducer<O, E, W, S, T, U, D, R, OT, C, RL> {
     /// Configuration for passkey authentication.
     config: PasskeyConfig,
     /// Phantom data to hold type parameters.
-    _phantom: std::marker::PhantomData<(O, E, W, S, T, U, D, R, OT, C)>,
+    _phantom: std::marker::PhantomData<(O, E, W, S, T, U, D, R, OT, C, RL)>,
 }
 
-impl<O, E, W, S, T, U, D, R, OT, C> PasskeyReducer<O, E, W, S, T, U, D, R, OT, C> {
+impl<O, E, W, S, T, U, D, R, OT, C, RL> PasskeyReducer<O, E, W, S, T, U, D, R, OT, C, RL> {
     /// Create a new passkey reducer with default configuration.
     ///
     /// Default configuration:
@@ -129,13 +129,13 @@ impl<O, E, W, S, T, U, D, R, OT, C> PasskeyReducer<O, E, W, S, T, U, D, R, OT, C
 
 }
 
-impl<O, E, W, S, T, U, D, R, OT, C> Default for PasskeyReducer<O, E, W, S, T, U, D, R, OT, C> {
+impl<O, E, W, S, T, U, D, R, OT, C, RL> Default for PasskeyReducer<O, E, W, S, T, U, D, R, OT, C, RL> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<O, E, W, S, T, U, D, R, OT, C> Reducer for PasskeyReducer<O, E, W, S, T, U, D, R, OT, C>
+impl<O, E, W, S, T, U, D, R, OT, C, RL> Reducer for PasskeyReducer<O, E, W, S, T, U, D, R, OT, C, RL>
 where
     O: OAuth2Provider + Clone + 'static,
     E: EmailProvider + Clone + 'static,
@@ -147,10 +147,11 @@ where
     R: RiskCalculator + Clone + 'static,
     OT: OAuthTokenStore + Clone + 'static,
     C: ChallengeStore + Clone + 'static,
+    RL: crate::providers::RateLimiter + Clone + 'static,
 {
     type State = AuthState;
     type Action = AuthAction;
-    type Environment = AuthEnvironment<O, E, W, S, T, U, D, R, OT, C>;
+    type Environment = AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>;
 
     fn reduce(
         &self,
@@ -416,11 +417,12 @@ where
                 let webauthn = env.webauthn.clone();
                 let users = env.users.clone();
                 let challenges = env.challenges.clone();
+                let rate_limiter = env.rate_limiter.clone();
                 let origin = self.config.origin.clone();
                 let rp_id = self.config.rp_id.clone();
 
                 smallvec![Effect::Future(Box::pin(async move {
-                    // Get credential first (to get user_id for challenge lookup)
+                    // Get credential first (to get user_id for challenge lookup and rate limiting)
                     let credential = match users.get_passkey_credential(&credential_id).await {
                         Ok(c) => c,
                         Err(_) => {
@@ -428,6 +430,39 @@ where
                             return None;
                         }
                     };
+
+                    // ✅ SECURITY FIX (HIGH #2): Rate limiting for passkey authentication
+                    //
+                    // Prevents brute force attacks and DoS via unlimited authentication attempts.
+                    //
+                    // Rate limit: 10 attempts per 15 minutes per user
+                    // - More generous than password auth (passkeys are cryptographically secure)
+                    // - Per-user limiting (not per-IP) to prevent legitimate users from being blocked
+                    // - Applied before expensive cryptographic verification
+                    //
+                    // Why 10 attempts?
+                    // - Legitimate users may have multiple devices/authenticators
+                    // - Typos in credential_id selection are rare but possible
+                    // - Failed biometric attempts (fingerprint misread) are common
+                    //
+                    // Why 15 minutes?
+                    // - Balance between security and usability
+                    // - Long enough for legitimate troubleshooting
+                    // - Short enough to limit attacker attempts
+                    let rate_key = format!("passkey_auth:{}", credential.user_id.0);
+                    if let Err(e) = rate_limiter
+                        .check_and_record(&rate_key, 10, std::time::Duration::from_secs(900))
+                        .await
+                    {
+                        tracing::warn!(
+                            rate_limit_exceeded = true,
+                            user_id = %credential.user_id.0,
+                            credential_id = %credential_id,
+                            error = %e,
+                            "Passkey authentication rate limit exceeded"
+                        );
+                        return None;
+                    }
 
                     // Extract challenge from assertion response
                     // Note: In a real implementation, the WebAuthn library would extract this
@@ -581,6 +616,41 @@ where
                     //
                     // This prevents cloned authenticators from bypassing detection by authenticating
                     // concurrently before either updates the stored counter value.
+                    //
+                    // ⚠️ TOCTOU WINDOW MITIGATION (NOT ELIMINATION)
+                    //
+                    // There is a Time-of-Check-Time-of-Use (TOCTOU) window between:
+                    // 1. Counter rollback check (lines 525-534, above)
+                    // 2. Atomic counter update (line 607, below)
+                    //
+                    // **What happens during this window:**
+                    // - Concurrent requests with the same counter will BOTH pass the rollback check
+                    // - Only ONE request will succeed at the atomic CAS
+                    // - The other request(s) will be rejected
+                    //
+                    // **Security guarantee:**
+                    // The rollback check is an optimization (fails fast on obvious attacks).
+                    // The atomic CAS is the FINAL verification that ensures only one authentication succeeds.
+                    //
+                    // **Example timeline:**
+                    //   t=0: Request A reads counter=100, checks rollback (PASS)
+                    //   t=1: Request B reads counter=100, checks rollback (PASS) ⚠️ TOCTOU
+                    //   t=2: Request A attempts CAS(100→101) ✓ SUCCESS
+                    //   t=3: Request B attempts CAS(100→101) ✗ FAIL (counter now 101)
+                    //   t=4: Request B is rejected (expected behavior)
+                    //
+                    // **Logging impact:**
+                    // - Both requests may log "rollback check passed"
+                    // - Only one will log "counter updated atomically"
+                    // - Failed CAS will log "concurrent authentication detected"
+                    //
+                    // **Why this is safe:**
+                    // - ✅ Atomic CAS ensures only ONE authentication succeeds
+                    // - ✅ Counters are monotonically increasing (never decrease)
+                    // - ✅ Database transaction provides ACID guarantees
+                    // - ✅ No security vulnerability - multiple checks before final CAS
+                    //
+                    // The TOCTOU window is unavoidable but mitigated by defense-in-depth.
                     match users
                         .update_passkey_counter_atomic(
                             &credential_id,
@@ -823,7 +893,7 @@ mod tests {
 
     #[test]
     fn test_default_config() {
-        type TestReducer = PasskeyReducer<(), (), (), (), (), (), (), (), (), ()>;
+        type TestReducer = PasskeyReducer<(), (), (), (), (), (), (), (), (), (), ()>;
         let reducer = TestReducer::new();
         assert_eq!(reducer.config.challenge_ttl_minutes, 5);
         assert_eq!(reducer.config.origin, "http://localhost:3000");
@@ -832,7 +902,7 @@ mod tests {
 
     #[test]
     fn test_custom_config() {
-        type TestReducer = PasskeyReducer<(), (), (), (), (), (), (), (), (), ()>;
+        type TestReducer = PasskeyReducer<(), (), (), (), (), (), (), (), (), (), ()>;
         let config = PasskeyConfig::new(
             "https://app.example.com".to_string(),
             "app.example.com".to_string(),
