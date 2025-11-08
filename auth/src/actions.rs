@@ -388,6 +388,14 @@ pub enum AuthAction {
         error: String,
     },
 
+    /// Passkey authentication failed.
+    ///
+    /// Triggered when passkey authentication fails (validation, verification, etc.).
+    PasskeyAuthenticationFailed {
+        /// Error message.
+        error: String,
+    },
+
     // ═══════════════════════════════════════════════════════════════════════
     // Advanced Features (Phase 6B/6C)
     // ═══════════════════════════════════════════════════════════════════════

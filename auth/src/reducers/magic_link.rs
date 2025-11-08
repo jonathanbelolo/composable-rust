@@ -291,6 +291,35 @@ where
                 ip_address,
                 user_agent,
             } => {
+                // ✅ INPUT VALIDATION: Defense-in-depth validation at entry point
+                if let Err(e) = crate::utils::validate_ip_address(&ip_address.to_string()) {
+                    tracing::warn!(
+                        error = %e,
+                        ip_address = %ip_address,
+                        "Invalid IP address during magic link verification"
+                    );
+                    return smallvec![Effect::Future(Box::pin(async move {
+                        Some(AuthAction::MagicLinkFailed {
+                            email: String::new(), // Don't leak email on validation failure
+                            error: "Invalid request parameters".to_string(),
+                        })
+                    }))];
+                }
+
+                if let Err(e) = crate::utils::validate_user_agent(&user_agent) {
+                    tracing::warn!(
+                        error = %e,
+                        user_agent_length = user_agent.len(),
+                        "Invalid user agent during magic link verification"
+                    );
+                    return smallvec![Effect::Future(Box::pin(async move {
+                        Some(AuthAction::MagicLinkFailed {
+                            email: String::new(), // Don't leak email on validation failure
+                            error: "Invalid request parameters".to_string(),
+                        })
+                    }))];
+                }
+
                 // ⚡ SECURITY FIX (BLOCKER #1): Atomic token consumption
                 // Use TokenStore.consume_token() to atomically verify and delete
                 // This prevents race conditions where two concurrent requests

@@ -732,6 +732,35 @@ where
                 ip_address,
                 user_agent,
             } => {
+                // ✅ INPUT VALIDATION: Defense-in-depth validation at entry point
+                if let Err(e) = crate::utils::validate_ip_address(&ip_address.to_string()) {
+                    tracing::warn!(
+                        error = %e,
+                        ip_address = %ip_address,
+                        user_id = %user_id.0,
+                        "Invalid IP address during passkey login"
+                    );
+                    return smallvec![Effect::Future(Box::pin(async move {
+                        Some(AuthAction::PasskeyAuthenticationFailed {
+                            error: "Invalid request parameters".to_string(),
+                        })
+                    }))];
+                }
+
+                if let Err(e) = crate::utils::validate_user_agent(&user_agent) {
+                    tracing::warn!(
+                        error = %e,
+                        user_agent_length = user_agent.len(),
+                        user_id = %user_id.0,
+                        "Invalid user agent during passkey login"
+                    );
+                    return smallvec![Effect::Future(Box::pin(async move {
+                        Some(AuthAction::PasskeyAuthenticationFailed {
+                            error: "Invalid request parameters".to_string(),
+                        })
+                    }))];
+                }
+
                 // Generate session ID
                 let session_id = SessionId::new();
                 let now = Utc::now();

@@ -257,6 +257,35 @@ where
                 ip_address,
                 user_agent,
             } => {
+                // ✅ INPUT VALIDATION: Defense-in-depth validation at entry point
+                if let Err(e) = crate::utils::validate_ip_address(&ip_address.to_string()) {
+                    tracing::warn!(
+                        error = %e,
+                        ip_address = %ip_address,
+                        "Invalid IP address during OAuth callback"
+                    );
+                    return smallvec![Effect::Future(Box::pin(async move {
+                        Some(AuthAction::OAuthFailed {
+                            error: "invalid_request".to_string(),
+                            error_description: Some("Invalid request parameters".to_string()),
+                        })
+                    }))];
+                }
+
+                if let Err(e) = crate::utils::validate_user_agent(&user_agent) {
+                    tracing::warn!(
+                        error = %e,
+                        user_agent_length = user_agent.len(),
+                        "Invalid user agent during OAuth callback"
+                    );
+                    return smallvec![Effect::Future(Box::pin(async move {
+                        Some(AuthAction::OAuthFailed {
+                            error: "invalid_request".to_string(),
+                            error_description: Some("Invalid request parameters".to_string()),
+                        })
+                    }))];
+                }
+
                 // Clear OAuth state immediately (one-time use)
                 // This ensures tests see the state cleared synchronously
                 state.oauth_state = None;
