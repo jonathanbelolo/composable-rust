@@ -59,6 +59,10 @@ pub mod providers;
 pub mod reducers;
 pub mod state;
 
+// Mock providers for testing
+#[cfg(any(test, feature = "test-utils"))]
+pub mod mocks;
+
 // Re-export main types for convenience
 pub use actions::AuthAction;
 pub use effects::AuthEffect;

@@ -52,5 +52,9 @@ tracing = { workspace = true }
 composable-rust-testing = { path = "../testing" }
 tokio-test = "0.4"
 
+[features]
+# Include mock providers for testing
+test-utils = []
+
 [lints]
 workspace = true
