@@ -368,6 +368,9 @@ where
                     login_risk_score: 0.1, // Placeholder - will be updated via SessionCreated
                 };
 
+                // Clear magic link state (token consumed, no longer valid)
+                state.magic_link_state = None;
+
                 // Update state immediately (sessions are ephemeral, not event-sourced)
                 // The risk score will be corrected when SessionCreated action is processed
                 state.session = Some(session.clone());

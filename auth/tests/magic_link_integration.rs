@@ -108,7 +108,22 @@ async fn test_magic_link_flow_complete_happy_path() {
         &env,
     );
 
-    // Magic link state should be cleared (single-use)
+    // VerifyMagicLink returns Effect::Future (async token consumption)
+    assert_eq!(effects.len(), 1);
+
+    // Step 3: Simulate effect execution by calling MagicLinkVerified
+    // (In production, this would come from the effect executor)
+    let _effects = reducer.reduce(
+        &mut state,
+        AuthAction::MagicLinkVerified {
+            email: test_email.clone(),
+            ip_address: test_ip,
+            user_agent: test_user_agent.clone(),
+        },
+        &env,
+    );
+
+    // Magic link state should be cleared (token consumed)
     assert!(state.magic_link_state.is_none());
 
     // Should have created a session
@@ -118,9 +133,6 @@ async fn test_magic_link_flow_complete_happy_path() {
     assert_eq!(session.ip_address, test_ip);
     assert_eq!(session.user_agent, test_user_agent);
     assert!(session.oauth_provider.is_none());
-
-    // Should return effect to persist user/device/session
-    assert_eq!(effects.len(), 1);
 }
 
 #[tokio::test]
@@ -157,11 +169,12 @@ async fn test_magic_link_rejects_invalid_token() {
         &env,
     );
 
-    // Magic link state should be cleared (security: reject and clear)
-    assert!(state.magic_link_state.is_none());
-
-    // Should return effect indicating failure
+    // VerifyMagicLink returns Effect::Future (async token consumption)
+    // Effect will fail to consume token and return None
     assert_eq!(effects.len(), 1);
+
+    // Magic link state NOT cleared yet (only cleared on successful verification)
+    assert!(state.magic_link_state.is_some());
 
     // No session should be created
     assert!(state.session.is_none());
@@ -236,11 +249,12 @@ async fn test_magic_link_token_expires_after_ttl() {
         &env,
     );
 
-    // Magic link state should be cleared
-    assert!(state.magic_link_state.is_none());
-
-    // Should return effect indicating expiration
+    // VerifyMagicLink returns Effect::Future (async token consumption)
+    // Effect will fail to consume expired token and return None
     assert_eq!(effects.len(), 1);
+
+    // Magic link state NOT cleared (only cleared on successful verification)
+    assert!(state.magic_link_state.is_some());
 
     // No session should be created
     assert!(state.session.is_none());
@@ -268,6 +282,7 @@ async fn test_magic_link_token_single_use() {
     );
 
     let valid_token = state.magic_link_state.as_ref().unwrap().token.clone();
+    let test_email = "user@example.com".to_string();
 
     // Step 2: Verify token (first time - should succeed)
     let _ = reducer.reduce(
@@ -280,13 +295,25 @@ async fn test_magic_link_token_single_use() {
         &env,
     );
 
+    // Step 3: Simulate successful verification
+    let _ = reducer.reduce(
+        &mut state,
+        AuthAction::MagicLinkVerified {
+            email: test_email,
+            ip_address: test_ip,
+            user_agent: test_user_agent.clone(),
+        },
+        &env,
+    );
+
     // Session should be created
     assert!(state.session.is_some());
 
     // Magic link state should be cleared
     assert!(state.magic_link_state.is_none());
 
-    // Step 3: Try to verify AGAIN with same token (should fail - single use)
+    // Step 4: Try to verify AGAIN with same token (should fail - single use)
+    // In production, TokenStore.consume_token() would return None (already consumed)
     let effects = reducer.reduce(
         &mut state,
         AuthAction::VerifyMagicLink {
@@ -297,7 +324,7 @@ async fn test_magic_link_token_single_use() {
         &env,
     );
 
-    // Should reject (no magic link state exists anymore)
+    // Should return Effect::Future that will fail
     assert_eq!(effects.len(), 1);
 }
 
@@ -365,6 +392,17 @@ async fn test_session_contains_correct_metadata() {
         &mut state,
         AuthAction::VerifyMagicLink {
             token,
+            ip_address: test_ip,
+            user_agent: test_user_agent.clone(),
+        },
+        &env,
+    );
+
+    // Simulate successful verification
+    let _ = reducer.reduce(
+        &mut state,
+        AuthAction::MagicLinkVerified {
+            email: test_email.clone(),
             ip_address: test_ip,
             user_agent: test_user_agent.clone(),
         },
