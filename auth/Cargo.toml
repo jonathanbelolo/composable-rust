@@ -28,6 +28,7 @@ bincode = { workspace = true }
 rand = "0.8"
 base64 = "0.22"
 constant_time_eq = "0.3"
+aes-gcm = "0.10"  # AES-256-GCM encryption for OAuth tokens
 
 # URL encoding
 urlencoding = "2"

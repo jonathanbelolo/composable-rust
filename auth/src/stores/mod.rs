@@ -4,13 +4,16 @@
 //!
 //! - **Session Store** (Redis) - Ephemeral session storage with TTL
 //! - **Device Registry** (PostgreSQL) - Persistent device tracking
+//! - **OAuth Token Store** (Redis) - Encrypted OAuth token storage with refresh
 //! - **Challenge Store** (Redis) - WebAuthn challenge storage (planned)
 
 #[cfg(feature = "postgres")]
 pub mod postgres;
 pub mod session_redis;
+pub mod oauth_token_redis;
 
 // Re-exports
 #[cfg(feature = "postgres")]
 pub use postgres::PostgresDeviceRepository;
 pub use session_redis::RedisSessionStore;
+pub use oauth_token_redis::RedisOAuthTokenStore;

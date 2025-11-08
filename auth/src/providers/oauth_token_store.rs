@@ -7,7 +7,7 @@ use crate::state::{OAuthProvider, UserId};
 use chrono::{DateTime, Utc};
 
 /// OAuth token data.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OAuthTokenData {
     /// User ID.
     pub user_id: UserId,
