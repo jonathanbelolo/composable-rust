@@ -122,6 +122,25 @@ impl SessionStore for RedisSessionStore {
             Some(bytes) => {
                 let session: Session = bincode::deserialize(&bytes)
                     .map_err(|e| AuthError::SerializationError(e.to_string()))?;
+
+                // ✅ SECURITY FIX: Validate session expiration
+                //
+                // Although Redis TTL automatically deletes expired sessions,
+                // we validate expiration here as defense-in-depth to guard against:
+                // - Clock skew between application server and Redis
+                // - Manual Redis TTL manipulation (PERSIST command)
+                // - Redis configuration issues (maxmemory-policy noeviction)
+                // - Redis bugs or edge cases
+                if session.expires_at < chrono::Utc::now() {
+                    tracing::warn!(
+                        session_id = %session_id.0,
+                        expires_at = %session.expires_at,
+                        now = %chrono::Utc::now(),
+                        "Session expired (TTL should have cleaned this up)"
+                    );
+                    return Err(AuthError::SessionExpired);
+                }
+
                 Ok(session)
             }
             None => Err(AuthError::SessionNotFound),
@@ -328,5 +347,91 @@ mod tests {
         // Verify deleted
         let exists_after_delete = store.exists(session.session_id).await.unwrap();
         assert!(!exists_after_delete);
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires Redis running
+    #[allow(clippy::unwrap_used)]
+    async fn test_expired_session_rejected() {
+        let store = RedisSessionStore::new("redis://127.0.0.1:6379")
+            .await
+            .unwrap();
+
+        // Create session with expiration in the past
+        let mut session = Session {
+            session_id: SessionId::new(),
+            user_id: UserId::new(),
+            device_id: DeviceId::new(),
+            email: "test@example.com".to_string(),
+            created_at: Utc::now() - Duration::hours(2),
+            last_active: Utc::now() - Duration::hours(1),
+            expires_at: Utc::now() - Duration::seconds(10), // ← Expired 10 seconds ago
+            ip_address: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            user_agent: "Test".to_string(),
+            oauth_provider: None,
+            login_risk_score: 0.1,
+        };
+
+        // Store with a short TTL (Redis will still allow storage)
+        // We're testing the application-level expiration check, not Redis TTL
+        store
+            .create_session(&session, Duration::seconds(60))
+            .await
+            .unwrap();
+
+        // Try to retrieve - should reject due to expires_at
+        let result = store.get_session(session.session_id).await;
+
+        match result {
+            Err(AuthError::SessionExpired) => {
+                // ✅ Expected: Session rejected due to expiration
+            }
+            Ok(_) => {
+                panic!("Expected SessionExpired error, but got success");
+            }
+            Err(e) => {
+                panic!("Expected SessionExpired error, but got: {:?}", e);
+            }
+        }
+
+        // Cleanup
+        let _ = store.delete_session(session.session_id).await;
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires Redis running
+    #[allow(clippy::unwrap_used)]
+    async fn test_valid_session_accepted() {
+        let store = RedisSessionStore::new("redis://127.0.0.1:6379")
+            .await
+            .unwrap();
+
+        // Create session with future expiration
+        let session = Session {
+            session_id: SessionId::new(),
+            user_id: UserId::new(),
+            device_id: DeviceId::new(),
+            email: "test@example.com".to_string(),
+            created_at: Utc::now(),
+            last_active: Utc::now(),
+            expires_at: Utc::now() + Duration::hours(24), // ← Valid for 24 hours
+            ip_address: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            user_agent: "Test".to_string(),
+            oauth_provider: None,
+            login_risk_score: 0.1,
+        };
+
+        store
+            .create_session(&session, Duration::hours(24))
+            .await
+            .unwrap();
+
+        // Should successfully retrieve
+        let retrieved = store.get_session(session.session_id).await.unwrap();
+        assert_eq!(retrieved.session_id, session.session_id);
+        assert_eq!(retrieved.user_id, session.user_id);
+
+        // Cleanup
+        store.delete_session(session.session_id).await.unwrap();
     }
 }
