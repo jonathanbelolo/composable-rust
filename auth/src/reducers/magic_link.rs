@@ -351,7 +351,7 @@ where
                 let session_id = SessionId::new();
                 let now = Utc::now();
 
-                // Build session (optimistically set in state since sessions are ephemeral)
+                // Build session with placeholder risk score (will be updated via SessionCreated)
                 let session = Session {
                     session_id,
                     user_id, // Will be updated with actual user_id from projection
@@ -363,10 +363,11 @@ where
                     ip_address,
                     user_agent: user_agent.clone(),
                     oauth_provider: None,
-                    login_risk_score: 0.1,
+                    login_risk_score: 0.1, // Placeholder - will be updated via SessionCreated
                 };
 
                 // Update state immediately (sessions are ephemeral, not event-sourced)
+                // The risk score will be corrected when SessionCreated action is processed
                 state.session = Some(session.clone());
 
                 // Query projection to check if user exists
@@ -498,6 +499,15 @@ where
                         }
                     }
                 }))]
+            }
+
+            // ═══════════════════════════════════════════════════════════════
+            // SessionCreated: Set session in state
+            // ═══════════════════════════════════════════════════════════════
+            AuthAction::SessionCreated { session } => {
+                // Set session in state (session now has correct risk score from RiskCalculator)
+                state.session = Some(session.clone());
+                smallvec![Effect::None]
             }
 
             // ═══════════════════════════════════════════════════════════════

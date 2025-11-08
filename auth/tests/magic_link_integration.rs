@@ -86,8 +86,8 @@ async fn test_magic_link_flow_complete_happy_path() {
     // Token should be 43 characters (256 bits base64url encoded)
     assert_eq!(magic_link_state.token.len(), 43);
 
-    // Should return effect to send email
-    assert_eq!(effects.len(), 1);
+    // Should return 2 effects: store token + send email (BLOCKER #1 fix)
+    assert_eq!(effects.len(), 2);
 
     // Step 2: Verify magic link with valid token
     let valid_token = magic_link_state.token.clone();
