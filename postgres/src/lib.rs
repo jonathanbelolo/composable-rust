@@ -29,6 +29,44 @@ use composable_rust_core::stream::{StreamId, Version};
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 
+/// Connection pool statistics for monitoring and observability.
+///
+/// These metrics are useful for:
+/// - Health checks (detecting pool saturation)
+/// - Prometheus/Grafana monitoring
+/// - Alerting on connection exhaustion
+/// - Capacity planning
+#[derive(Debug, Clone, Copy)]
+pub struct PoolStats {
+    /// Total number of connections in the pool (active + idle)
+    pub size: u32,
+    /// Number of idle connections available for use
+    pub idle: usize,
+}
+
+impl PoolStats {
+    /// Check if the connection pool is saturated (no idle connections).
+    ///
+    /// Returns `true` if all connections are in use.
+    #[must_use]
+    pub const fn is_saturated(&self) -> bool {
+        self.idle == 0
+    }
+
+    /// Get the utilization percentage of the pool.
+    ///
+    /// Returns a value between 0.0 and 1.0 representing how many
+    /// connections are currently in use.
+    #[must_use]
+    pub fn utilization(&self) -> f64 {
+        if self.size == 0 {
+            0.0
+        } else {
+            1.0 - (self.idle as f64 / f64::from(self.size))
+        }
+    }
+}
+
 /// `PostgreSQL`-based event store implementation.
 ///
 /// This implementation uses `PostgreSQL` for durable event storage with:
@@ -94,6 +132,70 @@ impl PostgresEventStore {
         Ok(Self { pool })
     }
 
+    /// Create a new `PostgreSQL` event store with optimized connection pool settings.
+    ///
+    /// This method creates a production-ready connection pool with configurable:
+    /// - Connection limits (min/max)
+    /// - Timeouts (connect, idle, max lifetime)
+    /// - Statement timeout
+    ///
+    /// # Arguments
+    ///
+    /// * `database_url` - PostgreSQL connection URL (supports SSL via `?sslmode=require`)
+    /// * `max_connections` - Maximum number of connections in the pool
+    /// * `min_connections` - Minimum number of idle connections to maintain
+    /// * `connect_timeout_secs` - Connection timeout in seconds
+    /// * `idle_timeout_secs` - How long a connection can be idle before being closed
+    /// * `max_lifetime_secs` - Maximum lifetime of a connection before recycling
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EventStoreError::DatabaseError`] if:
+    /// - The database URL is invalid
+    /// - Cannot connect to the database
+    /// - Database authentication fails
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use composable_rust_postgres::PostgresEventStore;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// // Production-optimized pool
+    /// let store = PostgresEventStore::with_options(
+    ///     "postgres://localhost/mydb?sslmode=require",
+    ///     20,  // max connections
+    ///     5,   // min connections
+    ///     30,  // connect timeout
+    ///     600, // idle timeout (10 minutes)
+    ///     1800 // max lifetime (30 minutes)
+    /// ).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn with_options(
+        database_url: &str,
+        max_connections: u32,
+        min_connections: u32,
+        connect_timeout_secs: u64,
+        idle_timeout_secs: u64,
+        max_lifetime_secs: u64,
+    ) -> Result<Self, EventStoreError> {
+        use std::time::Duration;
+
+        let pool = PgPoolOptions::new()
+            .max_connections(max_connections)
+            .min_connections(min_connections)
+            .acquire_timeout(Duration::from_secs(connect_timeout_secs))
+            .idle_timeout(Some(Duration::from_secs(idle_timeout_secs)))
+            .max_lifetime(Some(Duration::from_secs(max_lifetime_secs)))
+            .connect(database_url)
+            .await
+            .map_err(|e| EventStoreError::DatabaseError(e.to_string()))?;
+
+        Ok(Self { pool })
+    }
+
     /// Create a new `PostgreSQL` event store from an existing connection pool.
     ///
     /// Useful when you want to share a connection pool across multiple services
@@ -126,6 +228,39 @@ impl PostgresEventStore {
     #[must_use]
     pub const fn pool(&self) -> &PgPool {
         &self.pool
+    }
+
+    /// Get connection pool statistics for monitoring and health checks.
+    ///
+    /// Returns current pool metrics:
+    /// - `size`: Total number of connections (active + idle)
+    /// - `idle`: Number of idle connections available for use
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use composable_rust_postgres::PostgresEventStore;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let store = PostgresEventStore::new("postgres://localhost/mydb").await?;
+    ///
+    /// // Get pool stats for monitoring
+    /// let stats = store.pool_stats();
+    /// println!("Pool size: {}, Idle: {}", stats.size, stats.idle);
+    ///
+    /// // Check if pool is saturated
+    /// if stats.idle == 0 {
+    ///     eprintln!("Warning: Connection pool exhausted!");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn pool_stats(&self) -> PoolStats {
+        PoolStats {
+            size: self.pool.size(),
+            idle: self.pool.num_idle(),
+        }
     }
 
     /// Run database migrations.

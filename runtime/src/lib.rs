@@ -34,6 +34,15 @@ use composable_rust_core::{effect::Effect, reducer::Reducer};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+/// Retry logic with exponential backoff
+pub mod retry;
+
+/// Circuit breaker pattern for preventing cascading failures
+pub mod circuit_breaker;
+
+/// Prometheus metrics for observability
+pub mod metrics;
+
 /// Error types for the Store runtime
 pub mod error {
     use thiserror::Error;

@@ -15,6 +15,7 @@ members = [
     "examples/metrics-demo",
     "examples/todo",
     "examples/banking",
+    "examples/ticketing",
 ]
 
 [workspace.package]

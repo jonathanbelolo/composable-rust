@@ -1,0 +1,39 @@
+[package]
+name = "ticketing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Framework dependencies
+composable-rust-core = { path = "../../core" }
+composable-rust-runtime = { path = "../../runtime" }
+composable-rust-testing = { path = "../../testing" }
+composable-rust-macros = { path = "../../macros" }
+composable-rust-postgres = { path = "../../postgres" }
+composable-rust-redpanda = { path = "../../redpanda" }
+composable-rust-projections = { path = "../../projections" }
+
+# Workspace dependencies
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = "1"
+chrono = { workspace = true }
+uuid = { version = "1", features = ["v4", "serde"] }
+smallvec = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+futures = { workspace = true }
+sqlx = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+testcontainers = { workspace = true }
+testcontainers-modules = { workspace = true }
+
+[lints]
+workspace = true
