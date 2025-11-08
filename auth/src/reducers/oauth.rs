@@ -24,7 +24,7 @@ use crate::config::OAuthConfig;
 use crate::constants::login_methods;
 use crate::environment::AuthEnvironment;
 use crate::events::AuthEvent;
-use crate::providers::{OAuth2Provider, UserRepository, DeviceRepository, SessionStore, TokenStore, RiskCalculator, EmailProvider, WebAuthnProvider, OAuthTokenStore, OAuthTokenData};
+use crate::providers::{ChallengeStore, OAuth2Provider, UserRepository, DeviceRepository, SessionStore, TokenStore, RiskCalculator, EmailProvider, WebAuthnProvider, OAuthTokenStore, OAuthTokenData};
 use crate::state::{AuthState, DeviceId, OAuthState, Session, SessionId, UserId};
 use composable_rust_core::effect::Effect;
 use composable_rust_core::reducer::Reducer;
@@ -37,7 +37,7 @@ use std::sync::Arc;
 ///
 /// Handles OAuth2/OIDC authentication flow with CSRF protection.
 #[derive(Debug, Clone)]
-pub struct OAuthReducer<O, E, W, S, T, U, D, R, OT>
+pub struct OAuthReducer<O, E, W, S, T, U, D, R, OT, C>
 where
     O: OAuth2Provider + Clone + 'static,
     E: EmailProvider + Clone + 'static,
@@ -48,15 +48,16 @@ where
     D: DeviceRepository + Clone + 'static,
     R: RiskCalculator + Clone + 'static,
     OT: OAuthTokenStore + Clone + 'static,
+    C: ChallengeStore + Clone + 'static,
 {
     /// Configuration for OAuth authentication.
     config: OAuthConfig,
 
     /// Phantom data to hold type parameters.
-    _phantom: std::marker::PhantomData<(O, E, W, S, T, U, D, R, OT)>,
+    _phantom: std::marker::PhantomData<(O, E, W, S, T, U, D, R, OT, C)>,
 }
 
-impl<O, E, W, S, T, U, D, R, OT> OAuthReducer<O, E, W, S, T, U, D, R, OT>
+impl<O, E, W, S, T, U, D, R, OT, C> OAuthReducer<O, E, W, S, T, U, D, R, OT, C>
 where
     O: OAuth2Provider + Clone + 'static,
     E: EmailProvider + Clone + 'static,
@@ -67,6 +68,7 @@ where
     D: DeviceRepository + Clone + 'static,
     R: RiskCalculator + Clone + 'static,
     OT: OAuthTokenStore + Clone + 'static,
+    C: ChallengeStore + Clone + 'static,
 {
     /// Create a new OAuth reducer with default configuration.
     ///
@@ -143,7 +145,7 @@ where
     }
 }
 
-impl<O, E, W, S, T, U, D, R, OT> Reducer for OAuthReducer<O, E, W, S, T, U, D, R, OT>
+impl<O, E, W, S, T, U, D, R, OT, C> Reducer for OAuthReducer<O, E, W, S, T, U, D, R, OT, C>
 where
     O: OAuth2Provider + Clone + 'static,
     E: EmailProvider + Clone + 'static,
@@ -154,10 +156,11 @@ where
     D: DeviceRepository + Clone + 'static,
     R: RiskCalculator + Clone + 'static,
     OT: OAuthTokenStore + Clone + 'static,
+    C: ChallengeStore + Clone + 'static,
 {
     type State = AuthState;
     type Action = AuthAction;
-    type Environment = AuthEnvironment<O, E, W, S, T, U, D, R, OT>;
+    type Environment = AuthEnvironment<O, E, W, S, T, U, D, R, OT, C>;
 
     fn reduce(
         &self,

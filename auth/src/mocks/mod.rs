@@ -12,6 +12,7 @@ pub mod email;
 pub mod webauthn;
 pub mod risk;
 pub mod token_store;
+pub mod challenge_store;
 
 pub use oauth::MockOAuth2Provider;
 pub use oauth_token_store::MockOAuthTokenStore;
@@ -22,3 +23,4 @@ pub use email::MockEmailProvider;
 pub use webauthn::MockWebAuthnProvider;
 pub use risk::MockRiskCalculator;
 pub use token_store::MockTokenStore;
+pub use challenge_store::MockChallengeStore;

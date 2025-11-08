@@ -58,8 +58,9 @@ use crate::constants::login_methods;
 use crate::environment::AuthEnvironment;
 use crate::events::AuthEvent;
 use crate::providers::{
-    DeviceRepository, EmailProvider, OAuth2Provider, OAuthTokenStore, PasskeyCredential,
-    RiskCalculator, SessionStore, TokenStore, UserRepository, WebAuthnProvider,
+    ChallengeStore, DeviceRepository, EmailProvider, OAuth2Provider, OAuthTokenStore,
+    PasskeyCredential, RiskCalculator, SessionStore, TokenStore, UserRepository,
+    WebAuthnProvider,
 };
 use crate::state::{AuthState, Session, SessionId};
 use chrono::Utc;
@@ -73,14 +74,14 @@ use std::sync::Arc;
 ///
 /// Handles passkey registration and login flows.
 #[derive(Debug, Clone)]
-pub struct PasskeyReducer<O, E, W, S, T, U, D, R, OT> {
+pub struct PasskeyReducer<O, E, W, S, T, U, D, R, OT, C> {
     /// Configuration for passkey authentication.
     config: PasskeyConfig,
     /// Phantom data to hold type parameters.
-    _phantom: std::marker::PhantomData<(O, E, W, S, T, U, D, R, OT)>,
+    _phantom: std::marker::PhantomData<(O, E, W, S, T, U, D, R, OT, C)>,
 }
 
-impl<O, E, W, S, T, U, D, R, OT> PasskeyReducer<O, E, W, S, T, U, D, R, OT> {
+impl<O, E, W, S, T, U, D, R, OT, C> PasskeyReducer<O, E, W, S, T, U, D, R, OT, C> {
     /// Create a new passkey reducer with default configuration.
     ///
     /// Default configuration:
@@ -128,13 +129,13 @@ impl<O, E, W, S, T, U, D, R, OT> PasskeyReducer<O, E, W, S, T, U, D, R, OT> {
 
 }
 
-impl<O, E, W, S, T, U, D, R, OT> Default for PasskeyReducer<O, E, W, S, T, U, D, R, OT> {
+impl<O, E, W, S, T, U, D, R, OT, C> Default for PasskeyReducer<O, E, W, S, T, U, D, R, OT, C> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<O, E, W, S, T, U, D, R, OT> Reducer for PasskeyReducer<O, E, W, S, T, U, D, R, OT>
+impl<O, E, W, S, T, U, D, R, OT, C> Reducer for PasskeyReducer<O, E, W, S, T, U, D, R, OT, C>
 where
     O: OAuth2Provider + Clone + 'static,
     E: EmailProvider + Clone + 'static,
@@ -145,10 +146,11 @@ where
     D: DeviceRepository + Clone + 'static,
     R: RiskCalculator + Clone + 'static,
     OT: OAuthTokenStore + Clone + 'static,
+    C: ChallengeStore + Clone + 'static,
 {
     type State = AuthState;
     type Action = AuthAction;
-    type Environment = AuthEnvironment<O, E, W, S, T, U, D, R, OT>;
+    type Environment = AuthEnvironment<O, E, W, S, T, U, D, R, OT, C>;
 
     fn reduce(
         &self,
@@ -703,7 +705,7 @@ mod tests {
 
     #[test]
     fn test_default_config() {
-        type TestReducer = PasskeyReducer<(), (), (), (), (), (), (), (), ()>;
+        type TestReducer = PasskeyReducer<(), (), (), (), (), (), (), (), (), ()>;
         let reducer = TestReducer::new();
         assert_eq!(reducer.config.challenge_ttl_minutes, 5);
         assert_eq!(reducer.config.origin, "http://localhost:3000");
@@ -712,7 +714,7 @@ mod tests {
 
     #[test]
     fn test_custom_config() {
-        type TestReducer = PasskeyReducer<(), (), (), (), (), (), (), (), ()>;
+        type TestReducer = PasskeyReducer<(), (), (), (), (), (), (), (), (), ()>;
         let config = PasskeyConfig::new(
             "https://app.example.com".to_string(),
             "app.example.com".to_string(),

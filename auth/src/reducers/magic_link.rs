@@ -36,8 +36,8 @@ use crate::constants::login_methods;
 use crate::environment::AuthEnvironment;
 use crate::events::AuthEvent;
 use crate::providers::{
-    DeviceRepository, EmailProvider, OAuth2Provider, OAuthTokenStore, RiskCalculator,
-    SessionStore, TokenStore, UserRepository, WebAuthnProvider,
+    ChallengeStore, DeviceRepository, EmailProvider, OAuth2Provider, OAuthTokenStore,
+    RiskCalculator, SessionStore, TokenStore, UserRepository, WebAuthnProvider,
 };
 use crate::state::{AuthState, DeviceId, MagicLinkState, Session, SessionId, UserId};
 use chrono::Utc;
@@ -51,14 +51,14 @@ use std::sync::Arc;
 ///
 /// Handles passwordless email authentication flows with event sourcing.
 #[derive(Debug, Clone)]
-pub struct MagicLinkReducer<O, E, W, S, T, U, D, R, OT> {
+pub struct MagicLinkReducer<O, E, W, S, T, U, D, R, OT, C> {
     /// Configuration for magic link authentication.
     config: MagicLinkConfig,
     /// Phantom data to hold type parameters.
-    _phantom: std::marker::PhantomData<(O, E, W, S, T, U, D, R, OT)>,
+    _phantom: std::marker::PhantomData<(O, E, W, S, T, U, D, R, OT, C)>,
 }
 
-impl<O, E, W, S, T, U, D, R, OT> MagicLinkReducer<O, E, W, S, T, U, D, R, OT> {
+impl<O, E, W, S, T, U, D, R, OT, C> MagicLinkReducer<O, E, W, S, T, U, D, R, OT, C> {
     /// Create a new magic link reducer with default settings.
     ///
     /// Default configuration:
@@ -152,13 +152,13 @@ impl<O, E, W, S, T, U, D, R, OT> MagicLinkReducer<O, E, W, S, T, U, D, R, OT> {
     }
 }
 
-impl<O, E, W, S, T, U, D, R, OT> Default for MagicLinkReducer<O, E, W, S, T, U, D, R, OT> {
+impl<O, E, W, S, T, U, D, R, OT, C> Default for MagicLinkReducer<O, E, W, S, T, U, D, R, OT, C> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<O, E, W, S, T, U, D, R, OT> Reducer for MagicLinkReducer<O, E, W, S, T, U, D, R, OT>
+impl<O, E, W, S, T, U, D, R, OT, C> Reducer for MagicLinkReducer<O, E, W, S, T, U, D, R, OT, C>
 where
     O: OAuth2Provider + Clone + 'static,
     E: EmailProvider + Clone + 'static,
@@ -169,10 +169,11 @@ where
     D: DeviceRepository + Clone + 'static,
     R: RiskCalculator + Clone + 'static,
     OT: OAuthTokenStore + Clone + 'static,
+    C: ChallengeStore + Clone + 'static,
 {
     type State = AuthState;
     type Action = AuthAction;
-    type Environment = AuthEnvironment<O, E, W, S, T, U, D, R, OT>;
+    type Environment = AuthEnvironment<O, E, W, S, T, U, D, R, OT, C>;
 
     fn reduce(
         &self,
@@ -531,7 +532,7 @@ mod tests {
 
     #[test]
     fn test_generate_token() {
-        type TestReducer = MagicLinkReducer<(), (), (), (), (), (), (), (), ()>;
+        type TestReducer = MagicLinkReducer<(), (), (), (), (), (), (), (), (), ()>;
         let reducer = TestReducer::new();
         let token1 = reducer.generate_token();
         let token2 = reducer.generate_token();
@@ -549,7 +550,7 @@ mod tests {
 
     #[test]
     fn test_custom_ttl() {
-        type TestReducer = MagicLinkReducer<(), (), (), (), (), (), (), (), ()>;
+        type TestReducer = MagicLinkReducer<(), (), (), (), (), (), (), (), (), ()>;
         let reducer = TestReducer::with_ttl(15);
         assert_eq!(reducer.config.token_ttl_minutes, 15);
     }

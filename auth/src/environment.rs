@@ -4,7 +4,7 @@
 //! in auth reducers.
 
 use crate::providers::{
-    OAuth2Provider, EmailProvider, WebAuthnProvider, SessionStore,
+    ChallengeStore, OAuth2Provider, EmailProvider, WebAuthnProvider, SessionStore,
     UserRepository, DeviceRepository, RiskCalculator, TokenStore,
     OAuthTokenStore,
 };
@@ -26,7 +26,8 @@ use std::sync::Arc;
 /// - `D`: Device repository
 /// - `R`: Risk calculator
 /// - `OT`: OAuth token store
-pub struct AuthEnvironment<O, E, W, S, T, U, D, R, OT>
+/// - `C`: Challenge store
+pub struct AuthEnvironment<O, E, W, S, T, U, D, R, OT, C>
 where
     O: OAuth2Provider,
     E: EmailProvider,
@@ -37,6 +38,7 @@ where
     D: DeviceRepository,
     R: RiskCalculator,
     OT: OAuthTokenStore,
+    C: ChallengeStore,
 {
     /// OAuth2 provider.
     pub oauth: O,
@@ -65,11 +67,14 @@ where
     /// OAuth token store (PostgreSQL - encrypted access/refresh tokens).
     pub oauth_tokens: OT,
 
+    /// Challenge store (Redis - WebAuthn challenges with atomic consumption).
+    pub challenges: C,
+
     /// Event store for event sourcing (PostgreSQL).
     pub event_store: Arc<dyn EventStore>,
 }
 
-impl<O, E, W, S, T, U, D, R, OT> AuthEnvironment<O, E, W, S, T, U, D, R, OT>
+impl<O, E, W, S, T, U, D, R, OT, C> AuthEnvironment<O, E, W, S, T, U, D, R, OT, C>
 where
     O: OAuth2Provider,
     E: EmailProvider,
@@ -80,6 +85,7 @@ where
     D: DeviceRepository,
     R: RiskCalculator,
     OT: OAuthTokenStore,
+    C: ChallengeStore,
 {
     /// Create a new authentication environment.
     #[must_use]
@@ -93,6 +99,7 @@ where
         devices: D,
         risk: R,
         oauth_tokens: OT,
+        challenges: C,
         event_store: Arc<dyn EventStore>,
     ) -> Self {
         Self {
@@ -105,6 +112,7 @@ where
             devices,
             risk,
             oauth_tokens,
+            challenges,
             event_store,
         }
     }

@@ -59,6 +59,7 @@ pub mod user;
 pub mod device;
 pub mod risk;
 pub mod token_store;
+pub mod challenge_store;
 
 // Re-export provider traits
 pub use oauth::OAuth2Provider;
@@ -70,6 +71,7 @@ pub use user::UserRepository;
 pub use device::DeviceRepository;
 pub use risk::RiskCalculator;
 pub use token_store::{TokenStore, TokenData, TokenType};
+pub use challenge_store::{ChallengeStore, ChallengeData};
 
 /// User data model.
 ///

@@ -4,9 +4,9 @@ use composable_rust_auth::{
     actions::AuthAction,
     environment::AuthEnvironment,
     mocks::{
-        MockDeviceRepository, MockEmailProvider, MockOAuth2Provider, MockOAuthTokenStore,
-        MockRiskCalculator, MockSessionStore, MockTokenStore, MockUserRepository,
-        MockWebAuthnProvider,
+        MockChallengeStore, MockDeviceRepository, MockEmailProvider, MockOAuth2Provider,
+        MockOAuthTokenStore, MockRiskCalculator, MockSessionStore, MockTokenStore,
+        MockUserRepository, MockWebAuthnProvider,
     },
     reducers::MagicLinkReducer,
     state::AuthState,
@@ -27,6 +27,7 @@ fn create_test_env() -> AuthEnvironment<
     MockDeviceRepository,
     MockRiskCalculator,
     MockOAuthTokenStore,
+    MockChallengeStore,
 > {
     AuthEnvironment::new(
         MockOAuth2Provider::new(),
@@ -38,6 +39,7 @@ fn create_test_env() -> AuthEnvironment<
         MockDeviceRepository::new(),
         MockRiskCalculator::new(),
         MockOAuthTokenStore::new(),
+        MockChallengeStore::new(),
         Arc::new(InMemoryEventStore::new()),
     )
 }
@@ -53,6 +55,7 @@ fn create_test_reducer() -> MagicLinkReducer<
     MockDeviceRepository,
     MockRiskCalculator,
     MockOAuthTokenStore,
+    MockChallengeStore,
 > {
     MagicLinkReducer::new()
 }
