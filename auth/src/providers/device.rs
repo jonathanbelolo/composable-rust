@@ -49,7 +49,12 @@ pub trait DeviceRepository: Send + Sync {
         device_id: DeviceId,
     ) -> impl std::future::Future<Output = Result<Device>> + Send;
 
-    /// Get all devices for a user.
+    /// Get devices for a user with pagination.
+    ///
+    /// # Pagination
+    ///
+    /// - `limit`: Maximum devices to return (capped at 1000, default 100)
+    /// - `offset`: Number of devices to skip (default 0)
     ///
     /// # Errors
     ///
@@ -57,6 +62,8 @@ pub trait DeviceRepository: Send + Sync {
     fn get_user_devices(
         &self,
         user_id: UserId,
+        limit: Option<i64>,
+        offset: Option<i64>,
     ) -> impl std::future::Future<Output = Result<Vec<Device>>> + Send;
 
     /// Create device.

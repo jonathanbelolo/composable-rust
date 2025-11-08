@@ -61,17 +61,38 @@ impl DeviceRepository for MockDeviceRepository {
     fn get_user_devices(
         &self,
         user_id: UserId,
+        limit: Option<i64>,
+        offset: Option<i64>,
     ) -> impl Future<Output = Result<Vec<Device>>> + Send {
         let devices = Arc::clone(&self.devices);
 
         async move {
+            // ✅ Cap limit to prevent DoS via unbounded queries
+            const MAX_LIMIT: i64 = 1000;
+            const DEFAULT_LIMIT: i64 = 100;
+
+            let limit = limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT) as usize;
+            let offset = offset.unwrap_or(0).max(0) as usize;
+
             let devices_guard = devices.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
-            let user_devices: Vec<Device> = devices_guard
+
+            // Sort by last_seen DESC (most recent first)
+            let mut user_devices: Vec<Device> = devices_guard
                 .values()
                 .filter(|d| d.user_id == user_id)
                 .cloned()
                 .collect();
-            Ok(user_devices)
+
+            user_devices.sort_by(|a, b| b.last_seen.cmp(&a.last_seen));
+
+            // Apply pagination
+            let paginated: Vec<Device> = user_devices
+                .into_iter()
+                .skip(offset)
+                .take(limit)
+                .collect();
+
+            Ok(paginated)
         }
     }
 
@@ -394,5 +415,162 @@ mod tests {
             .await;
 
         assert!(result.is_ok(), "Owner should be able to update last_seen");
+    }
+
+    #[tokio::test]
+    async fn test_device_pagination_default_limit() {
+        let repo = MockDeviceRepository::new();
+        let user_id = UserId::new();
+
+        // Create 150 devices (more than default limit of 100)
+        for i in 0..150 {
+            let device = Device {
+                device_id: DeviceId::new(),
+                user_id,
+                name: format!("Device {}", i),
+                device_type: DeviceType::Desktop,
+                platform: "Linux".to_string(),
+                first_seen: chrono::Utc::now(),
+                last_seen: chrono::Utc::now() + chrono::Duration::seconds(i),
+                trust_level: DeviceTrustLevel::Unknown,
+                passkey_credential_id: None,
+                public_key: None,
+            };
+            repo.create_device(&device).await.unwrap();
+        }
+
+        // Get devices with default pagination (should return 100)
+        let devices = repo.get_user_devices(user_id, None, None).await.unwrap();
+        assert_eq!(devices.len(), 100, "Default limit should return 100 devices");
+    }
+
+    #[tokio::test]
+    async fn test_device_pagination_custom_limit() {
+        let repo = MockDeviceRepository::new();
+        let user_id = UserId::new();
+
+        // Create 50 devices
+        for i in 0..50 {
+            let device = Device {
+                device_id: DeviceId::new(),
+                user_id,
+                name: format!("Device {}", i),
+                device_type: DeviceType::Desktop,
+                platform: "Linux".to_string(),
+                first_seen: chrono::Utc::now(),
+                last_seen: chrono::Utc::now() + chrono::Duration::seconds(i),
+                trust_level: DeviceTrustLevel::Unknown,
+                passkey_credential_id: None,
+                public_key: None,
+            };
+            repo.create_device(&device).await.unwrap();
+        }
+
+        // Get devices with custom limit of 10
+        let devices = repo.get_user_devices(user_id, Some(10), None).await.unwrap();
+        assert_eq!(devices.len(), 10, "Custom limit should return 10 devices");
+    }
+
+    #[tokio::test]
+    async fn test_device_pagination_max_limit_enforcement() {
+        let repo = MockDeviceRepository::new();
+        let user_id = UserId::new();
+
+        // Create 50 devices
+        for i in 0..50 {
+            let device = Device {
+                device_id: DeviceId::new(),
+                user_id,
+                name: format!("Device {}", i),
+                device_type: DeviceType::Desktop,
+                platform: "Linux".to_string(),
+                first_seen: chrono::Utc::now(),
+                last_seen: chrono::Utc::now(),
+                trust_level: DeviceTrustLevel::Unknown,
+                passkey_credential_id: None,
+                public_key: None,
+            };
+            repo.create_device(&device).await.unwrap();
+        }
+
+        // Try to get 2000 devices (should be capped at 1000)
+        let devices = repo.get_user_devices(user_id, Some(2000), None).await.unwrap();
+        assert_eq!(
+            devices.len(),
+            50,
+            "Should return all 50 devices (less than max limit)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_device_pagination_offset() {
+        let repo = MockDeviceRepository::new();
+        let user_id = UserId::new();
+
+        // Create 30 devices
+        for i in 0..30 {
+            let device = Device {
+                device_id: DeviceId::new(),
+                user_id,
+                name: format!("Device {}", i),
+                device_type: DeviceType::Desktop,
+                platform: "Linux".to_string(),
+                first_seen: chrono::Utc::now(),
+                last_seen: chrono::Utc::now() + chrono::Duration::seconds(i),
+                trust_level: DeviceTrustLevel::Unknown,
+                passkey_credential_id: None,
+                public_key: None,
+            };
+            repo.create_device(&device).await.unwrap();
+        }
+
+        // Get first 10 devices
+        let page1 = repo.get_user_devices(user_id, Some(10), Some(0)).await.unwrap();
+        assert_eq!(page1.len(), 10);
+
+        // Get second 10 devices
+        let page2 = repo.get_user_devices(user_id, Some(10), Some(10)).await.unwrap();
+        assert_eq!(page2.len(), 10);
+
+        // Get third 10 devices
+        let page3 = repo.get_user_devices(user_id, Some(10), Some(20)).await.unwrap();
+        assert_eq!(page3.len(), 10);
+
+        // Verify no overlap between pages
+        assert!(
+            page1[0].device_id != page2[0].device_id,
+            "Pages should not overlap"
+        );
+        assert!(
+            page2[0].device_id != page3[0].device_id,
+            "Pages should not overlap"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_device_pagination_negative_offset_prevented() {
+        let repo = MockDeviceRepository::new();
+        let user_id = UserId::new();
+
+        // Create 10 devices
+        for i in 0..10 {
+            let device = Device {
+                device_id: DeviceId::new(),
+                user_id,
+                name: format!("Device {}", i),
+                device_type: DeviceType::Desktop,
+                platform: "Linux".to_string(),
+                first_seen: chrono::Utc::now(),
+                last_seen: chrono::Utc::now(),
+                trust_level: DeviceTrustLevel::Unknown,
+                passkey_credential_id: None,
+                public_key: None,
+            };
+            repo.create_device(&device).await.unwrap();
+        }
+
+        // Try negative offset (should be treated as 0)
+        let devices = repo.get_user_devices(user_id, Some(5), Some(-10)).await.unwrap();
+        assert_eq!(devices.len(), 5, "Negative offset should be treated as 0");
     }
 }

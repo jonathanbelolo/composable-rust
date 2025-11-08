@@ -102,7 +102,19 @@ impl DeviceRepository for PostgresDeviceRepository {
         })
     }
 
-    async fn get_user_devices(&self, user_id: UserId) -> Result<Vec<Device>> {
+    async fn get_user_devices(
+        &self,
+        user_id: UserId,
+        limit: Option<i64>,
+        offset: Option<i64>,
+    ) -> Result<Vec<Device>> {
+        // ✅ Cap limit to prevent DoS via unbounded queries
+        const MAX_LIMIT: i64 = 1000;
+        const DEFAULT_LIMIT: i64 = 100;
+
+        let limit = limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
+        let offset = offset.unwrap_or(0).max(0); // Prevent negative offsets
+
         let rows = sqlx::query!(
             r#"
             SELECT device_id, user_id, name, device_type AS "device_type: DeviceType",
@@ -111,8 +123,11 @@ impl DeviceRepository for PostgresDeviceRepository {
             FROM registered_devices
             WHERE user_id = $1
             ORDER BY last_seen DESC
+            LIMIT $2 OFFSET $3
             "#,
-            user_id.0
+            user_id.0,
+            limit,
+            offset
         )
         .fetch_all(&self.pool)
         .await
