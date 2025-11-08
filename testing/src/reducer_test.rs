@@ -104,6 +104,7 @@ where
     /// Panics if initial state, action, or environment is not set,
     /// or if any assertions fail.
     #[allow(clippy::panic)] // Test code can panic
+    #[allow(clippy::expect_used)] // Test code can use expect
     pub fn run(self) {
         let mut state = self
             .initial_state

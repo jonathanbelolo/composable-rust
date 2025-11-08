@@ -58,6 +58,7 @@ impl PoolStats {
     /// Returns a value between 0.0 and 1.0 representing how many
     /// connections are currently in use.
     #[must_use]
+    #[allow(clippy::cast_precision_loss)]
     pub fn utilization(&self) -> f64 {
         if self.size == 0 {
             0.0
@@ -141,7 +142,7 @@ impl PostgresEventStore {
     ///
     /// # Arguments
     ///
-    /// * `database_url` - PostgreSQL connection URL (supports SSL via `?sslmode=require`)
+    /// * `database_url` - `PostgreSQL` connection URL (supports SSL via `?sslmode=require`)
     /// * `max_connections` - Maximum number of connections in the pool
     /// * `min_connections` - Minimum number of idle connections to maintain
     /// * `connect_timeout_secs` - Connection timeout in seconds

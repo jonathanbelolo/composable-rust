@@ -180,6 +180,7 @@ impl Money {
     /// Panics if the conversion would overflow (dollars * 100 > u64::MAX).
     /// Use `checked_from_dollars` for non-panicking conversion.
     #[must_use]
+    #[allow(clippy::panic)]
     pub const fn from_dollars(dollars: u64) -> Self {
         match dollars.checked_mul(100) {
             Some(cents) => Self(cents),
@@ -230,6 +231,7 @@ impl Money {
     /// Panics if the addition would overflow.
     /// Use `checked_add` for non-panicking addition.
     #[must_use]
+    #[allow(clippy::panic)]
     pub const fn add(self, other: Self) -> Self {
         match self.checked_add(other) {
             Some(result) => result,
@@ -263,6 +265,7 @@ impl Money {
     /// Panics if the multiplication would overflow.
     /// Use `checked_multiply` for non-panicking multiplication.
     #[must_use]
+    #[allow(clippy::panic)]
     pub const fn multiply(self, quantity: u32) -> Self {
         match self.checked_multiply(quantity) {
             Some(result) => result,
@@ -294,6 +297,7 @@ impl Money {
     /// Panics if the calculation would overflow.
     /// Use `checked_apply_discount` for non-panicking discount.
     #[must_use]
+    #[allow(clippy::panic)]
     pub const fn apply_discount(self, percent: u32) -> Self {
         match self.checked_apply_discount(percent) {
             Some(result) => result,
@@ -324,6 +328,7 @@ impl Money {
     /// Panics if the calculation would overflow.
     /// Use `checked_apply_markup` for non-panicking markup.
     #[must_use]
+    #[allow(clippy::panic)]
     pub const fn apply_markup(self, percent: u32) -> Self {
         match self.checked_apply_markup(percent) {
             Some(result) => result,

@@ -73,9 +73,13 @@ impl RetryPolicy {
 
     /// Calculate delay for a given attempt number.
     ///
-    /// Uses exponential backoff: delay = initial_delay * (multiplier ^ attempt)
+    /// Uses exponential backoff: delay = `initial_delay` * (multiplier ^ attempt)
     /// Capped at `max_delay`.
     #[must_use]
+    #[allow(clippy::cast_precision_loss)]
+    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_wrap)]
+    #[allow(clippy::cast_sign_loss)]
     pub fn delay_for_attempt(&self, attempt: usize) -> Duration {
         if attempt == 0 {
             return self.initial_delay;
@@ -155,6 +159,10 @@ impl RetryPolicyBuilder {
 ///
 /// Returns `Ok(T)` if the operation succeeds within the retry limit,
 /// or `Err(E)` with the last error if all retries are exhausted.
+///
+/// # Errors
+///
+/// Returns the last error if all retry attempts are exhausted.
 ///
 /// # Example
 ///
