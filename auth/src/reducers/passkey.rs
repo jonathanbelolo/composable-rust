@@ -64,6 +64,7 @@ use crate::providers::{
 };
 use crate::state::{AuthState, Session, SessionId};
 use chrono::Utc;
+use composable_rust_core::async_effect;
 use composable_rust_core::effect::Effect;
 use composable_rust_core::reducer::Reducer;
 use composable_rust_core::stream::StreamId;
@@ -175,7 +176,7 @@ where
                 let challenges = env.challenges.clone();
                 let challenge_ttl = chrono::Duration::minutes(self.config.challenge_ttl_minutes);
 
-                smallvec![Effect::Future(Box::pin(async move {
+                smallvec![async_effect! {
                     // Get user info for WebAuthn
                     let user = match users.get_user_by_id(user_id).await {
                         Ok(u) => u,
@@ -213,7 +214,7 @@ where
                         }
                         Err(_) => None,
                     }
-                }))]
+                }]
             }
 
             // ═══════════════════════════════════════════════════════════════
@@ -241,7 +242,7 @@ where
                 let origin = self.config.origin.clone();
                 let rp_id = self.config.rp_id.clone();
 
-                smallvec![Effect::Future(Box::pin(async move {
+                smallvec![async_effect! {
                     // Extract challenge from attestation response
                     // Note: In a real implementation, the WebAuthn library would extract this
                     // For now, we're using a simplified approach where the challenge is the challenge_id
@@ -323,7 +324,7 @@ where
                         }
                         Err(_) => None,
                     }
-                }))]
+                }]
             }
 
             // ═══════════════════════════════════════════════════════════════
@@ -342,7 +343,7 @@ where
                 let challenges = env.challenges.clone();
                 let challenge_ttl = chrono::Duration::minutes(self.config.challenge_ttl_minutes);
 
-                smallvec![Effect::Future(Box::pin(async move {
+                smallvec![async_effect! {
                     // Get user by email
                     let user = match users.get_user_by_email(&username).await {
                         Ok(u) => u,
@@ -393,7 +394,7 @@ where
                         }
                         Err(_) => None,
                     }
-                }))]
+                }]
             }
 
             // ═══════════════════════════════════════════════════════════════
@@ -421,7 +422,7 @@ where
                 let origin = self.config.origin.clone();
                 let rp_id = self.config.rp_id.clone();
 
-                smallvec![Effect::Future(Box::pin(async move {
+                smallvec![async_effect! {
                     // Get credential first (to get user_id for challenge lookup and rate limiting)
                     let credential = match users.get_passkey_credential(&credential_id).await {
                         Ok(c) => c,
@@ -719,7 +720,7 @@ where
                         ip_address,
                         user_agent,
                     })
-                }))]
+                }]
             }
 
             // ═══════════════════════════════════════════════════════════════
@@ -740,11 +741,11 @@ where
                         user_id = %user_id.0,
                         "Invalid IP address during passkey login"
                     );
-                    return smallvec![Effect::Future(Box::pin(async move {
+                    return smallvec![async_effect! {
                         Some(AuthAction::PasskeyAuthenticationFailed {
                             error: "Invalid request parameters".to_string(),
                         })
-                    }))];
+                    }];
                 }
 
                 if let Err(e) = crate::utils::validate_user_agent(&user_agent) {
@@ -754,11 +755,11 @@ where
                         user_id = %user_id.0,
                         "Invalid user agent during passkey login"
                     );
-                    return smallvec![Effect::Future(Box::pin(async move {
+                    return smallvec![async_effect! {
                         Some(AuthAction::PasskeyAuthenticationFailed {
                             error: "Invalid request parameters".to_string(),
                         })
-                    }))];
+                    }];
                 }
 
                 // Generate session ID
@@ -795,7 +796,7 @@ where
                 let max_concurrent_sessions = self.config.max_concurrent_sessions;
                 let idle_timeout = self.config.idle_timeout;
 
-                smallvec![Effect::Future(Box::pin(async move {
+                smallvec![async_effect! {
                     // Calculate login risk
                     let risk_assessment = risk.calculate_login_risk(&crate::providers::LoginContext {
                         user_id: Some(user_id),
@@ -902,7 +903,7 @@ where
                             })
                         }
                     }
-                }))]
+                }]
             }
 
             // ═══════════════════════════════════════════════════════════════

@@ -26,6 +26,7 @@ use crate::environment::AuthEnvironment;
 use crate::events::AuthEvent;
 use crate::providers::{ChallengeStore, OAuth2Provider, UserRepository, DeviceRepository, SessionStore, TokenStore, RiskCalculator, EmailProvider, WebAuthnProvider, OAuthTokenStore, OAuthTokenData};
 use crate::state::{AuthState, DeviceId, OAuthState, Session, SessionId, UserId};
+use composable_rust_core::async_effect;
 use composable_rust_core::effect::Effect;
 use composable_rust_core::reducer::Reducer;
 use composable_rust_core::stream::StreamId;
@@ -209,7 +210,7 @@ where
 
                 smallvec![
                     // Effect 1: Store OAuth state atomically
-                    Effect::Future(Box::pin(async move {
+                    async_effect! {
                         match token_store.store_token(&state_for_store, token_data).await {
                             Ok(()) => {
                                 tracing::debug!("OAuth state stored");
@@ -224,9 +225,9 @@ where
                                 })
                             }
                         }
-                    })),
+                    },
                     // Effect 2: Build authorization URL
-                    Effect::Future(Box::pin(async move {
+                    async_effect! {
                         // Build authorization URL
                         match oauth_provider.build_authorization_url(provider, &state_param, &redirect_uri).await {
                             Ok(_auth_url) => {
@@ -244,7 +245,7 @@ where
                                 })
                             }
                         }
-                    }))
+                    }
                 ]
             }
 
@@ -264,12 +265,12 @@ where
                         ip_address = %ip_address,
                         "Invalid IP address during OAuth callback"
                     );
-                    return smallvec![Effect::Future(Box::pin(async move {
+                    return smallvec![async_effect! {
                         Some(AuthAction::OAuthFailed {
                             error: "invalid_request".to_string(),
                             error_description: Some("Invalid request parameters".to_string()),
                         })
-                    }))];
+                    }];
                 }
 
                 if let Err(e) = crate::utils::validate_user_agent(&user_agent) {
@@ -278,12 +279,12 @@ where
                         user_agent_length = user_agent.len(),
                         "Invalid user agent during OAuth callback"
                     );
-                    return smallvec![Effect::Future(Box::pin(async move {
+                    return smallvec![async_effect! {
                         Some(AuthAction::OAuthFailed {
                             error: "invalid_request".to_string(),
                             error_description: Some("Invalid request parameters".to_string()),
                         })
-                    }))];
+                    }];
                 }
 
                 // Clear OAuth state immediately (one-time use)
@@ -303,7 +304,7 @@ where
                 let redirect_uri = self.redirect_uri();
                 let oauth_provider = env.oauth.clone();
 
-                smallvec![Effect::Future(Box::pin(async move {
+                smallvec![async_effect! {
                     // Atomically consume OAuth state (check + delete in one operation)
                     match token_store.consume_token(&state_for_consume, &state_for_consume).await {
                         Ok(Some(token_data)) => {
@@ -383,7 +384,7 @@ where
                             })
                         }
                     }
-                }))]
+                }]
             }
 
             // ═══════════════════════════════════════════════════════════════════
@@ -401,12 +402,12 @@ where
                 // Validate email format from OAuth provider
                 if !crate::utils::is_valid_email(&email) {
                     tracing::warn!("Invalid email from OAuth provider {}: {}", provider.as_str(), email);
-                    return smallvec![Effect::Future(Box::pin(async move {
+                    return smallvec![async_effect! {
                         Some(AuthAction::OAuthFailed {
                             error: "invalid_email".to_string(),
                             error_description: Some(format!("Invalid email from OAuth provider: {email}")),
                         })
-                    }))];
+                    }];
                 }
 
                 // Generate IDs upfront
@@ -448,7 +449,7 @@ where
                 let name_clone = name.clone();
                 let user_agent_clone = user_agent.clone();
 
-                smallvec![Effect::Future(Box::pin(async move {
+                smallvec![async_effect! {
                     // Check if user exists in projection
                     let existing_user = users.get_user_by_email(&email_clone).await.ok();
                     let final_user_id = existing_user.as_ref().map_or(user_id, |u| u.user_id);
@@ -600,7 +601,7 @@ where
                             })
                         }
                     }
-                }))]
+                }]
             }
 
             // ═══════════════════════════════════════════════════════════════════

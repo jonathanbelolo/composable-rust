@@ -41,6 +41,7 @@ use crate::providers::{
 };
 use crate::state::{AuthState, DeviceId, MagicLinkState, Session, SessionId, UserId};
 use chrono::Utc;
+use composable_rust_core::async_effect;
 use composable_rust_core::effect::Effect;
 use composable_rust_core::reducer::Reducer;
 use composable_rust_core::stream::StreamId;
@@ -228,7 +229,7 @@ where
 
                 smallvec![
                     // Effect 1: Store token atomically
-                    Effect::Future(Box::pin(async move {
+                    async_effect! {
                         match token_store.store_token(&token_for_store, token_data).await {
                             Ok(()) => {
                                 tracing::debug!("Magic link token stored for {}", email_for_store);
@@ -242,9 +243,9 @@ where
                                 })
                             }
                         }
-                    })),
+                    },
                     // Effect 2: Send email
-                    Effect::Future(Box::pin(async move {
+                    async_effect! {
                         match email_provider
                             .send_magic_link(&email_for_email, &token_for_email, &base_url, expires_at_clone)
                             .await
@@ -262,7 +263,7 @@ where
                                 })
                             }
                         }
-                    }))
+                    }
                 ]
             }
 
@@ -298,12 +299,12 @@ where
                         ip_address = %ip_address,
                         "Invalid IP address during magic link verification"
                     );
-                    return smallvec![Effect::Future(Box::pin(async move {
+                    return smallvec![async_effect! {
                         Some(AuthAction::MagicLinkFailed {
                             email: String::new(), // Don't leak email on validation failure
                             error: "Invalid request parameters".to_string(),
                         })
-                    }))];
+                    }];
                 }
 
                 if let Err(e) = crate::utils::validate_user_agent(&user_agent) {
@@ -312,12 +313,12 @@ where
                         user_agent_length = user_agent.len(),
                         "Invalid user agent during magic link verification"
                     );
-                    return smallvec![Effect::Future(Box::pin(async move {
+                    return smallvec![async_effect! {
                         Some(AuthAction::MagicLinkFailed {
                             email: String::new(), // Don't leak email on validation failure
                             error: "Invalid request parameters".to_string(),
                         })
-                    }))];
+                    }];
                 }
 
                 // ⚡ SECURITY FIX (BLOCKER #1): Atomic token consumption
@@ -330,7 +331,7 @@ where
                 let ip_clone = ip_address;
                 let ua_clone = user_agent.clone();
 
-                smallvec![Effect::Future(Box::pin(async move {
+                smallvec![async_effect! {
                     // Atomically consume token (check + delete in one operation)
                     match token_store.consume_token(&token_for_consume, &token_for_consume).await {
                         Ok(Some(token_data)) => {
@@ -366,7 +367,7 @@ where
                             None
                         }
                     }
-                }))]
+                }]
             }
 
             // ═══════════════════════════════════════════════════════════════
@@ -417,7 +418,7 @@ where
                 let max_concurrent_sessions = self.config.max_concurrent_sessions;
                 let idle_timeout = self.config.idle_timeout;
 
-                smallvec![Effect::Future(Box::pin(async move {
+                smallvec![async_effect! {
                     // Check if user exists in projection
                     let existing_user = users.get_user_by_email(&email_clone).await.ok();
                     let final_user_id = existing_user.as_ref().map_or(user_id, |u| u.user_id);
@@ -537,7 +538,7 @@ where
                             })
                         }
                     }
-                }))]
+                }]
             }
 
             // ═══════════════════════════════════════════════════════════════
