@@ -1359,4 +1359,227 @@ mod tests {
         // Cleanup
         store.delete_session(sessions[2].session_id).await.unwrap();
     }
+
+    #[tokio::test]
+    #[ignore] // Requires Redis running
+    #[allow(clippy::unwrap_used)]
+    async fn test_concurrent_session_limit_race_condition() {
+        // This test verifies that concurrent session creation properly enforces
+        // max_concurrent_sessions limit even when multiple requests arrive simultaneously.
+        //
+        // Without MGET optimization and proper race handling, this could allow
+        // more than max_concurrent_sessions to be created.
+
+        let store = RedisSessionStore::new("redis://127.0.0.1:6379")
+            .await
+            .unwrap();
+
+        let user_id = UserId::new();
+        let max_sessions = 3;
+
+        // Create max_sessions concurrently
+        let mut handles = vec![];
+        for i in 0..max_sessions {
+            let store_clone = store.clone();
+            let handle = tokio::spawn(async move {
+                let session = Session {
+                    session_id: SessionId::new(),
+                    user_id,
+                    device_id: DeviceId::new(),
+                    email: format!("concurrent{}@example.com", i),
+                    created_at: Utc::now(),
+                    last_active: Utc::now(),
+                    expires_at: Utc::now() + Duration::hours(1),
+                    ip_address: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+                    user_agent: format!("Browser{}", i),
+                    oauth_provider: None,
+                    login_risk_score: 0.1,
+                    idle_timeout: Duration::minutes(30),
+                };
+                store_clone
+                    .create_session(&session, Duration::hours(1), max_sessions)
+                    .await
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all to complete
+        for handle in handles {
+            handle.await.unwrap().unwrap();
+        }
+
+        // Verify exactly max_sessions exist
+        let active_sessions = store.get_user_sessions(user_id).await.unwrap();
+        assert_eq!(
+            active_sessions.len(),
+            max_sessions,
+            "Should have exactly {} sessions",
+            max_sessions
+        );
+
+        // Now try to create one more session - should evict oldest
+        let new_session = Session {
+            session_id: SessionId::new(),
+            user_id,
+            device_id: DeviceId::new(),
+            email: "overflow@example.com".to_string(),
+            created_at: Utc::now(),
+            last_active: Utc::now(),
+            expires_at: Utc::now() + Duration::hours(1),
+            ip_address: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            user_agent: "OverflowBrowser".to_string(),
+            oauth_provider: None,
+            login_risk_score: 0.1,
+            idle_timeout: Duration::minutes(30),
+        };
+
+        store
+            .create_session(&new_session, Duration::hours(1), max_sessions)
+            .await
+            .unwrap();
+
+        // Should still have exactly max_sessions (oldest evicted)
+        let active_sessions = store.get_user_sessions(user_id).await.unwrap();
+        assert_eq!(
+            active_sessions.len(),
+            max_sessions,
+            "Should still have exactly {} sessions after overflow",
+            max_sessions
+        );
+
+        // Cleanup
+        store.delete_user_sessions(user_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires Redis running
+    #[allow(clippy::unwrap_used)]
+    async fn test_concurrent_session_rotation() {
+        // This test verifies that session rotation (session fixation prevention)
+        // works correctly even under concurrent access.
+
+        let store = RedisSessionStore::new("redis://127.0.0.1:6379")
+            .await
+            .unwrap();
+
+        let user_id = UserId::new();
+        let session = Session {
+            session_id: SessionId::new(),
+            user_id,
+            device_id: DeviceId::new(),
+            email: "rotation@example.com".to_string(),
+            created_at: Utc::now(),
+            last_active: Utc::now(),
+            expires_at: Utc::now() + Duration::hours(1),
+            ip_address: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            user_agent: "RotationBrowser".to_string(),
+            oauth_provider: None,
+            login_risk_score: 0.1,
+            idle_timeout: Duration::minutes(30),
+        };
+
+        store
+            .create_session(&session, Duration::hours(1), 5)
+            .await
+            .unwrap();
+
+        let old_session_id = session.session_id;
+
+        // Attempt concurrent rotations (only one should succeed)
+        let mut handles = vec![];
+        for _ in 0..5 {
+            let store_clone = store.clone();
+            let handle = tokio::spawn(async move {
+                store_clone.rotate_session(old_session_id).await
+            });
+            handles.push(handle);
+        }
+
+        // Collect results
+        let mut successful_rotations = 0;
+        let mut new_session_ids = vec![];
+        for handle in handles {
+            if let Ok(Ok(new_id)) = handle.await {
+                successful_rotations += 1;
+                new_session_ids.push(new_id);
+            }
+        }
+
+        // Only the first rotation should succeed
+        assert_eq!(
+            successful_rotations, 1,
+            "Only one concurrent rotation should succeed"
+        );
+
+        // Old session should not exist
+        let old_exists = store.exists(old_session_id).await.unwrap();
+        assert!(!old_exists, "Old session should not exist after rotation");
+
+        // New session should exist
+        let new_session_id = new_session_ids[0];
+        let new_exists = store.exists(new_session_id).await.unwrap();
+        assert!(new_exists, "New session should exist after rotation");
+
+        // Cleanup
+        store.delete_session(new_session_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires Redis running
+    #[allow(clippy::unwrap_used)]
+    async fn test_idle_timeout_clock_skew() {
+        // This test verifies that idle timeout handles clock skew gracefully.
+        // If last_active is in the future (due to clock skew), we should not
+        // treat the session as expired.
+
+        let store = RedisSessionStore::new("redis://127.0.0.1:6379")
+            .await
+            .unwrap();
+
+        let now = Utc::now();
+        let future_time = now + Duration::minutes(5); // Simulate clock skew
+
+        let session = Session {
+            session_id: SessionId::new(),
+            user_id: UserId::new(),
+            device_id: DeviceId::new(),
+            email: "clockskew@example.com".to_string(),
+            created_at: now,
+            last_active: future_time, // Last active is in the future
+            expires_at: now + Duration::hours(1),
+            ip_address: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            user_agent: "SkewBrowser".to_string(),
+            oauth_provider: None,
+            login_risk_score: 0.1,
+            idle_timeout: Duration::minutes(30),
+        };
+
+        store
+            .create_session(&session, Duration::hours(1), 5)
+            .await
+            .unwrap();
+
+        // Get session - should NOT fail due to negative idle duration
+        let retrieved = store.get_session(session.session_id).await;
+
+        // Should succeed (clock skew is tolerated)
+        assert!(
+            retrieved.is_ok(),
+            "Session with future last_active should be retrievable (clock skew tolerance)"
+        );
+
+        // last_active should be updated to current time
+        let retrieved_session = retrieved.unwrap();
+        assert!(
+            retrieved_session.last_active >= now,
+            "last_active should be updated to current time or later"
+        );
+        assert!(
+            retrieved_session.last_active <= Utc::now() + Duration::seconds(1),
+            "last_active should not be too far in the future"
+        );
+
+        // Cleanup
+        store.delete_session(session.session_id).await.unwrap();
+    }
 }

@@ -22,6 +22,12 @@ The authentication system uses a **dual-layer logging approach**:
 1. **Event Sourcing** (PostgreSQL) - Immutable audit trail of domain events
 2. **Structured Logging** (tracing) - Real-time operational and security logs
 
+> **⚠️ IMPORTANT**: Not everything is event-sourced. This is a **hybrid approach**:
+> - ✅ **Event-Sourced**: User lifecycle, authentication attempts, credential changes (compliance-critical, immutable)
+> - ❌ **NOT Event-Sourced**: Sessions, rate limits, challenges, OAuth tokens (ephemeral, high-volume, Redis TTL)
+>
+> See [What Gets Event-Sourced](#what-gets-event-sourced) for complete details.
+
 This provides:
 - **Compliance**: Immutable audit trail for regulatory requirements
 - **Security**: Detection and investigation of suspicious activity
@@ -91,9 +97,9 @@ ORDER BY created_at DESC;
 **Purpose**: Real-time operational logging for monitoring, alerting, and debugging.
 
 **Levels**:
-- `ERROR` - System errors, security violations, failed operations (76 instances)
-- `WARN` - Suspicious activity, validation failures, rate limits (44 instances)
-- `INFO` - Successful operations, state changes (38 instances)
+- `ERROR` - System errors, security violations, failed operations (44 instances)
+- `WARN` - Suspicious activity, validation failures, rate limits (31 instances)
+- `INFO` - Successful operations, state changes (25 instances)
 - `DEBUG` - Detailed operation context (development only)
 
 **Structured Fields**:
@@ -127,10 +133,15 @@ tracing::warn!(
 - OAuth tokens (Redis with TTL, encrypted)
 
 **Why Sessions Aren't Event-Sourced**:
-- High volume (every page load)
-- Short-lived (24 hours)
-- Not compliance-critical
-- Redis TTL provides automatic cleanup
+- **High volume**: Every page load would generate a SessionValidated event
+- **Short-lived**: 24-hour TTL means automatic cleanup
+- **Not compliance-critical**: Session access isn't required for audit trails
+- **Redis TTL**: Automatic expiration without manual cleanup
+- **Performance**: Event store would be overwhelmed with ephemeral data
+
+> **📝 Design Rationale**: Event sourcing is for **state reconstruction** and **compliance**.
+> Sessions are **caching** - they can be derived from authentication events if needed.
+> Storing them in Redis with TTL is the correct architectural choice.
 
 ---
 
@@ -552,7 +563,7 @@ let historical_state = User::from_events(events);
 ### Current State: Excellent ✅
 
 - **Event Sourcing**: Comprehensive audit trail for all critical domain events
-- **Structured Logging**: 158 log statements (44 WARN, 76 ERROR, 38 INFO)
+- **Structured Logging**: 100 log statements (31 WARN, 44 ERROR, 25 INFO)
 - **Privacy**: IP sanitization implemented
 - **Security**: All critical events logged with context
 - **Compliance**: Immutable audit trail in PostgreSQL
