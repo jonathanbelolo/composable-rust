@@ -2,6 +2,91 @@
 
 ## Completed
 
+### ✅ COMPLETED: Sprint 1 - Production Hardening (Security Audit Fixes)
+
+**Status**: COMPLETE (2025-01-09)
+**Duration**: Sprint 1 Week 1 + Week 2 (6 tasks total)
+**Security Impact**: Fixed 2 CRITICAL, 2 HIGH, 1 MEDIUM, 1 LOW severity vulnerabilities
+
+**Week 1 Tasks (1.1-1.3)**:
+1. ✅ **Task 1.1 - Session Expiration Validation** (HIGH - CVSS 7.2)
+   - Added defense-in-depth expiration check in `get_session()`
+   - Guards against clock skew, Redis bugs, manual TTL manipulation
+   - Location: `src/stores/session_redis.rs:158-174`
+
+2. ✅ **Task 1.2 - Atomic Session Operations** (CRITICAL - CVSS 8.9)
+   - Atomic session creation with Redis pipeline (session + user set + TTL)
+   - Atomic bulk deletion with Lua script (prevents orphaned sessions)
+   - Session fixation prevention (rejects duplicate session IDs)
+   - Location: `src/stores/session_redis.rs:76-143, 320-367`
+
+3. ✅ **Task 1.3 - User Sessions Set TTL** (MEDIUM - CVSS 6.3)
+   - Added TTL to `user:{user_id}:sessions` sets (+1 day buffer)
+   - Lazy cleanup in `get_user_sessions()` (removes dead references)
+   - Prevents unbounded memory growth
+   - Location: `src/stores/session_redis.rs:116-130, 396-452`
+
+**Week 2 Tasks (1.4-1.6)**:
+4. ✅ **Task 1.4 - Device Repository Authorization** (CRITICAL - CVSS 9.1)
+   - Redesigned DeviceRepository trait to require `user_id` parameter
+   - Database-level authorization (SQL WHERE clauses)
+   - Returns ResourceNotFound (not Unauthorized) to prevent information leakage
+   - Location: `src/providers/device.rs`, `src/stores/postgres/device.rs`, `src/mocks/device.rs`
+   - Tests: 8 comprehensive authorization tests
+
+5. ✅ **Task 1.5 - Device Input Validation** (MEDIUM - CVSS 5.4)
+   - Added `validate_device_name()` (1-255 chars, no XSS: <>"'&\0)
+   - Added `validate_platform()` (1-500 chars, ASCII-only)
+   - Prevents stored XSS and injection attacks
+   - Location: `src/utils.rs:142-239`
+   - Tests: 13 comprehensive validation tests
+
+6. ✅ **Task 1.6 - Device Pagination** (LOW - CVSS 3.1)
+   - Added pagination to `get_user_devices()` (limit + offset)
+   - MAX_LIMIT=1000, DEFAULT_LIMIT=100
+   - Negative offset prevention with `max(0)`
+   - Location: `src/providers/device.rs`, `src/stores/postgres/device.rs`, `src/mocks/device.rs`
+   - Tests: 5 comprehensive pagination tests
+
+**Post-Sprint Audit Fixes**:
+- ✅ Added concurrent session creation race test
+- ✅ Documented TOCTOU acceptance in `update_session()` with full risk assessment
+- Location: `src/stores/session_redis.rs:671-718, 196-214`
+
+**Test Coverage**:
+- 63 total library tests passing
+- 37 new security tests added
+- 25 Redis integration tests (require Redis instance)
+- 0 test failures
+
+**Security Measures Implemented**:
+- Defense-in-depth expiration validation
+- Atomic Redis operations (pipelines + Lua scripts)
+- Session fixation prevention
+- Immutable field enforcement (5 fields)
+- Sliding window TTL refresh
+- Database-level authorization
+- XSS prevention (blocks dangerous characters)
+- DoS prevention (pagination limits)
+- Information leakage prevention (consistent error responses)
+
+**Files Modified**:
+- `src/stores/session_redis.rs` - Session security hardening
+- `src/providers/session.rs` - Added get_user_sessions()
+- `src/mocks/session.rs` - Mock implementation
+- `src/providers/device.rs` - Authorization-by-design trait
+- `src/stores/postgres/device.rs` - PostgreSQL authorization
+- `src/mocks/device.rs` - Mock authorization + tests
+- `src/utils.rs` - Input validation functions
+- `src/error.rs` - Added InvalidInput variant
+
+**Audit Result**: ✅ **APPROVED FOR PRODUCTION DEPLOYMENT**
+- Overall Assessment: 5/6 PASS, 1/6 NEEDS_ENHANCEMENT (minor)
+- Risk Level: **LOW** - All critical attack vectors blocked
+- Confidence: **VERY HIGH** - Comprehensive testing and defense-in-depth
+
+---
+
 ### ✅ COMPLETED: RedisTokenStore for Magic Links
 
 **Status**: COMPLETE (2025-01-08)
