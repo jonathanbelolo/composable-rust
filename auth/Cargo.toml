@@ -54,6 +54,7 @@ tokio-test = "0.4"
 
 [features]
 # Include mock providers for testing
+default = ["test-utils"]
 test-utils = []
 
 [lints]
