@@ -1,0 +1,56 @@
+[package]
+name = "composable-rust-auth"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Core composable-rust dependencies
+composable-rust-core = { path = "../core" }
+composable-rust-runtime = { path = "../runtime" }
+
+# OAuth2 and OIDC
+oauth2 = "4.4"
+openidconnect = "3.5"
+
+# Async runtime
+tokio = { workspace = true, features = ["full"] }
+
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json = "1"
+bincode = { workspace = true }
+
+# Crypto and security
+rand = "0.8"
+base64 = "0.22"
+constant_time_eq = "0.3"
+
+# URL encoding
+urlencoding = "2"
+
+# Time
+chrono = { workspace = true, features = ["serde"] }
+
+# UUIDs
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# HTTP client (for OAuth token exchange)
+reqwest = { version = "0.12", features = ["json"] }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+[dev-dependencies]
+composable-rust-testing = { path = "../testing" }
+tokio-test = "0.4"
+
+[lints]
+workspace = true
