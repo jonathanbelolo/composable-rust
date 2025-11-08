@@ -41,7 +41,7 @@ use crate::state::UserId;
 use chrono::Duration;
 
 /// WebAuthn challenge data.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ChallengeData {
     /// User ID associated with this challenge.
     pub user_id: UserId,
