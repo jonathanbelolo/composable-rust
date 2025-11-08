@@ -853,19 +853,252 @@ When the same email appears from multiple auth providers (e.g., Google and GitHu
   - Primary email must be verified before linking
   - Send confirmation to both old and new provider emails
 
-### 5. Session State Lifecycle
+### 5. Session Management Architecture
 
-**Critical Architecture Decision**: How auth state integrates with the Store pattern.
+**Critical Design Decision**: Explicit separation of ephemeral and persistent data.
 
-- **Session Persistence**: Redis/PostgreSQL stores session data
-- **Per-Request Reconstruction**: Auth state is reconstructed on each request from session token
-- **Store Pattern Integration**:
-  - Session middleware extracts token → loads session from Redis
-  - Reconstructs `AuthState` for the request
-  - Store operates on reconstructed state
-  - Session updates persisted back to Redis
-- **Performance**: Session lookup is <5ms (Redis) or <10ms (PostgreSQL)
-- **Caching**: Optional in-memory LRU cache for hot sessions
+#### Persistent Data (PostgreSQL)
+
+User and device data that outlives sessions:
+
+```rust
+// Stored in PostgreSQL: Permanent user account
+struct User {
+    id: UserId,
+    email: String,
+    email_verified: bool,
+    created_at: DateTime,
+    updated_at: DateTime,
+}
+
+// Stored in PostgreSQL: Permanent device registry
+struct RegisteredDevice {
+    device_id: DeviceId,
+    user_id: UserId,
+
+    // Device metadata
+    name: String,              // "iPhone 15 Pro", "Chrome on MacBook"
+    device_type: DeviceType,   // Mobile, Desktop, Tablet
+    platform: String,          // "iOS 17.2", "macOS 14.1"
+
+    // Timestamps
+    first_seen: DateTime,
+    last_seen: DateTime,
+
+    // Security
+    trusted: bool,             // User-marked trusted device
+    requires_mfa: bool,        // Require additional verification
+
+    // WebAuthn
+    passkey_credential_id: Option<String>, // If device has registered passkey
+    public_key: Option<Vec<u8>>,           // WebAuthn public key
+}
+
+// Stored in PostgreSQL: OAuth provider linkage
+struct OAuthLink {
+    user_id: UserId,
+    provider: OAuthProvider,
+    provider_user_id: String,
+    email: String,
+    linked_at: DateTime,
+}
+```
+
+**Use cases for persistent device data:**
+- User views "All devices with access to your account"
+- User revokes device permanently (not just current session)
+- Passkey registration is permanent
+- Security audit: "Which devices accessed my account in last 30 days?"
+- Trust levels: "Always trust this device"
+
+#### Ephemeral Data (Redis)
+
+Session data that expires with the session:
+
+```rust
+// Stored in Redis: Temporary session (TTL = 24 hours)
+struct Session {
+    session_id: SessionId,     // Primary key
+    user_id: UserId,           // FK to PostgreSQL User
+    device_id: DeviceId,       // FK to PostgreSQL RegisteredDevice
+
+    // Cached user data (avoid PostgreSQL lookup on every request)
+    email: String,
+    roles: Vec<Role>,
+    permissions: Vec<Permission>,
+
+    // Session metadata
+    created_at: DateTime,
+    last_active: DateTime,
+    expires_at: DateTime,
+    ip_address: IpAddr,
+    user_agent: String,
+
+    // OAuth tokens (if authenticated via OAuth)
+    oauth_provider: Option<OAuthProvider>,
+    oauth_access_token: Option<String>,  // Encrypted
+    oauth_refresh_token: Option<String>, // Encrypted
+}
+
+// Redis key structure:
+// session:{session_id} -> Session (TTL = 24 hours)
+// user:{user_id}:sessions -> Set<SessionId> (for multi-device tracking)
+// challenge:{challenge_id} -> Challenge (TTL = 5 minutes, WebAuthn)
+```
+
+**Use cases for ephemeral session data:**
+- Fast authentication on every request (<5ms Redis lookup)
+- Instant logout (delete session from Redis)
+- Instant revocation (delete all user sessions)
+- Cached permissions (avoid database lookup)
+- OAuth token storage (encrypted, expires with session)
+
+#### Session Lifecycle
+
+```rust
+// 1. Login: Create both device record (if new) and session
+async fn create_session(user_id: UserId, device_info: DeviceInfo) -> Session {
+    // Check if device is already registered
+    let device = match postgres.get_device(device_info.id).await? {
+        Some(existing) => {
+            // Update last_seen timestamp
+            postgres.update_device_last_seen(existing.id, now()).await?;
+            existing
+        }
+        None => {
+            // Register new device (permanent record)
+            postgres.create_device(RegisteredDevice {
+                device_id: device_info.id,
+                user_id,
+                name: device_info.name,
+                device_type: device_info.device_type,
+                first_seen: now(),
+                last_seen: now(),
+                trusted: false, // User can mark as trusted later
+                requires_mfa: true,
+                passkey_credential_id: None,
+            }).await?
+        }
+    };
+
+    // Create ephemeral session in Redis (24 hour TTL)
+    let session_id = SessionId::generate_secure();
+    let session = Session {
+        session_id,
+        user_id,
+        device_id: device.device_id,
+        roles: load_user_roles(user_id).await?,
+        created_at: now(),
+        expires_at: now() + Duration::hours(24),
+        // ...
+    };
+
+    redis.setex(
+        format!("session:{}", session_id),
+        86400, // 24 hours
+        session.serialize()
+    ).await?;
+
+    // Track active sessions per user (for multi-device)
+    redis.sadd(
+        format!("user:{}:sessions", user_id),
+        session_id
+    ).await?;
+
+    session
+}
+
+// 2. Per-Request Authentication
+async fn authenticate_request(session_id: SessionId) -> Result<User> {
+    // Fast Redis lookup (<5ms)
+    let session = redis.get(format!("session:{}", session_id)).await?
+        .ok_or(AuthError::SessionExpired)?;
+
+    // Update last active (sliding expiration)
+    redis.expire(format!("session:{}", session_id), 86400).await?;
+
+    // Also update device last_seen in PostgreSQL (async, non-blocking)
+    tokio::spawn(async move {
+        postgres.update_device_last_seen(session.device_id, now()).await
+    });
+
+    Ok(User {
+        id: session.user_id,
+        roles: session.roles,
+        permissions: session.permissions,
+    })
+}
+
+// 3. Logout: Delete session, device remains registered
+async fn logout(session_id: SessionId) {
+    let session = redis.get(format!("session:{}", session_id)).await?;
+
+    // Remove session from Redis
+    redis.del(format!("session:{}", session_id)).await?;
+    redis.srem(
+        format!("user:{}:sessions", session.user_id),
+        session_id
+    ).await?;
+
+    // Device remains in PostgreSQL for permanent record
+    // User can still see it in "My Devices"
+}
+
+// 4. Revoke Device: Delete all sessions + device record
+async fn revoke_device(user_id: UserId, device_id: DeviceId) {
+    // Delete all active sessions for this device
+    let all_sessions = redis.smembers(format!("user:{}:sessions", user_id)).await?;
+    for session_id in all_sessions {
+        let session = redis.get(format!("session:{}", session_id)).await?;
+        if session.device_id == device_id {
+            redis.del(format!("session:{}", session_id)).await?;
+            redis.srem(format!("user:{}:sessions", user_id), session_id).await?;
+        }
+    }
+
+    // Delete device from PostgreSQL (permanent revocation)
+    postgres.delete_device(device_id).await?;
+
+    // Emit security audit event
+    emit_event(AuthEvent::DeviceRevoked { user_id, device_id });
+}
+```
+
+#### Client-Side Storage
+
+**What goes to the client (HTTP-only cookie):**
+```rust
+// ONLY the session ID - nothing sensitive
+Set-Cookie: session_id=<cryptographically_random_256_bit_value>;
+    HttpOnly;           // No JavaScript access
+    Secure;             // HTTPS only
+    SameSite=Strict;    // CSRF protection
+    Max-Age=86400       // 24 hours
+```
+
+**Why minimal client storage:**
+- ✅ Can't tamper with roles/permissions (stored server-side)
+- ✅ Can't extend session beyond expiration
+- ✅ Revocation works instantly (just delete from Redis)
+- ✅ Can update permissions without new cookie
+- ✅ XSS can't steal sensitive data (HTTP-only)
+
+#### Performance Targets
+
+- Session lookup (Redis): **<5ms**
+- Device lookup (PostgreSQL): **<10ms** (only during login/device management)
+- Per-request auth: **<5ms** (Redis only, PostgreSQL cached)
+- Session creation: **<20ms** (Redis + PostgreSQL)
+- Optional LRU cache for hot sessions: **<100μs**
+
+#### Store Pattern Integration
+
+- Session middleware extracts session_id from cookie
+- Loads `Session` from Redis (<5ms)
+- Reconstructs `AuthState` with cached roles/permissions
+- Store operates on reconstructed state
+- Session updates persisted back to Redis
+- Device updates persisted to PostgreSQL (async, non-blocking)
 
 ### 6. Audit Logging
 

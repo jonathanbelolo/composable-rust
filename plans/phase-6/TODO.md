@@ -177,6 +177,41 @@ Implement authentication and authorization as first-class composable primitives 
   - [ ] Handle `RegisterPasskey` action
   - [ ] Generate appropriate effects
 
+### Persistent Device Registry (PostgreSQL)
+
+**Critical**: Device data outlives sessions and is stored in PostgreSQL.
+
+- [ ] Device registry schema (`auth/migrations/002_device_registry.sql`)
+  - [ ] `users` table (id, email, email_verified, created_at, updated_at)
+  - [ ] `registered_devices` table:
+    - device_id (UUID, PK)
+    - user_id (FK to users)
+    - name (String, "iPhone 15 Pro")
+    - device_type (Enum: Mobile, Desktop, Tablet)
+    - platform (String, "iOS 17.2")
+    - first_seen (DateTime)
+    - last_seen (DateTime)
+    - trusted (Boolean, user-marked)
+    - requires_mfa (Boolean)
+    - passkey_credential_id (Optional String)
+    - public_key (Optional Bytes)
+  - [ ] `oauth_links` table (user_id, provider, provider_user_id, email, linked_at)
+  - [ ] Indexes: user_id, last_seen, passkey_credential_id
+
+- [ ] Device store trait (`auth/src/stores/device_store.rs`)
+  - [ ] `get_device()` - Retrieve device by ID
+  - [ ] `create_device()` - Register new device
+  - [ ] `update_device_last_seen()` - Update last active timestamp
+  - [ ] `list_user_devices()` - Get all devices for a user
+  - [ ] `delete_device()` - Revoke device permanently
+  - [ ] `mark_device_trusted()` - User marks device as trusted
+  - [ ] `link_passkey_to_device()` - Associate passkey with device
+
+- [ ] PostgreSQL device store (`auth/src/stores/device_postgres.rs`)
+  - [ ] Implement device_store trait
+  - [ ] Efficient queries with indexes
+  - [ ] Tests with testcontainers
+
 ### Recovery Flows
 
 - [ ] Recovery code implementation (`auth/src/recovery/mod.rs`)
@@ -185,51 +220,55 @@ Implement authentication and authorization as first-class composable primitives 
   - [ ] Recovery code validation (constant-time comparison)
   - [ ] Mark recovery code as used after verification
   - [ ] Display codes only once during generation
+  - [ ] Store recovery codes in PostgreSQL (persistent)
 
 - [ ] Backup email flow (`auth/src/recovery/backup_email.rs`)
-  - [ ] Backup email registration
+  - [ ] Backup email registration (stored in PostgreSQL)
   - [ ] Backup email verification
   - [ ] Recovery via backup email
   - [ ] Rate limiting for recovery attempts
 
 - [ ] Device revocation (`auth/src/recovery/revocation.rs`)
-  - [ ] List all registered devices/passkeys
-  - [ ] Revoke specific device
+  - [ ] List all registered devices from PostgreSQL
+  - [ ] Revoke specific device:
+    - Delete all active sessions for device (Redis)
+    - Delete device record (PostgreSQL)
   - [ ] Revoke all devices (nuclear option)
   - [ ] Audit logging for all revocations
 
-### Session Store Trait
+### Session Store Trait (Redis - Ephemeral)
 
-- [ ] Define `SessionStore` trait (`auth/src/stores/mod.rs`)
-  - [ ] `create_session()` - Store new session
+**Critical**: Sessions are ephemeral (TTL-based) and stored in Redis. They reference devices from PostgreSQL.
+
+- [ ] Define `SessionStore` trait (`auth/src/stores/session_store.rs`)
+  - [ ] `create_session()` - Store new session (with device_id FK)
   - [ ] `get_session()` - Retrieve session
   - [ ] `update_session()` - Update session data
   - [ ] `delete_session()` - Remove session
-  - [ ] `extend_session()` - Extend expiration
+  - [ ] `extend_session()` - Extend expiration (sliding window)
+  - [ ] `list_user_sessions()` - Get all active sessions for a user
+  - [ ] `delete_all_user_sessions()` - Revoke all sessions for a user
 
-### Redis Implementation
+### Redis Session Implementation
 
-- [ ] Redis session store (`auth/src/stores/redis.rs`)
+- [ ] Redis session store (`auth/src/stores/session_redis.rs`)
   - [ ] Connection pooling
-  - [ ] Session serialization
-  - [ ] TTL-based expiration
-  - [ ] Tests with testcontainers
-
-### PostgreSQL Implementation
-
-- [ ] PostgreSQL session store (`auth/src/stores/postgres.rs`)
-  - [ ] Schema migration
-  - [ ] Index on session_id
-  - [ ] Index on user_id
-  - [ ] Cleanup job for expired sessions
+  - [ ] Session serialization (bincode)
+  - [ ] TTL-based expiration (24 hours default, sliding)
+  - [ ] Multi-device tracking (user:{user_id}:sessions set)
+  - [ ] Encrypted OAuth token storage
   - [ ] Tests with testcontainers
 
 ### Session Reducer
 
 - [ ] Session management reducer (`auth/src/reducers/session.rs`)
-  - [ ] Handle session creation
-  - [ ] Handle session refresh
+  - [ ] Handle session creation:
+    - Check/create device in PostgreSQL
+    - Create session in Redis (with device_id reference)
+  - [ ] Handle session refresh (sliding expiration)
   - [ ] Handle session expiration
+  - [ ] Handle logout (delete session, keep device)
+  - [ ] Handle device revocation (delete sessions + device)
   - [ ] Multi-device session support
 
 ### Refresh Token Flow
