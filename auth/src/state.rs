@@ -143,6 +143,15 @@ pub struct Session {
     /// idle timeout policies (e.g., passkeys might have longer timeouts
     /// than magic links).
     pub idle_timeout: chrono::Duration,
+
+    /// Enable sliding window session refresh.
+    ///
+    /// When `true`, the `expires_at` timestamp is extended on each access,
+    /// creating a sliding window for the absolute session lifetime.
+    /// When `false`, the session expires at a fixed `expires_at` time.
+    ///
+    /// Default: false (fixed expiration for security)
+    pub enable_sliding_refresh: bool,
 }
 
 /// Token pair for JWT-based authentication (optional feature).

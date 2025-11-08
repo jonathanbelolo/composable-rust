@@ -398,6 +398,7 @@ where
                     oauth_provider: None,
                     login_risk_score: 0.1, // Placeholder - will be updated via SessionCreated
                     idle_timeout: self.config.idle_timeout,
+                    enable_sliding_refresh: self.config.enable_sliding_session_refresh,
                 };
 
                 // Clear magic link state (token consumed, no longer valid)
@@ -417,6 +418,7 @@ where
                 let session_duration = self.config.session_duration;
                 let max_concurrent_sessions = self.config.max_concurrent_sessions;
                 let idle_timeout = self.config.idle_timeout;
+                let enable_sliding_refresh = self.config.enable_sliding_session_refresh;
 
                 smallvec![async_effect! {
                     // Check if user exists in projection
@@ -507,6 +509,7 @@ where
                         oauth_provider: None,
                         login_risk_score,
                         idle_timeout,
+                        enable_sliding_refresh,
                     };
 
                     // Batch append all events to the user stream

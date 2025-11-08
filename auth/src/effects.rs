@@ -677,6 +677,7 @@ mod tests {
                 oauth_provider: None,
                 login_risk_score: 0.1,
                 idle_timeout: chrono::Duration::minutes(30),
+                enable_sliding_refresh: false,
             },
             ttl_seconds: 86400,
         };

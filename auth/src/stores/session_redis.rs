@@ -285,7 +285,24 @@ impl SessionStore for RedisSessionStore {
                 // abandoned sessions.
                 session.last_active = now;
 
-                // Persist updated last_active to Redis
+                // ✅ OPTIONAL: Sliding window session refresh (extends absolute expiration)
+                //
+                // If enabled, extend expires_at on each access. This creates a true
+                // sliding window where active sessions never expire.
+                //
+                // SECURITY CONSIDERATION:
+                // - Pro: Better UX - users stay logged in while actively using the app
+                // - Con: Sessions could theoretically last forever if continuously used
+                // - Con: May conflict with compliance requirements (max session lifetime)
+                //
+                // Recommendation: Use false (fixed expiration) for high-security apps.
+                // The idle timeout still applies regardless of this setting.
+                if session.enable_sliding_refresh {
+                    let original_duration = session.expires_at.signed_duration_since(session.created_at);
+                    session.expires_at = now + original_duration;
+                }
+
+                // Persist updated session (last_active and potentially expires_at) to Redis
                 // This is a trade-off: write on every read for security vs. performance.
                 // For high-traffic applications, consider rate-limiting these updates
                 // (e.g., only update if last_active is > 1 minute old).
@@ -734,6 +751,7 @@ mod tests {
             oauth_provider: None,
             login_risk_score: 0.1,
             idle_timeout: Duration::minutes(30),
+            enable_sliding_refresh: false,
         }
     }
 
@@ -796,6 +814,7 @@ mod tests {
             oauth_provider: None,
             login_risk_score: 0.1,
             idle_timeout: Duration::minutes(30),
+            enable_sliding_refresh: false,
         };
 
         // Store with a short TTL (Redis will still allow storage)
@@ -846,6 +865,7 @@ mod tests {
             oauth_provider: None,
             login_risk_score: 0.1,
             idle_timeout: Duration::minutes(30),
+            enable_sliding_refresh: false,
         };
 
         store
@@ -885,6 +905,7 @@ mod tests {
             oauth_provider: None,
             login_risk_score: 0.1,
             idle_timeout: Duration::minutes(30),
+            enable_sliding_refresh: false,
         };
 
         store
@@ -906,6 +927,7 @@ mod tests {
             oauth_provider: None,
             login_risk_score: 0.9,
             idle_timeout: Duration::minutes(30),
+            enable_sliding_refresh: false,
         };
 
         let result = store.create_session(&session2, Duration::hours(24), 5).await;
@@ -954,6 +976,7 @@ mod tests {
             oauth_provider: None,
             login_risk_score: 0.1,
             idle_timeout: Duration::minutes(30),
+            enable_sliding_refresh: false,
         };
 
         let session_clone = session.clone();
@@ -1012,6 +1035,7 @@ mod tests {
             oauth_provider: original_oauth_provider,
             login_risk_score: original_risk_score,
             idle_timeout: Duration::minutes(30),
+            enable_sliding_refresh: false,
         };
 
         store
@@ -1117,6 +1141,7 @@ mod tests {
             oauth_provider: None,
             login_risk_score: 0.1,
             idle_timeout: Duration::minutes(30),
+            enable_sliding_refresh: false,
         };
 
         // Create session with 10 second TTL
@@ -1185,6 +1210,7 @@ mod tests {
                 oauth_provider: None,
                 login_risk_score: 0.1,
                 idle_timeout: Duration::minutes(30),
+            enable_sliding_refresh: false,
             })
             .collect();
 
@@ -1226,6 +1252,7 @@ mod tests {
             oauth_provider: None,
             login_risk_score: 0.1,
             idle_timeout: Duration::minutes(30),
+            enable_sliding_refresh: false,
         };
 
         store
@@ -1260,6 +1287,7 @@ mod tests {
             oauth_provider: None,
             login_risk_score: 0.1,
             idle_timeout: Duration::minutes(30),
+            enable_sliding_refresh: false,
         };
 
         // Create session with 1 hour TTL
@@ -1312,6 +1340,7 @@ mod tests {
                 oauth_provider: None,
                 login_risk_score: 0.1,
                 idle_timeout: Duration::minutes(30),
+            enable_sliding_refresh: false,
             })
             .collect();
 
@@ -1395,6 +1424,7 @@ mod tests {
                     oauth_provider: None,
                     login_risk_score: 0.1,
                     idle_timeout: Duration::minutes(30),
+            enable_sliding_refresh: false,
                 };
                 store_clone
                     .create_session(&session, Duration::hours(1), max_sessions)
@@ -1431,6 +1461,7 @@ mod tests {
             oauth_provider: None,
             login_risk_score: 0.1,
             idle_timeout: Duration::minutes(30),
+            enable_sliding_refresh: false,
         };
 
         store
@@ -1476,6 +1507,7 @@ mod tests {
             oauth_provider: None,
             login_risk_score: 0.1,
             idle_timeout: Duration::minutes(30),
+            enable_sliding_refresh: false,
         };
 
         store
@@ -1552,6 +1584,7 @@ mod tests {
             oauth_provider: None,
             login_risk_score: 0.1,
             idle_timeout: Duration::minutes(30),
+            enable_sliding_refresh: false,
         };
 
         store
@@ -1581,5 +1614,257 @@ mod tests {
 
         // Cleanup
         store.delete_session(session.session_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires Redis running
+    #[allow(clippy::unwrap_used)]
+    async fn test_sliding_session_refresh_extends_expiration() {
+        // Test that when sliding refresh is enabled, expires_at is extended on access.
+        let store = RedisSessionStore::new("redis://127.0.0.1:6379")
+            .await
+            .unwrap();
+
+        let session_id = SessionId::new();
+        let user_id = UserId::new();
+        let device_id = DeviceId::new();
+        let created_at = Utc::now();
+        let expires_at = created_at + Duration::hours(24);
+
+        let session = Session {
+            session_id,
+            user_id,
+            device_id,
+            email: "test@example.com".to_string(),
+            created_at,
+            last_active: created_at,
+            expires_at,
+            ip_address: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            user_agent: "Test".to_string(),
+            oauth_provider: None,
+            login_risk_score: 0.1,
+            idle_timeout: Duration::minutes(30),
+            enable_sliding_refresh: true, // ✅ Sliding refresh ENABLED
+        };
+
+        store
+            .create_session(&session, Duration::hours(24), 5)
+            .await
+            .unwrap();
+
+        // Wait 1 second to ensure time has advanced
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+        // Get session - should extend expires_at
+        let retrieved = store.get_session(session_id).await.unwrap();
+
+        // expires_at should be extended (approximately 24 hours from NOW, not from creation)
+        let expected_expires_at = Utc::now() + Duration::hours(24);
+        let time_diff = retrieved.expires_at.signed_duration_since(expected_expires_at).num_seconds().abs();
+
+        assert!(
+            time_diff < 5, // Allow 5 seconds tolerance for test execution time
+            "expires_at should be extended to ~24h from now when sliding refresh is enabled. \
+             Expected: {}, Got: {}, Diff: {}s",
+            expected_expires_at,
+            retrieved.expires_at,
+            time_diff
+        );
+
+        // Original expires_at should have been left behind
+        assert!(
+            retrieved.expires_at > expires_at,
+            "expires_at should be later than original. Original: {}, New: {}",
+            expires_at,
+            retrieved.expires_at
+        );
+
+        // Cleanup
+        store.delete_session(session_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires Redis running
+    #[allow(clippy::unwrap_used)]
+    async fn test_sliding_session_refresh_disabled_does_not_extend() {
+        // Test that when sliding refresh is disabled, expires_at remains fixed.
+        let store = RedisSessionStore::new("redis://127.0.0.1:6379")
+            .await
+            .unwrap();
+
+        let session_id = SessionId::new();
+        let user_id = UserId::new();
+        let device_id = DeviceId::new();
+        let created_at = Utc::now();
+        let expires_at = created_at + Duration::hours(24);
+
+        let session = Session {
+            session_id,
+            user_id,
+            device_id,
+            email: "test@example.com".to_string(),
+            created_at,
+            last_active: created_at,
+            expires_at,
+            ip_address: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            user_agent: "Test".to_string(),
+            oauth_provider: None,
+            login_risk_score: 0.1,
+            idle_timeout: Duration::minutes(30),
+            enable_sliding_refresh: false, // ❌ Sliding refresh DISABLED
+        };
+
+        store
+            .create_session(&session, Duration::hours(24), 5)
+            .await
+            .unwrap();
+
+        // Wait 1 second
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+        // Get session - should NOT extend expires_at
+        let retrieved = store.get_session(session_id).await.unwrap();
+
+        // expires_at should remain unchanged (within 1 second tolerance)
+        let time_diff = retrieved.expires_at.signed_duration_since(expires_at).num_seconds().abs();
+
+        assert!(
+            time_diff < 1,
+            "expires_at should NOT change when sliding refresh is disabled. \
+             Original: {}, Retrieved: {}, Diff: {}s",
+            expires_at,
+            retrieved.expires_at,
+            time_diff
+        );
+
+        // last_active should still be updated (sliding idle timeout)
+        assert!(
+            retrieved.last_active > created_at,
+            "last_active should be updated even when sliding refresh is disabled"
+        );
+
+        // Cleanup
+        store.delete_session(session_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires Redis running
+    #[allow(clippy::unwrap_used)]
+    async fn test_sliding_session_refresh_preserves_original_duration() {
+        // Test that sliding refresh extends expires_at by the original session duration.
+        let store = RedisSessionStore::new("redis://127.0.0.1:6379")
+            .await
+            .unwrap();
+
+        let session_id = SessionId::new();
+        let user_id = UserId::new();
+        let device_id = DeviceId::new();
+        let created_at = Utc::now();
+
+        // Create session with 2-hour duration (not the typical 24h)
+        let session_duration = Duration::hours(2);
+        let expires_at = created_at + session_duration;
+
+        let session = Session {
+            session_id,
+            user_id,
+            device_id,
+            email: "test@example.com".to_string(),
+            created_at,
+            last_active: created_at,
+            expires_at,
+            ip_address: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            user_agent: "Test".to_string(),
+            oauth_provider: None,
+            login_risk_score: 0.1,
+            idle_timeout: Duration::minutes(30),
+            enable_sliding_refresh: true,
+        };
+
+        store
+            .create_session(&session, session_duration, 5)
+            .await
+            .unwrap();
+
+        // Wait 1 second
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+        // Get session - should extend by ORIGINAL duration (2 hours), not 24 hours
+        let retrieved = store.get_session(session_id).await.unwrap();
+
+        // expires_at should be ~2 hours from now (not 24 hours)
+        let expected_expires_at = Utc::now() + session_duration;
+        let time_diff = retrieved.expires_at.signed_duration_since(expected_expires_at).num_seconds().abs();
+
+        assert!(
+            time_diff < 5,
+            "expires_at should be extended by original duration (2h). \
+             Expected: {}, Got: {}, Diff: {}s",
+            expected_expires_at,
+            retrieved.expires_at,
+            time_diff
+        );
+
+        // Should NOT be extended to 24 hours
+        let wrong_expiration = Utc::now() + Duration::hours(24);
+        let wrong_diff = retrieved.expires_at.signed_duration_since(wrong_expiration).num_hours().abs();
+
+        assert!(
+            wrong_diff > 20, // Should be ~22 hours different
+            "expires_at should NOT be extended to 24h (original duration was 2h)"
+        );
+
+        // Cleanup
+        store.delete_session(session_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires Redis running
+    #[allow(clippy::unwrap_used)]
+    async fn test_sliding_session_refresh_with_idle_timeout() {
+        // Test that idle timeout still applies even with sliding refresh enabled.
+        let store = RedisSessionStore::new("redis://127.0.0.1:6379")
+            .await
+            .unwrap();
+
+        let session_id = SessionId::new();
+        let user_id = UserId::new();
+        let device_id = DeviceId::new();
+        let created_at = Utc::now() - Duration::minutes(35); // 35 minutes ago
+        let last_active = created_at; // No activity since creation
+        let expires_at = created_at + Duration::hours(24); // Still has 23.5h left
+
+        let session = Session {
+            session_id,
+            user_id,
+            device_id,
+            email: "test@example.com".to_string(),
+            created_at,
+            last_active,
+            expires_at, // NOT expired yet (23.5h remaining)
+            ip_address: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            user_agent: "Test".to_string(),
+            oauth_provider: None,
+            login_risk_score: 0.1,
+            idle_timeout: Duration::minutes(30), // But idle for 35min > 30min timeout
+            enable_sliding_refresh: true, // Even with sliding refresh enabled
+        };
+
+        store
+            .create_session(&session, Duration::hours(24), 5)
+            .await
+            .unwrap();
+
+        // Get session - should FAIL due to idle timeout (even though sliding refresh is enabled)
+        let result = store.get_session(session_id).await;
+
+        assert!(
+            matches!(result, Err(AuthError::SessionExpired)),
+            "Session should expire due to idle timeout even with sliding refresh enabled. Got: {:?}",
+            result
+        );
+
+        // Cleanup (session might already be gone, ignore errors)
+        let _ = store.delete_session(session_id).await;
     }
 }

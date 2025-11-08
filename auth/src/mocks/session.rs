@@ -141,8 +141,14 @@ impl SessionStore for MockSessionStore {
                 return Err(AuthError::SessionExpired);
             }
 
-            // Update last_active timestamp (sliding window)
+            // Update last_active timestamp (sliding idle timeout)
             session.last_active = now;
+
+            // Sliding window session refresh (extends absolute expiration if enabled)
+            if session.enable_sliding_refresh {
+                let original_duration = session.expires_at.signed_duration_since(session.created_at);
+                session.expires_at = now + original_duration;
+            }
 
             Ok(session.clone())
         }

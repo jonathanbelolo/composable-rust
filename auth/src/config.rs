@@ -46,6 +46,28 @@ pub struct MagicLinkConfig {
     /// - Reduces attack surface (fewer valid tokens exist at any time)
     /// - Forces attackers to compete with legitimate sessions
     pub max_concurrent_sessions: usize,
+
+    /// Enable sliding window session refresh.
+    ///
+    /// Default: false
+    ///
+    /// # Behavior
+    ///
+    /// When `true`, the absolute session expiration (`expires_at`) is extended
+    /// on each access, creating a sliding window. When `false`, sessions expire
+    /// at a fixed time regardless of activity.
+    ///
+    /// # Security Considerations
+    ///
+    /// - ✅ **Pro**: Better UX - active users stay logged in
+    /// - ⚠️  **Con**: Sessions could theoretically last forever if continuously used
+    /// - ⚠️  **Con**: May conflict with compliance requirements for absolute session limits
+    ///
+    /// **Recommendation**: Use `false` (fixed expiration) for high-security applications,
+    /// `true` for better user experience in lower-risk contexts.
+    ///
+    /// **Note**: The idle timeout still applies regardless of this setting.
+    pub enable_sliding_session_refresh: bool,
 }
 
 impl MagicLinkConfig {
@@ -62,6 +84,7 @@ impl MagicLinkConfig {
             session_duration: Duration::hours(24),
             idle_timeout: Duration::minutes(30),
             max_concurrent_sessions: 5,
+            enable_sliding_session_refresh: false,
         }
     }
 
@@ -92,6 +115,15 @@ impl MagicLinkConfig {
         self.max_concurrent_sessions = max;
         self
     }
+
+    /// Enable sliding window session refresh.
+    ///
+    /// When enabled, the absolute session expiration extends on each access.
+    #[must_use]
+    pub const fn with_sliding_session_refresh(mut self, enable: bool) -> Self {
+        self.enable_sliding_session_refresh = enable;
+        self
+    }
 }
 
 impl Default for MagicLinkConfig {
@@ -102,6 +134,7 @@ impl Default for MagicLinkConfig {
             session_duration: Duration::hours(24),
             idle_timeout: Duration::minutes(30),
             max_concurrent_sessions: 5,
+            enable_sliding_session_refresh: false,
         }
     }
 }
@@ -144,6 +177,28 @@ pub struct OAuthConfig {
     /// Limits the number of active sessions per user. When exceeded, the
     /// oldest session is automatically revoked.
     pub max_concurrent_sessions: usize,
+
+    /// Enable sliding window session refresh.
+    ///
+    /// Default: false
+    ///
+    /// # Behavior
+    ///
+    /// When `true`, the absolute session expiration (`expires_at`) is extended
+    /// on each access, creating a sliding window. When `false`, sessions expire
+    /// at a fixed time regardless of activity.
+    ///
+    /// # Security Considerations
+    ///
+    /// - ✅ **Pro**: Better UX - active users stay logged in
+    /// - ⚠️  **Con**: Sessions could theoretically last forever if continuously used
+    /// - ⚠️  **Con**: May conflict with compliance requirements for absolute session limits
+    ///
+    /// **Recommendation**: Use `false` (fixed expiration) for high-security applications,
+    /// `true` for better user experience in lower-risk contexts.
+    ///
+    /// **Note**: The idle timeout still applies regardless of this setting.
+    pub enable_sliding_session_refresh: bool,
 }
 
 impl OAuthConfig {
@@ -160,6 +215,7 @@ impl OAuthConfig {
             session_duration: Duration::hours(24),
             idle_timeout: Duration::minutes(30),
             max_concurrent_sessions: 5,
+            enable_sliding_session_refresh: false,
         }
     }
 
@@ -190,6 +246,15 @@ impl OAuthConfig {
         self.max_concurrent_sessions = max;
         self
     }
+
+    /// Enable sliding window session refresh.
+    ///
+    /// When enabled, the absolute session expiration extends on each access.
+    #[must_use]
+    pub const fn with_sliding_session_refresh(mut self, enable: bool) -> Self {
+        self.enable_sliding_session_refresh = enable;
+        self
+    }
 }
 
 impl Default for OAuthConfig {
@@ -200,6 +265,7 @@ impl Default for OAuthConfig {
             session_duration: Duration::hours(24),
             idle_timeout: Duration::minutes(30),
             max_concurrent_sessions: 5,
+            enable_sliding_session_refresh: false,
         }
     }
 }
@@ -247,6 +313,28 @@ pub struct PasskeyConfig {
     /// Limits the number of active sessions per user. When exceeded, the
     /// oldest session is automatically revoked.
     pub max_concurrent_sessions: usize,
+
+    /// Enable sliding window session refresh.
+    ///
+    /// Default: false
+    ///
+    /// # Behavior
+    ///
+    /// When `true`, the absolute session expiration (`expires_at`) is extended
+    /// on each access, creating a sliding window. When `false`, sessions expire
+    /// at a fixed time regardless of activity.
+    ///
+    /// # Security Considerations
+    ///
+    /// - ✅ **Pro**: Better UX - active users stay logged in
+    /// - ⚠️  **Con**: Sessions could theoretically last forever if continuously used
+    /// - ⚠️  **Con**: May conflict with compliance requirements for absolute session limits
+    ///
+    /// **Recommendation**: Use `false` (fixed expiration) for high-security applications,
+    /// `true` for better user experience in lower-risk contexts.
+    ///
+    /// **Note**: The idle timeout still applies regardless of this setting.
+    pub enable_sliding_session_refresh: bool,
 }
 
 impl PasskeyConfig {
@@ -265,6 +353,7 @@ impl PasskeyConfig {
             session_duration: Duration::hours(24),
             idle_timeout: Duration::minutes(30),
             max_concurrent_sessions: 5,
+            enable_sliding_session_refresh: false,
         }
     }
 
@@ -295,6 +384,15 @@ impl PasskeyConfig {
         self.max_concurrent_sessions = max;
         self
     }
+
+    /// Enable sliding window session refresh.
+    ///
+    /// When enabled, the absolute session expiration extends on each access.
+    #[must_use]
+    pub const fn with_sliding_session_refresh(mut self, enable: bool) -> Self {
+        self.enable_sliding_session_refresh = enable;
+        self
+    }
 }
 
 impl Default for PasskeyConfig {
@@ -306,6 +404,7 @@ impl Default for PasskeyConfig {
             session_duration: Duration::hours(24),
             idle_timeout: Duration::minutes(30),
             max_concurrent_sessions: 5,
+            enable_sliding_session_refresh: false,
         }
     }
 }

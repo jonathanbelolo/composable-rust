@@ -430,6 +430,7 @@ where
                     oauth_provider: Some(provider),
                     login_risk_score: 0.1, // Placeholder - will be updated via SessionCreated
                     idle_timeout: self.config.idle_timeout,
+                    enable_sliding_refresh: self.config.enable_sliding_session_refresh,
                 };
 
                 // Update state immediately (sessions are ephemeral, not event-sourced)
@@ -445,6 +446,7 @@ where
                 let session_duration = self.config.session_duration;
                 let max_concurrent_sessions = self.config.max_concurrent_sessions;
                 let idle_timeout = self.config.idle_timeout;
+                let enable_sliding_refresh = self.config.enable_sliding_session_refresh;
                 let email_clone = email.clone();
                 let name_clone = name.clone();
                 let user_agent_clone = user_agent.clone();
@@ -551,6 +553,7 @@ where
                         oauth_provider: Some(provider),
                         login_risk_score,
                         idle_timeout,
+                        enable_sliding_refresh,
                     };
 
                     // Batch append all events to the user stream
