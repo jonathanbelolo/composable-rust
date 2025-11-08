@@ -18,26 +18,37 @@ Implement authentication and authorization as first-class composable primitives 
 
 - [ ] Create `composable-rust-auth` crate
   - [ ] Add to workspace
-  - [ ] Set up dependencies (jsonwebtoken, argon2, etc.)
+  - [ ] Set up dependencies (webauthn-rs, oauth2, etc.)
   - [ ] Configure lints and CI
 
 - [ ] Define core types (`auth/src/state.rs`)
   - [ ] `AuthState` - Authentication state
   - [ ] `Session` - User session type
   - [ ] `TokenPair` - Access + refresh tokens
-  - [ ] `Credentials` - Username/password
   - [ ] `User` - Authenticated user type
+  - [ ] `Challenge` - WebAuthn challenge type
+  - [ ] `PublicKeyCredential` - Passkey credential
 
 - [ ] Define action types (`auth/src/actions.rs`)
-  - [ ] `AuthAction::Login`
+  - [ ] `AuthAction::InitiatePasskeyLogin` - Start passkey flow
+  - [ ] `AuthAction::VerifyPasskey` - Verify passkey credential
+  - [ ] `AuthAction::SendMagicLink` - Send passwordless email
+  - [ ] `AuthAction::VerifyMagicLink` - Verify magic link token
+  - [ ] `AuthAction::InitiateOAuth` - Start OAuth flow
+  - [ ] `AuthAction::OAuthCallback` - Handle OAuth callback
   - [ ] `AuthAction::LoginSuccess`
   - [ ] `AuthAction::LoginFailed`
   - [ ] `AuthAction::RefreshToken`
   - [ ] `AuthAction::Logout`
-  - [ ] `AuthAction::ValidateToken`
 
 - [ ] Define effect types (`auth/src/effects.rs`)
-  - [ ] `AuthEffect::ValidateCredentials`
+  - [ ] `AuthEffect::GenerateChallenge` - WebAuthn challenge
+  - [ ] `AuthEffect::VerifyAssertion` - Verify WebAuthn assertion
+  - [ ] `AuthEffect::StoreCredential` - Store passkey
+  - [ ] `AuthEffect::SendEmail` - Send magic link
+  - [ ] `AuthEffect::ValidateMagicToken` - Verify magic link
+  - [ ] `AuthEffect::RedirectToProvider` - OAuth redirect
+  - [ ] `AuthEffect::ExchangeCodeForToken` - OAuth token exchange
   - [ ] `AuthEffect::GenerateTokens`
   - [ ] `AuthEffect::RefreshTokens`
   - [ ] `AuthEffect::RevokeSession`
@@ -45,28 +56,41 @@ Implement authentication and authorization as first-class composable primitives 
 
 - [ ] Define core traits (`auth/src/providers/mod.rs`)
   - [ ] `AuthProvider` - Generic auth provider trait
-  - [ ] `PasswordHasher` - Password hashing trait
+  - [ ] `PasskeyProvider` - WebAuthn/FIDO2 trait
+  - [ ] `MagicLinkProvider` - Email/SMS auth trait
+  - [ ] `OAuthProvider` - OAuth2 provider trait
   - [ ] `TokenGenerator` - Token generation trait
   - [ ] `SessionStore` - Session storage trait
 
-### JWT Implementation
+### OAuth2 Implementation (Simplest to start)
 
-- [ ] Implement JWT provider (`auth/src/providers/jwt.rs`)
-  - [ ] `JwtProvider::encode()` - Create JWT
-  - [ ] `JwtProvider::decode()` - Validate JWT
-  - [ ] Support RS256, HS256, ES256
-  - [ ] Custom claims support
+- [ ] Implement OAuth2 provider (`auth/src/providers/oauth2.rs`)
+  - [ ] Generic OAuth2 provider
+  - [ ] Google provider
+  - [ ] GitHub provider
+  - [ ] Authorization URL generation
+  - [ ] Code exchange for tokens
+  - [ ] Token refresh
 
-- [ ] Implement JWT reducer (`auth/src/reducers/jwt.rs`)
-  - [ ] Handle `Login` action
-  - [ ] Handle `RefreshToken` action
-  - [ ] Handle `Logout` action
+- [ ] Implement OAuth2 reducer (`auth/src/reducers/oauth.rs`)
+  - [ ] Handle `InitiateOAuth` action
+  - [ ] Handle `OAuthCallback` action
+  - [ ] State machine for OAuth flow
   - [ ] Generate appropriate effects
 
-- [ ] Password hashing (`auth/src/password.rs`)
-  - [ ] Argon2id implementation
-  - [ ] Secure salt generation
-  - [ ] Optional pepper support
+### Magic Link Implementation
+
+- [ ] Magic link provider (`auth/src/providers/magic_link.rs`)
+  - [ ] Token generation (cryptographically secure)
+  - [ ] Token storage (Redis/PostgreSQL)
+  - [ ] Token expiration (5-15 minutes)
+  - [ ] Email template support
+
+- [ ] Magic link reducer (`auth/src/reducers/magic_link.rs`)
+  - [ ] Handle `SendMagicLink` action
+  - [ ] Handle `VerifyMagicLink` action
+  - [ ] Rate limiting logic
+  - [ ] Generate appropriate effects
 
 ### Axum Integration
 
@@ -80,16 +104,34 @@ Implement authentication and authorization as first-class composable primitives 
   - [ ] `OptionalAuth` extractor
   - [ ] Error handling
 
+### WebAuthn/Passkeys Implementation (Advanced - Week 2)
+
+- [ ] WebAuthn provider (`auth/src/providers/webauthn.rs`)
+  - [ ] Challenge generation
+  - [ ] Credential registration flow
+  - [ ] Assertion verification
+  - [ ] Credential storage
+  - [ ] Device management
+
+- [ ] Passkey reducer (`auth/src/reducers/passkey.rs`)
+  - [ ] Handle `InitiatePasskeyLogin` action
+  - [ ] Handle `VerifyPasskey` action
+  - [ ] Handle `RegisterPasskey` action
+  - [ ] Generate appropriate effects
+
 ### Testing
 
 - [ ] Unit tests
-  - [ ] JWT encoding/decoding
-  - [ ] Password hashing
+  - [ ] OAuth2 flow state machine
+  - [ ] Magic link token generation/validation
+  - [ ] WebAuthn challenge/response
   - [ ] Token expiration
   - [ ] Reducer logic
 
 - [ ] Integration tests
-  - [ ] Full login flow
+  - [ ] Full OAuth2 flow with mock provider
+  - [ ] Magic link flow
+  - [ ] WebAuthn registration and login
   - [ ] Token refresh
   - [ ] Invalid token handling
 
@@ -101,7 +143,9 @@ Implement authentication and authorization as first-class composable primitives 
   - [ ] Examples in docstrings
 
 - [ ] User guide
-  - [ ] Quickstart: JWT in 5 minutes
+  - [ ] Quickstart: OAuth2 in 5 minutes
+  - [ ] Magic link setup
+  - [ ] Passkey implementation guide
   - [ ] Configuration guide
 
 ---
@@ -477,15 +521,18 @@ Implement authentication and authorization as first-class composable primitives 
 
 ### External
 
-- `jsonwebtoken` - JWT encoding/decoding
-- `argon2` - Password hashing
+- `webauthn-rs` - WebAuthn/FIDO2 implementation
 - `oauth2` - OAuth2 flows
 - `openidconnect` - OIDC support
 - `samael` - SAML support
 - `axum` - Web framework
 - `tower` - Middleware
+- `tower-http` - HTTP middleware (CORS, compression, etc.)
 - `redis` - Session storage
 - `sqlx` - Database access
+- `lettre` - Email sending (for magic links)
+- `rand` - Cryptographic random numbers
+- `base64` - Encoding support
 
 ---
 
@@ -502,28 +549,39 @@ Implement authentication and authorization as first-class composable primitives 
 
 ## Future Enhancements (Phase 7)
 
-- [ ] Multi-factor authentication (MFA)
-  - TOTP (Time-based OTP)
-  - SMS verification
-  - Hardware keys (WebAuthn)
+- [ ] Additional MFA options (beyond WebAuthn)
+  - TOTP (Time-based OTP) for backup auth
+  - SMS verification (with warnings about security)
+  - Email-based 2FA
 
-- [ ] Passwordless authentication
-  - Magic links
-  - Passkeys (WebAuthn)
+- [ ] Passkey advanced features
+  - Cross-device passkey syncing
+  - Passkey backup/recovery flows
+  - Device attestation verification
+  - Conditional UI (autofill)
 
 - [ ] Advanced rate limiting
   - Adaptive rate limiting
   - Distributed rate limiting
+  - Per-user limits
 
 - [ ] API key management
   - API key generation
   - Scoped permissions
   - Usage tracking
+  - Rotation policies
 
 - [ ] Audit log export
-  - SIEM integration
+  - SIEM integration (Splunk, DataDog, etc.)
   - Custom formatters
   - Retention policies
+  - Compliance reports (GDPR, SOC2, HIPAA)
+
+- [ ] Social auth providers
+  - Apple Sign-In
+  - Twitter/X auth
+  - LinkedIn auth
+  - Discord auth
 
 ---
 

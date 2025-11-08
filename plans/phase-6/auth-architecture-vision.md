@@ -21,7 +21,22 @@ Authentication and authorization in Composable Rust are not middleware layers or
 ```
 Authentication = State + Actions + Effects
 Authorization = Reducers + Sagas + Policies
+Passwordless = Modern Cryptography + WebAuthn + OAuth2
 ```
+
+### Passwordless-First Philosophy
+
+**We do NOT store passwords.** Instead, we support:
+
+1. **Passkeys/WebAuthn** (FIDO2) - The future of authentication
+2. **Magic Links** - Email/SMS-based passwordless auth
+3. **OAuth2/OIDC** - Delegate to trusted providers (Google, GitHub, etc.)
+4. **Biometric Auth** - Built into passkeys/WebAuthn
+
+**Passwords are supported ONLY for:**
+- Legacy system migration (with clear deprecation path)
+- Scenarios where modern auth is technically impossible
+- Always with strong hashing (Argon2id) and clear warnings
 
 ### Authentication as State Management
 
@@ -31,12 +46,30 @@ struct AuthState {
     session: Option<Session>,
     tokens: TokenPair,
     refresh_in_progress: bool,
+    // For WebAuthn
+    challenge: Option<Challenge>,
+    // For magic links
+    pending_verification: Option<PendingVerification>,
 }
 
 // Login is just an action
 enum AuthAction {
-    Login { credentials: Credentials },
-    LoginSuccess { session: Session, tokens: TokenPair },
+    // Passkey/WebAuthn flow
+    InitiatePasskeyLogin { username: String },
+    VerifyPasskey { credential: PublicKeyCredential },
+    PasskeyLoginSuccess { session: Session },
+
+    // Magic link flow
+    SendMagicLink { email: String },
+    VerifyMagicLink { token: String },
+    MagicLinkSuccess { session: Session },
+
+    // OAuth2 flow
+    InitiateOAuth { provider: OAuthProvider },
+    OAuthCallback { code: String },
+    OAuthSuccess { session: Session },
+
+    // Common actions
     LoginFailed { error: AuthError },
     RefreshToken,
     Logout,
@@ -44,6 +77,20 @@ enum AuthAction {
 
 // Token validation is just an effect
 enum AuthEffect {
+    // WebAuthn effects
+    GenerateChallenge,
+    VerifyAssertion { credential: PublicKeyCredential },
+    StoreCredential { credential: StoredCredential },
+
+    // Magic link effects
+    SendEmail { to: String, token: String },
+    ValidateMagicToken { token: String },
+
+    // OAuth2 effects
+    RedirectToProvider { provider: OAuthProvider },
+    ExchangeCodeForToken { code: String },
+
+    // Common effects
     ValidateToken(String),
     RefreshTokens { refresh_token: String },
     RevokeSession { session_id: SessionId },
@@ -76,28 +123,49 @@ impl Saga for PermissionSaga {
 
 Users should be able to start simple and scale up:
 
-**Level 1: Simple JWT (Day 1)**
+**Level 1: OAuth2 Delegation (Day 1)**
 ```rust
-// Just validate tokens, no persistence
-let auth = JwtAuth::new(secret);
+// Start with OAuth2 - delegate auth to Google/GitHub
+let auth = OAuthAuth::new(vec![
+    GoogleProvider::new(client_id, client_secret),
+    GitHubProvider::new(client_id, client_secret),
+]);
 ```
 
-**Level 2: Session Management (Week 1)**
+**Level 2: Magic Links (Week 1)**
 ```rust
-// Add session storage and refresh
-let auth = SessionAuth::new(secret, session_store);
+// Add passwordless email-based auth
+let auth = AuthStack::new()
+    .oauth(oauth_providers)
+    .magic_link(email_service);
 ```
 
-**Level 3: RBAC (Month 1)**
+**Level 3: Passkeys/WebAuthn (Week 2)**
+```rust
+// Add FIDO2 passkeys for maximum security
+let auth = AuthStack::new()
+    .oauth(oauth_providers)
+    .magic_link(email_service)
+    .passkeys(webauthn_config);
+```
+
+**Level 4: RBAC + Authorization (Month 1)**
 ```rust
 // Add role-based access control
-let auth = RbacAuth::new(secret, session_store, role_provider);
+let auth = AuthStack::new()
+    .passkeys(webauthn_config)
+    .oauth(oauth_providers)
+    .authorization(rbac_authorizer);
 ```
 
-**Level 4: Enterprise SSO (Production)**
+**Level 5: Enterprise SSO (Production)**
 ```rust
-// Full OAuth2/OIDC with multi-tenancy
-let auth = EnterpriseAuth::new(oidc_config, saml_config);
+// Full OIDC + SAML with multi-tenancy
+let auth = EnterpriseAuth::new()
+    .oidc(oidc_providers)
+    .saml(saml_config)
+    .passkeys(webauthn_config)
+    .multi_tenant(tenant_config);
 ```
 
 ### 2. Composable Building Blocks
@@ -107,9 +175,10 @@ All components should compose:
 ```rust
 // Compose multiple auth strategies
 let auth = AuthStack::new()
-    .layer(JwtAuth::new(jwt_secret))
-    .layer(ApiKeyAuth::new(api_key_store))
-    .layer(OidcAuth::new(oidc_config))
+    .passkeys(webauthn_config)
+    .magic_link(email_service)
+    .oauth(oauth_providers)
+    .api_key(api_key_store)  // For service-to-service auth
     .fallback(AnonymousAuth);
 ```
 
@@ -710,12 +779,14 @@ proptest! {
 - **Concurrent Sessions**: Configurable max sessions per user
 - **IP Binding**: Optional IP address validation
 
-### 3. Password Security
+### 3. Passwordless Security
 
-- **Hashing**: Argon2id (winner of Password Hashing Competition)
-- **Salting**: Unique salt per password
-- **Pepper**: Optional global pepper for additional security
-- **Rate Limiting**: Login attempt rate limiting
+- **WebAuthn/FIDO2**: Hardware-backed cryptographic authentication
+- **Public Key Crypto**: Private keys never leave the user's device
+- **Phishing Resistant**: Origin binding prevents phishing attacks
+- **Biometric Support**: Built-in fingerprint/FaceID support
+- **Magic Link Security**: Time-limited, single-use tokens
+- **Rate Limiting**: Prevent brute force on magic links and passkey challenges
 
 ### 4. Audit Logging
 
@@ -884,11 +955,14 @@ async fn migrate_users(
 
 ## Open Questions
 
-1. **Password Storage**: Should we include password auth or assume external providers?
-2. **MFA**: Include multi-factor authentication in Phase 6 or defer to Phase 7?
-3. **Rate Limiting**: Build into auth layer or separate middleware?
-4. **Audit Export**: Support for exporting auth logs to external SIEM systems?
-5. **API Keys**: Include API key management or separate module?
+1. **WebAuthn Implementation**: Use `webauthn-rs` crate or build from scratch?
+2. **Passkey Sync**: Support for passkey syncing across devices (Apple/Google/1Password)?
+3. **MFA**: Include multi-factor authentication in Phase 6 or defer to Phase 7?
+4. **Rate Limiting**: Build into auth layer or separate middleware?
+5. **Audit Export**: Support for exporting auth logs to external SIEM systems?
+6. **Magic Link Delivery**: Support SMS in addition to email?
+7. **API Keys**: Include API key management or separate module?
+8. **Backup Auth**: What happens if user loses all passkeys? Recovery email only?
 
 ---
 
