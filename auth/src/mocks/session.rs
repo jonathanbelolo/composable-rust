@@ -189,4 +189,26 @@ impl SessionStore for MockSessionStore {
             }
         }
     }
+
+    fn get_user_sessions(
+        &self,
+        user_id: UserId,
+    ) -> impl Future<Output = Result<Vec<SessionId>>> + Send {
+        let sessions = Arc::clone(&self.sessions);
+
+        async move {
+            let sessions_guard = sessions.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
+
+            // Return all non-expired sessions for this user
+            let session_ids: Vec<SessionId> = sessions_guard
+                .iter()
+                .filter(|(_, session)| {
+                    session.user_id == user_id && session.expires_at >= chrono::Utc::now()
+                })
+                .map(|(id, _)| *id)
+                .collect();
+
+            Ok(session_ids)
+        }
+    }
 }

@@ -112,11 +112,22 @@ impl SessionStore for RedisSessionStore {
         // - Session added to user set but creation fails (dangling reference)
         //
         // Redis pipeline ensures both operations succeed or both fail.
+        //
+        // ✅ MEMORY LEAK FIX: Set TTL on user sessions set (+1 day buffer)
+        //
+        // Without TTL, user:sessions:{user_id} sets grow unbounded, causing memory leaks.
+        // We set TTL to session_ttl + 1 day to ensure the set outlives all sessions
+        // but still gets cleaned up eventually.
+        #[allow(clippy::cast_possible_truncation)]
+        let set_ttl_seconds = (ttl_seconds + 86400) as i64; // +1 day buffer
+
         let _: () = redis::pipe()
             .atomic()
             .set_ex(&session_key, session_bytes, ttl_seconds)
             .sadd(&user_sessions_key, session.session_id.0.to_string())
             .ignore() // Continue pipeline even if SADD has issues
+            .expire(&user_sessions_key, set_ttl_seconds) // ✅ Set TTL on set
+            .ignore() // Continue pipeline even if EXPIRE has issues
             .query_async(&mut conn)
             .await
             .map_err(|e| AuthError::InternalError(format!("Failed to create session: {e}")))?;
@@ -380,6 +391,64 @@ impl SessionStore for RedisSessionStore {
             seconds if seconds > 0 => Ok(Some(Duration::seconds(seconds))),
             _ => Ok(None),
         }
+    }
+
+    async fn get_user_sessions(&self, user_id: UserId) -> Result<Vec<SessionId>> {
+        let mut conn = self.conn_manager.clone();
+        let user_sessions_key = Self::user_sessions_key(&user_id);
+
+        // Get all session IDs from the user's set
+        let session_ids: Vec<String> = conn
+            .smembers(&user_sessions_key)
+            .await
+            .map_err(|e| AuthError::InternalError(format!("Failed to get user sessions: {e}")))?;
+
+        // ✅ CLEANUP: Filter out dead sessions and remove from set
+        //
+        // This prevents the user:sessions:{user_id} set from accumulating
+        // references to expired/deleted sessions. Without this cleanup,
+        // the set would grow unbounded over time.
+        let mut valid_sessions = Vec::new();
+        let mut dead_session_count = 0;
+
+        for id_str in session_ids {
+            if let Ok(uuid) = uuid::Uuid::parse_str(&id_str) {
+                let session_id = SessionId(uuid);
+
+                // Check if session still exists
+                if self.exists(session_id).await? {
+                    valid_sessions.push(session_id);
+                } else {
+                    // Session expired or was deleted - clean up the reference
+                    let _: () = conn
+                        .srem(&user_sessions_key, &id_str)
+                        .await
+                        .map_err(|e| {
+                            tracing::warn!(
+                                user_id = %user_id.0,
+                                session_id = %id_str,
+                                error = %e,
+                                "Failed to clean up dead session reference"
+                            );
+                            e
+                        })
+                        .unwrap_or(());
+
+                    dead_session_count += 1;
+                }
+            }
+        }
+
+        if dead_session_count > 0 {
+            tracing::debug!(
+                user_id = %user_id.0,
+                dead_count = dead_session_count,
+                valid_count = valid_sessions.len(),
+                "Cleaned up dead session references"
+            );
+        }
+
+        Ok(valid_sessions)
     }
 }
 
@@ -843,5 +912,125 @@ mod tests {
         // Should have 1 session for this user
         let count = store.delete_user_sessions(user_id).await.unwrap();
         assert_eq!(count, 1, "New session should be tracked correctly");
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires Redis running
+    #[allow(clippy::unwrap_used)]
+    async fn test_user_sessions_set_ttl() {
+        let store = RedisSessionStore::new("redis://127.0.0.1:6379")
+            .await
+            .unwrap();
+
+        let user_id = UserId::new();
+        let session = Session {
+            session_id: SessionId::new(),
+            user_id,
+            device_id: DeviceId::new(),
+            email: "test@example.com".to_string(),
+            created_at: Utc::now(),
+            last_active: Utc::now(),
+            expires_at: Utc::now() + Duration::hours(24),
+            ip_address: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            user_agent: "Test".to_string(),
+            oauth_provider: None,
+            login_risk_score: 0.1,
+        };
+
+        // Create session with 1 hour TTL
+        store
+            .create_session(&session, Duration::hours(1))
+            .await
+            .unwrap();
+
+        // Check TTL on user sessions set
+        let mut conn = store.conn_manager.clone();
+        let user_sessions_key = format!("user:sessions:{}", user_id.0);
+        let set_ttl: i64 = conn.ttl(&user_sessions_key).await.unwrap();
+
+        // TTL should be session_ttl + 1 day buffer = 1 hour + 86400 seconds
+        // Allow some margin for test execution time
+        let expected_ttl = 3600 + 86400; // 1 hour + 1 day
+        assert!(
+            set_ttl >= expected_ttl - 10 && set_ttl <= expected_ttl + 10,
+            "User sessions set TTL should be ~{} seconds (session TTL + 1 day), got {}",
+            expected_ttl,
+            set_ttl
+        );
+
+        // Cleanup
+        store.delete_session(session.session_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires Redis running
+    #[allow(clippy::unwrap_used)]
+    async fn test_get_user_sessions_cleanup() {
+        let store = RedisSessionStore::new("redis://127.0.0.1:6379")
+            .await
+            .unwrap();
+
+        let user_id = UserId::new();
+
+        // Create 3 sessions
+        let sessions: Vec<Session> = (0..3)
+            .map(|i| Session {
+                session_id: SessionId::new(),
+                user_id,
+                device_id: DeviceId::new(),
+                email: format!("test{}@example.com", i),
+                created_at: Utc::now(),
+                last_active: Utc::now(),
+                expires_at: Utc::now() + Duration::hours(24),
+                ip_address: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+                user_agent: format!("Browser{}", i),
+                oauth_provider: None,
+                login_risk_score: 0.1,
+            })
+            .collect();
+
+        for session in &sessions {
+            store
+                .create_session(session, Duration::hours(24))
+                .await
+                .unwrap();
+        }
+
+        // Verify all 3 sessions exist
+        let active_sessions = store.get_user_sessions(user_id).await.unwrap();
+        assert_eq!(active_sessions.len(), 3, "Should have 3 active sessions");
+
+        // Manually delete 2 sessions (simulating expiration)
+        store.delete_session(sessions[0].session_id).await.unwrap();
+        store.delete_session(sessions[1].session_id).await.unwrap();
+
+        // At this point:
+        // - sessions[0] and sessions[1] are deleted from Redis
+        // - But user:sessions:{user_id} set still has 3 references (dead data)
+
+        // Call get_user_sessions() - should clean up dead references
+        let active_sessions = store.get_user_sessions(user_id).await.unwrap();
+        assert_eq!(
+            active_sessions.len(),
+            1,
+            "Should have 1 active session after cleanup"
+        );
+        assert_eq!(
+            active_sessions[0], sessions[2].session_id,
+            "Should return the remaining valid session"
+        );
+
+        // Verify the set now has only 1 entry (dead references cleaned up)
+        let mut conn = store.conn_manager.clone();
+        let user_sessions_key = format!("user:sessions:{}", user_id.0);
+        let set_members: Vec<String> = conn.smembers(&user_sessions_key).await.unwrap();
+        assert_eq!(
+            set_members.len(),
+            1,
+            "User sessions set should have 1 entry after cleanup"
+        );
+
+        // Cleanup
+        store.delete_session(sessions[2].session_id).await.unwrap();
     }
 }

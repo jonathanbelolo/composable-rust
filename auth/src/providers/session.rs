@@ -110,4 +110,21 @@ pub trait SessionStore: Send + Sync {
         &self,
         session_id: SessionId,
     ) -> impl std::future::Future<Output = Result<Option<Duration>>> + Send;
+
+    /// Get all active sessions for a user.
+    ///
+    /// This method returns only valid sessions and automatically cleans up
+    /// any dead references from the user's session set.
+    ///
+    /// # Returns
+    ///
+    /// List of valid session IDs for the user.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if network request fails.
+    fn get_user_sessions(
+        &self,
+        user_id: UserId,
+    ) -> impl std::future::Future<Output = Result<Vec<SessionId>>> + Send;
 }
