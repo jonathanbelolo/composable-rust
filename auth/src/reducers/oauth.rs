@@ -411,16 +411,19 @@ where
                 user_agent,
                 fingerprint,
             } => {
-                // Validate email format from OAuth provider
-                if !crate::utils::is_valid_email(&email) {
-                    tracing::warn!("Invalid email from OAuth provider {}: {}", provider.as_str(), email);
-                    return smallvec![async_effect! {
-                        Some(AuthAction::OAuthFailed {
-                            error: "invalid_email".to_string(),
-                            error_description: Some(format!("Invalid email from OAuth provider: {email}")),
-                        })
-                    }];
-                }
+                // Validate and normalize email from OAuth provider (prevent account collision)
+                let email = match crate::utils::normalize_email(&email) {
+                    Ok(normalized) => normalized,
+                    Err(e) => {
+                        tracing::warn!("Invalid email from OAuth provider {}: {}", provider.as_str(), e);
+                        return smallvec![async_effect! {
+                            Some(AuthAction::OAuthFailed {
+                                error: "invalid_email".to_string(),
+                                error_description: Some(format!("Invalid email from OAuth provider: {e}")),
+                            })
+                        }];
+                    }
+                };
 
                 // Generate IDs upfront
                 let user_id = UserId::new();
@@ -479,7 +482,7 @@ where
                         last_login_location: None,
                         last_login_at: None,
                         fingerprint: fingerprint_clone,
-                    }).await.unwrap_or_else(|_| {
+                    }).await.ok().unwrap_or_else(|| {
                         // Fall back to safe default on error
                         crate::providers::RiskAssessment {
                             score: 0.1,

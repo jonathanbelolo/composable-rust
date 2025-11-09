@@ -405,6 +405,7 @@ where
                 assertion_response,
                 ip_address,
                 user_agent,
+                fingerprint,
             } => {
                 // ✅ SECURITY: Atomic challenge consumption from ChallengeStore
                 // The assertion_response contains the challenge that was sent to the client
@@ -603,6 +604,15 @@ where
                         return None;
                     }
 
+                    // ✅ Preliminary rollback check passed
+                    // This is phase 1 of 2-phase validation. Phase 2 (atomic CAS) is the final barrier.
+                    tracing::debug!(
+                        stored_counter = credential.counter,
+                        received_counter = result.counter,
+                        credential_id = %credential_id,
+                        "Preliminary rollback check passed (final verification at CAS)"
+                    );
+
                     // ✅ SECURITY FIX (BLOCKER #6): Atomic counter update with compare-and-swap
                     //
                     // VULNERABILITY PREVENTED: Race condition in concurrent authentication
@@ -661,12 +671,13 @@ where
                         .await
                     {
                         Ok(true) => {
-                            // ✅ Counter update succeeded - authentication allowed
+                            // ✅ Counter update succeeded - authentication ALLOWED
                             tracing::info!(
-                                "Passkey counter updated atomically: {} -> {} (credential: {})",
-                                credential.counter,
-                                result.counter,
-                                credential_id
+                                credential_id = %credential_id,
+                                user_id = %credential.user_id.0,
+                                old_counter = credential.counter,
+                                new_counter = result.counter,
+                                "Counter updated atomically - authentication ALLOWED"
                             );
                         }
                         Ok(false) => {
@@ -688,8 +699,9 @@ where
                                 user_id = %credential.user_id.0,
                                 device_id = %credential.device_id.0,
                                 expected_counter = credential.counter,
-                                attempted_counter = result.counter,
-                                "Concurrent authentication blocked by atomic counter update"
+                                received_counter = result.counter,
+                                reason = "CAS conflict - counter already updated by another request",
+                                "Concurrent authentication detected - authentication REJECTED"
                             );
 
                             // REJECT the authentication - counter was modified by concurrent request
@@ -719,6 +731,7 @@ where
                         email: user.email,
                         ip_address,
                         user_agent,
+                        fingerprint,
                     })
                 }]
             }
@@ -732,6 +745,7 @@ where
                 email,
                 ip_address,
                 user_agent,
+                fingerprint,
             } => {
                 // ✅ INPUT VALIDATION: Defense-in-depth validation at entry point
                 if let Err(e) = crate::utils::validate_ip_address(&ip_address.to_string()) {
@@ -808,8 +822,8 @@ where
                         device_id: Some(device_id),
                         last_login_location: None,
                         last_login_at: None,
-                        fingerprint: None, // TODO: Pass from client
-                    }).await.unwrap_or_else(|_| {
+                        fingerprint,
+                    }).await.ok().unwrap_or_else(|| {
                         // Fall back to safe default on error
                         crate::providers::RiskAssessment {
                             score: 0.05, // Passkeys are very secure, low default
@@ -1099,5 +1113,209 @@ mod tests {
         let reducer = TestReducer::with_config(config);
         assert_eq!(reducer.config.origin, "https://app.example.com");
         assert_eq!(reducer.config.rp_id, "app.example.com");
+    }
+
+    /// ✅ SECURITY TEST: Comprehensive counter rollback detection
+    ///
+    /// This tests the critical algorithm that detects cloned authenticators
+    /// using WebAuthn's signature counter. The counter MUST always increment.
+    /// If it goes backward (rolls back), it indicates a cloned authenticator
+    /// or replay attack.
+    ///
+    /// The algorithm uses wrapping arithmetic to handle u32 overflow:
+    /// - Forward difference < HALF_SPACE (2^31) = valid increment
+    /// - Forward difference > HALF_SPACE = rollback attack
+    ///
+    /// This handles all cases including counter wraparound at u32::MAX.
+    #[test]
+    fn test_counter_rollback_detection() {
+        /// Helper function implementing the same logic as the reducer
+        fn is_rollback(stored: u32, received: u32) -> bool {
+            const HALF_SPACE: u32 = u32::MAX / 2;
+            if received == stored {
+                // Same counter = replay attack (counter should always increment)
+                true
+            } else {
+                // Calculate forward difference using wrapping arithmetic
+                let forward_diff = received.wrapping_sub(stored);
+                // If forward_diff > HALF_SPACE, the counter moved backward
+                forward_diff > HALF_SPACE
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        // Normal cases (no wrapping)
+        // ═══════════════════════════════════════════════════════════
+
+        // Same counter = replay attack
+        assert!(
+            is_rollback(100, 100),
+            "Same counter should be detected as rollback (replay attack)"
+        );
+
+        // Forward increment = valid
+        assert!(
+            !is_rollback(100, 101),
+            "Counter increment by 1 should be valid"
+        );
+        assert!(
+            !is_rollback(100, 150),
+            "Counter forward jump should be valid"
+        );
+        assert!(
+            !is_rollback(100, 1000),
+            "Large forward jump should be valid"
+        );
+
+        // Backward = rollback attack
+        assert!(
+            is_rollback(100, 99),
+            "Counter decrement by 1 should be rollback"
+        );
+        assert!(
+            is_rollback(100, 50),
+            "Backward jump should be rollback"
+        );
+        assert!(
+            is_rollback(100, 0),
+            "Reset to 0 should be rollback"
+        );
+
+        // ═══════════════════════════════════════════════════════════
+        // Wrapping cases (CRITICAL edge cases!)
+        // ═══════════════════════════════════════════════════════════
+
+        // Valid wraparound at boundary
+        assert!(
+            !is_rollback(u32::MAX, 0),
+            "Wraparound from MAX to 0 should be valid"
+        );
+        assert!(
+            !is_rollback(u32::MAX, 1),
+            "Wraparound from MAX to 1 should be valid"
+        );
+        assert!(
+            !is_rollback(u32::MAX, 100),
+            "Wraparound from MAX to 100 should be valid"
+        );
+
+        // Valid wraparound near boundary
+        assert!(
+            !is_rollback(u32::MAX - 5, 0),
+            "Wraparound from near-MAX to 0 should be valid"
+        );
+        assert!(
+            !is_rollback(u32::MAX - 5, 10),
+            "Wraparound from near-MAX to 10 should be valid (forward_diff=16)"
+        );
+        assert!(
+            !is_rollback(u32::MAX - 100, 50),
+            "Wraparound across boundary should be valid"
+        );
+
+        // Backward across wraparound = rollback
+        assert!(
+            is_rollback(10, u32::MAX),
+            "Backward from 10 to MAX should be rollback"
+        );
+        assert!(
+            is_rollback(10, u32::MAX - 5),
+            "Backward from 10 to near-MAX should be rollback"
+        );
+        assert!(
+            is_rollback(100, u32::MAX - 100),
+            "Large backward jump should be rollback"
+        );
+
+        // ═══════════════════════════════════════════════════════════
+        // Half-space boundary cases (CRITICAL threshold!)
+        // ═══════════════════════════════════════════════════════════
+
+        let half = u32::MAX / 2; // 2,147,483,647
+
+        // Just before half-space = valid forward
+        assert!(
+            !is_rollback(0, half - 1),
+            "Forward jump just before HALF_SPACE should be valid"
+        );
+        assert!(
+            !is_rollback(0, half),
+            "Forward jump exactly to HALF_SPACE should be valid"
+        );
+
+        // Just after half-space = rollback
+        assert!(
+            is_rollback(0, half + 1),
+            "Jump just past HALF_SPACE should be rollback (too far forward = backward)"
+        );
+        assert!(
+            is_rollback(0, half + 100),
+            "Jump past HALF_SPACE should be rollback"
+        );
+
+        // Half-space from non-zero
+        assert!(
+            !is_rollback(100, 100 + half),
+            "Forward jump of exactly HALF_SPACE should be valid"
+        );
+        assert!(
+            is_rollback(100, 100 + half + 1),
+            "Forward jump past HALF_SPACE should be rollback"
+        );
+
+        // ═══════════════════════════════════════════════════════════
+        // Edge cases with 0 and MAX
+        // ═══════════════════════════════════════════════════════════
+
+        // From 0
+        assert!(!is_rollback(0, 1), "0 → 1 should be valid");
+        assert!(!is_rollback(0, 100), "0 → 100 should be valid");
+        assert!(is_rollback(0, 0), "0 → 0 should be rollback (replay)");
+
+        // To 0 (wrapping)
+        assert!(
+            !is_rollback(u32::MAX, 0),
+            "MAX → 0 should be valid (wraparound)"
+        );
+        assert!(
+            !is_rollback(u32::MAX - 1, 0),
+            "(MAX-1) → 0 should be valid"
+        );
+
+        // From MAX
+        assert!(
+            is_rollback(u32::MAX, u32::MAX),
+            "MAX → MAX should be rollback (replay)"
+        );
+        assert!(
+            is_rollback(u32::MAX, u32::MAX - 1),
+            "MAX → (MAX-1) should be rollback"
+        );
+
+        // ═══════════════════════════════════════════════════════════
+        // Real-world scenarios
+        // ═══════════════════════════════════════════════════════════
+
+        // Normal authenticator use (counter increments)
+        assert!(!is_rollback(42, 43), "Normal use: 42 → 43");
+        assert!(!is_rollback(999, 1000), "Normal use: 999 → 1000");
+
+        // Cloned authenticator (counter doesn't advance)
+        assert!(
+            is_rollback(42, 42),
+            "Cloned authenticator: counter doesn't advance"
+        );
+
+        // Attacker resets counter
+        assert!(
+            is_rollback(1000, 1),
+            "Attacker reset counter: 1000 → 1"
+        );
+
+        // Attacker uses old backup
+        assert!(
+            is_rollback(500, 450),
+            "Attacker uses old backup: 500 → 450"
+        );
     }
 }

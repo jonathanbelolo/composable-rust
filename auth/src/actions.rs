@@ -3,6 +3,7 @@
 //! This module defines all possible actions in the authentication system.
 //! Actions follow the CQRS pattern: Commands (user intent) and Events (what happened).
 
+use crate::providers::DeviceFingerprint;
 use crate::state::{DeviceId, OAuthProvider, Session, SessionId, UserId};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -228,6 +229,9 @@ pub enum AuthAction {
 
         /// User agent string.
         user_agent: String,
+
+        /// Browser fingerprint (optional, for risk scoring).
+        fingerprint: Option<DeviceFingerprint>,
     },
 
     /// Magic link verified successfully.
@@ -240,6 +244,9 @@ pub enum AuthAction {
 
         /// User agent string.
         user_agent: String,
+
+        /// Browser fingerprint (optional, for risk scoring).
+        fingerprint: Option<DeviceFingerprint>,
     },
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -324,6 +331,9 @@ pub enum AuthAction {
 
         /// User agent string.
         user_agent: String,
+
+        /// Browser fingerprint (optional, for risk scoring).
+        fingerprint: Option<DeviceFingerprint>,
     },
 
     /// Passkey login succeeded.
@@ -342,6 +352,9 @@ pub enum AuthAction {
 
         /// User agent string.
         user_agent: String,
+
+        /// Browser fingerprint (optional, for risk scoring).
+        fingerprint: Option<DeviceFingerprint>,
     },
 
     // ═══════════════════════════════════════════════════════════════════════

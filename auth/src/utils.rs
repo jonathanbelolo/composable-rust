@@ -225,6 +225,57 @@ pub fn is_valid_email(email: &str) -> bool {
     validate_email(email).is_ok()
 }
 
+/// Normalize email address for storage to prevent account collision.
+///
+/// Normalization:
+/// 1. **Trim whitespace** - Remove leading/trailing spaces
+/// 2. **Convert to lowercase** - RFC 5321 says local-part is case-sensitive,
+///    but most providers treat it case-insensitive (Gmail, Outlook, etc.)
+/// 3. **Validate after normalization** - Ensure result is valid email
+///
+/// # Security
+///
+/// ⚠️ **Note**: This function does NOT collapse `+` tags (e.g., `user+tag@example.com`).
+/// While Gmail treats `user@gmail.com` and `user+tag@gmail.com` as the same mailbox,
+/// we store them separately to avoid data loss for providers that treat them differently.
+///
+/// # Errors
+///
+/// Returns [`AuthError::InvalidEmail`] if the email is invalid after normalization.
+///
+/// # Examples
+///
+/// ```
+/// use composable_rust_auth::utils::normalize_email;
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// assert_eq!(normalize_email("User@Example.COM")?, "user@example.com");
+/// assert_eq!(normalize_email("  admin@test.com  ")?, "admin@test.com");
+/// assert_eq!(normalize_email("Admin+Tag@Company.COM")?, "admin+tag@company.com");
+///
+/// // Invalid emails are rejected
+/// assert!(normalize_email("not-an-email").is_err());
+/// assert!(normalize_email("@example.com").is_err());
+/// # Ok(())
+/// # }
+/// ```
+pub fn normalize_email(email: &str) -> crate::error::Result<String> {
+    use crate::error::AuthError;
+
+    // 1. Trim whitespace
+    // 2. Convert to lowercase
+    let normalized = email.trim().to_lowercase();
+
+    // 3. Validate after normalization
+    validate_email(&normalized).map_err(|_| {
+        AuthError::InvalidInput(
+            "Email address is invalid after normalization".to_string()
+        )
+    })?;
+
+    Ok(normalized)
+}
+
 /// Legacy email validation (kept for backward compatibility).
 #[must_use]
 #[allow(dead_code)]
@@ -875,6 +926,68 @@ mod tests {
         // Too long (>255 chars)
         let long_email = format!("{}@example.com", "a".repeat(250));
         assert!(!is_valid_email(&long_email));
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)] // Test code
+    fn test_email_normalization_lowercase() {
+        // SECURITY: Case normalization prevents account collision
+        assert_eq!(normalize_email("User@Example.COM").unwrap(), "user@example.com");
+        assert_eq!(normalize_email("ADMIN@TEST.COM").unwrap(), "admin@test.com");
+        assert_eq!(normalize_email("MixedCase@Domain.ORG").unwrap(), "mixedcase@domain.org");
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)] // Test code
+    fn test_email_normalization_whitespace() {
+        // SECURITY: Trim whitespace prevents account collision
+        assert_eq!(normalize_email("  admin@test.com  ").unwrap(), "admin@test.com");
+        assert_eq!(normalize_email("\tuser@example.com\n").unwrap(), "user@example.com");
+        assert_eq!(normalize_email(" User@Example.COM ").unwrap(), "user@example.com");
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)] // Test code
+    fn test_email_normalization_preserves_plus_tags() {
+        // SECURITY: Do NOT collapse + tags to avoid data loss
+        // Gmail treats user@gmail.com and user+tag@gmail.com as same mailbox,
+        // but other providers may not. Store separately.
+        assert_eq!(
+            normalize_email("Admin+Tag@Company.COM").unwrap(),
+            "admin+tag@company.com"
+        );
+        assert_eq!(
+            normalize_email("user+spam@example.com").unwrap(),
+            "user+spam@example.com"
+        );
+        assert_eq!(
+            normalize_email("TEST+FILTER@DOMAIN.COM").unwrap(),
+            "test+filter@domain.com"
+        );
+    }
+
+    #[test]
+    fn test_email_normalization_rejects_invalid() {
+        // Invalid emails should be rejected after normalization
+        assert!(normalize_email("not-an-email").is_err());
+        assert!(normalize_email("@example.com").is_err());
+        assert!(normalize_email("user@").is_err());
+        assert!(normalize_email("").is_err());
+        assert!(normalize_email("   ").is_err()); // Only whitespace
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)] // Test code
+    fn test_email_normalization_combined() {
+        // Combine all normalization rules
+        assert_eq!(
+            normalize_email("  Admin+Tag@Example.COM  ").unwrap(),
+            "admin+tag@example.com"
+        );
+        assert_eq!(
+            normalize_email("\n\tUSER@DOMAIN.ORG\t\n").unwrap(),
+            "user@domain.org"
+        );
     }
 
     #[test]

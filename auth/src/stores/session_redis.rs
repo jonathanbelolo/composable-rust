@@ -199,12 +199,14 @@ impl SessionStore for RedisSessionStore {
             .atomic()
             .set_ex(&session_key, session_bytes, ttl_seconds)
             .sadd(&user_sessions_key, session.session_id.0.to_string())
-            .ignore() // Continue pipeline even if SADD has issues
             .expire(&user_sessions_key, set_ttl_seconds) // ✅ Set TTL on set
-            .ignore() // Continue pipeline even if EXPIRE has issues
+            // ✅ SECURITY: Don't ignore EXPIRE failures - memory leak prevention
             .query_async(&mut conn)
             .await
-            .map_err(|e| AuthError::InternalError(format!("Failed to create session: {e}")))?;
+            .map_err(|e| {
+                tracing::error!("Failed to create session with TTL: {}", e);
+                AuthError::InternalError(format!("Session creation failed: {e}"))
+            })?;
 
         tracing::info!(
             session_id = %session.session_id.0,
@@ -266,6 +268,12 @@ impl SessionStore for RedisSessionStore {
                 // longer timeouts than magic links).
                 let idle_timeout = session.idle_timeout;
                 let idle_duration = now.signed_duration_since(session.last_active);
+
+                // ✅ SECURITY: Handle clock skew
+                // If last_active is in the future (clock skew between servers),
+                // signed_duration_since returns a negative duration. Clamp to zero
+                // to avoid incorrectly rejecting sessions.
+                let idle_duration = idle_duration.max(chrono::Duration::zero());
 
                 if idle_duration > idle_timeout {
                     tracing::warn!(

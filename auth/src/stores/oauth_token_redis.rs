@@ -47,6 +47,7 @@ use aes_gcm::{
 use chrono::Utc;
 use redis::aio::ConnectionManager;
 use redis::{AsyncCommands, Client};
+use std::sync::Arc;
 
 /// Redis-based OAuth token store with AES-256-GCM encryption at rest.
 ///
@@ -60,7 +61,8 @@ pub struct RedisOAuthTokenStore {
     /// Connection manager for connection pooling.
     conn_manager: ConnectionManager,
     /// AES-256-GCM cipher for token encryption.
-    cipher: Aes256Gcm,
+    /// Wrapped in Arc for safe cloning without nonce reuse risks.
+    cipher: Arc<Aes256Gcm>,
 }
 
 impl RedisOAuthTokenStore {
@@ -106,7 +108,7 @@ impl RedisOAuthTokenStore {
 
         Ok(Self {
             conn_manager,
-            cipher,
+            cipher: Arc::new(cipher),
         })
     }
 
@@ -171,11 +173,11 @@ impl RedisOAuthTokenStore {
 
 impl Clone for RedisOAuthTokenStore {
     fn clone(&self) -> Self {
-        // Cannot clone cipher directly, but we can create a new one from the same key
-        // This is a workaround - in production, consider using Arc<Aes256Gcm>
+        // Arc allows safe sharing of the cipher across clones.
+        // Each encrypt() call generates a fresh nonce, so nonce reuse is not a concern.
         Self {
             conn_manager: self.conn_manager.clone(),
-            cipher: self.cipher.clone(),
+            cipher: Arc::clone(&self.cipher),
         }
     }
 }

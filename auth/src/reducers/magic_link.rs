@@ -192,11 +192,14 @@ where
                 ip_address: _,
                 user_agent: _,
             } => {
-                // Validate email format
-                if !crate::utils::is_valid_email(&email) {
-                    tracing::warn!("Invalid email format: {}", email);
-                    return smallvec![Effect::None];
-                }
+                // Validate and normalize email (prevent account collision)
+                let email = match crate::utils::normalize_email(&email) {
+                    Ok(normalized) => normalized,
+                    Err(e) => {
+                        tracing::warn!("Invalid email format: {}", e);
+                        return smallvec![Effect::None];
+                    }
+                };
 
                 // Generate cryptographically secure token
                 let token = self.generate_token();
@@ -291,6 +294,7 @@ where
                 token,
                 ip_address,
                 user_agent,
+                fingerprint,
             } => {
                 // ✅ INPUT VALIDATION: Defense-in-depth validation at entry point
                 if let Err(e) = crate::utils::validate_ip_address(&ip_address.to_string()) {
@@ -330,6 +334,7 @@ where
                 let token_for_consume = token.clone();
                 let ip_clone = ip_address;
                 let ua_clone = user_agent.clone();
+                let fingerprint_clone = fingerprint.clone();
 
                 smallvec![async_effect! {
                     // Atomically consume token (check + delete in one operation)
@@ -354,6 +359,7 @@ where
                                 email,
                                 ip_address: ip_clone,
                                 user_agent: ua_clone,
+                                fingerprint: fingerprint_clone,
                             })
                         }
                         Ok(None) => {
@@ -377,6 +383,7 @@ where
                 email,
                 ip_address,
                 user_agent,
+                fingerprint,
             } => {
                 // Generate IDs upfront
                 let user_id = UserId::new();
@@ -415,6 +422,7 @@ where
                 let risk = env.risk.clone();
                 let email_clone = email.clone();
                 let user_agent_clone = user_agent.clone();
+                let fingerprint_clone = fingerprint.clone();
                 let session_duration = self.config.session_duration;
                 let max_concurrent_sessions = self.config.max_concurrent_sessions;
                 let idle_timeout = self.config.idle_timeout;
@@ -434,8 +442,8 @@ where
                         device_id: Some(device_id),
                         last_login_location: None,
                         last_login_at: None,
-                        fingerprint: None, // TODO: Pass from client
-                    }).await.unwrap_or_else(|_| {
+                        fingerprint: fingerprint_clone.clone(),
+                    }).await.ok().unwrap_or_else(|| {
                         // Fall back to safe default on error
                         crate::providers::RiskAssessment {
                             score: 0.1,
