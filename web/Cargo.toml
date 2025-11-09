@@ -1,0 +1,69 @@
+[package]
+name = "composable-rust-web"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Axum web framework integration for Composable Rust"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Local dependencies
+composable-rust-core = { path = "../core" }
+composable-rust-runtime = { path = "../runtime" }
+composable-rust-auth = { path = "../auth" }
+
+# Web framework
+axum = { version = "0.7", features = ["macros"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip", "request-id"] }
+
+# Async
+tokio = { workspace = true }
+futures = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = "1"
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Observability
+tracing = { workspace = true }
+metrics = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# HTTP types
+http = "1"
+hyper = "1"
+
+# Correlation IDs
+uuid = { version = "1", features = ["serde", "v4"] }
+
+# Session management (for Phase 7.5) - will be added in Sprint 7.5
+# tower-sessions = { version = "0.13", optional = true }
+# tower-sessions-redis-store = { version = "0.13", optional = true }
+
+# Security (for Phase 7.5) - will be added in Sprint 7.5
+# tower_governor = { version = "0.4", optional = true }
+
+[dev-dependencies]
+composable-rust-testing = { path = "../testing" }
+tokio-test = { workspace = true }
+tracing-subscriber = { workspace = true }
+axum-test = "16"
+
+[features]
+default = []
+# Features will be added in Sprint 7.5
+# sessions = ["tower-sessions", "tower-sessions-redis-store"]
+# rate-limiting = ["tower_governor"]
+# full = ["sessions", "rate-limiting"]
