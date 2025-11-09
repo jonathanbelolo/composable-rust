@@ -160,6 +160,10 @@ pub enum AuthError {
     #[error("Failed to send email")]
     EmailDeliveryFailed,
 
+    /// Email sending error with details.
+    #[error("Email error: {0}")]
+    EmailError(String),
+
     /// Serialization/deserialization error.
     #[error("Serialization error: {0}")]
     SerializationError(String),
