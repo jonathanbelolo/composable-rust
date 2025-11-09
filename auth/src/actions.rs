@@ -272,6 +272,80 @@ pub enum AuthAction {
     },
 
     // ═══════════════════════════════════════════════════════════════════════
+    // Passkey Credential Management
+    // ═══════════════════════════════════════════════════════════════════════
+    /// List all passkey credentials for the authenticated user.
+    ///
+    /// # Returns
+    ///
+    /// Effect that queries the database and returns `PasskeyCredentialsListed` event.
+    ///
+    /// # Security
+    ///
+    /// This action should only be callable by authenticated users for their own credentials.
+    /// The session validation ensures users can only list their own passkeys.
+    ListPasskeyCredentials {
+        /// User ID (from authenticated session).
+        user_id: UserId,
+    },
+
+    /// Passkey credentials list retrieved.
+    ///
+    /// This is an **event** produced by the effect executor.
+    PasskeyCredentialsListed {
+        /// User ID.
+        user_id: UserId,
+
+        /// List of passkey credentials.
+        credentials: Vec<crate::providers::PasskeyCredential>,
+    },
+
+    /// Delete a specific passkey credential.
+    ///
+    /// # Security
+    ///
+    /// - Only the credential owner can delete it (enforced by DB query with user_id)
+    /// - Prevents users from deleting other users' credentials
+    /// - Credential ID must belong to the user_id
+    ///
+    /// # Note
+    ///
+    /// This does NOT delete the device record - only the passkey credential.
+    /// The device may still exist with other authentication methods.
+    DeletePasskeyCredential {
+        /// User ID (from authenticated session).
+        user_id: UserId,
+
+        /// Credential ID to delete.
+        credential_id: String,
+    },
+
+    /// Passkey credential deleted successfully.
+    ///
+    /// This is an **event** produced by the effect executor.
+    PasskeyCredentialDeleted {
+        /// User ID.
+        user_id: UserId,
+
+        /// Credential ID that was deleted.
+        credential_id: String,
+    },
+
+    /// Passkey credential deletion failed.
+    ///
+    /// This is an **event** for error cases.
+    PasskeyCredentialDeletionFailed {
+        /// User ID.
+        user_id: UserId,
+
+        /// Credential ID that failed to delete.
+        credential_id: String,
+
+        /// Error message.
+        error: String,
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════
     // Session Management
     // ═══════════════════════════════════════════════════════════════════════
     /// Session created successfully.

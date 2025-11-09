@@ -213,9 +213,24 @@ impl UserRepository for MockUserRepository {
 
     fn get_user_passkey_credentials(
         &self,
-        _user_id: UserId,
+        user_id: UserId,
     ) -> impl Future<Output = Result<Vec<PasskeyCredential>>> + Send {
-        async move { Ok(Vec::new()) }
+        let credentials = Arc::clone(&self.passkey_credentials);
+
+        async move {
+            let credentials_guard = credentials
+                .lock()
+                .map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
+
+            // Filter credentials by user_id and collect into Vec
+            let user_credentials: Vec<PasskeyCredential> = credentials_guard
+                .values()
+                .filter(|cred| cred.user_id == user_id)
+                .cloned()
+                .collect();
+
+            Ok(user_credentials)
+        }
     }
 
     fn create_passkey_credential(
@@ -274,9 +289,22 @@ impl UserRepository for MockUserRepository {
 
     fn delete_passkey_credential(
         &self,
-        _credential_id: &str,
+        credential_id: &str,
     ) -> impl Future<Output = Result<()>> + Send {
-        async move { Ok(()) }
+        let credentials = Arc::clone(&self.passkey_credentials);
+        let credential_id = credential_id.to_string();
+
+        async move {
+            let mut credentials_guard = credentials
+                .lock()
+                .map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
+
+            // Remove the credential from the HashMap
+            // Returns None if credential doesn't exist (idempotent delete)
+            credentials_guard.remove(&credential_id);
+
+            Ok(())
+        }
     }
 }
 
@@ -460,5 +488,201 @@ mod tests {
             "Expected PasskeyNotFound error, got {:?}",
             result
         );
+    }
+
+    #[tokio::test]
+    async fn test_list_user_passkey_credentials() {
+        // This test validates listing all credentials for a user.
+
+        let repo = MockUserRepository::new();
+        let user_id = UserId::new();
+        let device_id_1 = DeviceId::new();
+        let device_id_2 = DeviceId::new();
+
+        // Create two credentials for the user
+        let credential_1 = PasskeyCredential {
+            credential_id: "credential_1".to_string(),
+            user_id,
+            device_id: device_id_1,
+            public_key: vec![1, 2, 3, 4],
+            counter: 10,
+            created_at: chrono::Utc::now(),
+            last_used: None,
+        };
+        repo.create_passkey_credential(&credential_1).await.unwrap();
+
+        let credential_2 = PasskeyCredential {
+            credential_id: "credential_2".to_string(),
+            user_id,
+            device_id: device_id_2,
+            public_key: vec![5, 6, 7, 8],
+            counter: 20,
+            created_at: chrono::Utc::now(),
+            last_used: None,
+        };
+        repo.create_passkey_credential(&credential_2).await.unwrap();
+
+        // List credentials for user
+        let credentials = repo.get_user_passkey_credentials(user_id).await.unwrap();
+
+        // Should return both credentials
+        assert_eq!(credentials.len(), 2);
+        assert!(credentials.iter().any(|c| c.credential_id == "credential_1"));
+        assert!(credentials.iter().any(|c| c.credential_id == "credential_2"));
+    }
+
+    #[tokio::test]
+    async fn test_list_user_passkey_credentials_empty() {
+        // This test validates listing credentials when user has none.
+
+        let repo = MockUserRepository::new();
+        let user_id = UserId::new();
+
+        // List credentials for user (no credentials exist)
+        let credentials = repo.get_user_passkey_credentials(user_id).await.unwrap();
+
+        // Should return empty list
+        assert_eq!(credentials.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_list_user_passkey_credentials_isolation() {
+        // This test validates that users can only see their own credentials.
+
+        let repo = MockUserRepository::new();
+        let user_1 = UserId::new();
+        let user_2 = UserId::new();
+        let device_id = DeviceId::new();
+
+        // Create credential for user_1
+        let credential_1 = PasskeyCredential {
+            credential_id: "user1_credential".to_string(),
+            user_id: user_1,
+            device_id,
+            public_key: vec![1, 2, 3, 4],
+            counter: 10,
+            created_at: chrono::Utc::now(),
+            last_used: None,
+        };
+        repo.create_passkey_credential(&credential_1).await.unwrap();
+
+        // Create credential for user_2
+        let credential_2 = PasskeyCredential {
+            credential_id: "user2_credential".to_string(),
+            user_id: user_2,
+            device_id,
+            public_key: vec![5, 6, 7, 8],
+            counter: 20,
+            created_at: chrono::Utc::now(),
+            last_used: None,
+        };
+        repo.create_passkey_credential(&credential_2).await.unwrap();
+
+        // List credentials for user_1
+        let user_1_credentials = repo.get_user_passkey_credentials(user_1).await.unwrap();
+
+        // Should only return user_1's credential
+        assert_eq!(user_1_credentials.len(), 1);
+        assert_eq!(user_1_credentials[0].credential_id, "user1_credential");
+
+        // List credentials for user_2
+        let user_2_credentials = repo.get_user_passkey_credentials(user_2).await.unwrap();
+
+        // Should only return user_2's credential
+        assert_eq!(user_2_credentials.len(), 1);
+        assert_eq!(user_2_credentials[0].credential_id, "user2_credential");
+    }
+
+    #[tokio::test]
+    async fn test_delete_passkey_credential() {
+        // This test validates deleting a credential.
+
+        let repo = MockUserRepository::new();
+        let user_id = UserId::new();
+        let device_id = DeviceId::new();
+
+        // Create credential
+        let credential = PasskeyCredential {
+            credential_id: "test_credential".to_string(),
+            user_id,
+            device_id,
+            public_key: vec![1, 2, 3, 4],
+            counter: 10,
+            created_at: chrono::Utc::now(),
+            last_used: None,
+        };
+        repo.create_passkey_credential(&credential).await.unwrap();
+
+        // Verify credential exists
+        let retrieved = repo.get_passkey_credential("test_credential").await.unwrap();
+        assert_eq!(retrieved.credential_id, "test_credential");
+
+        // Delete credential
+        repo.delete_passkey_credential("test_credential").await.unwrap();
+
+        // Verify credential is deleted
+        let result = repo.get_passkey_credential("test_credential").await;
+        assert!(
+            matches!(result, Err(AuthError::PasskeyNotFound)),
+            "Expected PasskeyNotFound after deletion, got {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delete_passkey_credential_nonexistent() {
+        // This test validates proper error handling when deleting nonexistent credential.
+
+        let repo = MockUserRepository::new();
+
+        // Attempt to delete credential that doesn't exist
+        let result = repo.delete_passkey_credential("nonexistent_credential").await;
+
+        // Should succeed (idempotent delete)
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_delete_passkey_credential_updates_list() {
+        // This test validates that deletion is reflected in list results.
+
+        let repo = MockUserRepository::new();
+        let user_id = UserId::new();
+        let device_id = DeviceId::new();
+
+        // Create two credentials
+        let credential_1 = PasskeyCredential {
+            credential_id: "credential_1".to_string(),
+            user_id,
+            device_id,
+            public_key: vec![1, 2, 3, 4],
+            counter: 10,
+            created_at: chrono::Utc::now(),
+            last_used: None,
+        };
+        repo.create_passkey_credential(&credential_1).await.unwrap();
+
+        let credential_2 = PasskeyCredential {
+            credential_id: "credential_2".to_string(),
+            user_id,
+            device_id,
+            public_key: vec![5, 6, 7, 8],
+            counter: 20,
+            created_at: chrono::Utc::now(),
+            last_used: None,
+        };
+        repo.create_passkey_credential(&credential_2).await.unwrap();
+
+        // Verify both credentials exist
+        let credentials = repo.get_user_passkey_credentials(user_id).await.unwrap();
+        assert_eq!(credentials.len(), 2);
+
+        // Delete one credential
+        repo.delete_passkey_credential("credential_1").await.unwrap();
+
+        // Verify only one credential remains
+        let credentials = repo.get_user_passkey_credentials(user_id).await.unwrap();
+        assert_eq!(credentials.len(), 1);
+        assert_eq!(credentials[0].credential_id, "credential_2");
     }
 }

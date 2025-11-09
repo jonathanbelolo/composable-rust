@@ -919,6 +919,157 @@ where
                 smallvec![Effect::None]
             }
 
+            // ═══════════════════════════════════════════════════════════════
+            // ListPasskeyCredentials: List all credentials for user
+            // ═══════════════════════════════════════════════════════════════
+            AuthAction::ListPasskeyCredentials { user_id } => {
+                // ✅ AUTHORIZATION: This action should only be called after session validation
+                // The session middleware ensures user_id matches the authenticated session
+                let users = env.users.clone();
+
+                smallvec![async_effect! {
+                    // Query database for user's passkey credentials
+                    match users.get_user_passkey_credentials(user_id).await {
+                        Ok(credentials) => {
+                            tracing::info!(
+                                "Retrieved {} passkey credential(s) for user {}",
+                                credentials.len(),
+                                user_id.0
+                            );
+                            Some(AuthAction::PasskeyCredentialsListed {
+                                user_id,
+                                credentials,
+                            })
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                "Failed to retrieve passkey credentials for user {}: {}",
+                                user_id.0,
+                                e
+                            );
+                            None
+                        }
+                    }
+                }]
+            }
+
+            // ═══════════════════════════════════════════════════════════════
+            // PasskeyCredentialsListed: Credentials retrieved successfully
+            // ═══════════════════════════════════════════════════════════════
+            AuthAction::PasskeyCredentialsListed {
+                user_id: _,
+                credentials: _,
+            } => {
+                // This is a success event - no state changes needed
+                // The application layer will use the credentials from the event
+                smallvec![Effect::None]
+            }
+
+            // ═══════════════════════════════════════════════════════════════
+            // DeletePasskeyCredential: Delete a specific credential
+            // ═══════════════════════════════════════════════════════════════
+            AuthAction::DeletePasskeyCredential {
+                user_id,
+                credential_id,
+            } => {
+                // ✅ AUTHORIZATION: This action should only be called after session validation
+                // The session middleware ensures user_id matches the authenticated session
+                //
+                // ✅ SECURITY: Double-check at database level
+                // The UserRepository implementation MUST verify that credential_id
+                // belongs to user_id before deletion (authorization-by-design)
+                let users = env.users.clone();
+                let credential_id_clone = credential_id.clone();
+
+                smallvec![async_effect! {
+                    // Verify credential exists and belongs to user
+                    match users.get_passkey_credential(&credential_id).await {
+                        Ok(credential) => {
+                            // ✅ AUTHORIZATION: Verify credential belongs to user
+                            if credential.user_id != user_id {
+                                tracing::error!(
+                                    "🚨 SECURITY ALERT: User {} attempted to delete credential {} owned by user {}",
+                                    user_id.0,
+                                    credential_id,
+                                    credential.user_id.0
+                                );
+                                return Some(AuthAction::PasskeyCredentialDeletionFailed {
+                                    user_id,
+                                    credential_id: credential_id_clone.clone(),
+                                    error: "Unauthorized".to_string(),
+                                });
+                            }
+
+                            // Delete credential
+                            match users.delete_passkey_credential(&credential_id).await {
+                                Ok(()) => {
+                                    tracing::info!(
+                                        "Deleted passkey credential {} for user {}",
+                                        credential_id,
+                                        user_id.0
+                                    );
+                                    Some(AuthAction::PasskeyCredentialDeleted {
+                                        user_id,
+                                        credential_id: credential_id_clone,
+                                    })
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Failed to delete passkey credential {} for user {}: {}",
+                                        credential_id,
+                                        user_id.0,
+                                        e
+                                    );
+                                    Some(AuthAction::PasskeyCredentialDeletionFailed {
+                                        user_id,
+                                        credential_id: credential_id_clone,
+                                        error: e.to_string(),
+                                    })
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                "Failed to retrieve passkey credential {} for user {}: {}",
+                                credential_id,
+                                user_id.0,
+                                e
+                            );
+                            Some(AuthAction::PasskeyCredentialDeletionFailed {
+                                user_id,
+                                credential_id: credential_id_clone,
+                                error: format!("Credential not found: {}", e),
+                            })
+                        }
+                    }
+                }]
+            }
+
+            // ═══════════════════════════════════════════════════════════════
+            // PasskeyCredentialDeleted: Credential deleted successfully
+            // ═══════════════════════════════════════════════════════════════
+            AuthAction::PasskeyCredentialDeleted {
+                user_id: _,
+                credential_id: _,
+            } => {
+                // This is a success event - no state changes needed
+                // The application layer will handle the success response
+                smallvec![Effect::None]
+            }
+
+            // ═══════════════════════════════════════════════════════════════
+            // PasskeyCredentialDeletionFailed: Credential deletion failed
+            // ═══════════════════════════════════════════════════════════════
+            AuthAction::PasskeyCredentialDeletionFailed {
+                user_id: _,
+                credential_id: _,
+                error: _,
+            } => {
+                // This is an error event - no state changes needed
+                // The application layer will handle the error response
+                smallvec![Effect::None]
+            }
+
             // Other actions are not handled by this reducer
             _ => smallvec![Effect::None],
         }
