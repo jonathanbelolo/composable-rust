@@ -17,7 +17,7 @@ composable-rust-core = { path = "../core" }
 composable-rust-runtime = { path = "../runtime" }
 
 # Web framework
-axum = { version = "0.7", features = ["macros"] }
+axum = { version = "0.7", features = ["macros", "ws"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip", "request-id"] }
 
