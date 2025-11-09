@@ -239,23 +239,120 @@ The passkey authentication flow had a race condition between counter verificatio
 
 ---
 
-## Medium Priority: Production Enhancements
+### ✅ COMPLETED: Sprint 5 - Production Enhancements
 
+**Status**: COMPLETE (2025-01-10)
+**Duration**: Sprint 5 (3 medium-priority enhancements)
+**Focus**: User experience and security improvements
 
-### Session Refresh Logic
-**Status**: Not started
-**Location**: Session management
-**Description**: Implement sliding window session refresh (extend TTL on activity)
+**Sprint 5.1 - Sliding Window Session Refresh**:
 
-### Device Fingerprinting
-**Status**: Not started
-**Location**: Risk calculation
-**Description**: Enhance device detection beyond user-agent parsing
+Implemented optional sliding window session refresh to improve user experience while maintaining security.
 
-### Passkey Credential Management
-**Status**: Not started
-**Location**: Passkey reducer
-**Description**: Add endpoints for listing/deleting registered passkeys
+**Implementation**:
+1. ✅ Added `enable_sliding_session_refresh` configuration flag (default: false)
+   - Location: `src/config.rs` (MagicLinkConfig, OAuthConfig, PasskeyConfig)
+2. ✅ Added `enable_sliding_refresh` field to Session struct
+   - Location: `src/state.rs:Session`
+3. ✅ Implemented sliding refresh logic in Redis session store
+   - Location: `src/stores/session_redis.rs:get_session()`
+   - Extends `expires_at` on each access while preserving original duration
+4. ✅ Implemented in mock session store for testing
+   - Location: `src/mocks/session.rs`
+5. ✅ Added 4 comprehensive tests
+   - Location: `src/stores/session_redis.rs:1619-1853` (all marked #[ignore])
+
+**Security Considerations**:
+- Pro: Better UX - active users stay logged in
+- Con: Sessions could theoretically last forever if continuously used
+- Mitigation: Idle timeout still applies regardless of setting
+- Recommendation: Use `false` for high-security apps, `true` for better UX
+
+**Sprint 5.2 - Device Fingerprinting Infrastructure**:
+
+Enhanced device recognition beyond user-agent parsing with comprehensive browser fingerprinting.
+
+**Implementation**:
+1. ✅ Added `DeviceFingerprint` struct with 18+ attributes
+   - Location: `src/providers/mod.rs:157-243`
+   - Canvas, WebGL, audio, fonts, plugins, screen, hardware, etc.
+   - Extensible with custom fields HashMap
+2. ✅ Extended Device model with fingerprint fields
+   - `fingerprint: Option<DeviceFingerprint>` - Full fingerprint data
+   - `fingerprint_hash: Option<String>` - SHA-256 hash for quick comparison
+3. ✅ Extended LoginContext with fingerprint field
+   - Integrated with risk calculator for enhanced risk assessment
+4. ✅ Implemented fingerprint utilities
+   - Location: `src/utils.rs:547-803`
+   - `hash_fingerprint()` - SHA-256 deterministic hashing
+   - `fingerprint_similarity()` - Weighted fuzzy matching (0.0-1.0 score)
+   - `fingerprints_match()` - Convenience threshold check (default 0.75)
+5. ✅ Added sha2 dependency for cryptographic hashing
+   - Location: `Cargo.toml`
+
+**Architecture**:
+- Backend library approach: Clients collect fingerprints (JavaScript)
+- Backend stores, hashes, and compares
+- Risk calculator uses for device recognition and anomaly detection
+
+**Weighted Similarity Scoring**:
+- High uniqueness (0.15): canvas, webgl, audio (hard to change)
+- Medium uniqueness (0.10): fonts, plugins, renderer (can change)
+- Low uniqueness (0.05): screen, timezone, languages (common values)
+
+**Sprint 5.3 - Passkey Credential Management**:
+
+Implemented user-facing credential management for listing and deleting registered passkeys.
+
+**Implementation**:
+1. ✅ Added 5 new actions
+   - Location: `src/actions.rs:274-346`
+   - `ListPasskeyCredentials { user_id }`
+   - `PasskeyCredentialsListed { user_id, credentials }`
+   - `DeletePasskeyCredential { user_id, credential_id }`
+   - `PasskeyCredentialDeleted { user_id, credential_id }`
+   - `PasskeyCredentialDeletionFailed { user_id, credential_id, error }`
+2. ✅ Added reducer logic
+   - Location: `src/reducers/passkey.rs:922-1071`
+   - List credentials handler with database query
+   - Delete credential handler with authorization checks
+   - Security logging for unauthorized attempts
+3. ✅ Implemented MockUserRepository methods
+   - `get_user_passkey_credentials()` - filter by user_id
+   - `delete_passkey_credential()` - idempotent deletion
+4. ✅ Added 6 comprehensive tests
+   - Location: `src/mocks/user.rs:465-659`
+   - List credentials (multiple, empty, isolation)
+   - Delete credentials (success, nonexistent, list update)
+
+**Security Features**:
+- ✅ Authorization by design: Credential ownership verified before deletion
+- ✅ User isolation: Users can only list/delete their own credentials
+- ✅ Security logging: Unauthorized attempts logged with SECURITY ALERT
+- ✅ Idempotent operations: Deleting nonexistent credential succeeds
+
+**Test Coverage**:
+- Total: 111 library tests passing + 37 ignored Redis tests
+- Sprint 5.1: 4 new session refresh tests
+- Sprint 5.3: 6 new credential management tests
+- All existing tests remain passing
+
+**Files Modified**:
+- `src/config.rs` - Session refresh configuration
+- `src/state.rs` - Session sliding refresh flag
+- `src/stores/session_redis.rs` - Sliding refresh implementation + tests
+- `src/mocks/session.rs` - Mock sliding refresh
+- `src/providers/mod.rs` - DeviceFingerprint struct
+- `src/utils.rs` - Fingerprint hashing and similarity
+- `Cargo.toml` - sha2 dependency
+- `src/actions.rs` - Credential management actions
+- `src/reducers/passkey.rs` - Credential management reducer logic
+- `src/mocks/user.rs` - Implementation and tests
+
+**Git Commits**:
+- e7c819c - Sprint 5.1: Sliding window session refresh
+- d1b9387 - Sprint 5.2: Device fingerprinting infrastructure
+- 4908475 - Sprint 5.3: Passkey credential management
 
 ---
 
