@@ -241,6 +241,11 @@ where
 /// * `operation` - Async operation to retry
 /// * `is_retryable` - Predicate to determine if an error should trigger a retry
 ///
+/// # Errors
+///
+/// Returns the error immediately if it is not retryable (as determined by the predicate).
+/// Returns the last error if all retry attempts are exhausted.
+///
 /// # Example
 ///
 /// ```rust

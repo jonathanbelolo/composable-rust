@@ -52,3 +52,7 @@ harness = false
 [[bench]]
 name = "phase4_benchmarks"
 harness = false
+
+[[bench]]
+name = "phase7_broadcasting"
+harness = false

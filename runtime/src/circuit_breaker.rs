@@ -46,9 +46,9 @@ use thiserror::Error;
 pub struct CircuitBreakerConfig {
     /// Number of failures before opening the circuit
     pub failure_threshold: usize,
-    /// Duration to wait before transitioning from Open to HalfOpen
+    /// Duration to wait before transitioning from Open to `HalfOpen`
     pub timeout: Duration,
-    /// Number of successes in HalfOpen state before closing the circuit
+    /// Number of successes in `HalfOpen` state before closing the circuit
     pub success_threshold: usize,
 }
 
@@ -94,7 +94,7 @@ impl CircuitBreakerConfigBuilder {
 
     /// Set the timeout duration.
     ///
-    /// How long to wait in Open state before trying HalfOpen.
+    /// How long to wait in Open state before trying `HalfOpen`.
     #[must_use]
     pub const fn timeout(mut self, duration: Duration) -> Self {
         self.timeout = Some(duration);
@@ -103,7 +103,7 @@ impl CircuitBreakerConfigBuilder {
 
     /// Set the success threshold.
     ///
-    /// Number of successes in HalfOpen state before closing the circuit.
+    /// Number of successes in `HalfOpen` state before closing the circuit.
     #[must_use]
     pub const fn success_threshold(mut self, threshold: usize) -> Self {
         self.success_threshold = Some(threshold);
@@ -232,8 +232,7 @@ impl CircuitBreaker {
         let mut state = self.state.write().await;
 
         match state.state {
-            State::Closed => true,
-            State::HalfOpen => true,
+            State::Closed | State::HalfOpen => true,
             State::Open => {
                 // Check if timeout has expired
                 if let Some(last_failure) = state.last_failure_time {
@@ -351,6 +350,7 @@ pub struct CircuitBreakerMetrics {
 impl CircuitBreakerMetrics {
     /// Calculate success rate (0.0 to 1.0).
     #[must_use]
+    #[allow(clippy::cast_precision_loss)]
     pub fn success_rate(&self) -> f64 {
         if self.total_calls == 0 {
             return 1.0;
@@ -360,6 +360,7 @@ impl CircuitBreakerMetrics {
 
     /// Calculate rejection rate (0.0 to 1.0).
     #[must_use]
+    #[allow(clippy::cast_precision_loss)]
     pub fn rejection_rate(&self) -> f64 {
         if self.total_calls == 0 {
             return 0.0;

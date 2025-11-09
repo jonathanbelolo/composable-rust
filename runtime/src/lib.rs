@@ -79,6 +79,20 @@ pub mod error {
         /// Some effects were still running when the timeout elapsed.
         #[error("Shutdown timed out with {0} effects still running")]
         ShutdownTimeout(usize),
+
+        /// Timeout waiting for terminal action
+        ///
+        /// Returned by `send_and_wait_for` when the timeout expires before
+        /// a matching action is received.
+        #[error("Timeout waiting for action")]
+        Timeout,
+
+        /// Action broadcast channel closed
+        ///
+        /// The action broadcast channel was closed, typically because the
+        /// store is shutting down.
+        #[error("Action broadcast channel closed")]
+        ChannelClosed,
     }
 }
 
@@ -1260,7 +1274,7 @@ pub mod store {
         Duration, Effect, EffectHandle, EffectTracking, HealthCheck, Ordering, Reducer,
         RetryPolicy, RwLock, StoreConfig, StoreError, TrackingMode,
     };
-    use tokio::sync::watch;
+    use tokio::sync::{broadcast, watch};
 
     /// The Store - runtime coordinator for a reducer
     ///
@@ -1302,16 +1316,27 @@ pub mod store {
         dlq: DeadLetterQueue<String>,
         shutdown: Arc<AtomicBool>,
         pending_effects: Arc<AtomicUsize>,
+        /// Action broadcast channel for observing actions produced by effects.
+        ///
+        /// All actions produced by effects (e.g., from `Effect::Future`) are
+        /// broadcast to observers. This enables HTTP request-response patterns
+        /// and real-time event streaming via `WebSockets`.
+        action_broadcast: broadcast::Sender<A>,
     }
 
     impl<S, A, E, R> Store<S, A, E, R>
     where
         R: Reducer<State = S, Action = A, Environment = E> + Send + Sync + 'static,
-        A: Send + 'static,
+        A: Send + Clone + 'static,
         S: Send + Sync + 'static,
         E: Send + Sync + 'static,
     {
         /// Create a new store with initial state, reducer, and environment
+        ///
+        /// Creates a Store with default configuration:
+        /// - Action broadcast capacity: 16 (increase with `with_broadcast_capacity`)
+        /// - Retry policy: Default (exponential backoff)
+        /// - DLQ max size: 100
         ///
         /// # Arguments
         ///
@@ -1324,6 +1349,8 @@ pub mod store {
         /// A new Store instance ready to process actions
         #[must_use]
         pub fn new(initial_state: S, reducer: R, environment: E) -> Self {
+            let (action_broadcast, _) = broadcast::channel(16);
+
             Self {
                 state: Arc::new(RwLock::new(initial_state)),
                 reducer,
@@ -1332,6 +1359,7 @@ pub mod store {
                 dlq: DeadLetterQueue::default(),
                 shutdown: Arc::new(AtomicBool::new(false)),
                 pending_effects: Arc::new(AtomicUsize::new(0)),
+                action_broadcast,
             }
         }
 
@@ -1349,6 +1377,8 @@ pub mod store {
             environment: E,
             retry_policy: RetryPolicy,
         ) -> Self {
+            let (action_broadcast, _) = broadcast::channel(16);
+
             Self {
                 state: Arc::new(RwLock::new(initial_state)),
                 reducer,
@@ -1357,6 +1387,7 @@ pub mod store {
                 dlq: DeadLetterQueue::default(),
                 shutdown: Arc::new(AtomicBool::new(false)),
                 pending_effects: Arc::new(AtomicUsize::new(0)),
+                action_broadcast,
             }
         }
 
@@ -1390,6 +1421,8 @@ pub mod store {
             environment: E,
             config: StoreConfig,
         ) -> Self {
+            let (action_broadcast, _) = broadcast::channel(16);
+
             Self {
                 state: Arc::new(RwLock::new(initial_state)),
                 reducer,
@@ -1398,6 +1431,53 @@ pub mod store {
                 dlq: DeadLetterQueue::new(config.dlq_max_size),
                 shutdown: Arc::new(AtomicBool::new(false)),
                 pending_effects: Arc::new(AtomicUsize::new(0)),
+                action_broadcast,
+            }
+        }
+
+        /// Create a new Store with custom action broadcast capacity
+        ///
+        /// Use this constructor when you need to handle high-throughput
+        /// scenarios with many slow observers (e.g., multiple WebSocket clients).
+        ///
+        /// Default capacity is 16. Increase if observers frequently lag.
+        ///
+        /// # Arguments
+        ///
+        /// - `initial_state`: The starting state for the store
+        /// - `reducer`: The reducer implementation (business logic)
+        /// - `environment`: Injected dependencies
+        /// - `capacity`: Action broadcast channel capacity (number of actions buffered)
+        ///
+        /// # Example
+        ///
+        /// ```ignore
+        /// // High throughput: 256 actions buffered
+        /// let store = Store::with_broadcast_capacity(
+        ///     MyState::default(),
+        ///     MyReducer,
+        ///     my_environment,
+        ///     256,
+        /// );
+        /// ```
+        #[must_use]
+        pub fn with_broadcast_capacity(
+            initial_state: S,
+            reducer: R,
+            environment: E,
+            capacity: usize,
+        ) -> Self {
+            let (action_broadcast, _) = broadcast::channel(capacity);
+
+            Self {
+                state: Arc::new(RwLock::new(initial_state)),
+                reducer,
+                environment,
+                retry_policy: RetryPolicy::default(),
+                dlq: DeadLetterQueue::default(),
+                shutdown: Arc::new(AtomicBool::new(false)),
+                pending_effects: Arc::new(AtomicUsize::new(0)),
+                action_broadcast,
             }
         }
 
@@ -1570,6 +1650,159 @@ pub mod store {
             A: Clone,
         {
             self.send_internal(action, TrackingMode::Direct).await
+        }
+
+        /// Send an action and wait for a matching result action
+        ///
+        /// This method is designed for request-response patterns (HTTP, RPC).
+        /// It subscribes to the action broadcast, sends the initial action,
+        /// then waits for an action matching the predicate.
+        ///
+        /// # How It Works
+        ///
+        /// 1. Subscribe to action broadcast BEFORE sending (avoids race conditions)
+        /// 2. Send the initial action through the store
+        /// 3. Wait for actions produced by effects
+        /// 4. Return the first action matching the predicate
+        ///
+        /// # Arguments
+        ///
+        /// - `action`: The initial action to send
+        /// - `predicate`: Function to test if an action is the terminal result
+        /// - `timeout`: Maximum time to wait for matching action
+        ///
+        /// # Returns
+        ///
+        /// The first action matching the predicate, or timeout error.
+        ///
+        /// # Errors
+        ///
+        /// - [`StoreError::Timeout`]: Timeout expired before matching action received
+        /// - [`StoreError::ChannelClosed`]: Action broadcast channel closed (store shutting down)
+        /// - [`StoreError::ShutdownInProgress`]: Store is shutting down
+        ///
+        /// # Example
+        ///
+        /// ```ignore
+        /// use std::time::Duration;
+        ///
+        /// let result = store.send_and_wait_for(
+        ///     OrderAction::PlaceOrder {
+        ///         correlation_id: Uuid::new_v4(),
+        ///         customer_id,
+        ///         items,
+        ///     },
+        ///     |a| matches!(a,
+        ///         OrderAction::OrderPlaced { .. } |
+        ///         OrderAction::OrderFailed { .. }
+        ///     ),
+        ///     Duration::from_secs(10),
+        /// ).await?;
+        ///
+        /// match result {
+        ///     OrderAction::OrderPlaced { order_id, .. } => {
+        ///         println!("Order placed: {}", order_id);
+        ///     }
+        ///     OrderAction::OrderFailed { reason, .. } => {
+        ///         eprintln!("Order failed: {}", reason);
+        ///     }
+        ///     _ => unreachable!("Predicate ensures only terminal actions"),
+        /// }
+        /// ```
+        ///
+        /// # Notes
+        ///
+        /// - Only actions produced by effects are broadcast (not the initial action)
+        /// - If the channel lags and drops actions, continues waiting (timeout catches it)
+        /// - Use correlation IDs to distinguish concurrent requests
+        pub async fn send_and_wait_for<F>(
+            &self,
+            action: A,
+            predicate: F,
+            timeout: Duration,
+        ) -> Result<A, StoreError>
+        where
+            R: Clone,
+            E: Clone,
+            A: Clone,
+            F: Fn(&A) -> bool,
+        {
+            // Subscribe BEFORE sending to avoid race condition
+            let mut rx = self.action_broadcast.subscribe();
+
+            // Send the initial action
+            self.send(action).await?;
+
+            // Wait for matching action with timeout
+            tokio::time::timeout(timeout, async {
+                loop {
+                    match rx.recv().await {
+                        Ok(action) if predicate(&action) => return Ok(action),
+                        Ok(_) => {} // Not the action we want, keep waiting
+                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                            // Slow consumer, some actions were dropped
+                            // Continue waiting - if terminal action was dropped, timeout will catch it
+                            tracing::warn!(
+                                skipped,
+                                "Action observer lagged, {} actions skipped",
+                                skipped
+                            );
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            return Err(StoreError::ChannelClosed);
+                        }
+                    }
+                }
+            })
+            .await
+            .map_err(|_| StoreError::Timeout)?
+        }
+
+        /// Subscribe to all actions from this store
+        ///
+        /// This method is designed for event streaming (`WebSockets`, SSE).
+        /// Returns a receiver that gets a clone of every action produced by effects.
+        ///
+        /// # Returns
+        ///
+        /// A broadcast receiver that receives all actions produced by effects.
+        ///
+        /// # Notes
+        ///
+        /// - Only actions produced by effects are broadcast (not initial actions sent via `send`)
+        /// - If the receiver lags, it will skip old actions and receive [`RecvError::Lagged`]
+        /// - The receiver must be consumed in a loop or it will block the channel
+        ///
+        /// # Example
+        ///
+        /// ```ignore
+        /// let mut rx = store.subscribe_actions();
+        ///
+        /// // Stream to WebSocket client
+        /// while let Ok(action) = rx.recv().await {
+        ///     let json = serde_json::to_string(&action)?;
+        ///     ws.send(json).await?;
+        /// }
+        /// ```
+        ///
+        /// # Filtered Streaming
+        ///
+        /// You can filter actions for specific users or criteria:
+        ///
+        /// ```ignore
+        /// let mut rx = store.subscribe_actions();
+        /// let user_id = session.user_id;
+        ///
+        /// while let Ok(action) = rx.recv().await {
+        ///     // Only stream actions for this user
+        ///     if action.user_id() == Some(&user_id) {
+        ///         ws.send(serde_json::to_string(&action)?).await?;
+        ///     }
+        /// }
+        /// ```
+        #[must_use]
+        pub fn subscribe_actions(&self) -> broadcast::Receiver<A> {
+            self.action_broadcast.subscribe()
         }
 
         /// Internal send implementation with tracking control
@@ -1819,6 +2052,10 @@ pub mod store {
 
                         if let Some(action) = fut.await {
                             tracing::trace!("Effect::Future produced an action, sending to store");
+
+                            // Broadcast to observers (HTTP handlers, WebSockets, metrics)
+                            let _ = store.action_broadcast.send(action.clone());
+
                             // Send action back to store (auto-feedback)
                             let _ = store.send(action).await;
                         } else {
@@ -1844,6 +2081,10 @@ pub mod store {
 
                         tokio::time::sleep(duration).await;
                         tracing::trace!("Effect::Delay completed, sending action");
+
+                        // Broadcast to observers
+                        let _ = store.action_broadcast.send((*action).clone());
+
                         let _ = store.send(*action).await;
                     });
                 },
@@ -2168,6 +2409,7 @@ pub mod store {
                 dlq: self.dlq.clone(),
                 shutdown: Arc::clone(&self.shutdown),
                 pending_effects: Arc::clone(&self.pending_effects),
+                action_broadcast: self.action_broadcast.clone(),
             }
         }
     }

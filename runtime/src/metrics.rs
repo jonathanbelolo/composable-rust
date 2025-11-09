@@ -60,7 +60,7 @@ impl MetricsServer {
     ///
     /// * `addr` - Socket address to bind to (e.g., `0.0.0.0:9090`)
     #[must_use]
-    pub fn new(addr: SocketAddr) -> Self {
+    pub const fn new(addr: SocketAddr) -> Self {
         Self { addr, handle: None }
     }
 
@@ -74,7 +74,7 @@ impl MetricsServer {
     ///
     /// If a metrics recorder is already installed (e.g., in tests), this will fail
     /// with `MetricsError::Install`. In production, ensure this is only called once.
-    pub async fn start(&mut self) -> Result<(), MetricsError> {
+    pub fn start(&mut self) -> Result<(), MetricsError> {
         // Register all metric descriptions
         register_metrics();
 
@@ -117,7 +117,7 @@ impl MetricsServer {
 
     /// Get the metrics handle for rendering.
     #[must_use]
-    pub fn handle(&self) -> Option<&PrometheusHandle> {
+    pub const fn handle(&self) -> Option<&PrometheusHandle> {
         self.handle.as_ref()
     }
 
@@ -126,7 +126,7 @@ impl MetricsServer {
     /// Returns `None` if server hasn't been started.
     #[must_use]
     pub fn render(&self) -> Option<String> {
-        self.handle.as_ref().map(|h| h.render())
+        self.handle.as_ref().map(PrometheusHandle::render)
     }
 }
 
@@ -327,7 +327,7 @@ pub struct CircuitBreakerMetrics;
 impl CircuitBreakerMetrics {
     /// Record circuit breaker state.
     ///
-    /// 0 = Closed, 1 = HalfOpen, 2 = Open
+    /// 0 = Closed, 1 = `HalfOpen`, 2 = Open
     pub fn record_state(state: f64) {
         gauge!("circuit_breaker_state").set(state);
     }
@@ -389,7 +389,7 @@ mod tests {
         let addr = "127.0.0.1:0".parse().unwrap();
         let mut server = MetricsServer::new(addr);
 
-        let result = server.start().await;
+        let result = server.start();
         assert!(result.is_ok());
         // Note: handle might be None if another test already initialized the recorder
         // This is OK - the recorder is still installed globally
@@ -400,7 +400,7 @@ mod tests {
         let addr = "127.0.0.1:0".parse().unwrap();
         let mut server = MetricsServer::new(addr);
 
-        server.start().await.unwrap();
+        server.start().unwrap();
 
         // Record some metrics
         EventStoreMetrics::record_append(5, Duration::from_millis(100));
@@ -418,7 +418,7 @@ mod tests {
     async fn test_event_store_metrics() {
         let addr = "127.0.0.1:0".parse().unwrap();
         let mut server = MetricsServer::new(addr);
-        server.start().await.unwrap();
+        server.start().unwrap();
 
         EventStoreMetrics::record_append(10, Duration::from_millis(200));
         EventStoreMetrics::record_load(5, Duration::from_millis(100));
@@ -437,7 +437,7 @@ mod tests {
     async fn test_circuit_breaker_metrics() {
         let addr = "127.0.0.1:0".parse().unwrap();
         let mut server = MetricsServer::new(addr);
-        server.start().await.unwrap();
+        server.start().unwrap();
 
         CircuitBreakerMetrics::record_state(0.0); // Closed
         CircuitBreakerMetrics::record_call();
