@@ -53,8 +53,9 @@ use redis::{AsyncCommands, Client};
 /// Provides:
 /// - Secure token storage with encryption
 /// - Automatic expiration aligned with token lifetime
-/// - Atomic token refresh operations
 /// - Connection pooling via `ConnectionManager`
+///
+/// This is a pure storage implementation. Token refresh logic belongs in reducers.
 pub struct RedisOAuthTokenStore {
     /// Connection manager for connection pooling.
     conn_manager: ConnectionManager,
@@ -268,30 +269,6 @@ impl OAuthTokenStore for RedisOAuthTokenStore {
         );
 
         Ok(())
-    }
-
-    async fn refresh_access_token(&self, user_id: UserId, provider: OAuthProvider) -> Result<String> {
-        // Get current tokens
-        let tokens = self
-            .get_tokens(user_id, provider)
-            .await?
-            .ok_or(AuthError::ResourceNotFound)?;
-
-        // Verify we have a refresh token
-        let _refresh_token = tokens
-            .refresh_token
-            .ok_or_else(|| AuthError::InternalError("No refresh token available".to_string()))?;
-
-        // TODO: Implement actual OAuth token refresh flow
-        // This would involve:
-        // 1. Call OAuth provider's token endpoint with refresh_token
-        // 2. Get new access_token (and possibly new refresh_token)
-        // 3. Update stored tokens with new values
-        //
-        // For now, returning a placeholder error
-        Err(AuthError::InternalError(
-            "Token refresh not yet implemented - requires OAuth provider integration".to_string(),
-        ))
     }
 }
 

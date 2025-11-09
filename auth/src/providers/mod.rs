@@ -61,9 +61,11 @@ pub mod risk;
 pub mod token_store;
 pub mod challenge_store;
 pub mod rate_limiter;
+pub mod google;
 
 // Re-export provider traits
-pub use oauth::OAuth2Provider;
+pub use oauth::{OAuth2Provider, OAuthTokenResponse};
+pub use google::GoogleOAuthProvider;
 pub use oauth_token_store::{OAuthTokenStore, OAuthTokenData};
 pub use email::EmailProvider;
 pub use webauthn::WebAuthnProvider;

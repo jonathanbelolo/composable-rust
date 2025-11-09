@@ -180,6 +180,7 @@ where
                 provider,
                 ip_address: _,
                 user_agent: _,
+                fingerprint: _,
             } => {
                 // Generate CSRF state parameter
                 let state_param = Self::generate_csrf_state();
@@ -226,15 +227,20 @@ where
                             }
                         }
                     },
-                    // Effect 2: Build authorization URL
+                    // Effect 2: Build authorization URL and signal redirect
                     async_effect! {
                         // Build authorization URL
                         match oauth_provider.build_authorization_url(provider, &state_param, &redirect_uri).await {
-                            Ok(_auth_url) => {
-                                // In a real implementation, this would trigger an HTTP redirect
-                                // For now, we'll emit a "redirect ready" action
-                                // The web framework integration will handle the actual redirect
-                                None // TODO: Return action with redirect URL when we have HTTP effects
+                            Ok(auth_url) => {
+                                tracing::info!(
+                                    provider = %provider.as_str(),
+                                    "OAuth authorization URL generated"
+                                );
+                                // Return action for web framework to perform HTTP redirect
+                                Some(AuthAction::OAuthAuthorizationUrlReady {
+                                    provider,
+                                    authorization_url: auth_url,
+                                })
                             }
                             Err(e) => {
                                 // ⚡ SECURITY FIX (BLOCKER #4): Don't leak internal error details
@@ -257,6 +263,7 @@ where
                 state: state_param,
                 ip_address,
                 user_agent,
+                fingerprint,
             } => {
                 // ✅ INPUT VALIDATION: Defense-in-depth validation at entry point
                 if let Err(e) = crate::utils::validate_ip_address(&ip_address.to_string()) {
@@ -301,6 +308,7 @@ where
                 let code_clone = code.clone();
                 let ip_clone = ip_address;
                 let ua_clone = user_agent.clone();
+                let fingerprint_clone = fingerprint.clone();
                 let redirect_uri = self.redirect_uri();
                 let oauth_provider = env.oauth.clone();
 
@@ -340,10 +348,12 @@ where
                                                 email: user_info.email,
                                                 name: user_info.name,
                                                 provider,
+                                                provider_user_id: user_info.provider_user_id,
                                                 access_token: token_response.access_token,
                                                 refresh_token: token_response.refresh_token,
                                                 ip_address: ip_clone,
                                                 user_agent: ua_clone,
+                                                fingerprint: fingerprint_clone,
                                             })
                                         }
                                         Err(e) => {
@@ -394,10 +404,12 @@ where
                 email,
                 name,
                 provider,
+                provider_user_id,
                 access_token,
                 refresh_token,
                 ip_address,
                 user_agent,
+                fingerprint,
             } => {
                 // Validate email format from OAuth provider
                 if !crate::utils::is_valid_email(&email) {
@@ -450,6 +462,7 @@ where
                 let email_clone = email.clone();
                 let name_clone = name.clone();
                 let user_agent_clone = user_agent.clone();
+                let fingerprint_clone = fingerprint.clone();
 
                 smallvec![async_effect! {
                     // Check if user exists in projection
@@ -465,7 +478,7 @@ where
                         device_id: Some(device_id),
                         last_login_location: None,
                         last_login_at: None,
-                        fingerprint: None, // TODO: Pass from client
+                        fingerprint: fingerprint_clone,
                     }).await.unwrap_or_else(|_| {
                         // Fall back to safe default on error
                         crate::providers::RiskAssessment {
@@ -496,7 +509,7 @@ where
                     events.push(AuthEvent::OAuthAccountLinked {
                         user_id: final_user_id,
                         provider,
-                        provider_user_id: format!("oauth-{}", final_user_id.0), // TODO: Get actual provider user ID
+                        provider_user_id: provider_user_id.clone(),
                         provider_email: email_clone.clone(),
                         timestamp: now,
                     });
@@ -628,6 +641,125 @@ where
             AuthAction::SessionCreated { session } => {
                 // Set session in state (session now has correct risk score from RiskCalculator)
                 state.session = Some(session.clone());
+                smallvec![Effect::None]
+            }
+
+            // ═══════════════════════════════════════════════════════════════════
+            // Refresh OAuth Token (Pure Orchestration)
+            // ═══════════════════════════════════════════════════════════════════
+            AuthAction::RefreshOAuthToken { user_id, provider } => {
+                // This is the composable-rust way:
+                // Reducer orchestrates effects, doesn't execute them
+                let token_store = env.oauth_tokens.clone();
+                let oauth_provider = env.oauth.clone();
+                let user_id_clone = user_id;
+                let provider_clone = provider;
+
+                smallvec![async_effect! {
+                    // 1. Get current tokens from storage
+                    let tokens = match token_store.get_tokens(user_id_clone, provider_clone).await {
+                        Ok(Some(tokens)) => tokens,
+                        Ok(None) => {
+                            tracing::warn!(
+                                user_id = %user_id_clone.0,
+                                provider = %provider_clone.as_str(),
+                                "No OAuth tokens found for refresh"
+                            );
+                            return None;
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                user_id = %user_id_clone.0,
+                                provider = %provider_clone.as_str(),
+                                error = %e,
+                                "Failed to get OAuth tokens"
+                            );
+                            return None;
+                        }
+                    };
+
+                    // 2. Verify we have a refresh token
+                    let refresh_token = match tokens.refresh_token {
+                        Some(rt) => rt,
+                        None => {
+                            tracing::warn!(
+                                user_id = %user_id_clone.0,
+                                provider = %provider_clone.as_str(),
+                                "No refresh token available"
+                            );
+                            return None;
+                        }
+                    };
+
+                    // 3. Call OAuth provider to refresh (external API call in effect)
+                    match oauth_provider.refresh_token(provider_clone, &refresh_token).await {
+                        Ok(token_response) => {
+                            tracing::info!(
+                                user_id = %user_id_clone.0,
+                                provider = %provider_clone.as_str(),
+                                "OAuth token refreshed successfully"
+                            );
+
+                            // 4. Update stored tokens
+                            let updated_tokens = crate::providers::OAuthTokenData {
+                                user_id: user_id_clone,
+                                provider: provider_clone,
+                                access_token: token_response.access_token.clone(),
+                                // Keep old refresh token if provider doesn't return new one
+                                refresh_token: token_response.refresh_token.or(Some(refresh_token)),
+                                expires_at: token_response.expires_at,
+                                stored_at: chrono::Utc::now(),
+                            };
+
+                            if let Err(e) = token_store.store_tokens(&updated_tokens).await {
+                                tracing::error!(
+                                    user_id = %user_id_clone.0,
+                                    provider = %provider_clone.as_str(),
+                                    error = %e,
+                                    "Failed to store refreshed tokens"
+                                );
+                                return None;
+                            }
+
+                            // 5. Emit success event
+                            Some(AuthAction::OAuthTokenRefreshed {
+                                user_id: user_id_clone,
+                                provider: provider_clone,
+                                access_token: token_response.access_token,
+                                expires_at: token_response.expires_at,
+                            })
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                user_id = %user_id_clone.0,
+                                provider = %provider_clone.as_str(),
+                                error = %e,
+                                "OAuth token refresh failed"
+                            );
+                            None
+                        }
+                    }
+                }]
+            }
+
+            // ═══════════════════════════════════════════════════════════════════
+            // OAuth Token Refreshed (Event)
+            // ═══════════════════════════════════════════════════════════════════
+            AuthAction::OAuthTokenRefreshed {
+                user_id,
+                provider,
+                access_token: _,
+                expires_at,
+            } => {
+                tracing::info!(
+                    user_id = %user_id.0,
+                    provider = %provider.as_str(),
+                    expires_at = ?expires_at,
+                    "OAuth token refresh completed"
+                );
+
+                // No state changes needed - tokens already updated in storage
+                // This event is for audit/logging purposes
                 smallvec![Effect::None]
             }
 

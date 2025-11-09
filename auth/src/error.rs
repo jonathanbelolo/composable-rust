@@ -54,6 +54,26 @@ pub enum AuthError {
     #[error("Invalid OAuth state parameter")]
     OAuthStateInvalid,
 
+    /// Invalid OAuth provider for this provider implementation.
+    #[error("Invalid OAuth provider")]
+    InvalidOAuthProvider,
+
+    /// OAuth token exchange failed.
+    #[error("OAuth token exchange failed: {0}")]
+    OAuthTokenExchangeFailed(String),
+
+    /// OAuth user info fetch failed.
+    #[error("OAuth user info fetch failed: {0}")]
+    OAuthUserInfoFailed(String),
+
+    /// OAuth token refresh failed.
+    #[error("OAuth token refresh failed: {0}")]
+    OAuthTokenRefreshFailed(String),
+
+    /// Email not verified by OAuth provider.
+    #[error("Email not verified by OAuth provider")]
+    EmailNotVerified,
+
     // ═══════════════════════════════════════════════════════════
     // Authorization Errors
     // ═══════════════════════════════════════════════════════════

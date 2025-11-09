@@ -33,6 +33,7 @@ sha2 = "0.10"     # SHA-256 for device fingerprint hashing
 
 # URL encoding
 urlencoding = "2"
+serde_urlencoded = "0.7"
 
 # Time
 chrono = { workspace = true, features = ["serde"] }

@@ -40,6 +40,9 @@ pub enum AuthAction {
 
         /// User agent string for device fingerprinting.
         user_agent: String,
+
+        /// Device fingerprint (optional, from client-side FingerprintJS or similar).
+        fingerprint: Option<crate::providers::DeviceFingerprint>,
     },
 
     /// Handle OAuth callback.
@@ -63,6 +66,9 @@ pub enum AuthAction {
 
         /// User agent string.
         user_agent: String,
+
+        /// Device fingerprint (optional, from client-side FingerprintJS or similar).
+        fingerprint: Option<crate::providers::DeviceFingerprint>,
     },
 
     /// OAuth token exchange succeeded.
@@ -78,6 +84,9 @@ pub enum AuthAction {
         /// OAuth provider.
         provider: OAuthProvider,
 
+        /// Provider's unique user ID (e.g., Google sub claim, GitHub user ID).
+        provider_user_id: String,
+
         /// Access token from provider (for future API calls).
         access_token: String,
 
@@ -89,6 +98,9 @@ pub enum AuthAction {
 
         /// User agent string.
         user_agent: String,
+
+        /// Device fingerprint (if provided).
+        fingerprint: Option<crate::providers::DeviceFingerprint>,
     },
 
     /// OAuth flow failed.
@@ -98,6 +110,67 @@ pub enum AuthAction {
 
         /// Human-readable error description.
         error_description: Option<String>,
+    },
+
+    /// OAuth authorization URL ready.
+    ///
+    /// This is an **event** produced by the reducer after OAuth state is stored.
+    /// The web framework should intercept this action and perform an HTTP redirect (302).
+    ///
+    /// # Web Framework Integration
+    ///
+    /// When you receive this action, return HTTP 302 redirect:
+    /// ```ignore
+    /// HTTP/1.1 302 Found
+    /// Location: <authorization_url>
+    /// ```
+    OAuthAuthorizationUrlReady {
+        /// OAuth provider.
+        provider: OAuthProvider,
+
+        /// Full authorization URL to redirect to.
+        authorization_url: String,
+    },
+
+    /// Refresh OAuth access token.
+    ///
+    /// This action triggers token refresh using the stored refresh token.
+    ///
+    /// # Flow
+    ///
+    /// 1. Get stored tokens from `OAuthTokenStore`
+    /// 2. Call OAuth provider's `refresh_token()` method
+    /// 3. Update stored tokens with new access token
+    /// 4. Emit `OAuthTokenRefreshed` event
+    ///
+    /// # Errors
+    ///
+    /// - No refresh token exists
+    /// - Refresh token is expired/invalid
+    /// - Provider token endpoint fails
+    RefreshOAuthToken {
+        /// User ID.
+        user_id: UserId,
+
+        /// OAuth provider.
+        provider: OAuthProvider,
+    },
+
+    /// OAuth token refreshed successfully.
+    ///
+    /// This is an **event** produced by the effect executor.
+    OAuthTokenRefreshed {
+        /// User ID.
+        user_id: UserId,
+
+        /// OAuth provider.
+        provider: OAuthProvider,
+
+        /// New access token.
+        access_token: String,
+
+        /// New expiration time (if provided).
+        expires_at: Option<DateTime<Utc>>,
     },
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -591,6 +664,7 @@ mod tests {
             provider: OAuthProvider::Google,
             ip_address: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
             user_agent: "Mozilla/5.0".to_string(),
+            fingerprint: None,
         };
 
         // Should serialize/deserialize

@@ -106,27 +106,4 @@ pub trait OAuthTokenStore: Send + Sync {
         user_id: UserId,
         provider: OAuthProvider,
     ) -> impl std::future::Future<Output = Result<()>> + Send;
-
-    /// Refresh access token using refresh token.
-    ///
-    /// This is a convenience method that:
-    /// 1. Retrieves existing tokens
-    /// 2. Uses refresh token to get new access token
-    /// 3. Updates stored tokens
-    ///
-    /// # Returns
-    ///
-    /// New access token if refresh succeeded.
-    ///
-    /// # Errors
-    ///
-    /// Returns error if:
-    /// - No refresh token exists
-    /// - Refresh token is expired/invalid
-    /// - Token endpoint fails
-    fn refresh_access_token(
-        &self,
-        user_id: UserId,
-        provider: OAuthProvider,
-    ) -> impl std::future::Future<Output = Result<String>> + Send;
 }

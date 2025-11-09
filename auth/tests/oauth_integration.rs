@@ -6,8 +6,8 @@ use composable_rust_auth::{
     environment::AuthEnvironment,
     mocks::{
         MockChallengeStore, MockDeviceRepository, MockEmailProvider, MockOAuth2Provider,
-        MockOAuthTokenStore, MockRiskCalculator, MockSessionStore, MockTokenStore,
-        MockUserRepository, MockWebAuthnProvider,
+        MockOAuthTokenStore, MockRateLimiter, MockRiskCalculator, MockSessionStore,
+        MockTokenStore, MockUserRepository, MockWebAuthnProvider,
     },
     reducers::oauth::OAuthReducer,
     state::{AuthState, OAuthProvider},
@@ -29,6 +29,7 @@ fn create_test_env() -> AuthEnvironment<
     MockRiskCalculator,
     MockOAuthTokenStore,
     MockChallengeStore,
+    MockRateLimiter,
 > {
     AuthEnvironment::new(
         MockOAuth2Provider::new(),
@@ -41,6 +42,7 @@ fn create_test_env() -> AuthEnvironment<
         MockRiskCalculator::new(),
         MockOAuthTokenStore::new(),
         MockChallengeStore::new(),
+        MockRateLimiter::new(),
         Arc::new(InMemoryEventStore::new()),
     )
 }
@@ -57,6 +59,7 @@ fn create_test_reducer() -> OAuthReducer<
     MockRiskCalculator,
     MockOAuthTokenStore,
     MockChallengeStore,
+    MockRateLimiter,
 > {
     let config = OAuthConfig::new("https://app.example.com".to_string());
     OAuthReducer::with_config(config)
@@ -80,6 +83,7 @@ async fn test_oauth_flow_complete_happy_path() {
             provider: OAuthProvider::Google,
             ip_address: test_ip,
             user_agent: test_user_agent.clone(),
+            fingerprint: None,
         },
         &env,
     );
@@ -105,6 +109,7 @@ async fn test_oauth_flow_complete_happy_path() {
             state: valid_state,
             ip_address: test_ip,
             user_agent: test_user_agent.clone(),
+            fingerprint: None,
         },
         &env,
     );
@@ -122,10 +127,12 @@ async fn test_oauth_flow_complete_happy_path() {
             email: "test@example.com".to_string(),
             name: Some("Test User".to_string()),
             provider: OAuthProvider::Google,
+            provider_user_id: "google_user_123".to_string(),
             access_token: "mock_access_token".to_string(),
             refresh_token: Some("mock_refresh_token".to_string()),
             ip_address: test_ip,
             user_agent: test_user_agent,
+            fingerprint: None,
         },
         &env,
     );
@@ -158,6 +165,7 @@ async fn test_oauth_callback_rejects_invalid_csrf_state() {
             provider: OAuthProvider::Google,
             ip_address: test_ip,
             user_agent: test_user_agent.clone(),
+            fingerprint: None,
         },
         &env,
     );
@@ -173,6 +181,7 @@ async fn test_oauth_callback_rejects_invalid_csrf_state() {
             state: "invalid_csrf_state_12345".to_string(), // Wrong state!
             ip_address: test_ip,
             user_agent: test_user_agent,
+            fingerprint: None,
         },
         &env,
     );
@@ -205,6 +214,7 @@ async fn test_oauth_callback_requires_prior_initiation() {
             state: "some_state".to_string(),
             ip_address: test_ip,
             user_agent: test_user_agent,
+            fingerprint: None,
         },
         &env,
     );
@@ -234,6 +244,7 @@ async fn test_oauth_state_expires_after_5_minutes() {
             provider: OAuthProvider::Google,
             ip_address: test_ip,
             user_agent: test_user_agent.clone(),
+            fingerprint: None,
         },
         &env,
     );
@@ -254,6 +265,7 @@ async fn test_oauth_state_expires_after_5_minutes() {
             state: valid_state,
             ip_address: test_ip,
             user_agent: test_user_agent,
+            fingerprint: None,
         },
         &env,
     );
@@ -285,6 +297,7 @@ async fn test_oauth_failed_clears_state() {
             provider: OAuthProvider::Google,
             ip_address: test_ip,
             user_agent: test_user_agent,
+            fingerprint: None,
         },
         &env,
     );
@@ -334,6 +347,7 @@ async fn test_multiple_oauth_providers() {
                 provider,
                 ip_address: test_ip,
                 user_agent: test_user_agent.clone(),
+                fingerprint: None,
             },
             &env,
         );
@@ -362,10 +376,12 @@ async fn test_session_created_event() {
             email: "test@example.com".to_string(),
             name: Some("Test User".to_string()),
             provider: OAuthProvider::Google,
+            provider_user_id: "google_user_123".to_string(),
             access_token: "mock_access_token".to_string(),
             refresh_token: Some("mock_refresh_token".to_string()),
             ip_address: test_ip,
             user_agent: test_user_agent,
+            fingerprint: None,
         },
         &env,
     );
@@ -408,6 +424,7 @@ async fn test_csrf_state_uniqueness() {
                 provider: OAuthProvider::Google,
                 ip_address: test_ip,
                 user_agent: test_user_agent.clone(),
+                fingerprint: None,
             },
             &env,
         );
@@ -442,10 +459,12 @@ async fn test_session_contains_correct_metadata() {
             email: test_email.clone(),
             name: Some("Test User".to_string()),
             provider: OAuthProvider::GitHub,
+            provider_user_id: "github_user_456".to_string(),
             access_token: "mock_access_token".to_string(),
             refresh_token: Some("mock_refresh_token".to_string()),
             ip_address: test_ip,
             user_agent: test_user_agent.clone(),
+            fingerprint: None,
         },
         &env,
     );

@@ -6,8 +6,8 @@ use composable_rust_auth::{
     environment::AuthEnvironment,
     mocks::{
         MockChallengeStore, MockDeviceRepository, MockEmailProvider, MockOAuth2Provider,
-        MockOAuthTokenStore, MockRiskCalculator, MockSessionStore, MockTokenStore,
-        MockUserRepository, MockWebAuthnProvider,
+        MockOAuthTokenStore, MockRateLimiter, MockRiskCalculator, MockSessionStore,
+        MockTokenStore, MockUserRepository, MockWebAuthnProvider,
     },
     reducers::PasskeyReducer,
     state::{AuthState, DeviceId, UserId},
@@ -29,6 +29,7 @@ fn create_test_env() -> AuthEnvironment<
     MockRiskCalculator,
     MockOAuthTokenStore,
     MockChallengeStore,
+    MockRateLimiter,
 > {
     AuthEnvironment::new(
         MockOAuth2Provider::new(),
@@ -41,6 +42,7 @@ fn create_test_env() -> AuthEnvironment<
         MockRiskCalculator::new(),
         MockOAuthTokenStore::new(),
         MockChallengeStore::new(),
+        MockRateLimiter::new(),
         Arc::new(InMemoryEventStore::new()),
     )
 }
@@ -57,6 +59,7 @@ fn create_test_reducer() -> PasskeyReducer<
     MockRiskCalculator,
     MockOAuthTokenStore,
     MockChallengeStore,
+    MockRateLimiter,
 > {
     PasskeyReducer::new()
 }

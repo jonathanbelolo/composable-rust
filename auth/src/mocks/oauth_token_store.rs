@@ -56,23 +56,6 @@ impl OAuthTokenStore for MockOAuthTokenStore {
         store.remove(&key);
         Ok(())
     }
-
-    async fn refresh_access_token(
-        &self,
-        user_id: UserId,
-        provider: OAuthProvider,
-    ) -> Result<String> {
-        // Mock implementation: just return the current access token
-        // In production, this would call the OAuth provider's token endpoint
-        let store = self.tokens.lock().unwrap();
-        let key = (user_id, provider);
-
-        if let Some(token_data) = store.get(&key) {
-            Ok(token_data.access_token.clone())
-        } else {
-            Err(crate::error::AuthError::ResourceNotFound)
-        }
-    }
 }
 
 #[cfg(test)]
