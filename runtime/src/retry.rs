@@ -262,6 +262,7 @@ where
 /// # Ok(())
 /// # }
 /// ```
+#[allow(clippy::cognitive_complexity)] // Retry logic requires complex control flow
 pub async fn retry_with_predicate<F, Fut, T, E, P>(
     policy: RetryPolicy,
     mut operation: F,

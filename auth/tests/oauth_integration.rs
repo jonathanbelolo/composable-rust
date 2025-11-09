@@ -16,6 +16,7 @@ use composable_rust_core::reducer::Reducer;
 use composable_rust_testing::mocks::InMemoryEventStore;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
+use uuid::Uuid;
 
 /// Create a test environment with mock providers.
 fn create_test_env() -> AuthEnvironment<
@@ -80,6 +81,7 @@ async fn test_oauth_flow_complete_happy_path() {
     let effects = reducer.reduce(
         &mut state,
         AuthAction::InitiateOAuth {
+            correlation_id: Uuid::new_v4(),
             provider: OAuthProvider::Google,
             ip_address: test_ip,
             user_agent: test_user_agent.clone(),
@@ -105,6 +107,7 @@ async fn test_oauth_flow_complete_happy_path() {
     let effects = reducer.reduce(
         &mut state,
         AuthAction::OAuthCallback {
+            correlation_id: Uuid::new_v4(),
             code: "test_auth_code_123".to_string(),
             state: valid_state,
             ip_address: test_ip,
@@ -124,6 +127,7 @@ async fn test_oauth_flow_complete_happy_path() {
     let effects = reducer.reduce(
         &mut state,
         AuthAction::OAuthSuccess {
+            correlation_id: Uuid::new_v4(),
             email: "test@example.com".to_string(),
             name: Some("Test User".to_string()),
             provider: OAuthProvider::Google,
@@ -162,6 +166,7 @@ async fn test_oauth_callback_rejects_invalid_csrf_state() {
     let _ = reducer.reduce(
         &mut state,
         AuthAction::InitiateOAuth {
+            correlation_id: Uuid::new_v4(),
             provider: OAuthProvider::Google,
             ip_address: test_ip,
             user_agent: test_user_agent.clone(),
@@ -177,6 +182,7 @@ async fn test_oauth_callback_rejects_invalid_csrf_state() {
     let effects = reducer.reduce(
         &mut state,
         AuthAction::OAuthCallback {
+            correlation_id: Uuid::new_v4(),
             code: "test_auth_code_123".to_string(),
             state: "invalid_csrf_state_12345".to_string(), // Wrong state!
             ip_address: test_ip,
@@ -210,6 +216,7 @@ async fn test_oauth_callback_requires_prior_initiation() {
     let effects = reducer.reduce(
         &mut state,
         AuthAction::OAuthCallback {
+            correlation_id: Uuid::new_v4(),
             code: "test_auth_code_123".to_string(),
             state: "some_state".to_string(),
             ip_address: test_ip,
@@ -241,6 +248,7 @@ async fn test_oauth_state_expires_after_5_minutes() {
     let _ = reducer.reduce(
         &mut state,
         AuthAction::InitiateOAuth {
+            correlation_id: Uuid::new_v4(),
             provider: OAuthProvider::Google,
             ip_address: test_ip,
             user_agent: test_user_agent.clone(),
@@ -261,6 +269,7 @@ async fn test_oauth_state_expires_after_5_minutes() {
     let effects = reducer.reduce(
         &mut state,
         AuthAction::OAuthCallback {
+            correlation_id: Uuid::new_v4(),
             code: "test_auth_code_123".to_string(),
             state: valid_state,
             ip_address: test_ip,
@@ -294,6 +303,7 @@ async fn test_oauth_failed_clears_state() {
     let _ = reducer.reduce(
         &mut state,
         AuthAction::InitiateOAuth {
+            correlation_id: Uuid::new_v4(),
             provider: OAuthProvider::Google,
             ip_address: test_ip,
             user_agent: test_user_agent,
@@ -308,6 +318,7 @@ async fn test_oauth_failed_clears_state() {
     let effects = reducer.reduce(
         &mut state,
         AuthAction::OAuthFailed {
+            correlation_id: Uuid::new_v4(),
             error: "access_denied".to_string(),
             error_description: Some("User denied access".to_string()),
         },
@@ -344,6 +355,7 @@ async fn test_multiple_oauth_providers() {
         let effects = reducer.reduce(
             &mut state,
             AuthAction::InitiateOAuth {
+                correlation_id: Uuid::new_v4(),
                 provider,
                 ip_address: test_ip,
                 user_agent: test_user_agent.clone(),
@@ -373,6 +385,7 @@ async fn test_session_created_event() {
     let _ = reducer.reduce(
         &mut state,
         AuthAction::OAuthSuccess {
+            correlation_id: Uuid::new_v4(),
             email: "test@example.com".to_string(),
             name: Some("Test User".to_string()),
             provider: OAuthProvider::Google,
@@ -392,6 +405,7 @@ async fn test_session_created_event() {
     let effects = reducer.reduce(
         &mut state,
         AuthAction::SessionCreated {
+            correlation_id: Uuid::new_v4(),
             session: session.clone(),
         },
         &env,
@@ -421,6 +435,7 @@ async fn test_csrf_state_uniqueness() {
         let _ = reducer.reduce(
             &mut state,
             AuthAction::InitiateOAuth {
+                correlation_id: Uuid::new_v4(),
                 provider: OAuthProvider::Google,
                 ip_address: test_ip,
                 user_agent: test_user_agent.clone(),
@@ -456,6 +471,7 @@ async fn test_session_contains_correct_metadata() {
     let _ = reducer.reduce(
         &mut state,
         AuthAction::OAuthSuccess {
+            correlation_id: Uuid::new_v4(),
             email: test_email.clone(),
             name: Some("Test User".to_string()),
             provider: OAuthProvider::GitHub,

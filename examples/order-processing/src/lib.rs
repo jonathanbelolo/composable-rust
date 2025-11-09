@@ -68,6 +68,13 @@
 pub mod reducer;
 pub mod types;
 
+// HTTP handlers and router (requires http feature)
+#[cfg(feature = "http")]
+pub mod handlers;
+
+#[cfg(feature = "http")]
+pub mod router;
+
 // Re-export commonly used types
 pub use reducer::{OrderEnvironment, OrderReducer};
 pub use types::{CustomerId, LineItem, Money, OrderAction, OrderId, OrderState, OrderStatus};

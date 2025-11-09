@@ -64,6 +64,13 @@ pub mod state;
 pub mod stores;
 pub mod utils;
 
+// HTTP handlers and router (requires axum feature)
+#[cfg(feature = "axum")]
+pub mod handlers;
+
+#[cfg(feature = "axum")]
+pub mod router;
+
 // Projection system (optional, requires postgres feature)
 #[cfg(feature = "postgres")]
 pub mod projection;
@@ -75,5 +82,7 @@ pub mod mocks;
 // Re-export main types for convenience
 pub use actions::AuthAction;
 pub use effects::AuthEffect;
+pub use environment::AuthEnvironment;
 pub use error::{AuthError, Result};
+pub use reducers::AuthReducer;
 pub use state::{AuthState, Session, SessionId, TokenPair, UserId};

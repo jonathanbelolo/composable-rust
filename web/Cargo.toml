@@ -15,7 +15,6 @@ workspace = true
 # Local dependencies
 composable-rust-core = { path = "../core" }
 composable-rust-runtime = { path = "../runtime" }
-composable-rust-auth = { path = "../auth" }
 
 # Web framework
 axum = { version = "0.7", features = ["macros"] }

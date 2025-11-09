@@ -197,7 +197,7 @@ impl UserRepository for PostgresUserRepository {
 
         let row = sqlx::query!(
             r#"
-            SELECT user_id, provider, provider_user_id, provider_email, linked_at
+            SELECT user_id, provider, provider_user_id, linked_at
             FROM oauth_links_projection
             WHERE user_id = $1 AND provider = $2
             "#,
@@ -213,8 +213,11 @@ impl UserRepository for PostgresUserRepository {
             user_id: UserId(row.user_id),
             provider,
             provider_user_id: row.provider_user_id,
-            provider_email: row.provider_email,
-            linked_at: row.linked_at,
+            access_token: String::new(), // TODO: Not stored in projection, load from token store
+            refresh_token: None, // TODO: Not stored in projection
+            expires_at: None, // TODO: Not stored in projection
+            created_at: row.linked_at,
+            updated_at: row.linked_at,
         })
     }
 
@@ -227,7 +230,7 @@ impl UserRepository for PostgresUserRepository {
 
         let row = sqlx::query!(
             r#"
-            SELECT user_id, provider, provider_user_id, provider_email, linked_at
+            SELECT user_id, provider, provider_user_id, linked_at
             FROM oauth_links_projection
             WHERE provider = $1 AND provider_user_id = $2
             "#,
@@ -243,8 +246,11 @@ impl UserRepository for PostgresUserRepository {
             user_id: UserId(row.user_id),
             provider,
             provider_user_id: row.provider_user_id,
-            provider_email: row.provider_email,
-            linked_at: row.linked_at,
+            access_token: String::new(), // TODO: Not stored in projection, load from token store
+            refresh_token: None, // TODO: Not stored in projection
+            expires_at: None, // TODO: Not stored in projection
+            created_at: row.linked_at,
+            updated_at: row.linked_at,
         })
     }
 
@@ -254,19 +260,17 @@ impl UserRepository for PostgresUserRepository {
         sqlx::query!(
             r#"
             INSERT INTO oauth_links_projection
-                (user_id, provider, provider_user_id, provider_email, linked_at)
-            VALUES ($1, $2, $3, $4, $5)
+                (user_id, provider, provider_user_id, linked_at)
+            VALUES ($1, $2, $3, $4)
             ON CONFLICT (user_id, provider)
             DO UPDATE SET
                 provider_user_id = EXCLUDED.provider_user_id,
-                provider_email = EXCLUDED.provider_email,
                 linked_at = EXCLUDED.linked_at
             "#,
             link.user_id.0,
             provider_str,
             link.provider_user_id,
-            link.provider_email,
-            link.linked_at,
+            link.created_at,
         )
         .execute(&self.pool)
         .await

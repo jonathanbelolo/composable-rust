@@ -11,6 +11,7 @@ repository.workspace = true
 # Core composable-rust dependencies
 composable-rust-core = { path = "../core" }
 composable-rust-runtime = { path = "../runtime" }
+composable-rust-web = { path = "../web", optional = true }
 
 # OAuth2 and OIDC
 oauth2 = "4.4"
@@ -64,6 +65,9 @@ webauthn-rs-proto = "0.5"
 # Email sending
 lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
 
+# Web framework (optional, for HTTP handlers)
+axum = { version = "0.7", optional = true }
+
 [dev-dependencies]
 composable-rust-testing = { path = "../testing" }
 tokio-test = "0.4"
@@ -75,6 +79,9 @@ test-utils = []
 
 # PostgreSQL support (requires DATABASE_URL or offline mode)
 postgres = ["dep:sqlx"]
+
+# Axum HTTP handlers
+axum = ["dep:composable-rust-web", "dep:axum"]
 
 [lints]
 workspace = true

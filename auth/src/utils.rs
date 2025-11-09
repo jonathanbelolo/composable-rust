@@ -568,7 +568,7 @@ pub fn validate_ip_address(ip: &str) -> crate::error::Result<()> {
 /// use composable_rust_auth::utils::sanitize_ip_for_logging;
 ///
 /// assert_eq!(sanitize_ip_for_logging("192.168.1.100"), "192.168.1.0");
-/// assert_eq!(sanitize_ip_for_logging("2001:0db8:85a3::8a2e:0370:7334"), "2001:db8:85a3::");
+/// assert_eq!(sanitize_ip_for_logging("2001:0db8:85a3::8a2e:0370:7334"), "2001:db8:85a3:0::");
 /// ```
 #[must_use]
 pub fn sanitize_ip_for_logging(ip: &str) -> String {

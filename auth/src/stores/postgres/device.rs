@@ -99,6 +99,8 @@ impl DeviceRepository for PostgresDeviceRepository {
             trust_level,
             passkey_credential_id: row.passkey_credential_id,
             public_key: row.public_key,
+            fingerprint: None, // TODO: Add to schema and query
+            fingerprint_hash: None, // TODO: Add to schema and query
         })
     }
 
@@ -153,6 +155,8 @@ impl DeviceRepository for PostgresDeviceRepository {
                     trust_level,
                     passkey_credential_id: row.passkey_credential_id,
                     public_key: row.public_key,
+                    fingerprint: None, // TODO: Add to schema and query
+                    fingerprint_hash: None, // TODO: Add to schema and query
                 }
             })
             .collect();
@@ -372,6 +376,8 @@ impl DeviceRepository for PostgresDeviceRepository {
                         trust_level,
                         passkey_credential_id: row.passkey_credential_id,
                         public_key: row.public_key,
+                        fingerprint: None, // TODO: Add to schema and query
+                        fingerprint_hash: None, // TODO: Add to schema and query
                     }))
                 } else {
                     Ok(None)

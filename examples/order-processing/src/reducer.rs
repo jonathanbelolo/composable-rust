@@ -4,7 +4,7 @@
 //! persisted to the event store. Events are then replayed to reconstruct state.
 
 use crate::types::{LineItem, Money, OrderAction, OrderId, OrderState, OrderStatus};
-use composable_rust_core::append_events;
+use composable_rust_core::{append_events, async_effect};
 use composable_rust_core::effect::Effect;
 use composable_rust_core::environment::Clock;
 use composable_rust_core::event::SerializedEvent;
@@ -93,8 +93,11 @@ impl OrderReducer {
     }
 
     /// Validates a `PlaceOrder` command
-    fn validate_place_order(state: &OrderState, items: &[LineItem]) -> Result<(), String> {
-        if state.order_id.is_some() {
+    fn validate_place_order(state: &OrderState, order_id: &OrderId, items: &[LineItem]) -> Result<(), String> {
+        // Check if THIS specific order was already placed
+        // (In a real app with per-aggregate stores, we'd check state.order_id.is_some())
+        // For this multi-order example, we allow different orders on the same store
+        if state.order_id.as_ref() == Some(order_id) {
             return Err("Order already placed".to_string());
         }
 
@@ -228,16 +231,15 @@ impl Reducer for OrderReducer {
                 items,
             } => {
                 // Validate command
-                if let Err(error) = Self::validate_place_order(state, &items) {
+                if let Err(error) = Self::validate_place_order(state, &order_id, &items) {
                     tracing::warn!("PlaceOrder validation failed: {error}");
                     // Apply validation failure to state so it's observable
-                    Self::apply_event(
-                        state,
-                        &OrderAction::ValidationFailed {
-                            error: error.clone(),
-                        },
-                    );
-                    return smallvec![Effect::None];
+                    let validation_failed = OrderAction::ValidationFailed {
+                        error: error.clone(),
+                    };
+                    Self::apply_event(state, &validation_failed);
+                    // Emit validation failure so HTTP handlers can observe it
+                    return smallvec![async_effect! { Some(validation_failed) }];
                 }
 
                 // Calculate total
@@ -272,13 +274,12 @@ impl Reducer for OrderReducer {
                 if let Err(error) = Self::validate_cancel_order(state, &order_id) {
                     tracing::warn!("CancelOrder validation failed: {error}");
                     // Apply validation failure to state so it's observable
-                    Self::apply_event(
-                        state,
-                        &OrderAction::ValidationFailed {
-                            error: error.clone(),
-                        },
-                    );
-                    return smallvec![Effect::None];
+                    let validation_failed = OrderAction::ValidationFailed {
+                        error: error.clone(),
+                    };
+                    Self::apply_event(state, &validation_failed);
+                    // Emit validation failure so HTTP handlers can observe it
+                    return smallvec![async_effect! { Some(validation_failed) }];
                 }
 
                 // Create event
@@ -307,13 +308,12 @@ impl Reducer for OrderReducer {
                 if let Err(error) = Self::validate_ship_order(state, &order_id, &tracking) {
                     tracing::warn!("ShipOrder validation failed: {error}");
                     // Apply validation failure to state so it's observable
-                    Self::apply_event(
-                        state,
-                        &OrderAction::ValidationFailed {
-                            error: error.clone(),
-                        },
-                    );
-                    return smallvec![Effect::None];
+                    let validation_failed = OrderAction::ValidationFailed {
+                        error: error.clone(),
+                    };
+                    Self::apply_event(state, &validation_failed);
+                    // Emit validation failure so HTTP handlers can observe it
+                    return smallvec![async_effect! { Some(validation_failed) }];
                 }
 
                 // Create event
@@ -361,7 +361,10 @@ impl Reducer for OrderReducer {
                 // Update version to match the last event appended
                 // This must match the replay logic where version = 1 for first event, 2 for second, etc.
                 state.version = Some(Version::new(version));
-                smallvec![Effect::None]
+
+                // Re-emit the event so HTTP handlers can observe it via send_and_wait_for
+                let event_to_emit = *event;
+                smallvec![async_effect! { Some(event_to_emit) }]
             },
 
             OrderAction::ValidationFailed { error } => {

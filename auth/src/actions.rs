@@ -33,6 +33,9 @@ pub enum AuthAction {
     /// 3. User authorizes at provider
     /// 4. Provider redirects to callback with code
     InitiateOAuth {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// OAuth provider to use.
         provider: OAuthProvider,
 
@@ -56,6 +59,9 @@ pub enum AuthAction {
     /// 4. Create or link user account
     /// 5. Create session
     OAuthCallback {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// Authorization code from provider.
         code: String,
 
@@ -76,6 +82,9 @@ pub enum AuthAction {
     ///
     /// This is an **event** produced by the effect executor.
     OAuthSuccess {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// User's email from provider.
         email: String,
 
@@ -106,6 +115,9 @@ pub enum AuthAction {
 
     /// OAuth flow failed.
     OAuthFailed {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// Error code from provider.
         error: String,
 
@@ -126,6 +138,9 @@ pub enum AuthAction {
     /// Location: <authorization_url>
     /// ```
     OAuthAuthorizationUrlReady {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// OAuth provider.
         provider: OAuthProvider,
 
@@ -150,6 +165,9 @@ pub enum AuthAction {
     /// - Refresh token is expired/invalid
     /// - Provider token endpoint fails
     RefreshOAuthToken {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// User ID.
         user_id: UserId,
 
@@ -161,6 +179,9 @@ pub enum AuthAction {
     ///
     /// This is an **event** produced by the effect executor.
     OAuthTokenRefreshed {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// User ID.
         user_id: UserId,
 
@@ -186,6 +207,9 @@ pub enum AuthAction {
     /// 3. Store hashed token in database
     /// 4. Send email with link
     SendMagicLink {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// Email address to send link to.
         email: String,
 
@@ -200,6 +224,9 @@ pub enum AuthAction {
     ///
     /// This is an **event** from the email provider.
     MagicLinkSent {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// Email address.
         email: String,
 
@@ -221,6 +248,9 @@ pub enum AuthAction {
     /// 5. Create session
     /// 6. Invalidate token
     VerifyMagicLink {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// Token from email link.
         token: String,
 
@@ -236,6 +266,9 @@ pub enum AuthAction {
 
     /// Magic link verified successfully.
     MagicLinkVerified {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// User's email.
         email: String,
 
@@ -261,6 +294,9 @@ pub enum AuthAction {
     /// 3. Client calls `navigator.credentials.create()`
     /// 4. Client sends attestation response
     InitiatePasskeyRegistration {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// User ID (must be logged in).
         user_id: UserId,
 
@@ -277,6 +313,9 @@ pub enum AuthAction {
     /// 3. Store credential in database
     /// 4. Update device as passkey-enabled
     CompletePasskeyRegistration {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// User ID.
         user_id: UserId,
 
@@ -302,6 +341,9 @@ pub enum AuthAction {
     /// 3. Generate WebAuthn challenge
     /// 4. Return challenge + credential IDs
     InitiatePasskeyLogin {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// Username or email.
         username: String,
 
@@ -320,6 +362,9 @@ pub enum AuthAction {
     /// 2. Verify signature with stored public key
     /// 3. Create session
     CompletePasskeyLogin {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// Credential ID used.
         credential_id: String,
 
@@ -336,8 +381,78 @@ pub enum AuthAction {
         fingerprint: Option<DeviceFingerprint>,
     },
 
+    /// Passkey registration challenge generated.
+    ///
+    /// Returned after `InitiatePasskeyRegistration`.
+    /// Contains WebAuthn challenge for client to use in `navigator.credentials.create()`.
+    PasskeyRegistrationChallengeGenerated {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
+        /// User ID.
+        user_id: UserId,
+
+        /// WebAuthn challenge (base64-encoded).
+        challenge: String,
+
+        /// Relying Party ID.
+        rp_id: String,
+
+        /// User email for WebAuthn.
+        user_email: String,
+
+        /// User display name for WebAuthn.
+        user_display_name: String,
+    },
+
+    /// Passkey registration succeeded.
+    ///
+    /// Returned after `CompletePasskeyRegistration` successfully verifies attestation.
+    PasskeyRegistrationSuccess {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
+        /// User ID.
+        user_id: UserId,
+
+        /// Device ID.
+        device_id: DeviceId,
+
+        /// Credential ID.
+        credential_id: String,
+    },
+
+    /// Passkey registration failed.
+    ///
+    /// Returned when attestation verification fails.
+    PasskeyRegistrationFailed {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
+        /// Error message.
+        error: String,
+    },
+
+    /// Passkey login challenge generated.
+    ///
+    /// Returned after `InitiatePasskeyLogin`.
+    /// Contains WebAuthn challenge for client to use in `navigator.credentials.get()`.
+    PasskeyLoginChallengeGenerated {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
+        /// WebAuthn challenge (base64-encoded).
+        challenge: String,
+
+        /// Allowed credential IDs for this user.
+        allowed_credentials: Vec<String>,
+    },
+
     /// Passkey login succeeded.
     PasskeyLoginSuccess {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// User ID.
         user_id: UserId,
 
@@ -371,6 +486,9 @@ pub enum AuthAction {
     /// This action should only be callable by authenticated users for their own credentials.
     /// The session validation ensures users can only list their own passkeys.
     ListPasskeyCredentials {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// User ID (from authenticated session).
         user_id: UserId,
     },
@@ -379,6 +497,9 @@ pub enum AuthAction {
     ///
     /// This is an **event** produced by the effect executor.
     PasskeyCredentialsListed {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// User ID.
         user_id: UserId,
 
@@ -399,6 +520,9 @@ pub enum AuthAction {
     /// This does NOT delete the device record - only the passkey credential.
     /// The device may still exist with other authentication methods.
     DeletePasskeyCredential {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// User ID (from authenticated session).
         user_id: UserId,
 
@@ -410,6 +534,9 @@ pub enum AuthAction {
     ///
     /// This is an **event** produced by the effect executor.
     PasskeyCredentialDeleted {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// User ID.
         user_id: UserId,
 
@@ -421,6 +548,9 @@ pub enum AuthAction {
     ///
     /// This is an **event** for error cases.
     PasskeyCredentialDeletionFailed {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// User ID.
         user_id: UserId,
 
@@ -438,6 +568,9 @@ pub enum AuthAction {
     ///
     /// This is the final **event** for all successful auth flows.
     SessionCreated {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// The new session.
         session: Session,
     },
@@ -450,6 +583,9 @@ pub enum AuthAction {
     /// 3. Update last_active timestamp
     /// 4. Refresh sliding expiration
     ValidateSession {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// Session ID from cookie.
         session_id: SessionId,
 
@@ -459,12 +595,18 @@ pub enum AuthAction {
 
     /// Session validated successfully.
     SessionValidated {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// The session.
         session: Session,
     },
 
     /// Session expired (TTL reached or explicit expiration).
     SessionExpired {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// Session ID that expired.
         session_id: SessionId,
     },
@@ -477,12 +619,18 @@ pub enum AuthAction {
     /// 2. Clear session cookie
     /// 3. Optionally publish logout event
     Logout {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// Session ID to revoke.
         session_id: SessionId,
     },
 
     /// Logout successful.
     LogoutSuccess {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// Session ID that was revoked.
         session_id: SessionId,
     },
@@ -494,6 +642,9 @@ pub enum AuthAction {
     /// - User reports account compromise
     /// - Admin action
     RevokeAllSessions {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// User ID.
         user_id: UserId,
     },
@@ -502,6 +653,9 @@ pub enum AuthAction {
     ///
     /// Removes all sessions for a device and marks device as untrusted.
     RevokeDevice {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// User ID.
         user_id: UserId,
 
@@ -516,6 +670,9 @@ pub enum AuthAction {
     ///
     /// Triggered when the email provider returns an error.
     MagicLinkFailed {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// Email that failed.
         email: String,
 
@@ -527,6 +684,9 @@ pub enum AuthAction {
     ///
     /// Triggered when Redis session store fails to create a session.
     SessionCreationFailed {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// User ID for which session creation failed.
         user_id: UserId,
 
@@ -552,6 +712,9 @@ pub enum AuthAction {
     ///
     /// Triggered when passkey authentication fails (validation, verification, etc.).
     PasskeyAuthenticationFailed {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// Error message.
         error: String,
     },
@@ -563,6 +726,9 @@ pub enum AuthAction {
     ///
     /// Used for sensitive operations (change password, view billing, etc.).
     RequestStepUp {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// Session ID.
         session_id: SessionId,
 
@@ -575,6 +741,9 @@ pub enum AuthAction {
 
     /// Step-up authentication completed.
     StepUpCompleted {
+        /// Correlation ID for request tracing.
+        correlation_id: uuid::Uuid,
+
         /// Session ID.
         session_id: SessionId,
 
@@ -674,6 +843,7 @@ mod tests {
         use std::net::Ipv4Addr;
 
         let action = AuthAction::InitiateOAuth {
+            correlation_id: uuid::Uuid::new_v4(),
             provider: OAuthProvider::Google,
             ip_address: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
             user_agent: "Mozilla/5.0".to_string(),

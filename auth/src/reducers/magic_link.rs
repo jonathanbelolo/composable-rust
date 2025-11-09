@@ -188,6 +188,7 @@ where
             // SendMagicLink: Generate token and send email
             // ═══════════════════════════════════════════════════════════════
             AuthAction::SendMagicLink {
+                correlation_id,
                 email,
                 ip_address: _,
                 user_agent: _,
@@ -241,6 +242,7 @@ where
                             Err(e) => {
                                 tracing::error!("Failed to store magic link token: {}", e);
                                 Some(AuthAction::MagicLinkFailed {
+                                    correlation_id,
                                     email: email_for_store,
                                     error: e.to_string(),
                                 })
@@ -254,6 +256,7 @@ where
                             .await
                         {
                             Ok(()) => Some(AuthAction::MagicLinkSent {
+                                correlation_id,
                                 email: email_for_email.clone(),
                                 token: token_for_email,
                                 expires_at: expires_at_clone,
@@ -261,6 +264,7 @@ where
                             Err(e) => {
                                 tracing::error!("Failed to send magic link to {}: {}", email_for_email, e);
                                 Some(AuthAction::MagicLinkFailed {
+                                    correlation_id,
                                     email: email_for_email,
                                     error: e.to_string(),
                                 })
@@ -273,7 +277,7 @@ where
             // ═══════════════════════════════════════════════════════════════
             // MagicLinkSent: Confirmation event (no-op)
             // ═══════════════════════════════════════════════════════════════
-            AuthAction::MagicLinkSent { .. } => {
+            AuthAction::MagicLinkSent { correlation_id: _, .. } => {
                 // Email sent successfully - this is just a confirmation event
                 smallvec![Effect::None]
             }
@@ -281,7 +285,7 @@ where
             // ═══════════════════════════════════════════════════════════════
             // MagicLinkFailed: Email sending failed
             // ═══════════════════════════════════════════════════════════════
-            AuthAction::MagicLinkFailed { .. } => {
+            AuthAction::MagicLinkFailed { correlation_id: _, .. } => {
                 // Clear magic link state on failure
                 state.magic_link_state = None;
                 smallvec![Effect::None]
@@ -291,6 +295,7 @@ where
             // VerifyMagicLink: Validate token (ATOMIC CONSUMPTION)
             // ═══════════════════════════════════════════════════════════════
             AuthAction::VerifyMagicLink {
+                correlation_id,
                 token,
                 ip_address,
                 user_agent,
@@ -305,6 +310,7 @@ where
                     );
                     return smallvec![async_effect! {
                         Some(AuthAction::MagicLinkFailed {
+                            correlation_id,
                             email: String::new(), // Don't leak email on validation failure
                             error: "Invalid request parameters".to_string(),
                         })
@@ -319,6 +325,7 @@ where
                     );
                     return smallvec![async_effect! {
                         Some(AuthAction::MagicLinkFailed {
+                            correlation_id,
                             email: String::new(), // Don't leak email on validation failure
                             error: "Invalid request parameters".to_string(),
                         })
@@ -356,6 +363,7 @@ where
 
                             // Transition to verified handler
                             Some(AuthAction::MagicLinkVerified {
+                                correlation_id,
                                 email,
                                 ip_address: ip_clone,
                                 user_agent: ua_clone,
@@ -380,6 +388,7 @@ where
             // MagicLinkVerified: Emit domain events (batch)
             // ═══════════════════════════════════════════════════════════════
             AuthAction::MagicLinkVerified {
+                correlation_id,
                 email,
                 ip_address,
                 user_agent,
@@ -533,6 +542,7 @@ where
                             if let Err(e) = sessions.create_session(&session, session_duration, max_concurrent_sessions).await {
                                 tracing::error!("Failed to create session in Redis for user {}: {}", final_user_id.0, e);
                                 return Some(AuthAction::SessionCreationFailed {
+                                    correlation_id,
                                     user_id: final_user_id,
                                     device_id,
                                     error: e.to_string(),
@@ -540,7 +550,7 @@ where
                             }
 
                             // Emit SessionCreated event
-                            Some(AuthAction::SessionCreated { session })
+                            Some(AuthAction::SessionCreated { correlation_id, session })
                         }
                         Err(e) => {
                             tracing::error!("Failed to persist events: {e}");
@@ -556,7 +566,7 @@ where
             // ═══════════════════════════════════════════════════════════════
             // SessionCreated: Set session in state
             // ═══════════════════════════════════════════════════════════════
-            AuthAction::SessionCreated { session } => {
+            AuthAction::SessionCreated { correlation_id: _, session } => {
                 // Set session in state (session now has correct risk score from RiskCalculator)
                 state.session = Some(session.clone());
                 smallvec![Effect::None]

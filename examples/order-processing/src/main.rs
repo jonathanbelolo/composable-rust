@@ -1,35 +1,65 @@
-//! Order Processing example demonstrating event sourcing.
+//! Order Processing HTTP API server.
 //!
-//! This example shows:
-//! 1. Placing an order with validation
-//! 2. Shipping an order
-//! 3. State reconstruction from events (simulating process restart)
+//! Demonstrates HTTP request-response pattern with `send_and_wait_for()`.
 //!
 //! # Usage
 //!
-//! Run with in-memory event store (default):
+//! Run with in-memory event store:
 //! ```bash
-//! cargo run --bin order-processing
+//! cargo run --bin order-processing --features http
 //! ```
 //!
-//! Run with `PostgreSQL` event store:
+//! Run with PostgreSQL event store:
 //! ```bash
-//! DATABASE_URL=postgres://user:pass@localhost/db cargo run --bin order-processing --features postgres
+//! DATABASE_URL=postgres://user:pass@localhost/db \
+//!   cargo run --bin order-processing --features http,postgres
+//! ```
+//!
+//! # API Endpoints
+//!
+//! - `POST /api/v1/orders` - Place a new order
+//! - `GET /api/v1/orders/:id` - Get order details
+//! - `POST /api/v1/orders/:id/cancel` - Cancel an order
+//! - `POST /api/v1/orders/:id/ship` - Ship an order
+//! - `GET /health` - Health check
+//!
+//! # Example Requests
+//!
+//! ```bash
+//! # Place an order
+//! curl -X POST http://localhost:3000/api/v1/orders \
+//!   -H "Content-Type: application/json" \
+//!   -d '{
+//!     "customer_id": "cust-123",
+//!     "items": [
+//!       {
+//!         "product_id": "prod-1",
+//!         "name": "Widget",
+//!         "quantity": 2,
+//!         "unit_price_cents": 1000
+//!       }
+//!     ]
+//!   }'
+//!
+//! # Get order status
+//! curl http://localhost:3000/api/v1/orders/order-abc123
+//!
+//! # Ship order
+//! curl -X POST http://localhost:3000/api/v1/orders/order-abc123/ship \
+//!   -H "Content-Type: application/json" \
+//!   -d '{"tracking": "TRACK123"}'
 //! ```
 
-#![allow(clippy::expect_used)] // Example code demonstrates error handling with expect
-#![allow(clippy::too_many_lines)] // Example main function demonstrates complete workflow
+#![cfg(feature = "http")]
 
+use axum::Router;
 use composable_rust_core::environment::SystemClock;
-use composable_rust_core::stream::StreamId;
 use composable_rust_runtime::Store;
 use composable_rust_testing::mocks::InMemoryEventStore;
-use order_processing::{
-    CustomerId, LineItem, Money, OrderAction, OrderEnvironment, OrderId, OrderReducer, OrderState,
-    OrderStatus,
-};
+use composable_rust_web::handlers::health::health_check;
+use order_processing::{OrderEnvironment, OrderReducer, OrderState};
 use std::sync::Arc;
-use tracing::{Level, info};
+use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
 #[tokio::main]
@@ -40,7 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
-    info!("=== Order Processing Example: Event Sourcing Demo ===\n");
+    info!("=== Order Processing HTTP API Server ===\n");
 
     // Create event store (in-memory or PostgreSQL based on feature flag)
     let event_store: Arc<dyn composable_rust_core::event_store::EventStore> = {
@@ -54,194 +84,56 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .expect("Failed to connect to PostgreSQL"),
                 )
             } else {
-                info!("DATABASE_URL not set, falling back to in-memory event store");
+                info!("DATABASE_URL not set, using in-memory event store");
                 Arc::new(InMemoryEventStore::new())
             }
         }
         #[cfg(not(feature = "postgres"))]
         {
-            info!("Using in-memory event store (compile with --features postgres for PostgreSQL)");
+            info!("Using in-memory event store");
+            info!("(Compile with --features postgres for PostgreSQL persistence)\n");
             Arc::new(InMemoryEventStore::new())
         }
     };
 
+    // Create environment with event store and clock
     let clock: Arc<dyn composable_rust_core::environment::Clock> = Arc::new(SystemClock);
     let env = OrderEnvironment::new(Arc::clone(&event_store), Arc::clone(&clock));
 
-    // ========== Part 1: Place an Order ==========
-    info!("Part 1: Placing a new order...");
+    // Create store
+    let store = Arc::new(Store::new(
+        OrderState::new(),
+        OrderReducer::new(),
+        env,
+    ));
 
-    let order_id = OrderId::new("order-12345".to_string());
-    let customer_id = CustomerId::new("customer-001".to_string());
+    info!("Store created with order-processing reducer");
 
-    let store = Store::new(OrderState::new(), OrderReducer::new(), env.clone());
+    // Build router
+    let app = Router::new()
+        .route("/health", axum::routing::get(health_check))
+        .nest("/api/v1", order_processing::router::order_router(Arc::clone(&store)));
 
-    // Create order with two items
-    let items = vec![
-        LineItem::new(
-            "prod-widget-a".to_string(),
-            "Premium Widget A".to_string(),
-            2,
-            Money::from_dollars(25),
-        ),
-        LineItem::new(
-            "prod-widget-b".to_string(),
-            "Deluxe Widget B".to_string(),
-            1,
-            Money::from_dollars(50),
-        ),
-    ];
+    // Start server
+    let addr = "0.0.0.0:3000";
+    let listener = tokio::net::TcpListener::bind(addr).await?;
 
-    info!("  Order ID: {}", order_id);
-    info!("  Customer: {}", customer_id);
-    info!("  Items:");
-    for item in &items {
-        info!(
-            "    - {} x{} @ {} each = {}",
-            item.name,
-            item.quantity,
-            item.unit_price,
-            item.total()
-        );
-    }
+    info!("Server listening on http://{}", addr);
+    info!("\nAPI Endpoints:");
+    info!("  POST   /api/v1/orders           - Place order");
+    info!("  GET    /api/v1/orders/:id       - Get order");
+    info!("  POST   /api/v1/orders/:id/cancel - Cancel order");
+    info!("  POST   /api/v1/orders/:id/ship  - Ship order");
+    info!("  GET    /health                  - Health check\n");
 
-    // Send PlaceOrder command
-    let handle = store
-        .send(OrderAction::PlaceOrder {
-            order_id: order_id.clone(),
-            customer_id: customer_id.clone(),
-            items: items.clone(),
-        })
-        .await;
-
-    // Wait for effects to complete
-    handle?.wait().await;
-
-    // Read state after placing order
-    let state_after_place = store.state(Clone::clone).await;
-    info!(
-        "\n  Order placed successfully! Status: {}, Total: {}",
-        state_after_place.status, state_after_place.total
-    );
-
-    // ========== Part 2: Ship the Order ==========
-    info!("\nPart 2: Shipping the order...");
-
-    let tracking = "TRACK-ABC123XYZ".to_string();
-    info!("  Tracking number: {}", tracking);
-
-    let handle = store
-        .send(OrderAction::ShipOrder {
-            order_id: order_id.clone(),
-            tracking: tracking.clone(),
-        })
-        .await;
-
-    handle?.wait().await;
-
-    let state_after_ship = store.state(Clone::clone).await;
-    info!("  Order shipped! Status: {}", state_after_ship.status);
-
-    // ========== Part 3: State Reconstruction from Events ==========
-    info!("\nPart 3: Simulating process restart - reconstructing state from events...");
-
-    // Create a new store with fresh state (simulating app restart)
-    let new_store = Store::new(OrderState::new(), OrderReducer::new(), env.clone());
-
-    info!("  New store created with empty state");
-
-    // Load events from event store
-    let stream_id = StreamId::new(format!("order-{}", order_id.as_str()));
-    info!("  Loading events from stream: {}", stream_id);
-
-    // Load all events from the event store
-    let serialized_events = event_store
-        .load_events(stream_id.clone(), None)
-        .await
-        .expect("Failed to load events");
-
-    info!("  Found {} events to replay", serialized_events.len());
-
-    // Deserialize and replay events through the reducer
-    for (idx, serialized_event) in serialized_events.iter().enumerate() {
-        info!(
-            "  Replaying event {}/{}: {}",
-            idx + 1,
-            serialized_events.len(),
-            serialized_event.event_type
-        );
-
-        // Deserialize the event
-        let event =
-            OrderAction::from_serialized(serialized_event).expect("Failed to deserialize event");
-
-        // Send event through store (will apply via reducer)
-        let handle = new_store.send(event).await;
-        handle?.wait().await;
-    }
-
-    // Now state should be reconstructed
-    let final_state = new_store.state(Clone::clone).await;
-    info!(
-        "\n  Reconstructed state: Status={}, Items={}, Total={}, Version={}",
-        final_state.status,
-        final_state.items.len(),
-        final_state.total,
-        final_state
-            .version
-            .map_or("None".to_string(), |v| v.value().to_string())
-    );
-
-    // Verify reconstruction worked
-    assert_eq!(final_state.status, OrderStatus::Shipped);
-    assert_eq!(final_state.items.len(), 2);
-    assert_eq!(final_state.total, Money::from_dollars(100));
-    assert_eq!(
-        final_state.version,
-        Some(composable_rust_core::stream::Version::new(2)),
-        "Version should be 2 after replaying 2 events"
-    );
-
-    info!(
-        "✓ State successfully reconstructed from {} events!",
-        serialized_events.len()
-    );
-
-    // ========== Part 4: Demonstrate Validation ==========
-    info!("\nPart 4: Demonstrating command validation...");
-
-    // Try to cancel an already-shipped order (should fail validation)
-    info!("  Attempting to cancel an already-shipped order...");
-
-    let handle = new_store
-        .send(OrderAction::CancelOrder {
-            order_id: order_id.clone(),
-            reason: "Customer changed mind".to_string(),
-        })
-        .await;
-
-    handle?.wait().await;
-
-    let state_after_invalid_cancel = new_store.state(Clone::clone).await;
-    info!(
-        "  Validation prevented cancellation. Status remains: {}",
-        state_after_invalid_cancel.status
-    );
-    if let Some(error) = &state_after_invalid_cancel.last_error {
-        info!("  Error tracked in state: {}", error);
-    }
-
-    // ========== Summary ==========
-    info!("\n=== Summary ===");
-    info!("✓ Order was successfully placed with 2 items");
-    info!("✓ Order was shipped with tracking number");
-    info!("✓ State can be reconstructed from events (event sourcing)");
-    info!("✓ Business rules prevent invalid state transitions");
-    info!("\nThis example demonstrates:");
-    info!("  - Command/Event pattern");
-    info!("  - Event persistence to EventStore");
-    info!("  - State reconstruction from events");
-    info!("  - Business logic validation in reducers");
+    axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+#[cfg(not(feature = "http"))]
+fn main() {
+    eprintln!("This binary requires the 'http' feature");
+    eprintln!("Run with: cargo run --bin order-processing --features http");
+    std::process::exit(1);
 }

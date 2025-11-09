@@ -26,6 +26,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 ///
 /// ```no_run
 /// use composable_rust_auth::stores::RedisRateLimiter;
+/// use composable_rust_auth::providers::RateLimiter;
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let limiter = RedisRateLimiter::new("redis://127.0.0.1:6379").await?;

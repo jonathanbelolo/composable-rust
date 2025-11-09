@@ -15,6 +15,7 @@ use composable_rust_core::reducer::Reducer;
 use composable_rust_testing::mocks::InMemoryEventStore;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
+use uuid::Uuid;
 
 /// Create a test environment with mock providers.
 fn create_test_env() -> AuthEnvironment<
@@ -79,6 +80,7 @@ async fn test_magic_link_flow_complete_happy_path() {
     let effects = reducer.reduce(
         &mut state,
         AuthAction::SendMagicLink {
+            correlation_id: Uuid::new_v4(),
             email: test_email.clone(),
             ip_address: test_ip,
             user_agent: test_user_agent.clone(),
@@ -104,9 +106,11 @@ async fn test_magic_link_flow_complete_happy_path() {
     let effects = reducer.reduce(
         &mut state,
         AuthAction::VerifyMagicLink {
+            correlation_id: Uuid::new_v4(),
             token: valid_token,
             ip_address: test_ip,
             user_agent: test_user_agent.clone(),
+            fingerprint: None,
         },
         &env,
     );
@@ -119,9 +123,11 @@ async fn test_magic_link_flow_complete_happy_path() {
     let _effects = reducer.reduce(
         &mut state,
         AuthAction::MagicLinkVerified {
+            correlation_id: Uuid::new_v4(),
             email: test_email.clone(),
             ip_address: test_ip,
             user_agent: test_user_agent.clone(),
+            fingerprint: None,
         },
         &env,
     );
@@ -152,6 +158,7 @@ async fn test_magic_link_rejects_invalid_token() {
     let _ = reducer.reduce(
         &mut state,
         AuthAction::SendMagicLink {
+            correlation_id: Uuid::new_v4(),
             email: "user@example.com".to_string(),
             ip_address: test_ip,
             user_agent: test_user_agent.clone(),
@@ -165,9 +172,11 @@ async fn test_magic_link_rejects_invalid_token() {
     let effects = reducer.reduce(
         &mut state,
         AuthAction::VerifyMagicLink {
+            correlation_id: Uuid::new_v4(),
             token: "invalid_token_12345678901234567890123456789".to_string(),
             ip_address: test_ip,
             user_agent: test_user_agent,
+            fingerprint: None,
         },
         &env,
     );
@@ -197,9 +206,11 @@ async fn test_magic_link_requires_prior_send() {
     let effects = reducer.reduce(
         &mut state,
         AuthAction::VerifyMagicLink {
+            correlation_id: Uuid::new_v4(),
             token: "some_token_1234567890123456789012345678901".to_string(),
             ip_address: test_ip,
             user_agent: test_user_agent,
+            fingerprint: None,
         },
         &env,
     );
@@ -226,6 +237,7 @@ async fn test_magic_link_token_expires_after_ttl() {
     let _ = reducer.reduce(
         &mut state,
         AuthAction::SendMagicLink {
+            correlation_id: Uuid::new_v4(),
             email: "user@example.com".to_string(),
             ip_address: test_ip,
             user_agent: test_user_agent.clone(),
@@ -245,9 +257,11 @@ async fn test_magic_link_token_expires_after_ttl() {
     let effects = reducer.reduce(
         &mut state,
         AuthAction::VerifyMagicLink {
+            correlation_id: Uuid::new_v4(),
             token: valid_token,
             ip_address: test_ip,
             user_agent: test_user_agent,
+            fingerprint: None,
         },
         &env,
     );
@@ -277,6 +291,7 @@ async fn test_magic_link_token_single_use() {
     let _ = reducer.reduce(
         &mut state,
         AuthAction::SendMagicLink {
+            correlation_id: Uuid::new_v4(),
             email: "user@example.com".to_string(),
             ip_address: test_ip,
             user_agent: test_user_agent.clone(),
@@ -291,9 +306,11 @@ async fn test_magic_link_token_single_use() {
     let _ = reducer.reduce(
         &mut state,
         AuthAction::VerifyMagicLink {
+            correlation_id: Uuid::new_v4(),
             token: valid_token.clone(),
             ip_address: test_ip,
             user_agent: test_user_agent.clone(),
+            fingerprint: None,
         },
         &env,
     );
@@ -302,9 +319,11 @@ async fn test_magic_link_token_single_use() {
     let _ = reducer.reduce(
         &mut state,
         AuthAction::MagicLinkVerified {
+            correlation_id: Uuid::new_v4(),
             email: test_email,
             ip_address: test_ip,
             user_agent: test_user_agent.clone(),
+            fingerprint: None,
         },
         &env,
     );
@@ -320,9 +339,11 @@ async fn test_magic_link_token_single_use() {
     let effects = reducer.reduce(
         &mut state,
         AuthAction::VerifyMagicLink {
+            correlation_id: Uuid::new_v4(),
             token: valid_token,
             ip_address: test_ip,
             user_agent: test_user_agent,
+            fingerprint: None,
         },
         &env,
     );
@@ -347,6 +368,7 @@ async fn test_magic_link_token_uniqueness() {
         let _ = reducer.reduce(
             &mut state,
             AuthAction::SendMagicLink {
+                correlation_id: Uuid::new_v4(),
                 email: "user@example.com".to_string(),
                 ip_address: test_ip,
                 user_agent: test_user_agent.clone(),
@@ -382,6 +404,7 @@ async fn test_session_contains_correct_metadata() {
     let _ = reducer.reduce(
         &mut state,
         AuthAction::SendMagicLink {
+            correlation_id: Uuid::new_v4(),
             email: test_email.clone(),
             ip_address: test_ip,
             user_agent: test_user_agent.clone(),
@@ -394,9 +417,11 @@ async fn test_session_contains_correct_metadata() {
     let _ = reducer.reduce(
         &mut state,
         AuthAction::VerifyMagicLink {
+            correlation_id: Uuid::new_v4(),
             token,
             ip_address: test_ip,
             user_agent: test_user_agent.clone(),
+            fingerprint: None,
         },
         &env,
     );
@@ -405,9 +430,11 @@ async fn test_session_contains_correct_metadata() {
     let _ = reducer.reduce(
         &mut state,
         AuthAction::MagicLinkVerified {
+            correlation_id: Uuid::new_v4(),
             email: test_email.clone(),
             ip_address: test_ip,
             user_agent: test_user_agent.clone(),
+            fingerprint: None,
         },
         &env,
     );
@@ -451,6 +478,7 @@ async fn test_magic_link_custom_ttl() {
     let _ = reducer.reduce(
         &mut state,
         AuthAction::SendMagicLink {
+            correlation_id: Uuid::new_v4(),
             email: "user@example.com".to_string(),
             ip_address: test_ip,
             user_agent: test_user_agent,

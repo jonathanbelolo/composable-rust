@@ -1,0 +1,12 @@
+{
+  "name": "order-processing-integration-tests",
+  "version": "1.0.0",
+  "description": "Integration tests for order-processing HTTP API",
+  "type": "module",
+  "scripts": {
+    "test": "node test.js"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {}
+}

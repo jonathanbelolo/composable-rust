@@ -16,6 +16,7 @@ use composable_rust_core::reducer::Reducer;
 use composable_rust_testing::mocks::InMemoryEventStore;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
+use uuid::Uuid;
 
 /// Create a test environment with mock providers.
 fn create_test_env() -> AuthEnvironment<
@@ -78,6 +79,7 @@ async fn test_passkey_registration_flow() {
     let effects = reducer.reduce(
         &mut state,
         AuthAction::InitiatePasskeyRegistration {
+            correlation_id: Uuid::new_v4(),
             user_id,
             device_name: device_name.clone(),
         },
@@ -108,6 +110,7 @@ async fn test_passkey_registration_completion() {
     let effects = reducer.reduce(
         &mut state,
         AuthAction::CompletePasskeyRegistration {
+            correlation_id: Uuid::new_v4(),
             user_id,
             device_id,
             credential_id: "mock_credential_id_123".to_string(),
@@ -135,6 +138,7 @@ async fn test_passkey_login_initiation() {
     let effects = reducer.reduce(
         &mut state,
         AuthAction::InitiatePasskeyLogin {
+            correlation_id: Uuid::new_v4(),
             username: "user@example.com".to_string(),
             ip_address: test_ip,
             user_agent: test_user_agent,
@@ -160,10 +164,12 @@ async fn test_passkey_login_completion() {
     let effects = reducer.reduce(
         &mut state,
         AuthAction::CompletePasskeyLogin {
+            correlation_id: Uuid::new_v4(),
             credential_id: "mock_credential_id_123".to_string(),
             assertion_response: "mock_assertion_response".to_string(),
             ip_address: test_ip,
             user_agent: test_user_agent,
+            fingerprint: None,
         },
         &env,
     );
@@ -189,11 +195,13 @@ async fn test_passkey_login_success_creates_session() {
     let effects = reducer.reduce(
         &mut state,
         AuthAction::PasskeyLoginSuccess {
+            correlation_id: Uuid::new_v4(),
             user_id,
             device_id,
             email: test_email.clone(),
             ip_address: test_ip,
             user_agent: test_user_agent.clone(),
+            fingerprint: None,
         },
         &env,
     );
@@ -230,11 +238,13 @@ async fn test_session_contains_correct_metadata() {
     let _ = reducer.reduce(
         &mut state,
         AuthAction::PasskeyLoginSuccess {
+            correlation_id: Uuid::new_v4(),
             user_id,
             device_id,
             email: test_email.clone(),
             ip_address: test_ip,
             user_agent: test_user_agent.clone(),
+            fingerprint: None,
         },
         &env,
     );
@@ -285,11 +295,13 @@ async fn test_custom_webauthn_config() {
     let effects = reducer.reduce(
         &mut state,
         AuthAction::PasskeyLoginSuccess {
+            correlation_id: Uuid::new_v4(),
             user_id,
             device_id,
             email: "user@example.com".to_string(),
             ip_address: test_ip,
             user_agent: test_user_agent,
+            fingerprint: None,
         },
         &env,
     );
@@ -313,11 +325,13 @@ async fn test_passkey_security_properties() {
     let _ = reducer.reduce(
         &mut state,
         AuthAction::PasskeyLoginSuccess {
+            correlation_id: Uuid::new_v4(),
             user_id,
             device_id,
             email: "user@example.com".to_string(),
             ip_address: test_ip,
             user_agent: test_user_agent,
+            fingerprint: None,
         },
         &env,
     );

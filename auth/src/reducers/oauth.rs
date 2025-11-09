@@ -177,6 +177,7 @@ where
             // Initiate OAuth Flow
             // ═══════════════════════════════════════════════════════════════════
             AuthAction::InitiateOAuth {
+                correlation_id,
                 provider,
                 ip_address: _,
                 user_agent: _,
@@ -221,6 +222,7 @@ where
                                 // ⚡ SECURITY FIX (BLOCKER #4): Don't leak internal error details
                                 tracing::error!("Failed to store OAuth state: {}", e);
                                 Some(AuthAction::OAuthFailed {
+                                    correlation_id,
                                     error: "authentication_failed".to_string(),
                                     error_description: Some("OAuth authentication failed".to_string()),
                                 })
@@ -238,6 +240,7 @@ where
                                 );
                                 // Return action for web framework to perform HTTP redirect
                                 Some(AuthAction::OAuthAuthorizationUrlReady {
+                                    correlation_id,
                                     provider,
                                     authorization_url: auth_url,
                                 })
@@ -246,6 +249,7 @@ where
                                 // ⚡ SECURITY FIX (BLOCKER #4): Don't leak internal error details
                                 tracing::error!("Failed to generate OAuth authorization URL: {}", e);
                                 Some(AuthAction::OAuthFailed {
+                                    correlation_id,
                                     error: "authentication_failed".to_string(),
                                     error_description: Some("OAuth authentication failed".to_string()),
                                 })
@@ -259,6 +263,7 @@ where
             // Handle OAuth Callback
             // ═══════════════════════════════════════════════════════════════════
             AuthAction::OAuthCallback {
+                correlation_id,
                 code,
                 state: state_param,
                 ip_address,
@@ -274,6 +279,7 @@ where
                     );
                     return smallvec![async_effect! {
                         Some(AuthAction::OAuthFailed {
+                            correlation_id,
                             error: "invalid_request".to_string(),
                             error_description: Some("Invalid request parameters".to_string()),
                         })
@@ -288,6 +294,7 @@ where
                     );
                     return smallvec![async_effect! {
                         Some(AuthAction::OAuthFailed {
+                            correlation_id,
                             error: "invalid_request".to_string(),
                             error_description: Some("Invalid request parameters".to_string()),
                         })
@@ -331,6 +338,7 @@ where
                                 // ⚡ SECURITY FIX (BLOCKER #4): Don't leak provider details
                                 tracing::error!("Unknown OAuth provider: {}", provider_str);
                                 return Some(AuthAction::OAuthFailed {
+                                    correlation_id,
                                     error: "authentication_failed".to_string(),
                                     error_description: Some("OAuth authentication failed".to_string()),
                                 });
@@ -345,6 +353,7 @@ where
                                     match oauth_provider.fetch_user_info(provider, &token_response.access_token).await {
                                         Ok(user_info) => {
                                             Some(AuthAction::OAuthSuccess {
+                                                correlation_id,
                                                 email: user_info.email,
                                                 name: user_info.name,
                                                 provider,
@@ -360,6 +369,7 @@ where
                                             // ⚡ SECURITY FIX (BLOCKER #4): Don't leak error details
                                             tracing::error!("Failed to fetch user info: {e}");
                                             Some(AuthAction::OAuthFailed {
+                                                correlation_id,
                                                 error: "authentication_failed".to_string(),
                                                 error_description: Some("OAuth authentication failed".to_string()),
                                             })
@@ -370,6 +380,7 @@ where
                                     // ⚡ SECURITY FIX (BLOCKER #4): Don't leak error details
                                     tracing::error!("Failed to exchange code for token: {e}");
                                     Some(AuthAction::OAuthFailed {
+                                        correlation_id,
                                         error: "authentication_failed".to_string(),
                                         error_description: Some("OAuth authentication failed".to_string()),
                                     })
@@ -381,6 +392,7 @@ where
                             // ⚡ SECURITY FIX (BLOCKER #4): Don't leak which failure mode
                             tracing::warn!("OAuth callback validation failed");
                             Some(AuthAction::OAuthFailed {
+                                correlation_id,
                                 error: "authentication_failed".to_string(),
                                 error_description: Some("OAuth authentication failed".to_string()),
                             })
@@ -389,6 +401,7 @@ where
                             // ⚡ SECURITY FIX (BLOCKER #4): Don't leak internal error details
                             tracing::error!("OAuth state consumption failed: {}", e);
                             Some(AuthAction::OAuthFailed {
+                                correlation_id,
                                 error: "authentication_failed".to_string(),
                                 error_description: Some("OAuth authentication failed".to_string()),
                             })
@@ -401,6 +414,7 @@ where
             // OAuth Success (Token Exchange Complete) - Emit events (batch)
             // ═══════════════════════════════════════════════════════════════════
             AuthAction::OAuthSuccess {
+                correlation_id,
                 email,
                 name,
                 provider,
@@ -418,6 +432,7 @@ where
                         tracing::warn!("Invalid email from OAuth provider {}: {}", provider.as_str(), e);
                         return smallvec![async_effect! {
                             Some(AuthAction::OAuthFailed {
+                                correlation_id,
                                 error: "invalid_email".to_string(),
                                 error_description: Some(format!("Invalid email from OAuth provider: {e}")),
                             })
@@ -551,6 +566,7 @@ where
                         // ⚡ SECURITY FIX (BLOCKER #4): Don't leak internal error details
                         tracing::error!("No events to persist");
                         return Some(AuthAction::OAuthFailed {
+                            correlation_id,
                             error: "authentication_failed".to_string(),
                             error_description: Some("OAuth authentication failed".to_string()),
                         });
@@ -585,6 +601,7 @@ where
                                 tracing::error!("Failed to create OAuth session for user {} device {}: {}",
                                     final_user_id.0, device_id.0, e);
                                 return Some(AuthAction::OAuthFailed {
+                                    correlation_id,
                                     error: "authentication_failed".to_string(),
                                     error_description: Some("OAuth authentication failed".to_string()),
                                 });
@@ -611,11 +628,12 @@ where
                             }
 
                             // Emit SessionCreated event
-                            Some(AuthAction::SessionCreated { session })
+                            Some(AuthAction::SessionCreated { correlation_id, session })
                         }
                         Err(e) => {
                             tracing::error!("Failed to persist OAuth events for user {}: {}", final_user_id.0, e);
                             Some(AuthAction::OAuthFailed {
+                                correlation_id,
                                 error: "event_persistence_failed".to_string(),
                                 error_description: Some(format!("Failed to persist events: {e}")),
                             })
@@ -628,6 +646,7 @@ where
             // OAuth Failed
             // ═══════════════════════════════════════════════════════════════════
             AuthAction::OAuthFailed {
+                correlation_id: _,
                 error: _,
                 error_description: _,
             } => {
@@ -641,7 +660,7 @@ where
             // ═══════════════════════════════════════════════════════════════════
             // Session Created
             // ═══════════════════════════════════════════════════════════════════
-            AuthAction::SessionCreated { session } => {
+            AuthAction::SessionCreated { correlation_id: _, session } => {
                 // Set session in state (session now has correct risk score from RiskCalculator)
                 state.session = Some(session.clone());
                 smallvec![Effect::None]
@@ -650,7 +669,7 @@ where
             // ═══════════════════════════════════════════════════════════════════
             // Refresh OAuth Token (Pure Orchestration)
             // ═══════════════════════════════════════════════════════════════════
-            AuthAction::RefreshOAuthToken { user_id, provider } => {
+            AuthAction::RefreshOAuthToken { correlation_id, user_id, provider } => {
                 // This is the composable-rust way:
                 // Reducer orchestrates effects, doesn't execute them
                 let token_store = env.oauth_tokens.clone();
@@ -726,6 +745,7 @@ where
 
                             // 5. Emit success event
                             Some(AuthAction::OAuthTokenRefreshed {
+                                correlation_id,
                                 user_id: user_id_clone,
                                 provider: provider_clone,
                                 access_token: token_response.access_token,
@@ -749,6 +769,7 @@ where
             // OAuth Token Refreshed (Event)
             // ═══════════════════════════════════════════════════════════════════
             AuthAction::OAuthTokenRefreshed {
+                correlation_id: _,
                 user_id,
                 provider,
                 access_token: _,

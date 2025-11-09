@@ -28,19 +28,20 @@ use std::sync::Arc;
 /// - `OT`: OAuth token store
 /// - `C`: Challenge store
 /// - `RL`: Rate limiter
+#[derive(Clone)]
 pub struct AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>
 where
-    O: OAuth2Provider,
-    E: EmailProvider,
-    W: WebAuthnProvider,
-    S: SessionStore,
-    T: TokenStore,
-    U: UserRepository,
-    D: DeviceRepository,
-    R: RiskCalculator,
-    OT: OAuthTokenStore,
-    C: ChallengeStore,
-    RL: RateLimiter,
+    O: OAuth2Provider + Clone,
+    E: EmailProvider + Clone,
+    W: WebAuthnProvider + Clone,
+    S: SessionStore + Clone,
+    T: TokenStore + Clone,
+    U: UserRepository + Clone,
+    D: DeviceRepository + Clone,
+    R: RiskCalculator + Clone,
+    OT: OAuthTokenStore + Clone,
+    C: ChallengeStore + Clone,
+    RL: RateLimiter + Clone,
 {
     /// OAuth2 provider.
     pub oauth: O,
@@ -81,17 +82,17 @@ where
 
 impl<O, E, W, S, T, U, D, R, OT, C, RL> AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>
 where
-    O: OAuth2Provider,
-    E: EmailProvider,
-    W: WebAuthnProvider,
-    S: SessionStore,
-    T: TokenStore,
-    U: UserRepository,
-    D: DeviceRepository,
-    R: RiskCalculator,
-    OT: OAuthTokenStore,
-    C: ChallengeStore,
-    RL: RateLimiter,
+    O: OAuth2Provider + Clone,
+    E: EmailProvider + Clone,
+    W: WebAuthnProvider + Clone,
+    S: SessionStore + Clone,
+    T: TokenStore + Clone,
+    U: UserRepository + Clone,
+    D: DeviceRepository + Clone,
+    R: RiskCalculator + Clone,
+    OT: OAuthTokenStore + Clone,
+    C: ChallengeStore + Clone,
+    RL: RateLimiter + Clone,
 {
     /// Create a new authentication environment.
     #[must_use]

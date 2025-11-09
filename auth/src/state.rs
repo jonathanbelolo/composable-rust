@@ -195,6 +195,20 @@ impl OAuthProvider {
             Self::Microsoft => "microsoft",
         }
     }
+
+    /// Parse provider from string.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the provider string is not recognized.
+    pub fn from_str(s: &str) -> Result<Self, String> {
+        match s.to_lowercase().as_str() {
+            "google" => Ok(Self::Google),
+            "github" => Ok(Self::GitHub),
+            "microsoft" => Ok(Self::Microsoft),
+            _ => Err(format!("Unknown OAuth provider: {s}")),
+        }
+    }
 }
 
 /// OAuth flow state.

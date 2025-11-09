@@ -165,6 +165,7 @@ where
             // InitiatePasskeyRegistration: Generate challenge
             // ═══════════════════════════════════════════════════════════════
             AuthAction::InitiatePasskeyRegistration {
+                correlation_id,
                 user_id,
                 device_name: _,
             } => {
@@ -175,12 +176,19 @@ where
                 let users = env.users.clone();
                 let challenges = env.challenges.clone();
                 let challenge_ttl = chrono::Duration::minutes(self.config.challenge_ttl_minutes);
+                let rp_id = self.config.rp_id.clone();
 
                 smallvec![async_effect! {
                     // Get user info for WebAuthn
                     let user = match users.get_user_by_id(user_id).await {
                         Ok(u) => u,
-                        Err(_) => return None,
+                        Err(e) => {
+                            tracing::error!("Failed to get user for passkey registration: {}", e);
+                            return Some(AuthAction::PasskeyRegistrationFailed {
+                                correlation_id,
+                                error: "User not found".to_string(),
+                            });
+                        }
                     };
 
                     // Generate challenge
@@ -204,15 +212,31 @@ where
                                         user_id.0,
                                         challenge_ttl.num_minutes()
                                     );
-                                    None // TODO: Return challenge_string to client
+                                    Some(AuthAction::PasskeyRegistrationChallengeGenerated {
+                                        correlation_id,
+                                        user_id,
+                                        challenge: challenge_string,
+                                        rp_id,
+                                        user_email: user.email.clone(),
+                                        user_display_name: user.name.unwrap_or(user.email),
+                                    })
                                 }
                                 Err(e) => {
                                     tracing::error!("Failed to store passkey registration challenge: {}", e);
-                                    None
+                                    Some(AuthAction::PasskeyRegistrationFailed {
+                                        correlation_id,
+                                        error: "Failed to store challenge".to_string(),
+                                    })
                                 }
                             }
                         }
-                        Err(_) => None,
+                        Err(e) => {
+                            tracing::error!("Failed to generate passkey registration challenge: {}", e);
+                            Some(AuthAction::PasskeyRegistrationFailed {
+                                correlation_id,
+                                error: "Failed to generate challenge".to_string(),
+                            })
+                        }
                     }
                 }]
             }
@@ -221,6 +245,7 @@ where
             // CompletePasskeyRegistration: Verify attestation
             // ═══════════════════════════════════════════════════════════════
             AuthAction::CompletePasskeyRegistration {
+                correlation_id,
                 user_id,
                 device_id,
                 credential_id: _,
@@ -248,9 +273,12 @@ where
                     // For now, we're using a simplified approach where the challenge is the challenge_id
                     let challenge_string = match webauthn.extract_challenge_from_attestation(&attestation_response).await {
                         Ok(c) => c,
-                        Err(_) => {
-                            tracing::warn!("Failed to extract challenge from attestation response");
-                            return None;
+                        Err(e) => {
+                            tracing::warn!("Failed to extract challenge from attestation response: {}", e);
+                            return Some(AuthAction::PasskeyRegistrationFailed {
+                                correlation_id,
+                                error: "Invalid attestation response".to_string(),
+                            });
                         }
                     };
 
@@ -264,11 +292,17 @@ where
                                 user_id = %user_id.0,
                                 "Passkey registration challenge verification failed"
                             );
-                            return None;
+                            return Some(AuthAction::PasskeyRegistrationFailed {
+                                correlation_id,
+                                error: "Invalid or expired challenge".to_string(),
+                            });
                         }
                         Err(e) => {
                             tracing::error!("Failed to consume registration challenge: {}", e);
-                            return None;
+                            return Some(AuthAction::PasskeyRegistrationFailed {
+                                correlation_id,
+                                error: "Challenge verification failed".to_string(),
+                            });
                         }
                     };
 
@@ -280,7 +314,10 @@ where
                             challenge_data.expires_at,
                             Utc::now()
                         );
-                        return None;
+                        return Some(AuthAction::PasskeyRegistrationFailed {
+                            correlation_id,
+                            error: "Challenge expired".to_string(),
+                        });
                     }
 
                     // Verify challenge matches expected user
@@ -290,7 +327,10 @@ where
                             user_id.0,
                             challenge_data.user_id.0
                         );
-                        return None;
+                        return Some(AuthAction::PasskeyRegistrationFailed {
+                            correlation_id,
+                            error: "Invalid challenge".to_string(),
+                        });
                     }
 
                     // Verify attestation with the consumed challenge
@@ -299,7 +339,13 @@ where
                         .await
                     {
                         Ok(r) => r,
-                        Err(_) => return None,
+                        Err(e) => {
+                            tracing::error!("Passkey registration verification failed: {}", e);
+                            return Some(AuthAction::PasskeyRegistrationFailed {
+                                correlation_id,
+                                error: "Attestation verification failed".to_string(),
+                            });
+                        }
                     };
 
                     // Store credential
@@ -320,9 +366,20 @@ where
                                 user_id.0,
                                 credential.credential_id
                             );
-                            None // TODO: Return success event
+                            Some(AuthAction::PasskeyRegistrationSuccess {
+                                correlation_id,
+                                user_id,
+                                device_id,
+                                credential_id: credential.credential_id,
+                            })
                         }
-                        Err(_) => None,
+                        Err(e) => {
+                            tracing::error!("Failed to store passkey credential: {}", e);
+                            Some(AuthAction::PasskeyRegistrationFailed {
+                                correlation_id,
+                                error: "Failed to store credential".to_string(),
+                            })
+                        }
                     }
                 }]
             }
@@ -331,6 +388,7 @@ where
             // InitiatePasskeyLogin: Generate challenge and lookup credentials
             // ═══════════════════════════════════════════════════════════════
             AuthAction::InitiatePasskeyLogin {
+                correlation_id,
                 username,
                 ip_address: _,
                 user_agent: _,
@@ -347,25 +405,40 @@ where
                     // Get user by email
                     let user = match users.get_user_by_email(&username).await {
                         Ok(u) => u,
-                        Err(_) => {
-                            tracing::warn!("User not found for passkey login: {}", username);
-                            return None;
+                        Err(e) => {
+                            tracing::warn!("User not found for passkey login: {}: {}", username, e);
+                            return Some(AuthAction::PasskeyAuthenticationFailed {
+                                correlation_id,
+                                error: "User not found".to_string(),
+                            });
                         }
                     };
 
                     // Get user's passkey credentials
                     let credentials = match users.get_user_passkey_credentials(user.user_id).await {
                         Ok(creds) => creds,
-                        Err(_) => {
-                            tracing::warn!("No passkeys found for user: {}", username);
-                            return None;
+                        Err(e) => {
+                            tracing::warn!("No passkeys found for user: {}: {}", username, e);
+                            return Some(AuthAction::PasskeyAuthenticationFailed {
+                                correlation_id,
+                                error: "No passkeys found".to_string(),
+                            });
                         }
                     };
 
                     if credentials.is_empty() {
                         tracing::warn!("User has no passkeys: {}", username);
-                        return None;
+                        return Some(AuthAction::PasskeyAuthenticationFailed {
+                            correlation_id,
+                            error: "No passkeys registered".to_string(),
+                        });
                     }
+
+                    // Extract credential IDs for the response
+                    let allowed_credentials: Vec<String> = credentials
+                        .iter()
+                        .map(|c| c.credential_id.clone())
+                        .collect();
 
                     // Generate authentication challenge
                     match webauthn
@@ -384,15 +457,28 @@ where
                                         user.user_id.0,
                                         challenge_ttl.num_minutes()
                                     );
-                                    None // TODO: Return challenge_string to client
+                                    Some(AuthAction::PasskeyLoginChallengeGenerated {
+                                        correlation_id,
+                                        challenge: challenge_string,
+                                        allowed_credentials,
+                                    })
                                 }
                                 Err(e) => {
                                     tracing::error!("Failed to store passkey authentication challenge: {}", e);
-                                    None
+                                    Some(AuthAction::PasskeyAuthenticationFailed {
+                                        correlation_id,
+                                        error: "Failed to store challenge".to_string(),
+                                    })
                                 }
                             }
                         }
-                        Err(_) => None,
+                        Err(e) => {
+                            tracing::error!("Failed to generate passkey authentication challenge: {}", e);
+                            Some(AuthAction::PasskeyAuthenticationFailed {
+                                correlation_id,
+                                error: "Failed to generate challenge".to_string(),
+                            })
+                        }
                     }
                 }]
             }
@@ -401,6 +487,7 @@ where
             // CompletePasskeyLogin: Verify assertion
             // ═══════════════════════════════════════════════════════════════
             AuthAction::CompletePasskeyLogin {
+                correlation_id,
                 credential_id,
                 assertion_response,
                 ip_address,
@@ -427,9 +514,12 @@ where
                     // Get credential first (to get user_id for challenge lookup and rate limiting)
                     let credential = match users.get_passkey_credential(&credential_id).await {
                         Ok(c) => c,
-                        Err(_) => {
-                            tracing::warn!("Credential not found: {}", credential_id);
-                            return None;
+                        Err(e) => {
+                            tracing::warn!("Credential not found: {}: {}", credential_id, e);
+                            return Some(AuthAction::PasskeyAuthenticationFailed {
+                                correlation_id,
+                                error: "Credential not found".to_string(),
+                            });
                         }
                     };
 
@@ -463,7 +553,10 @@ where
                             error = %e,
                             "Passkey authentication rate limit exceeded"
                         );
-                        return None;
+                        return Some(AuthAction::PasskeyAuthenticationFailed {
+                            correlation_id,
+                            error: "Too many attempts. Please try again later.".to_string(),
+                        });
                     }
 
                     // Extract challenge from assertion response
@@ -471,9 +564,12 @@ where
                     // For now, we're using a simplified approach where the challenge is the challenge_id
                     let challenge_string = match webauthn.extract_challenge_from_assertion(&assertion_response).await {
                         Ok(c) => c,
-                        Err(_) => {
-                            tracing::warn!("Failed to extract challenge from assertion response");
-                            return None;
+                        Err(e) => {
+                            tracing::warn!("Failed to extract challenge from assertion response: {}", e);
+                            return Some(AuthAction::PasskeyAuthenticationFailed {
+                                correlation_id,
+                                error: "Invalid assertion response".to_string(),
+                            });
                         }
                     };
 
@@ -487,11 +583,17 @@ where
                                 user_id = %credential.user_id.0,
                                 "Passkey login challenge verification failed"
                             );
-                            return None;
+                            return Some(AuthAction::PasskeyAuthenticationFailed {
+                                correlation_id,
+                                error: "Invalid or expired challenge".to_string(),
+                            });
                         }
                         Err(e) => {
                             tracing::error!("Failed to consume login challenge: {}", e);
-                            return None;
+                            return Some(AuthAction::PasskeyAuthenticationFailed {
+                                correlation_id,
+                                error: "Challenge verification failed".to_string(),
+                            });
                         }
                     };
 
@@ -503,7 +605,10 @@ where
                             challenge_data.expires_at,
                             Utc::now()
                         );
-                        return None;
+                        return Some(AuthAction::PasskeyAuthenticationFailed {
+                            correlation_id,
+                            error: "Challenge expired".to_string(),
+                        });
                     }
 
                     // Verify challenge matches expected user
@@ -513,7 +618,10 @@ where
                             credential.user_id.0,
                             challenge_data.user_id.0
                         );
-                        return None;
+                        return Some(AuthAction::PasskeyAuthenticationFailed {
+                            correlation_id,
+                            error: "Invalid challenge".to_string(),
+                        });
                     }
 
                     // Verify assertion with the consumed challenge
@@ -528,9 +636,12 @@ where
                         .await
                     {
                         Ok(r) => r,
-                        Err(_) => {
-                            tracing::warn!("Passkey verification failed");
-                            return None;
+                        Err(e) => {
+                            tracing::warn!("Passkey verification failed: {}", e);
+                            return Some(AuthAction::PasskeyAuthenticationFailed {
+                                correlation_id,
+                                error: "Assertion verification failed".to_string(),
+                            });
                         }
                     };
 
@@ -601,7 +712,10 @@ where
                         );
 
                         // REJECT the authentication immediately
-                        return None;
+                        return Some(AuthAction::PasskeyAuthenticationFailed {
+                            correlation_id,
+                            error: "Security error: Counter rollback detected".to_string(),
+                        });
                     }
 
                     // ✅ Preliminary rollback check passed
@@ -705,7 +819,10 @@ where
                             );
 
                             // REJECT the authentication - counter was modified by concurrent request
-                            return None;
+                            return Some(AuthAction::PasskeyAuthenticationFailed {
+                                correlation_id,
+                                error: "Security error: Concurrent authentication detected".to_string(),
+                            });
                         }
                         Err(e) => {
                             tracing::error!(
@@ -714,18 +831,28 @@ where
                                 e
                             );
                             // Database failure is serious - don't allow auth
-                            return None;
+                            return Some(AuthAction::PasskeyAuthenticationFailed {
+                                correlation_id,
+                                error: "Authentication failed".to_string(),
+                            });
                         }
                     }
 
                     // Get user email
                     let user = match users.get_user_by_id(result.user_id).await {
                         Ok(u) => u,
-                        Err(_) => return None,
+                        Err(e) => {
+                            tracing::error!("Failed to load user after passkey verification: {}", e);
+                            return Some(AuthAction::PasskeyAuthenticationFailed {
+                                correlation_id,
+                                error: "Failed to load user".to_string(),
+                            });
+                        }
                     };
 
                     // Emit success event
                     Some(AuthAction::PasskeyLoginSuccess {
+                        correlation_id,
                         user_id: result.user_id,
                         device_id: result.device_id,
                         email: user.email,
@@ -740,6 +867,7 @@ where
             // PasskeyLoginSuccess: Emit events (batch) and create session
             // ═══════════════════════════════════════════════════════════════
             AuthAction::PasskeyLoginSuccess {
+                correlation_id,
                 user_id,
                 device_id,
                 email,
@@ -757,6 +885,7 @@ where
                     );
                     return smallvec![async_effect! {
                         Some(AuthAction::PasskeyAuthenticationFailed {
+                            correlation_id,
                             error: "Invalid request parameters".to_string(),
                         })
                     }];
@@ -771,6 +900,7 @@ where
                     );
                     return smallvec![async_effect! {
                         Some(AuthAction::PasskeyAuthenticationFailed {
+                            correlation_id,
                             error: "Invalid request parameters".to_string(),
                         })
                     }];
@@ -904,6 +1034,7 @@ where
                                 tracing::error!("Failed to create passkey session for user {} device {}: {}",
                                     user_id.0, device_id.0, e);
                                 return Some(AuthAction::SessionCreationFailed {
+                                    correlation_id,
                                     user_id,
                                     device_id,
                                     error: e.to_string(),
@@ -911,7 +1042,7 @@ where
                             }
 
                             // Emit SessionCreated event
-                            Some(AuthAction::SessionCreated { session })
+                            Some(AuthAction::SessionCreated { correlation_id, session })
                         }
                         Err(e) => {
                             tracing::error!("Failed to persist passkey events for user {}: {}", user_id.0, e);
@@ -927,7 +1058,7 @@ where
             // ═══════════════════════════════════════════════════════════════
             // SessionCreated: Set session in state
             // ═══════════════════════════════════════════════════════════════
-            AuthAction::SessionCreated { session } => {
+            AuthAction::SessionCreated { correlation_id: _, session } => {
                 // Set session in state (session now has correct risk score from RiskCalculator)
                 state.session = Some(session.clone());
                 smallvec![Effect::None]
@@ -936,7 +1067,7 @@ where
             // ═══════════════════════════════════════════════════════════════
             // ListPasskeyCredentials: List all credentials for user
             // ═══════════════════════════════════════════════════════════════
-            AuthAction::ListPasskeyCredentials { user_id } => {
+            AuthAction::ListPasskeyCredentials { correlation_id, user_id } => {
                 // ✅ AUTHORIZATION: This action should only be called after session validation
                 // The session middleware ensures user_id matches the authenticated session
                 let users = env.users.clone();
@@ -951,6 +1082,7 @@ where
                                 user_id.0
                             );
                             Some(AuthAction::PasskeyCredentialsListed {
+                                correlation_id,
                                 user_id,
                                 credentials,
                             })
@@ -971,6 +1103,7 @@ where
             // PasskeyCredentialsListed: Credentials retrieved successfully
             // ═══════════════════════════════════════════════════════════════
             AuthAction::PasskeyCredentialsListed {
+                correlation_id: _,
                 user_id: _,
                 credentials: _,
             } => {
@@ -983,6 +1116,7 @@ where
             // DeletePasskeyCredential: Delete a specific credential
             // ═══════════════════════════════════════════════════════════════
             AuthAction::DeletePasskeyCredential {
+                correlation_id,
                 user_id,
                 credential_id,
             } => {
@@ -1008,6 +1142,7 @@ where
                                     credential.user_id.0
                                 );
                                 return Some(AuthAction::PasskeyCredentialDeletionFailed {
+                                    correlation_id,
                                     user_id,
                                     credential_id: credential_id_clone.clone(),
                                     error: "Unauthorized".to_string(),
@@ -1023,6 +1158,7 @@ where
                                         user_id.0
                                     );
                                     Some(AuthAction::PasskeyCredentialDeleted {
+                                        correlation_id,
                                         user_id,
                                         credential_id: credential_id_clone,
                                     })
@@ -1035,6 +1171,7 @@ where
                                         e
                                     );
                                     Some(AuthAction::PasskeyCredentialDeletionFailed {
+                                        correlation_id,
                                         user_id,
                                         credential_id: credential_id_clone,
                                         error: e.to_string(),
@@ -1050,6 +1187,7 @@ where
                                 e
                             );
                             Some(AuthAction::PasskeyCredentialDeletionFailed {
+                                correlation_id,
                                 user_id,
                                 credential_id: credential_id_clone,
                                 error: format!("Credential not found: {}", e),
@@ -1063,6 +1201,7 @@ where
             // PasskeyCredentialDeleted: Credential deleted successfully
             // ═══════════════════════════════════════════════════════════════
             AuthAction::PasskeyCredentialDeleted {
+                correlation_id: _,
                 user_id: _,
                 credential_id: _,
             } => {
@@ -1075,6 +1214,7 @@ where
             // PasskeyCredentialDeletionFailed: Credential deletion failed
             // ═══════════════════════════════════════════════════════════════
             AuthAction::PasskeyCredentialDeletionFailed {
+                correlation_id: _,
                 user_id: _,
                 credential_id: _,
                 error: _,

@@ -19,6 +19,7 @@ composable-rust-macros = { path = "../../macros" }
 composable-rust-runtime = { path = "../../runtime" }
 composable-rust-testing = { path = "../../testing" }
 composable-rust-postgres = { path = "../../postgres", optional = true }
+composable-rust-web = { path = "../../web", optional = true }
 
 # Async
 tokio = { workspace = true }
@@ -39,6 +40,10 @@ tracing-subscriber = { workspace = true }
 # Time
 chrono = { workspace = true }
 
+# Web (optional)
+axum = { version = "0.7", optional = true }
+uuid = { version = "1", features = ["v4", "serde"], optional = true }
+
 [dev-dependencies]
 proptest = { workspace = true }
 tokio-test = { workspace = true }
@@ -46,6 +51,7 @@ tokio-test = { workspace = true }
 [features]
 default = []
 postgres = ["dep:composable-rust-postgres"]
+http = ["dep:composable-rust-web", "dep:axum", "dep:uuid"]
 
 [[bin]]
 name = "order-processing"
