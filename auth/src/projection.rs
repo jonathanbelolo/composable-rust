@@ -80,17 +80,29 @@ impl AuthProjection {
             timestamp,
         } = event
         {
+            // ✅ IDEMPOTENCY: Use ON CONFLICT DO UPDATE with timestamp check
+            // This ensures:
+            // - Duplicate events are handled correctly (same timestamp = no-op)
+            // - Out-of-order events are rejected (older timestamp ignored)
+            // - Late-arriving events don't overwrite newer data
             sqlx::query!(
                 r#"
-                INSERT INTO users_projection (user_id, email, name, email_verified, created_at, updated_at)
-                VALUES ($1, $2, $3, $4, $5, $5)
-                ON CONFLICT (user_id) DO NOTHING
+                INSERT INTO users_projection (user_id, email, name, email_verified, created_at, updated_at, last_event_timestamp)
+                VALUES ($1, $2, $3, $4, $5, $5, $6)
+                ON CONFLICT (user_id) DO UPDATE SET
+                    email = EXCLUDED.email,
+                    name = EXCLUDED.name,
+                    email_verified = EXCLUDED.email_verified,
+                    updated_at = EXCLUDED.updated_at,
+                    last_event_timestamp = EXCLUDED.last_event_timestamp
+                WHERE users_projection.last_event_timestamp < EXCLUDED.last_event_timestamp
                 "#,
                 user_id.0,
                 email,
                 name.as_deref(),
                 email_verified,
-                timestamp
+                timestamp,
+                timestamp // last_event_timestamp
             )
             .execute(&self.pool)
             .await
@@ -103,14 +115,19 @@ impl AuthProjection {
     /// Apply an EmailVerified event.
     async fn apply_email_verified(&self, event: &AuthEvent) -> Result<()> {
         if let AuthEvent::EmailVerified { user_id, timestamp } = event {
+            // ✅ IDEMPOTENCY: Only update if timestamp is newer
             sqlx::query!(
                 r#"
                 UPDATE users_projection
-                SET email_verified = true, updated_at = $2
+                SET email_verified = true,
+                    updated_at = $2,
+                    last_event_timestamp = $3
                 WHERE user_id = $1
+                  AND last_event_timestamp < $3
                 "#,
                 user_id.0,
-                timestamp
+                timestamp,
+                timestamp // last_event_timestamp
             )
             .execute(&self.pool)
             .await
@@ -128,15 +145,20 @@ impl AuthProjection {
             timestamp,
         } = event
         {
+            // ✅ IDEMPOTENCY: Only update if timestamp is newer
             sqlx::query!(
                 r#"
                 UPDATE users_projection
-                SET name = $2, updated_at = $3
+                SET name = $2,
+                    updated_at = $3,
+                    last_event_timestamp = $4
                 WHERE user_id = $1
+                  AND last_event_timestamp < $4
                 "#,
                 user_id.0,
                 name.as_deref(),
-                timestamp
+                timestamp,
+                timestamp // last_event_timestamp
             )
             .execute(&self.pool)
             .await
@@ -158,19 +180,29 @@ impl AuthProjection {
             timestamp,
         } = event
         {
+            // ✅ IDEMPOTENCY: Use ON CONFLICT DO UPDATE with timestamp check
             sqlx::query!(
                 r#"
                 INSERT INTO devices_projection
-                    (device_id, user_id, name, device_type, platform, first_seen, last_seen, trust_level, login_count)
-                VALUES ($1, $2, $3, $4::device_type, $5, $6, $6, 'unknown'::device_trust_level, 0)
-                ON CONFLICT (device_id) DO NOTHING
+                    (device_id, user_id, name, device_type, platform, first_seen, last_seen, trust_level, login_count, last_event_timestamp)
+                VALUES ($1, $2, $3, $4::device_type, $5, $6, $6, 'unknown'::device_trust_level, 0, $7)
+                ON CONFLICT (device_id) DO UPDATE SET
+                    user_id = EXCLUDED.user_id,
+                    name = EXCLUDED.name,
+                    device_type = EXCLUDED.device_type,
+                    platform = EXCLUDED.platform,
+                    first_seen = EXCLUDED.first_seen,
+                    last_seen = EXCLUDED.last_seen,
+                    last_event_timestamp = EXCLUDED.last_event_timestamp
+                WHERE devices_projection.last_event_timestamp < EXCLUDED.last_event_timestamp
                 "#,
                 device_id.0,
                 user_id.0,
                 name,
                 device_type,
                 platform,
-                timestamp
+                timestamp,
+                timestamp // last_event_timestamp
             )
             .execute(&self.pool)
             .await
@@ -186,7 +218,7 @@ impl AuthProjection {
             device_id,
             user_id: _,
             trusted,
-            timestamp: _,
+            timestamp,
         } = event
         {
             let trust_level = if *trusted {
@@ -203,14 +235,18 @@ impl AuthProjection {
                 DeviceTrustLevel::HighlyTrusted => "highly_trusted",
             };
 
+            // ✅ IDEMPOTENCY: Only update if timestamp is newer
             sqlx::query!(
                 r#"
                 UPDATE devices_projection
-                SET trust_level = $2::device_trust_level
+                SET trust_level = $2::device_trust_level,
+                    last_event_timestamp = $3
                 WHERE device_id = $1
+                  AND last_event_timestamp < $3
                 "#,
                 device_id.0,
-                trust_level_str
+                trust_level_str,
+                timestamp
             )
             .execute(&self.pool)
             .await
@@ -230,13 +266,18 @@ impl AuthProjection {
             timestamp,
         } = event
         {
+            // ✅ IDEMPOTENCY: Only update if timestamp is newer
             sqlx::query!(
                 r#"
                 UPDATE devices_projection
-                SET last_seen = $2, login_count = login_count + 1
+                SET last_seen = $2,
+                    login_count = login_count + 1,
+                    last_event_timestamp = $3
                 WHERE device_id = $1
+                  AND last_event_timestamp < $3
                 "#,
                 device_id.0,
+                timestamp,
                 timestamp
             )
             .execute(&self.pool)
@@ -257,17 +298,22 @@ impl AuthProjection {
             timestamp,
         } = event
         {
+            // ✅ IDEMPOTENCY: Use ON CONFLICT DO UPDATE with timestamp check
             sqlx::query!(
                 r#"
-                INSERT INTO oauth_links_projection (user_id, provider, provider_user_id, linked_at)
-                VALUES ($1, $2, $3, $4)
-                ON CONFLICT (user_id, provider)
-                DO UPDATE SET provider_user_id = $3, linked_at = $4
+                INSERT INTO oauth_links_projection (user_id, provider, provider_user_id, linked_at, last_event_timestamp)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (user_id, provider) DO UPDATE SET
+                    provider_user_id = EXCLUDED.provider_user_id,
+                    linked_at = EXCLUDED.linked_at,
+                    last_event_timestamp = EXCLUDED.last_event_timestamp
+                WHERE oauth_links_projection.last_event_timestamp < EXCLUDED.last_event_timestamp
                 "#,
                 user_id.0,
                 provider.as_str(),
                 provider_user_id,
-                timestamp
+                timestamp,
+                timestamp // last_event_timestamp
             )
             .execute(&self.pool)
             .await
@@ -288,33 +334,45 @@ impl AuthProjection {
             timestamp,
         } = event
         {
+            // ✅ IDEMPOTENCY: Use ON CONFLICT DO UPDATE with timestamp check
             sqlx::query!(
                 r#"
                 INSERT INTO passkeys_projection
-                    (credential_id, user_id, device_id, public_key, counter, registered_at)
-                VALUES ($1, $2, $3, $4, $5, $6)
-                ON CONFLICT (credential_id) DO NOTHING
+                    (credential_id, user_id, device_id, public_key, counter, registered_at, last_event_timestamp)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT (credential_id) DO UPDATE SET
+                    user_id = EXCLUDED.user_id,
+                    device_id = EXCLUDED.device_id,
+                    public_key = EXCLUDED.public_key,
+                    counter = EXCLUDED.counter,
+                    registered_at = EXCLUDED.registered_at,
+                    last_event_timestamp = EXCLUDED.last_event_timestamp
+                WHERE passkeys_projection.last_event_timestamp < EXCLUDED.last_event_timestamp
                 "#,
                 credential_id,
                 user_id.0,
                 device_id.0,
                 public_key,
                 *counter as i32,
-                timestamp
+                timestamp,
+                timestamp // last_event_timestamp
             )
             .execute(&self.pool)
             .await
             .map_err(|e| ProjectionError::Storage(format!("Failed to register passkey: {e}")))?;
 
-            // Also update device to link passkey
+            // Also update device to link passkey (with timestamp check)
             sqlx::query!(
                 r#"
                 UPDATE devices_projection
-                SET passkey_credential_id = $2
+                SET passkey_credential_id = $2,
+                    last_event_timestamp = $3
                 WHERE device_id = $1
+                  AND last_event_timestamp < $3
                 "#,
                 device_id.0,
-                credential_id
+                credential_id,
+                timestamp
             )
             .execute(&self.pool)
             .await
@@ -335,14 +393,19 @@ impl AuthProjection {
             timestamp,
         } = event
         {
+            // ✅ IDEMPOTENCY: Only update if timestamp is newer
             sqlx::query!(
                 r#"
                 UPDATE passkeys_projection
-                SET counter = $2, last_used = $3
+                SET counter = $2,
+                    last_used = $3,
+                    last_event_timestamp = $4
                 WHERE credential_id = $1
+                  AND last_event_timestamp < $4
                 "#,
                 credential_id,
                 *counter as i32,
+                timestamp,
                 timestamp
             )
             .execute(&self.pool)
