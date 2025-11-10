@@ -187,18 +187,18 @@ impl<C: Clock> Reducer for TodoReducer {
         state: &mut Self::State,
         action: Self::Action,
         env: &Self::Environment,
-    ) -> Vec<Effect<Self::Action>> {
+    ) -> SmallVec<[Effect<Self::Action>; 4]> {
         match action {
             // Command: Create todo
             TodoAction::CreateTodo { title } => {
                 if title.is_empty() {
-                    return vec![Effect::None];
+                    return smallvec![Effect::None];
                 }
 
                 let id = format!("todo-{}", uuid::Uuid::new_v4());
                 let timestamp = env.clock.now();
 
-                vec![Effect::Future(Box::pin(async move {
+                smallvec![Effect::Future(Box::pin(async move {
                     Some(TodoAction::TodoCreated { id, title, timestamp })
                 }))]
             }
@@ -208,7 +208,7 @@ impl<C: Clock> Reducer for TodoReducer {
                 state.id = Some(id);
                 state.title = title;
                 state.completed = false;
-                vec![Effect::None]
+                smallvec![Effect::None]
             }
 
             // Command: Toggle completion
@@ -216,7 +216,7 @@ impl<C: Clock> Reducer for TodoReducer {
                 let completed = !state.completed;
                 let timestamp = env.clock.now();
 
-                vec![Effect::Future(Box::pin(async move {
+                smallvec![Effect::Future(Box::pin(async move {
                     Some(TodoAction::TodoToggled { completed, timestamp })
                 }))]
             }
@@ -224,18 +224,18 @@ impl<C: Clock> Reducer for TodoReducer {
             // Event: Todo toggled
             TodoAction::TodoToggled { completed, .. } => {
                 state.completed = completed;
-                vec![Effect::None]
+                smallvec![Effect::None]
             }
 
             // Command: Update title
             TodoAction::UpdateTitle { new_title } => {
                 if new_title.is_empty() {
-                    return vec![Effect::None];
+                    return smallvec![Effect::None];
                 }
 
                 let timestamp = env.clock.now();
 
-                vec![Effect::Future(Box::pin(async move {
+                smallvec![Effect::Future(Box::pin(async move {
                     Some(TodoAction::TitleUpdated { new_title, timestamp })
                 }))]
             }
@@ -243,7 +243,7 @@ impl<C: Clock> Reducer for TodoReducer {
             // Event: Title updated
             TodoAction::TitleUpdated { new_title, .. } => {
                 state.title = new_title;
-                vec![Effect::None]
+                smallvec![Effect::None]
             }
         }
     }
@@ -302,7 +302,7 @@ TodoAction::TodoCreated { id, title, .. } => {
     state.completed = false;
 
     // Add side effect
-    vec![Effect::Future(Box::pin(async move {
+    smallvec![Effect::Future(Box::pin(async move {
         println!("✓ Created todo: {} ({})", title, id);
         None // No follow-up action
     }))]

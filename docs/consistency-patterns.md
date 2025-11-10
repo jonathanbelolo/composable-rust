@@ -247,7 +247,7 @@ struct CheckoutSagaState {
 }
 
 impl CheckoutSaga {
-    async fn handle_order_placed(&mut self, event: OrderPlacedEvent) -> Vec<Effect<SagaAction>> {
+    async fn handle_order_placed(&mut self, event: OrderPlacedEvent) -> SmallVec<[Effect<SagaAction>; 4]> {
         // Event carries ALL data we need
         self.state.order_id = event.order_id;
         self.state.customer_id = event.customer_id;
@@ -258,7 +258,7 @@ impl CheckoutSaga {
 
         // Next step: charge payment
         // ✅ No projection query needed - we have everything!
-        vec![Effect::Future(Box::pin(async move {
+        smallvec![Effect::Future(Box::pin(async move {
             self.payment_service.charge(
                 self.state.payment_method,
                 self.state.order_total
@@ -267,12 +267,12 @@ impl CheckoutSaga {
         }))]
     }
 
-    async fn handle_payment_charged(&mut self, event: PaymentChargedEvent) -> Vec<Effect<SagaAction>> {
+    async fn handle_payment_charged(&mut self, event: PaymentChargedEvent) -> SmallVec<[Effect<SagaAction>; 4]> {
         self.state.payment_confirmed = true;
 
         // Reserve inventory
         // ✅ We have items from initial state - no query!
-        vec![Effect::Future(Box::pin(async move {
+        smallvec![Effect::Future(Box::pin(async move {
             self.inventory_service.reserve_items(
                 &self.state.order_id,
                 &self.state.items  // ✅ Already in saga state
@@ -281,10 +281,10 @@ impl CheckoutSaga {
         }))]
     }
 
-    async fn handle_payment_failed(&mut self, event: PaymentFailedEvent) -> Vec<Effect<SagaAction>> {
+    async fn handle_payment_failed(&mut self, event: PaymentFailedEvent) -> SmallVec<[Effect<SagaAction>; 4]> {
         // Compensate: cancel order
         // ✅ We have order_id - no query needed
-        vec![Effect::PublishEvent(OrderAction::CancelOrder {
+        smallvec![Effect::PublishEvent(OrderAction::CancelOrder {
             order_id: self.state.order_id.clone(),
             reason: "Payment failed".to_string(),
         })]
@@ -701,7 +701,7 @@ impl Reducer for OrderReducer {
         state: &mut Self::State,
         action: Self::Action,
         env: &Self::Environment,
-    ) -> Vec<Effect<Self::Action>> {
+    ) -> SmallVec<[Effect<Self::Action>; 4]> {
         match action {
             OrderAction::OrderShipped { order_id, tracking_number } => {
                 // Update state

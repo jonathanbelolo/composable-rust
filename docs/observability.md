@@ -138,7 +138,7 @@ impl Reducer for OrderReducer {
         state: &mut Self::State,
         action: Self::Action,
         env: &Self::Environment,
-    ) -> Vec<Effect<Self::Action>> {
+    ) -> SmallVec<[Effect<Self::Action>; 4]> {
         match action {
             OrderAction::PlaceOrder { customer_id, items } => {
                 tracing::info!(

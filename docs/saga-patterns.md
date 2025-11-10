@@ -138,7 +138,7 @@ impl Reducer for CheckoutSagaReducer {
         state: &mut Self::State,
         action: Self::Action,
         env: &Self::Environment,
-    ) -> Vec<Effect<Self::Action>> {
+    ) -> SmallVec<[Effect<Self::Action>; 4]> {
         match (state.step.clone(), action) {
             // Step 1: Order placed → charge payment
             (CheckoutStep::Started, CheckoutSagaAction::OrderPlaced { order_id, customer_id, items, total, .. }) => {
@@ -148,7 +148,7 @@ impl Reducer for CheckoutSagaReducer {
                 state.order_total = total;
                 state.step = CheckoutStep::ChargingPayment;
 
-                vec![Effect::Database(/* charge payment */)]
+                smallvec![Effect::Database(/* charge payment */)]
             }
 
             // Step 2: Payment charged → reserve inventory
@@ -157,7 +157,7 @@ impl Reducer for CheckoutSagaReducer {
                 state.completed_steps.push(CompletedStep::PaymentCharged);
                 state.step = CheckoutStep::ReservingInventory;
 
-                vec![Effect::Database(/* reserve inventory */)]
+                smallvec![Effect::Database(/* reserve inventory */)]
             }
 
             // Step 3: Inventory reserved → schedule shipment
@@ -166,7 +166,7 @@ impl Reducer for CheckoutSagaReducer {
                 state.completed_steps.push(CompletedStep::InventoryReserved);
                 state.step = CheckoutStep::SchedulingShipment;
 
-                vec![Effect::Database(/* schedule shipment */)]
+                smallvec![Effect::Database(/* schedule shipment */)]
             }
 
             // Step 4: Shipment scheduled → complete
@@ -174,7 +174,7 @@ impl Reducer for CheckoutSagaReducer {
                 state.shipping_scheduled = true;
                 state.step = CheckoutStep::Completed;
 
-                vec![Effect::PublishEvent(OrderAction::OrderShipped {
+                smallvec![Effect::PublishEvent(OrderAction::OrderShipped {
                     order_id: state.order_id.clone(),
                     tracking,
                     timestamp: env.clock.now(),
@@ -185,7 +185,7 @@ impl Reducer for CheckoutSagaReducer {
             (CheckoutStep::ChargingPayment, CheckoutSagaAction::PaymentFailed { reason, .. }) => {
                 state.step = CheckoutStep::Failed;
 
-                vec![Effect::PublishEvent(OrderAction::OrderCancelled {
+                smallvec![Effect::PublishEvent(OrderAction::OrderCancelled {
                     order_id: state.order_id.clone(),
                     reason,
                     timestamp: env.clock.now(),
@@ -197,10 +197,10 @@ impl Reducer for CheckoutSagaReducer {
                 state.step = CheckoutStep::Compensating;
 
                 // Refund payment (undo completed step)
-                vec![Effect::Database(/* refund payment */)]
+                smallvec![Effect::Database(/* refund payment */)]
             }
 
-            _ => vec![Effect::None],
+            _ => smallvec![Effect::None],
         }
     }
 }
@@ -239,7 +239,7 @@ pub struct TransferSagaState {
 }
 
 impl Reducer for TransferSagaReducer {
-    fn reduce(&self, state: &mut State, action: Action, env: &Env) -> Vec<Effect<Action>> {
+    fn reduce(&self, state: &mut State, action: Action, env: &Env) -> SmallVec<[Effect<Action>; 4]> {
         match action {
             TransferAction::TransferInitiated { transfer_id, from_account_id, to_account_id, amount, .. } => {
                 // ✅ Carry all data in state
@@ -249,7 +249,7 @@ impl Reducer for TransferSagaReducer {
                 state.amount = amount;
 
                 // Debit from account
-                vec![Effect::PublishEvent(AccountAction::Debit {
+                smallvec![Effect::PublishEvent(AccountAction::Debit {
                     account_id: from_account_id,
                     amount,
                     reference: format!("transfer-{}", transfer_id),
@@ -261,7 +261,7 @@ impl Reducer for TransferSagaReducer {
                 state.debit_transaction_id = Some(transaction_id);
 
                 // Credit to account (using state data)
-                vec![Effect::PublishEvent(AccountAction::Credit {
+                smallvec![Effect::PublishEvent(AccountAction::Credit {
                     account_id: state.to_account_id.clone(),  // From state!
                     amount: state.amount,                      // From state!
                     reference: format!("transfer-{}", state.transfer_id),
@@ -290,13 +290,13 @@ impl Reducer for TransferSagaReducer {
 
 ```rust
 impl Reducer for RefundSagaReducer {
-    fn reduce(&self, state: &mut State, action: Action, env: &Env) -> Vec<Effect<Action>> {
+    fn reduce(&self, state: &mut State, action: Action, env: &Env) -> SmallVec<[Effect<Action>; 4]> {
         match action {
             RefundAction::RefundInitiated { order_id, .. } => {
                 state.order_id = order_id.clone();
 
                 // Need current order state to process refund
-                vec![Effect::Future(Box::pin(async move {
+                smallvec![Effect::Future(Box::pin(async move {
                     // ✅ Query event store for current state
                     let stream_id = format!("order-{}", order_id);
                     let events = env.event_store.load_events(&stream_id).await?;
@@ -316,7 +316,7 @@ impl Reducer for RefundSagaReducer {
                 state.refund_amount = amount;
 
                 // Process refund
-                vec![Effect::Database(/* process refund */)]
+                smallvec![Effect::Database(/* process refund */)]
             }
 
             // ... rest of saga
@@ -352,14 +352,14 @@ pub struct OrderFulfillmentState {
 }
 
 impl Reducer for OrderFulfillmentReducer {
-    fn reduce(&self, state: &mut State, action: Action, env: &Env) -> Vec<Effect<Action>> {
+    fn reduce(&self, state: &mut State, action: Action, env: &Env) -> SmallVec<[Effect<Action>; 4]> {
         match action {
             FulfillmentAction::PaymentConfirmed { payment_details, .. } => {
                 // ✅ Accumulate data from each step
                 state.payment_details = Some(payment_details);
 
                 // Next step uses accumulated data
-                vec![Effect::Database(/* allocate inventory */)]
+                smallvec![Effect::Database(/* allocate inventory */)]
             }
 
             FulfillmentAction::InventoryAllocated { allocation, warehouse_id, .. } => {
@@ -367,7 +367,7 @@ impl Reducer for OrderFulfillmentReducer {
                 state.warehouse_assignment = Some(warehouse_id);
 
                 // Generate shipping label using accumulated data
-                vec![Effect::Future(Box::pin(async move {
+                smallvec![Effect::Future(Box::pin(async move {
                     let label = env.shipping_service.generate_label(
                         state.warehouse_assignment.unwrap(),
                         state.inventory_allocation.as_ref().unwrap(),
@@ -410,7 +410,7 @@ enum CompletedStep {
 }
 
 impl Reducer for CheckoutSagaReducer {
-    fn reduce(&self, state: &mut State, action: Action, env: &Env) -> Vec<Effect<Action>> {
+    fn reduce(&self, state: &mut State, action: Action, env: &Env) -> SmallVec<[Effect<Action>; 4]> {
         match action {
             CheckoutSagaAction::InventoryUnavailable { .. } => {
                 // ✅ Compensate in reverse order
@@ -448,11 +448,11 @@ Compensate independent steps in parallel:
 
 ```rust
 impl Reducer for CheckoutSagaReducer {
-    fn reduce(&self, state: &mut State, action: Action, env: &Env) -> Vec<Effect<Action>> {
+    fn reduce(&self, state: &mut State, action: Action, env: &Env) -> SmallVec<[Effect<Action>; 4]> {
         match action {
             CheckoutSagaAction::ShipmentFailed { .. } => {
                 // ✅ Compensate independent steps in parallel
-                vec![Effect::Parallel(vec![
+                smallvec![Effect::Parallel(vec![
                     // These can happen concurrently
                     Effect::Database(/* refund payment */),
                     Effect::Database(/* release inventory */),
@@ -511,14 +511,14 @@ async fn compensate_inventory(reservation_id: &str) -> Result<()> {
 use std::time::Duration;
 
 impl Reducer for CheckoutSagaReducer {
-    fn reduce(&self, state: &mut State, action: Action, env: &Env) -> Vec<Effect<Action>> {
+    fn reduce(&self, state: &mut State, action: Action, env: &Env) -> SmallVec<[Effect<Action>; 4]> {
         match action {
             CheckoutSagaAction::PaymentServiceUnavailable { attempt, .. } => {
                 if attempt < 3 {
                     // ✅ Retry with exponential backoff
                     let delay = Duration::from_millis(100 * 2_u64.pow(attempt));
 
-                    vec![Effect::Delay(
+                    smallvec![Effect::Delay(
                         delay,
                         Box::new(CheckoutSagaAction::RetryPayment {
                             order_id: state.order_id.clone(),
@@ -527,7 +527,7 @@ impl Reducer for CheckoutSagaReducer {
                     )]
                 } else {
                     // Max retries exceeded → compensate
-                    vec![Effect::PublishEvent(CheckoutSagaAction::PaymentFailed {
+                    smallvec![Effect::PublishEvent(CheckoutSagaAction::PaymentFailed {
                         order_id: state.order_id.clone(),
                         reason: "Payment service unavailable after 3 attempts".to_string(),
                     })]
@@ -553,7 +553,7 @@ impl Reducer for CheckoutSagaReducer {
 
 ```rust
 impl Reducer for CheckoutSagaReducer {
-    fn reduce(&self, state: &mut State, action: Action, env: &Env) -> Vec<Effect<Action>> {
+    fn reduce(&self, state: &mut State, action: Action, env: &Env) -> SmallVec<[Effect<Action>; 4]> {
         match action {
             CheckoutSagaAction::PaymentCharged { .. } => {
                 state.payment_confirmed = true;
@@ -579,12 +579,12 @@ impl Reducer for CheckoutSagaReducer {
             CheckoutSagaAction::InventoryTimeout { .. } => {
                 // ✅ Timeout fired → compensate
                 if !state.inventory_reserved {
-                    vec![Effect::PublishEvent(CheckoutSagaAction::InventoryUnavailable {
+                    smallvec![Effect::PublishEvent(CheckoutSagaAction::InventoryUnavailable {
                         order_id: state.order_id.clone(),
                         reason: "Timeout waiting for inventory".to_string(),
                     })]
                 } else {
-                    vec![Effect::None] // Already succeeded, ignore timeout
+                    smallvec![Effect::None] // Already succeeded, ignore timeout
                 }
             }
 
@@ -598,7 +598,7 @@ impl Reducer for CheckoutSagaReducer {
 
 ```rust
 impl Reducer for CheckoutSagaReducer {
-    fn reduce(&self, state: &mut State, action: Action, env: &Env) -> Vec<Effect<Action>> {
+    fn reduce(&self, state: &mut State, action: Action, env: &Env) -> SmallVec<[Effect<Action>; 4]> {
         match action {
             CheckoutSagaAction::UnrecoverableError { error, .. } => {
                 // ✅ Send to DLQ for manual intervention
@@ -868,11 +868,11 @@ async fn handle_payment_sent(&mut self) -> Result<()> {
 
 ```rust
 // ✅ CORRECT: Event-driven (wait for event)
-fn reduce(&self, state: &mut State, action: Action) -> Vec<Effect<Action>> {
+fn reduce(&self, state: &mut State, action: Action) -> SmallVec<[Effect<Action>; 4]> {
     match action {
         SagaAction::PaymentSent { .. } => {
             // Just wait for PaymentConfirmed event
-            vec![Effect::None]
+            smallvec![Effect::None]
         }
         SagaAction::PaymentConfirmed { .. } => {
             // Event arrived → continue

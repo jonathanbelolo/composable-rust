@@ -197,7 +197,7 @@ event_bus.publish("order-events", &event).await?;
 Use `Effect::PublishEvent` to publish after Postgres commit:
 
 ```rust
-fn reduce(&self, state: &mut State, action: Action, env: &Env) -> Vec<Effect<Action>> {
+fn reduce(&self, state: &mut State, action: Action, env: &Env) -> SmallVec<[Effect<Action>; 4]> {
     match action {
         OrderAction::PlaceOrder { cart } => {
             // 1. Update state
@@ -388,17 +388,17 @@ Redpanda provides **at-least-once delivery** with manual offset commits:
 Make your reducers **idempotent**:
 
 ```rust
-fn reduce(&self, state: &mut State, action: Action, env: &Env) -> Vec<Effect<Action>> {
+fn reduce(&self, state: &mut State, action: Action, env: &Env) -> SmallVec<[Effect<Action>; 4]> {
     match action {
         SagaAction::OrderPlaced { order_id } => {
             // Check if already processed
             if state.order_id.is_some() {
-                return vec![Effect::None]; // Duplicate, ignore
+                return smallvec![Effect::None]; // Duplicate, ignore
             }
 
             // First time, process it
             state.order_id = Some(order_id);
-            vec![Effect::DispatchCommand(ProcessPayment { order_id })]
+            smallvec![Effect::DispatchCommand(ProcessPayment { order_id })]
         }
     }
 }

@@ -87,7 +87,7 @@ impl Reducer for OrderReducer {
         state: &mut OrderState,
         action: OrderAction,
         env: &OrderEnv,
-    ) -> Vec<Effect<OrderAction>> {
+    ) -> SmallVec<[Effect<OrderAction>; 4]> {
         match action {
             // Step 1: Order placed
             OrderAction::PlaceOrder { customer_id, items } => {
@@ -112,7 +112,7 @@ impl Reducer for OrderReducer {
 
             // Step 2: Check inventory
             OrderAction::CheckInventory { order_id } => {
-                vec![Effect::Future(Box::pin({
+                smallvec![Effect::Future(Box::pin({
                     let inventory = env.inventory.clone();
                     let order_id = order_id.clone();
                     async move {
@@ -127,7 +127,7 @@ impl Reducer for OrderReducer {
 
             // Step 3: Process based on inventory
             OrderAction::InventoryAvailable { order_id } => {
-                vec![Effect::Future(Box::pin({
+                smallvec![Effect::Future(Box::pin({
                     let order_id = order_id.clone();
                     async move {
                         Some(OrderAction::ChargePayment { order_id })
@@ -138,7 +138,7 @@ impl Reducer for OrderReducer {
             // Handle failures
             OrderAction::InventoryUnavailable { order_id } => {
                 state.orders.get_mut(&order_id).unwrap().status = OrderStatus::Cancelled;
-                vec![Effect::None]
+                smallvec![Effect::None]
             }
 
             _ => vec![],
@@ -184,7 +184,7 @@ impl Reducer for CheckoutSagaReducer {
         state: &mut SagaState,
         action: SagaAction,
         env: &SagaEnv,
-    ) -> Vec<Effect<SagaAction>> {
+    ) -> SmallVec<[Effect<SagaAction>; 4]> {
         match action {
             // Forward flow
             SagaAction::OrderCreated { order_id } => {
@@ -192,7 +192,7 @@ impl Reducer for CheckoutSagaReducer {
                 state.completed_steps.push(SagaStep::CreateOrder);
                 state.current_step = SagaStep::ReserveInventory;
 
-                vec![Effect::Future(Box::pin(async move {
+                smallvec![Effect::Future(Box::pin(async move {
                     Some(SagaAction::ReserveInventory { order_id })
                 }))]
             }
@@ -202,7 +202,7 @@ impl Reducer for CheckoutSagaReducer {
                 state.completed_steps.push(SagaStep::ReserveInventory);
                 state.current_step = SagaStep::ChargePayment;
 
-                vec![Effect::Future(Box::pin({
+                smallvec![Effect::Future(Box::pin({
                     let order_id = state.order_id.clone().unwrap();
                     async move {
                         Some(SagaAction::ChargePayment { order_id })
@@ -221,7 +221,7 @@ impl Reducer for CheckoutSagaReducer {
 }
 
 impl CheckoutSagaReducer {
-    fn compensate(&self, state: &SagaState) -> Vec<Effect<SagaAction>> {
+    fn compensate(&self, state: &SagaState) -> SmallVec<[Effect<SagaAction>; 4]> {
         let mut effects = vec![];
 
         // Compensate in reverse order
@@ -447,12 +447,12 @@ struct OrderState {
 }
 
 impl Reducer for OrderReducer {
-    fn reduce(&self, state: &mut OrderState, action: OrderAction, env: &OrderEnv) -> Vec<Effect<OrderAction>> {
+    fn reduce(&self, state: &mut OrderState, action: OrderAction, env: &OrderEnv) -> SmallVec<[Effect<OrderAction>; 4]> {
         match action {
             OrderAction::PlaceOrder { request_id, .. } => {
                 // Check if already processed
                 if state.processed_request_ids.contains(&request_id) {
-                    return vec![Effect::None]; // Idempotent - already processed
+                    return smallvec![Effect::None]; // Idempotent - already processed
                 }
 
                 // Process and mark as seen
@@ -487,7 +487,7 @@ match action {
     OrderAction::PlaceOrder { customer_id, items } => {
         // Validate in reducer
         if items.is_empty() {
-            return vec![Effect::Future(Box::pin(async move {
+            return smallvec![Effect::Future(Box::pin(async move {
                 Some(OrderAction::OrderRejected {
                     reason: "Order must contain at least one item".into(),
                 })

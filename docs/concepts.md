@@ -921,7 +921,7 @@ async fn place_order(order: Order) {
 }
 
 // ✅ EXPLICIT: Effect as return value
-fn place_order(state: &mut State, order: Order) -> Vec<Effect> {
+fn place_order(state: &mut State, order: Order) -> SmallVec<[Effect; 4]> {
     state.orders.push(order);
     vec![Effect::Database(SaveOrder)]  // Visible!
 }

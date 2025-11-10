@@ -53,7 +53,7 @@ impl Reducer for CheckoutSaga {
         state: &mut Self::State,
         action: Self::Action,
         env: &Self::Environment,
-    ) -> Vec<Effect<Self::Action>> {
+    ) -> SmallVec<[Effect<Self::Action>; 4]> {
         match (state, action) {
             // State machine transitions...
         }
@@ -101,12 +101,12 @@ pub enum SagaStatus {
 State transitions are explicit in the pattern matching:
 
 ```rust
-fn reduce(&self, state: &mut State, action: Action, env: &Env) -> Vec<Effect<Action>> {
+fn reduce(&self, state: &mut State, action: Action, env: &Env) -> SmallVec<[Effect<Action>; 4]> {
     match (&state.status, action) {
         // Happy path: Idle → PlacingOrder
         (SagaStatus::Idle, CheckoutAction::InitiateCheckout { cart, customer }) => {
             state.status = SagaStatus::PlacingOrder;
-            vec![Effect::DispatchCommand(PlaceOrder { cart, customer })]
+            smallvec![Effect::DispatchCommand(PlaceOrder { cart, customer })]
         }
 
         // Happy path: PlacingOrder → ProcessingPayment
@@ -114,13 +114,13 @@ fn reduce(&self, state: &mut State, action: Action, env: &Env) -> Vec<Effect<Act
             state.order_id = Some(order_id);
             state.status = SagaStatus::ProcessingPayment;
             state.completed_steps.push("OrderPlaced".to_string());
-            vec![Effect::DispatchCommand(ProcessPayment { order_id })]
+            smallvec![Effect::DispatchCommand(ProcessPayment { order_id })]
         }
 
         // Error path: payment failure triggers compensation
         (SagaStatus::ProcessingPayment, CheckoutAction::PaymentFailed { .. }) => {
             state.status = SagaStatus::Compensating;
-            vec![Effect::DispatchCommand(CancelOrder { order_id: state.order_id })]
+            smallvec![Effect::DispatchCommand(CancelOrder { order_id: state.order_id })]
         }
 
         // More transitions...
@@ -190,7 +190,7 @@ match (&state.status, action) {
     (SagaStatus::Compensating, CheckoutAction::OrderCancelled { .. }) => {
         state.status = SagaStatus::Failed;
         state.completed_steps.push("Compensated".to_string());
-        vec![Effect::None]
+        smallvec![Effect::None]
     }
 }
 ```
@@ -231,7 +231,7 @@ vec![
 // On success, the timeout effect is cancelled automatically
 (SagaStatus::ReservingInventory, CheckoutAction::InventoryReserved { .. }) => {
     state.status = SagaStatus::Completed;
-    vec![Effect::None]
+    smallvec![Effect::None]
 }
 ```
 
@@ -252,7 +252,7 @@ Events may be delivered multiple times (at-least-once semantics):
 // Use IDs to detect duplicates
 (SagaStatus::Completed, CheckoutAction::InventoryReserved { .. }) => {
     // Already completed, ignore duplicate event
-    vec![Effect::None]
+    smallvec![Effect::None]
 }
 ```
 
@@ -335,7 +335,7 @@ Not all compensations may succeed:
     // Mark as failed with note
     state.status = SagaStatus::Failed;
     state.completed_steps.push(format!("RefundFailed: {error}"));
-    vec![Effect::None]
+    smallvec![Effect::None]
 }
 ```
 
