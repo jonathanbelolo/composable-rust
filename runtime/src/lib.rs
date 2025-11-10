@@ -2103,10 +2103,11 @@ pub mod store {
                     let store = self.clone();
 
                     tokio::spawn(async move {
+                        use futures::StreamExt;
+
                         let _guard = DecrementGuard(tracking_clone.clone());
                         let _pending_guard = pending_guard; // Decrement on drop
 
-                        use futures::StreamExt;
                         let mut stream = stream;
                         let mut item_count = 0;
 
@@ -2128,7 +2129,8 @@ pub mod store {
                             "Effect::Stream completed, processed {} items",
                             item_count
                         );
-                        metrics::histogram!("store.stream_items.total").record(item_count as f64);
+                        metrics::histogram!("store.stream_items.total")
+                            .record(f64::from(item_count));
                     });
                 },
                 Effect::Delay { duration, action } => {

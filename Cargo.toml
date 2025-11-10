@@ -17,6 +17,7 @@ members = [
     "examples/todo",
     "examples/banking",
     "examples/ticketing",
+    "examples/basic-agent",
     "auth",
     "web",
 ]
@@ -40,6 +41,7 @@ default-members = [
     "examples/todo",
     "examples/banking",
     "examples/ticketing",
+    "examples/basic-agent",
     "web",
 ]
 
