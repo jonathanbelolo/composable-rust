@@ -18,6 +18,7 @@ members = [
     "examples/banking",
     "examples/ticketing",
     "examples/basic-agent",
+    "examples/weather-agent",
     "auth",
     "web",
 ]
@@ -42,6 +43,7 @@ default-members = [
     "examples/banking",
     "examples/ticketing",
     "examples/basic-agent",
+    "examples/weather-agent",
     "web",
 ]
 
