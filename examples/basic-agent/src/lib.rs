@@ -36,6 +36,7 @@ use smallvec::{smallvec, SmallVec};
 /// 4. Execute tools in parallel
 /// 5. Collect all tool results
 /// 6. Continue conversation with Claude
+#[derive(Clone)]
 pub struct BasicAgentReducer<E> {
     _phantom: std::marker::PhantomData<E>,
 }

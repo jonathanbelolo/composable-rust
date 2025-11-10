@@ -21,6 +21,7 @@ pub type ToolExecutorFn =
     Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = ToolResult> + Send>> + Send + Sync>;
 
 /// Production agent environment that calls the real Anthropic API
+#[derive(Clone)]
 pub struct ProductionAgentEnvironment {
     /// Claude API client
     client: Arc<AnthropicClient>,
