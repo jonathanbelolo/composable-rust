@@ -42,7 +42,9 @@ Reducer: (State, Action, Env) → (New State, Effects)
        ↓
 Store executes Effects
        ↓
-Effects produce new Actions (e.g., Effect::Future returns Option<Action>)
+Effects produce new Actions:
+  - Effect::Future returns 0 or 1 action
+  - Effect::Stream yields 0..N actions over time
        ↓
 Loop back to Reducer
 ```
@@ -199,11 +201,20 @@ impl Reducer for OrderReducer {
 pub enum Effect<Action> {
     None,
     Future(Pin<Box<dyn Future<Output = Option<Action>> + Send>>),
+    Stream(Pin<Box<dyn Stream<Item = Action> + Send>>),  // Phase 8
     Delay { duration: Duration, action: Box<Action> },
     Parallel(Vec<Effect<Action>>),
     Sequential(Vec<Effect<Action>>),
 }
 ```
+
+**Effect Variants**:
+- **`None`**: No side effect needed
+- **`Future`**: Async operation yielding 0 or 1 action
+- **`Stream`**: Streaming operation yielding 0..N actions over time (Phase 8)
+- **`Delay`**: Scheduled action after a duration
+- **`Parallel`**: Execute multiple effects concurrently
+- **`Sequential`**: Execute effects in order, waiting for each to complete
 
 ### Effect Patterns
 
@@ -233,7 +244,32 @@ smallvec![delay! {
 }]
 ```
 
-**4. Multiple parallel effects:**
+**4. Streaming actions (LLM tokens, WebSocket messages, etc.):**
+```rust
+use futures::stream;
+
+// Stream multiple actions over time
+smallvec![Effect::Stream(Box::pin(stream::iter(
+    items.into_iter().map(|item| OrderAction::ItemProcessed { item })
+)))]
+
+// Async stream with delays
+smallvec![Effect::Stream(Box::pin(async_stream::stream! {
+    let mut response_stream = llm_client.messages_stream(request).await?;
+
+    while let Some(chunk) = response_stream.next().await {
+        yield AgentAction::StreamChunk {
+            content: chunk?.delta.text
+        };
+    }
+
+    yield AgentAction::StreamComplete;
+}))]
+```
+
+**Use cases**: LLM token streaming, WebSocket message streams, database cursors, SSE, multi-agent progress tracking.
+
+**5. Multiple parallel effects:**
 ```rust
 smallvec![Effect::Parallel(smallvec![
     Effect::Database(SaveOrder),
@@ -242,7 +278,7 @@ smallvec![Effect::Parallel(smallvec![
 ])]
 ```
 
-**5. Sequential effects (order matters):**
+**6. Sequential effects (order matters):**
 ```rust
 smallvec![Effect::Sequential(smallvec![
     Effect::Database(ReserveInventory),

@@ -8,6 +8,7 @@ members = [
     "redpanda",
     "projections",
     "macros",
+    "anthropic",
     "examples/counter",
     "examples/order-processing",
     "examples/order-projection",
@@ -30,6 +31,7 @@ default-members = [
     "redpanda",
     "projections",
     "macros",
+    "anthropic",
     "examples/counter",
     "examples/order-processing",
     "examples/order-projection",
@@ -53,6 +55,10 @@ repository = "https://github.com/yourusername/composable-rust"
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
+async-stream = "0.3"
+
+# HTTP client
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

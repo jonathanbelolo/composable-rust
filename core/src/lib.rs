@@ -79,6 +79,9 @@ pub mod projection;
 // Phase 5: Effect helper macros for ergonomic effect construction
 pub mod effect_macros;
 
+// Phase 8: Agent types for AI agent systems
+pub mod agent;
+
 /// Action module - Unified input type for reducers (commands, events, cross-aggregate events)
 ///
 /// # Phase 1 Implementation
@@ -206,6 +209,9 @@ pub mod effect {
     use std::future::Future;
     use std::pin::Pin;
     use std::time::Duration;
+
+    use futures::stream::Stream;
+    use futures::StreamExt;
 
     use crate::event::SerializedEvent;
     use crate::event_bus::{EventBus, EventBusError};
@@ -388,6 +394,100 @@ pub mod effect {
         /// Returns `Option<Action>` - if Some, the action is fed back into the reducer
         Future(Pin<Box<dyn Future<Output = Option<Action>> + Send>>),
 
+        /// Stream of actions over time (Phase 8)
+        ///
+        /// Unlike `Future` which yields 0 or 1 action, `Stream` yields 0..N actions
+        /// over time. Each item from the stream becomes a separate action fed back
+        /// into the reducer loop.
+        ///
+        /// Streams must eventually terminate. For long-running or infinite streams,
+        /// use timeouts or cancellation mechanisms (implemented in Phase 8.6).
+        ///
+        /// # When to Use
+        ///
+        /// - **LLM streaming responses**: Show tokens as they arrive
+        /// - **WebSocket connections**: Handle incoming messages over time
+        /// - **Server-Sent Events**: Real-time notifications
+        /// - **Database cursors**: Process large result sets incrementally
+        /// - **Multi-agent progress**: Stream updates from long-running tasks
+        ///
+        /// # Error Handling
+        ///
+        /// Streams should yield error actions rather than panicking:
+        ///
+        /// ```ignore
+        /// Effect::Stream(Box::pin(async_stream::stream! {
+        ///     match fetch_data().await {
+        ///         Ok(data) => {
+        ///             for chunk in data {
+        ///                 yield Action::Chunk { text: chunk };
+        ///             }
+        ///         }
+        ///         Err(e) => {
+        ///             yield Action::StreamError { error: e.to_string() };
+        ///         }
+        ///     }
+        /// }))
+        /// ```
+        ///
+        /// # Backpressure
+        ///
+        /// The runtime consumes stream items sequentially, providing natural backpressure.
+        /// Each item is fully processed (reducer + effects) before the next is requested.
+        ///
+        /// # Examples
+        ///
+        /// ## Static stream from vec
+        ///
+        /// ```ignore
+        /// use futures::stream;
+        ///
+        /// Effect::Stream(Box::pin(stream::iter(vec![
+        ///     AgentAction::Chunk { text: "Hello".to_string() },
+        ///     AgentAction::Chunk { text: " world".to_string() },
+        ///     AgentAction::Complete,
+        /// ])))
+        /// ```
+        ///
+        /// ## Async stream with I/O
+        ///
+        /// ```ignore
+        /// Effect::Stream(Box::pin(async_stream::stream! {
+        ///     let mut response_stream = client.messages_stream(request).await?;
+        ///
+        ///     while let Some(chunk) = response_stream.next().await {
+        ///         yield AgentAction::StreamChunk {
+        ///             content: chunk?.delta.text,
+        ///         };
+        ///     }
+        ///
+        ///     yield AgentAction::StreamComplete;
+        /// }))
+        /// ```
+        ///
+        /// ## WebSocket connection
+        ///
+        /// ```ignore
+        /// Effect::Stream(Box::pin(async_stream::stream! {
+        ///     let ws_stream = connect_async(&url).await?;
+        ///     let (_, mut read) = ws_stream.split();
+        ///
+        ///     while let Some(msg) = read.next().await {
+        ///         match msg? {
+        ///             Message::Text(text) => {
+        ///                 yield AppAction::WebSocketMessage { text };
+        ///             }
+        ///             Message::Close(_) => {
+        ///                 yield AppAction::WebSocketClosed;
+        ///                 break;
+        ///             }
+        ///             _ => {}
+        ///         }
+        ///     }
+        /// }))
+        /// ```
+        Stream(Pin<Box<dyn Stream<Item = Action> + Send + 'static>>),
+
         /// Event store operation (Phase 2)
         ///
         /// Describes an event sourcing persistence operation to be executed by
@@ -460,6 +560,7 @@ pub mod effect {
                     .field("action", action)
                     .finish(),
                 Effect::Future(_) => write!(f, "Effect::Future(<future>)"),
+                Effect::Stream(_) => write!(f, "Effect::Stream(<stream>)"),
                 Effect::EventStore(op) => match op {
                     EventStoreOperation::AppendEvents {
                         stream_id,
@@ -588,6 +689,7 @@ pub mod effect {
                     action: Box::new(f(*action)),
                 },
                 Effect::Future(fut) => Effect::Future(Box::pin(async move { fut.await.map(f) })),
+                Effect::Stream(stream) => Effect::Stream(Box::pin(stream.map(f))),
                 Effect::EventStore(op) => Effect::EventStore(map_event_store_operation(op, f)),
                 Effect::PublishEvent(op) => Effect::PublishEvent(map_event_bus_operation(op, f)),
             }
@@ -628,6 +730,7 @@ pub mod effect {
                 action: Box::new(f(*action)),
             },
             Effect::Future(fut) => Effect::Future(Box::pin(async move { fut.await.map(f) })),
+            Effect::Stream(stream) => Effect::Stream(Box::pin(stream.map(f))),
             Effect::EventStore(op) => Effect::EventStore(map_event_store_operation(op, f)),
             Effect::PublishEvent(op) => Effect::PublishEvent(map_event_bus_operation(op, f)),
         }
@@ -1101,5 +1204,214 @@ mod tests {
 
         assert_eq!(effects.len(), 6);
         assert!(effects.spilled(), "Collected 6 effects should spill");
+    }
+
+    // ========== Effect::Stream Tests ==========
+
+    #[tokio::test]
+    async fn test_effect_stream_basic() {
+        use futures::stream;
+
+        let effect: Effect<TestAction> = Effect::Stream(Box::pin(stream::iter(vec![
+            TestAction::Action1,
+            TestAction::Action2,
+            TestAction::Action3,
+        ])));
+
+        match effect {
+            Effect::Stream(s) => {
+                use futures::StreamExt;
+                let items: Vec<_> = s.collect().await;
+                assert_eq!(items.len(), 3);
+                assert_eq!(items[0], TestAction::Action1);
+                assert_eq!(items[1], TestAction::Action2);
+                assert_eq!(items[2], TestAction::Action3);
+            },
+            _ => panic!("Expected Stream effect"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_effect_stream_empty() {
+        use futures::stream;
+
+        let effect: Effect<TestAction> =
+            Effect::Stream(Box::pin(stream::iter(Vec::<TestAction>::new())));
+
+        match effect {
+            Effect::Stream(s) => {
+                use futures::StreamExt;
+                let items: Vec<_> = s.collect().await;
+                assert_eq!(items.len(), 0);
+            },
+            _ => panic!("Expected Stream effect"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_effect_stream_map() {
+        use futures::stream;
+
+        let effect: Effect<TestAction> = Effect::Stream(Box::pin(stream::iter(vec![
+            TestAction::Action1,
+            TestAction::Action2,
+        ])));
+
+        let mapped: Effect<MappedAction> = effect.map(|a| MappedAction::Mapped(a));
+
+        match mapped {
+            Effect::Stream(s) => {
+                use futures::StreamExt;
+                let items: Vec<_> = s.collect().await;
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0], MappedAction::Mapped(TestAction::Action1));
+                assert_eq!(items[1], MappedAction::Mapped(TestAction::Action2));
+            },
+            _ => panic!("Expected Stream effect"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_effect_stream_async() {
+        use futures::stream;
+        use tokio::time::{sleep, Duration as TokioDuration};
+
+        // Create async stream with delays
+        let effect: Effect<TestAction> =
+            Effect::Stream(Box::pin(stream::unfold(0, |count| async move {
+                if count < 3 {
+                    sleep(TokioDuration::from_millis(10)).await;
+                    Some((TestAction::Action1, count + 1))
+                } else {
+                    None
+                }
+            })));
+
+        match effect {
+            Effect::Stream(s) => {
+                use futures::StreamExt;
+                let start = std::time::Instant::now();
+                let items: Vec<_> = s.collect().await;
+                let elapsed = start.elapsed();
+
+                assert_eq!(items.len(), 3);
+                assert!(
+                    elapsed.as_millis() >= 30,
+                    "Should take ~30ms for 3 items with 10ms delays"
+                );
+            },
+            _ => panic!("Expected Stream effect"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_effect_stream_with_async_stream_macro() {
+        use async_stream::stream;
+
+        let effect: Effect<TestAction> = Effect::Stream(Box::pin(stream! {
+            yield TestAction::Action1;
+            yield TestAction::Action2;
+            yield TestAction::Action3;
+        }));
+
+        match effect {
+            Effect::Stream(s) => {
+                use futures::StreamExt;
+                let items: Vec<_> = s.collect().await;
+                assert_eq!(items.len(), 3);
+                assert_eq!(items[0], TestAction::Action1);
+                assert_eq!(items[1], TestAction::Action2);
+                assert_eq!(items[2], TestAction::Action3);
+            },
+            _ => panic!("Expected Stream effect"),
+        }
+    }
+
+    #[test]
+    fn test_stream_in_parallel() {
+        use futures::stream;
+
+        let effect: Effect<TestAction> = Effect::Parallel(vec![
+            Effect::Stream(Box::pin(stream::iter(vec![TestAction::Action1]))),
+            Effect::Stream(Box::pin(stream::iter(vec![TestAction::Action2]))),
+            Effect::Stream(Box::pin(stream::iter(vec![TestAction::Action3]))),
+        ]);
+
+        // Verify structure
+        match effect {
+            Effect::Parallel(effects) => {
+                assert_eq!(effects.len(), 3);
+                for effect in effects {
+                    assert!(matches!(effect, Effect::Stream(_)));
+                }
+            },
+            _ => panic!("Expected Parallel effect"),
+        }
+    }
+
+    #[test]
+    fn test_stream_in_sequential() {
+        use futures::stream;
+
+        let effect: Effect<TestAction> = Effect::Sequential(vec![
+            Effect::Stream(Box::pin(stream::iter(vec![TestAction::Action1]))),
+            Effect::None,
+            Effect::Stream(Box::pin(stream::iter(vec![TestAction::Action2]))),
+        ]);
+
+        // Verify structure
+        match effect {
+            Effect::Sequential(effects) => {
+                assert_eq!(effects.len(), 3);
+                assert!(matches!(effects[0], Effect::Stream(_)));
+                assert!(matches!(effects[1], Effect::None));
+                assert!(matches!(effects[2], Effect::Stream(_)));
+            },
+            _ => panic!("Expected Sequential effect"),
+        }
+    }
+
+    #[test]
+    fn test_stream_debug() {
+        use futures::stream;
+
+        let effect: Effect<TestAction> =
+            Effect::Stream(Box::pin(stream::iter(vec![TestAction::Action1])));
+
+        let debug_str = format!("{:?}", effect);
+        assert!(debug_str.contains("Effect::Stream(<stream>)"));
+    }
+
+    #[tokio::test]
+    async fn test_nested_stream_map() {
+        use futures::stream;
+
+        // Create nested Parallel containing streams, then map the whole thing
+        let effect: Effect<TestAction> = Effect::Parallel(vec![
+            Effect::Stream(Box::pin(stream::iter(vec![TestAction::Action1]))),
+            Effect::Sequential(vec![
+                Effect::Stream(Box::pin(stream::iter(vec![TestAction::Action2]))),
+                Effect::None,
+            ]),
+        ]);
+
+        let mapped: Effect<MappedAction> = effect.map(|a| MappedAction::Mapped(a));
+
+        // Verify nested structure is preserved and mapped
+        match mapped {
+            Effect::Parallel(effects) => {
+                assert_eq!(effects.len(), 2);
+                assert!(matches!(effects[0], Effect::Stream(_)));
+                match &effects[1] {
+                    Effect::Sequential(inner) => {
+                        assert_eq!(inner.len(), 2);
+                        assert!(matches!(inner[0], Effect::Stream(_)));
+                        assert!(matches!(inner[1], Effect::None));
+                    },
+                    _ => panic!("Expected Sequential in Parallel"),
+                }
+            },
+            _ => panic!("Expected Parallel effect"),
+        }
     }
 }

@@ -11,6 +11,33 @@
 //! - **Effect Executor**: Executes effect descriptions and feeds actions back to reducers
 //! - **Event Loop**: Manages the action → reducer → effects → action feedback loop
 //!
+//! ## Effect Execution
+//!
+//! The Store executes all effect variants defined in `composable_rust_core::Effect`:
+//!
+//! - **`Effect::None`**: No-op, completes immediately
+//! - **`Effect::Future`**: Spawns async task, yields 0 or 1 action
+//! - **`Effect::Stream`**: Spawns async task, yields 0..N actions over time (Phase 8)
+//! - **`Effect::Delay`**: Sleeps for duration, then yields action
+//! - **`Effect::Parallel`**: Executes multiple effects concurrently
+//! - **`Effect::Sequential`**: Executes effects in sequence, waiting for each to complete
+//!
+//! ### Stream Execution (Phase 8)
+//!
+//! `Effect::Stream` enables streaming multiple actions over time. The runtime:
+//!
+//! 1. Spawns a tokio task to consume the stream
+//! 2. Sequentially processes each item: `while let Some(action) = stream.next().await`
+//! 3. Broadcasts each action to observers (WebSocket handlers, metrics)
+//! 4. Sends each action back to the reducer (feedback loop)
+//! 5. Natural backpressure: waits for reducer + effects to complete before requesting next item
+//!
+//! **Observability**:
+//! - Tracing: Spans for stream start, per-item, and completion
+//! - Metrics: `store.effects.executed{type="stream"}`, `store.stream_items.processed`, `store.stream_items.total`
+//!
+//! **Use cases**: LLM token streaming, WebSocket message streams, database cursors, SSE, multi-agent progress tracking
+//!
 //! ## Example
 //!
 //! ```ignore
@@ -2061,6 +2088,47 @@ pub mod store {
                         } else {
                             tracing::trace!("Effect::Future completed with no action");
                         }
+                    });
+                },
+                Effect::Stream(stream) => {
+                    tracing::trace!("Executing Effect::Stream");
+                    metrics::counter!("store.effects.executed", "type" => "stream").increment(1);
+                    tracking.increment();
+
+                    // Track global pending effects for shutdown
+                    self.pending_effects.fetch_add(1, Ordering::SeqCst);
+                    let pending_guard = AtomicCounterGuard(Arc::clone(&self.pending_effects));
+
+                    let tracking_clone = tracking.clone();
+                    let store = self.clone();
+
+                    tokio::spawn(async move {
+                        let _guard = DecrementGuard(tracking_clone.clone());
+                        let _pending_guard = pending_guard; // Decrement on drop
+
+                        use futures::StreamExt;
+                        let mut stream = stream;
+                        let mut item_count = 0;
+
+                        tracing::trace!("Starting stream consumption");
+
+                        while let Some(action) = stream.next().await {
+                            item_count += 1;
+                            tracing::trace!("Stream yielded item #{}", item_count);
+                            metrics::counter!("store.stream_items.processed").increment(1);
+
+                            // Broadcast to observers (HTTP handlers, WebSockets, metrics)
+                            let _ = store.action_broadcast.send(action.clone());
+
+                            // Send action back to store (auto-feedback)
+                            let _ = store.send(action).await;
+                        }
+
+                        tracing::trace!(
+                            "Effect::Stream completed, processed {} items",
+                            item_count
+                        );
+                        metrics::histogram!("store.stream_items.total").record(item_count as f64);
                     });
                 },
                 Effect::Delay { duration, action } => {

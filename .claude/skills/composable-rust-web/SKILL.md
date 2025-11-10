@@ -295,6 +295,44 @@ pub async fn send(&self, action: Action) {
 
 **Pattern**: Broadcast action before or after reducing (depending on needs). Ignore send errors (no subscribers OK).
 
+### Streaming Actions via WebSocket (Phase 8)
+
+`Effect::Stream` automatically broadcasts each streamed action to WebSocket clients:
+
+```rust
+// In your reducer
+fn reduce(...) -> SmallVec<[Effect<Action>; 4]> {
+    match action {
+        Action::StartLlmGeneration { prompt } => {
+            // Stream LLM tokens as they arrive
+            let effect = Effect::Stream(Box::pin(async_stream::stream! {
+                let mut response_stream = env.llm_client.messages_stream(prompt).await?;
+
+                while let Some(chunk) = response_stream.next().await {
+                    // Each yield is automatically broadcast to WebSocket clients
+                    yield Action::LlmChunk {
+                        content: chunk?.delta.text
+                    };
+                }
+
+                yield Action::LlmComplete;
+            }));
+
+            smallvec![effect]
+        }
+        // ...
+    }
+}
+```
+
+**Result**: WebSocket clients receive `LlmChunk` actions in real-time as tokens arrive.
+
+**Use cases**:
+- LLM token streaming (ChatGPT-style UX)
+- Progress updates from long-running operations
+- Multi-step workflow status broadcasts
+- Real-time data feed processing
+
 ### Client Integration (React Example)
 
 ```typescript
