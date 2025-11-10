@@ -617,8 +617,10 @@ async fn handler(
 Alternative: Use effect that returns result action:
 
 ```rust
+use composable_rust_core::async_effect;
+
 fn reduce(...) -> Vec<Effect> {
-    vec![Effect::Future(Box::pin(async move {
+    vec![async_effect! {
         let result = database.save(&data).await?;
 
         // Return action with result
@@ -626,7 +628,7 @@ fn reduce(...) -> Vec<Effect> {
             success: true,
             id: result.id,
         })
-    }))]
+    }]
 }
 ```
 

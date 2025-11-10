@@ -204,7 +204,7 @@ fn reduce(&self, state: &mut State, action: Action, env: &Env) -> SmallVec<[Effe
             state.status = OrderStatus::Placed;
 
             // 2. Return effects
-            vec![
+            smallvec![
                 // First: persist to Postgres (source of truth)
                 Effect::EventStore(AppendEvents {
                     events: vec![OrderPlaced { order_id: state.id, cart }],

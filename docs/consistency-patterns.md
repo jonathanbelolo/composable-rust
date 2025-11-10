@@ -258,13 +258,13 @@ impl CheckoutSaga {
 
         // Next step: charge payment
         // ✅ No projection query needed - we have everything!
-        smallvec![Effect::Future(Box::pin(async move {
+        smallvec![async_effect! {
             self.payment_service.charge(
                 self.state.payment_method,
                 self.state.order_total
             ).await?;
             Some(SagaAction::PaymentCharged { order_id: self.state.order_id })
-        }))]
+        }]
     }
 
     async fn handle_payment_charged(&mut self, event: PaymentChargedEvent) -> SmallVec<[Effect<SagaAction>; 4]> {
@@ -272,13 +272,13 @@ impl CheckoutSaga {
 
         // Reserve inventory
         // ✅ We have items from initial state - no query!
-        smallvec![Effect::Future(Box::pin(async move {
+        smallvec![async_effect! {
             self.inventory_service.reserve_items(
                 &self.state.order_id,
                 &self.state.items  // ✅ Already in saga state
             ).await?;
             Some(SagaAction::InventoryReserved { order_id: self.state.order_id })
-        }))]
+        }]
     }
 
     async fn handle_payment_failed(&mut self, event: PaymentFailedEvent) -> SmallVec<[Effect<SagaAction>; 4]> {
@@ -304,7 +304,7 @@ When saga needs current state of an aggregate:
 
 ```rust
 impl TransferSaga {
-    async fn handle_transfer_initiated(&mut self, event: TransferInitiatedEvent) -> Result<Vec<Effect<SagaAction>>> {
+    async fn handle_transfer_initiated(&mut self, event: TransferInitiatedEvent) -> Result<SmallVec<[Effect<SagaAction>; 4]>> {
         // Need current balance to validate transfer
         let from_stream = format!("account-{}", event.from_account_id);
         let events = self.event_store.load_events(&from_stream).await?;
@@ -313,7 +313,7 @@ impl TransferSaga {
         // ✅ Now we have current balance
         if from_account.balance >= event.amount {
             // Proceed with transfer
-            Ok(vec![
+            Ok(smallvec![
                 Effect::PublishEvent(AccountAction::Debit {
                     account_id: event.from_account_id,
                     amount: event.amount,
@@ -321,7 +321,7 @@ impl TransferSaga {
             ])
         } else {
             // Insufficient funds - compensate
-            Ok(vec![
+            Ok(smallvec![
                 Effect::PublishEvent(TransferAction::TransferFailed {
                     transfer_id: event.transfer_id,
                     reason: "Insufficient funds".to_string(),
@@ -709,19 +709,17 @@ impl Reducer for OrderReducer {
                 state.tracking_number = Some(tracking_number.clone());
 
                 // ✅ Send email notification (async, eventual)
-                vec![
-                    Effect::Future(Box::pin({
+                smallvec![
+                    async_effect! {
                         let email = env.email_provider.clone();
                         let customer_email = state.customer_email.clone();
-                        async move {
-                            email.send_security_alert(
-                                &customer_email,
-                                "Your order has shipped!",
-                                &format!("Tracking: {tracking_number}"),
-                            ).await.ok();
-                            None // No follow-up action
-                        }
-                    })),
+                        email.send_security_alert(
+                            &customer_email,
+                            "Your order has shipped!",
+                            &format!("Tracking: {tracking_number}"),
+                        ).await.ok();
+                        None // No follow-up action
+                    },
                     Effect::PublishEvent(OrderAction::OrderShipped {
                         order_id,
                         tracking_number,

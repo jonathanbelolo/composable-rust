@@ -334,7 +334,7 @@ The counter uses `Effect::None` because it's a pure state machine. In real appli
 
 ```rust
 // Phase 2+: Effects with side effects
-vec![
+smallvec![
     Effect::Database(SaveOrder { order }),
     Effect::Http {
         url: "https://api.example.com",
@@ -342,9 +342,9 @@ vec![
         body: json_body,
     },
     Effect::PublishEvent(OrderPlaced { order_id }),
-    Effect::Delay {
+    delay! {
         duration: Duration::from_secs(60),
-        action: Box::new(CheckOrderStatus { order_id }),
+        action: CheckOrderStatus { order_id }
     },
 ]
 ```

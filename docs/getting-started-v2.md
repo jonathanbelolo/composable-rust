@@ -101,6 +101,7 @@ composable-rust-core = "0.1"
 composable-rust-runtime = "0.1"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
+smallvec = "1"
 chrono = "0.4"
 uuid = { version = "1", features = ["v4"] }
 
@@ -132,6 +133,7 @@ use composable_rust_core::{effect::Effect, environment::Clock, reducer::Reducer}
 use composable_rust_runtime::Store;
 use composable_rust_testing::test_clock;
 use serde::{Deserialize, Serialize};
+use smallvec::{smallvec, SmallVec};
 
 // ===== STATE =====
 
@@ -198,9 +200,9 @@ impl<C: Clock> Reducer for TodoReducer {
                 let id = format!("todo-{}", uuid::Uuid::new_v4());
                 let timestamp = env.clock.now();
 
-                smallvec![Effect::Future(Box::pin(async move {
+                smallvec![async_effect! {
                     Some(TodoAction::TodoCreated { id, title, timestamp })
-                }))]
+                }]
             }
 
             // Event: Todo created
@@ -216,9 +218,9 @@ impl<C: Clock> Reducer for TodoReducer {
                 let completed = !state.completed;
                 let timestamp = env.clock.now();
 
-                smallvec![Effect::Future(Box::pin(async move {
+                smallvec![async_effect! {
                     Some(TodoAction::TodoToggled { completed, timestamp })
-                }))]
+                }]
             }
 
             // Event: Todo toggled
@@ -235,9 +237,9 @@ impl<C: Clock> Reducer for TodoReducer {
 
                 let timestamp = env.clock.now();
 
-                smallvec![Effect::Future(Box::pin(async move {
+                smallvec![async_effect! {
                     Some(TodoAction::TitleUpdated { new_title, timestamp })
-                }))]
+                }]
             }
 
             // Event: Title updated
@@ -302,10 +304,10 @@ TodoAction::TodoCreated { id, title, .. } => {
     state.completed = false;
 
     // Add side effect
-    smallvec![Effect::Future(Box::pin(async move {
+    smallvec![async_effect! {
         println!("✓ Created todo: {} ({})", title, id);
         None // No follow-up action
-    }))]
+    }]
 }
 ```
 

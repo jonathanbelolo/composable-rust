@@ -451,7 +451,7 @@ Display live order status updates:
 
 ```rust
 // Server automatically broadcasts order events
-vec![AuthEffect::PublishEvent(OrderPlaced { ... })]
+smallvec![AuthEffect::PublishEvent(OrderPlaced { ... })]
 
 // All connected dashboards receive the event instantly
 ```
@@ -468,7 +468,7 @@ Send instant notifications to users:
 
 ```rust
 // Reducer emits notification event
-vec![AuthEffect::PublishEvent(NotificationCreated {
+smallvec![AuthEffect::PublishEvent(NotificationCreated {
     user_id,
     message: "Your order has shipped!",
     priority: Priority::High,

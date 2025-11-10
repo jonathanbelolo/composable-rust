@@ -296,7 +296,7 @@ impl Reducer for RefundSagaReducer {
                 state.order_id = order_id.clone();
 
                 // Need current order state to process refund
-                smallvec![Effect::Future(Box::pin(async move {
+                smallvec![async_effect! {
                     // ✅ Query event store for current state
                     let stream_id = format!("order-{}", order_id);
                     let events = env.event_store.load_events(&stream_id).await?;
@@ -309,7 +309,7 @@ impl Reducer for RefundSagaReducer {
                         order_id,
                         amount: refund_amount,
                     })
-                }))]
+                }]
             }
 
             RefundAction::RefundAmountCalculated { amount, .. } => {
@@ -367,14 +367,14 @@ impl Reducer for OrderFulfillmentReducer {
                 state.warehouse_assignment = Some(warehouse_id);
 
                 // Generate shipping label using accumulated data
-                smallvec![Effect::Future(Box::pin(async move {
+                smallvec![async_effect! {
                     let label = env.shipping_service.generate_label(
                         state.warehouse_assignment.unwrap(),
                         state.inventory_allocation.as_ref().unwrap(),
                     ).await?;
 
                     Some(FulfillmentAction::ShippingLabelGenerated { label })
-                }))]
+                }]
             }
 
             // ... continue building state
@@ -559,7 +559,7 @@ impl Reducer for CheckoutSagaReducer {
                 state.payment_confirmed = true;
 
                 // ✅ Start timeout for next step
-                vec![
+                smallvec![
                     Effect::Database(/* reserve inventory */),
                     Effect::Delay(
                         Duration::from_secs(30),
@@ -573,7 +573,7 @@ impl Reducer for CheckoutSagaReducer {
             CheckoutSagaAction::InventoryReserved { .. } => {
                 // Success - timeout no longer needed
                 state.inventory_reserved = true;
-                vec![/* continue */]
+                smallvec![/* continue */]
             }
 
             CheckoutSagaAction::InventoryTimeout { .. } => {
@@ -602,8 +602,8 @@ impl Reducer for CheckoutSagaReducer {
         match action {
             CheckoutSagaAction::UnrecoverableError { error, .. } => {
                 // ✅ Send to DLQ for manual intervention
-                vec![
-                    Effect::Future(Box::pin(async move {
+                smallvec![
+                    async_effect! {
                         env.dlq.send(DLQMessage {
                             saga_id: state.order_id.clone(),
                             saga_type: "CheckoutSaga",
@@ -613,7 +613,7 @@ impl Reducer for CheckoutSagaReducer {
                         }).await?;
 
                         Some(CheckoutSagaAction::SentToDLQ { order_id: state.order_id.clone() })
-                    })),
+                    },
                     // Notify ops team
                     Effect::PublishEvent(AlertAction::SagaFailure {
                         saga_id: state.order_id.clone(),
@@ -876,7 +876,7 @@ fn reduce(&self, state: &mut State, action: Action) -> SmallVec<[Effect<Action>;
         }
         SagaAction::PaymentConfirmed { .. } => {
             // Event arrived → continue
-            vec![/* next step */]
+            smallvec![/* next step */]
         }
     }
 }

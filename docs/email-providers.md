@@ -313,7 +313,7 @@ match action {
     AuthAction::InitiateMagicLink { email } => {
         // Reducer generates a token and returns an email effect
         let token = generate_token();
-        vec![
+        smallvec![
             AuthEffect::SendMagicLink {
                 email: email.clone(),
                 token,

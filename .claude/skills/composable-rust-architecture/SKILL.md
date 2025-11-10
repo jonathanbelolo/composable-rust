@@ -215,18 +215,21 @@ smallvec![Effect::None]
 
 **2. Async operation (database, HTTP, etc.):**
 ```rust
-let future = async move {
+use composable_rust_core::async_effect;
+
+smallvec![async_effect! {
     database.save(&data).await?;
     Some(OrderAction::OrderSaved { order_id })
-};
-smallvec![Effect::Future(Box::pin(future))]
+}]
 ```
 
 **3. Delayed action (timers, retries):**
 ```rust
-smallvec![Effect::Delay {
+use composable_rust_core::delay;
+
+smallvec![delay! {
     duration: Duration::from_secs(30),
-    action: Box::new(OrderAction::TimerExpired { order_id }),
+    action: OrderAction::TimerExpired { order_id }
 }]
 ```
 
@@ -583,11 +586,13 @@ fn reduce(...) {
 
 ### ❌ Anti-Pattern 4: Ignoring the Feedback Loop
 ```rust
+use composable_rust_core::async_effect;
+
 // ❌ Not returning actions from effects
-Effect::Future(Box::pin(async move {
+async_effect! {
     database.save(&data).await?;
     None  // ❌ Missing feedback!
-}))
+}
 ```
 **Solution**: Return actions from futures to feed back into the system.
 

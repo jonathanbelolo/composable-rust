@@ -127,10 +127,10 @@ Effect::None
 Arbitrary async computation that may produce an action.
 
 ```rust
-Effect::Future(Box::pin(async move {
+async_effect! {
     let result = some_async_work().await;
     Some(Action::Completed(result))
-}))
+}
 ```
 
 **Returns:**
@@ -142,9 +142,9 @@ Effect::Future(Box::pin(async move {
 Delayed action dispatch (like JavaScript's `setTimeout`).
 
 ```rust
-Effect::Delay {
+delay! {
     duration: Duration::from_secs(60),
-    action: Box::new(Action::TimeoutExpired),
+    action: Action::TimeoutExpired
 }
 ```
 
@@ -158,9 +158,9 @@ Execute multiple effects concurrently.
 
 ```rust
 Effect::Parallel(smallvec![
-    Effect::Future(Box::pin(send_email())),
-    Effect::Future(Box::pin(send_sms())),
-    Effect::Delay { /* ... */ },
+    async_effect! { send_email().await },
+    async_effect! { send_sms().await },
+    delay! { duration: Duration::from_secs(10), action: Action::Timeout },
 ])
 ```
 
@@ -175,9 +175,9 @@ Execute effects in order (next starts after previous completes).
 
 ```rust
 Effect::Sequential(smallvec![
-    Effect::Future(Box::pin(save_to_db())),      // First
-    Effect::Future(Box::pin(publish_event())),   // Then
-    Effect::Delay { /* notify */ },              // Finally
+    async_effect! { save_to_db().await },      // First
+    async_effect! { publish_event().await },   // Then
+    delay! { duration: Duration::from_secs(1), action: Action::Notify },  // Finally
 ])
 ```
 
@@ -224,11 +224,11 @@ pub fn merge(self, other: Effect<Action>) -> Effect<Action>
 **Example:**
 
 ```rust
-let effect1 = Effect::Future(Box::pin(async { Some(Action::A) }));
-let effect2 = Effect::Future(Box::pin(async { Some(Action::B) }));
+let effect1 = async_effect! { Some(Action::A) };
+let effect2 = async_effect! { Some(Action::B) };
 
 let combined = effect1.merge(effect2);
-// Equivalent to: Effect::Parallel(vec![effect1, effect2])
+// Equivalent to: Effect::Parallel(smallvec![effect1, effect2])
 ```
 
 ##### `chain(self, other: Effect<Action>) -> Effect<Action>`
@@ -242,11 +242,11 @@ pub fn chain(self, other: Effect<Action>) -> Effect<Action>
 **Example:**
 
 ```rust
-let effect1 = Effect::Future(Box::pin(save_order()));
-let effect2 = Effect::Future(Box::pin(publish_event()));
+let effect1 = async_effect! { save_order().await };
+let effect2 = async_effect! { publish_event().await };
 
 let chained = effect1.chain(effect2);
-// Equivalent to: Effect::Sequential(vec![effect1, effect2])
+// Equivalent to: Effect::Sequential(smallvec![effect1, effect2])
 ```
 
 ---

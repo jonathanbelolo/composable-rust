@@ -501,8 +501,8 @@ pub enum Effect<Action> {
     None,
     Future(Pin<Box<dyn Future<Output = Option<Action>> + Send>>),
     Delay { duration: Duration, action: Box<Action> },
-    Parallel(Vec<Effect<Action>>),
-    Sequential(Vec<Effect<Action>>),
+    Parallel(SmallVec<[Effect<Action>; 4]>),
+    Sequential(SmallVec<[Effect<Action>; 4]>),
 }
 ```
 
@@ -570,19 +570,19 @@ CounterAction::Increment => {
 Arbitrary async computation that may produce an action.
 
 ```rust
-Effect::Future(Box::pin(async move {
+async_effect! {
     let result = some_async_work().await;
     Some(Action::WorkCompleted(result))
-}))
+}
 ```
 
 **`Effect::Delay`**
 Delayed action dispatch (like `setTimeout` in JavaScript).
 
 ```rust
-Effect::Delay {
+delay! {
     duration: Duration::from_secs(60),
-    action: Box::new(Action::TimeoutExpired),
+    action: Action::TimeoutExpired
 }
 ```
 
@@ -923,7 +923,7 @@ async fn place_order(order: Order) {
 // ✅ EXPLICIT: Effect as return value
 fn place_order(state: &mut State, order: Order) -> SmallVec<[Effect; 4]> {
     state.orders.push(order);
-    vec![Effect::Database(SaveOrder)]  // Visible!
+    smallvec![Effect::Database(SaveOrder)]  // Visible!
 }
 ```
 
@@ -1111,11 +1111,11 @@ fn reduce(...) {
 Effects can panic due to runtime failures (network, disk, etc.):
 
 ```rust
-Effect::Future(Box::pin(async move {
+async_effect! {
     // If this panics, tokio::spawn isolates it
     let result = flaky_api_call().await?;
     Some(Action::Success(result))
-}))
+}
 ```
 
 **Result**: Effect failure is logged, but Store continues operating. Other effects and actions are unaffected.
@@ -1153,7 +1153,7 @@ match action {
     OrderAction::OrderFailed { reason } => {
         state.status = OrderStatus::Failed;
         state.error_message = Some(reason);
-        vec![Effect::PublishEvent(OrderFailed)]
+        smallvec![Effect::PublishEvent(OrderFailed)]
     },
     // ...
 }

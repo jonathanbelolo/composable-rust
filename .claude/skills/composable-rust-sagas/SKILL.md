@@ -585,14 +585,16 @@ match failed_step {
 ### Transient vs Permanent Failures
 
 ```rust
+use composable_rust_core::delay;
+
 match error {
     Error::NetworkTimeout | Error::ServiceUnavailable => {
         // Transient error → retry
         if state.retry_count < MAX_RETRIES {
             state.retry_count += 1;
-            vec![Effect::Delay {
+            vec![delay! {
                 duration: exponential_backoff(state.retry_count),
-                action: Box::new(original_action),
+                action: original_action
             }]
         } else {
             // Max retries → compensate
@@ -777,11 +779,13 @@ fn reduce(...) -> Vec<Effect> {
 ```
 **Solution**: Use timeouts and retry logic:
 ```rust
+use composable_rust_core::delay;
+
 vec![
     Effect::PublishEvent(command),
-    Effect::Delay {
+    delay! {
         duration: Duration::from_secs(30),
-        action: Box::new(SagaAction::StepTimeout { step: current_step }),
+        action: SagaAction::StepTimeout { step: current_step }
     },
 ]
 ```
@@ -995,13 +999,15 @@ pub active_children: Vec<ChildSaga>,  // Track which children are running
 ### Pattern: Saga Timeouts
 
 ```rust
+use composable_rust_core::delay;
+
 vec![
     Effect::PublishEvent(command),
-    Effect::Delay {
+    delay! {
         duration: Duration::from_secs(30),
-        action: Box::new(SagaAction::Timeout {
+        action: SagaAction::Timeout {
             step: state.current_step.clone(),
-        }),
+        }
     },
 ]
 

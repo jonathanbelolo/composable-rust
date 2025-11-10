@@ -172,7 +172,7 @@ match (&state.status, action) {
     // Payment fails → compensate by cancelling order
     (SagaStatus::ProcessingPayment, CheckoutAction::PaymentFailed { error }) => {
         state.status = SagaStatus::Compensating;
-        vec![
+        smallvec![
             Effect::DispatchCommand(CancelOrder { order_id: state.order_id }),
         ]
     }
@@ -180,7 +180,7 @@ match (&state.status, action) {
     // Inventory fails → compensate by refunding payment AND cancelling order
     (SagaStatus::ReservingInventory, CheckoutAction::InsufficientInventory { .. }) => {
         state.status = SagaStatus::Compensating;
-        vec![
+        smallvec![
             Effect::DispatchCommand(RefundPayment { payment_id: state.payment_id }),
             Effect::DispatchCommand(CancelOrder { order_id: state.order_id }),
         ]
@@ -210,11 +210,11 @@ Sagas must handle steps that never complete.
 
 ```rust
 // Start operation with timeout
-vec![
+smallvec![
     Effect::DispatchCommand(ReserveInventory { items }),
-    Effect::Delay {
+    delay! {
         duration: Duration::from_secs(30),
-        action: Some(Box::new(CheckoutAction::InventoryTimeout)),
+        action: CheckoutAction::InventoryTimeout
     },
 ]
 
@@ -222,7 +222,7 @@ vec![
 (SagaStatus::ReservingInventory, CheckoutAction::InventoryTimeout) => {
     // Treat timeout as failure → compensate
     state.status = SagaStatus::Compensating;
-    vec![
+    smallvec![
         Effect::DispatchCommand(RefundPayment { payment_id: state.payment_id }),
         Effect::DispatchCommand(CancelOrder { order_id: state.order_id }),
     ]

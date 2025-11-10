@@ -148,7 +148,7 @@ impl Reducer for OrderReducer {
                 );
 
                 // Business logic...
-                vec![/* effects */]
+                smallvec![/* effects */]
             }
             // ...
         }

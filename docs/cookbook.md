@@ -94,45 +94,39 @@ impl Reducer for OrderReducer {
                 let order_id = generate_id();
                 state.orders.insert(order_id.clone(), Order::new(customer_id, items));
 
-                vec![
+                smallvec![
                     Effect::AppendEvents {
                         stream_id: StreamId::new(&order_id),
                         events: vec![serialize(&OrderPlaced { order_id: order_id.clone() })],
                         expected_version: None,
                     },
-                    Effect::Future(Box::pin({
+                    async_effect! {
                         let order_id = order_id.clone();
-                        async move {
-                            // Triggers next step
-                            Some(OrderAction::CheckInventory { order_id })
-                        }
-                    })),
+                        // Triggers next step
+                        Some(OrderAction::CheckInventory { order_id })
+                    },
                 ]
             }
 
             // Step 2: Check inventory
             OrderAction::CheckInventory { order_id } => {
-                smallvec![Effect::Future(Box::pin({
+                smallvec![async_effect! {
                     let inventory = env.inventory.clone();
                     let order_id = order_id.clone();
-                    async move {
-                        match inventory.check_availability(&order_id).await {
-                            Ok(true) => Some(OrderAction::InventoryAvailable { order_id }),
-                            Ok(false) => Some(OrderAction::InventoryUnavailable { order_id }),
-                            Err(e) => Some(OrderAction::InventoryCheckFailed { order_id, error: e.to_string() }),
-                        }
+                    match inventory.check_availability(&order_id).await {
+                        Ok(true) => Some(OrderAction::InventoryAvailable { order_id }),
+                        Ok(false) => Some(OrderAction::InventoryUnavailable { order_id }),
+                        Err(e) => Some(OrderAction::InventoryCheckFailed { order_id, error: e.to_string() }),
                     }
-                }))]
+                }]
             }
 
             // Step 3: Process based on inventory
             OrderAction::InventoryAvailable { order_id } => {
-                smallvec![Effect::Future(Box::pin({
+                smallvec![async_effect! {
                     let order_id = order_id.clone();
-                    async move {
-                        Some(OrderAction::ChargePayment { order_id })
-                    }
-                }))]
+                    Some(OrderAction::ChargePayment { order_id })
+                }]
             }
 
             // Handle failures
@@ -141,7 +135,7 @@ impl Reducer for OrderReducer {
                 smallvec![Effect::None]
             }
 
-            _ => vec![],
+            _ => smallvec![],
         }
     }
 }
@@ -192,9 +186,9 @@ impl Reducer for CheckoutSagaReducer {
                 state.completed_steps.push(SagaStep::CreateOrder);
                 state.current_step = SagaStep::ReserveInventory;
 
-                smallvec![Effect::Future(Box::pin(async move {
+                smallvec![async_effect! {
                     Some(SagaAction::ReserveInventory { order_id })
-                }))]
+                }]
             }
 
             SagaAction::InventoryReserved { reservation_id } => {
@@ -202,12 +196,10 @@ impl Reducer for CheckoutSagaReducer {
                 state.completed_steps.push(SagaStep::ReserveInventory);
                 state.current_step = SagaStep::ChargePayment;
 
-                smallvec![Effect::Future(Box::pin({
+                smallvec![async_effect! {
                     let order_id = state.order_id.clone().unwrap();
-                    async move {
-                        Some(SagaAction::ChargePayment { order_id })
-                    }
-                }))]
+                    Some(SagaAction::ChargePayment { order_id })
+                }]
             }
 
             // Failure triggers compensation
@@ -215,36 +207,32 @@ impl Reducer for CheckoutSagaReducer {
                 self.compensate(state)
             }
 
-            _ => vec![],
+            _ => smallvec![],
         }
     }
 }
 
 impl CheckoutSagaReducer {
     fn compensate(&self, state: &SagaState) -> SmallVec<[Effect<SagaAction>; 4]> {
-        let mut effects = vec![];
+        let mut effects = SmallVec::new();
 
         // Compensate in reverse order
         for step in state.completed_steps.iter().rev() {
             match step {
                 SagaStep::ReserveInventory => {
                     if let Some(reservation_id) = &state.inventory_reservation_id {
-                        effects.push(Effect::Future(Box::pin({
+                        effects.push(async_effect! {
                             let reservation_id = reservation_id.clone();
-                            async move {
-                                Some(SagaAction::ReleaseInventory { reservation_id })
-                            }
-                        })));
+                            Some(SagaAction::ReleaseInventory { reservation_id })
+                        });
                     }
                 }
                 SagaStep::CreateOrder => {
                     if let Some(order_id) = &state.order_id {
-                        effects.push(Effect::Future(Box::pin({
+                        effects.push(async_effect! {
                             let order_id = order_id.clone();
-                            async move {
-                                Some(SagaAction::CancelOrder { order_id })
-                            }
-                        })));
+                            Some(SagaAction::CancelOrder { order_id })
+                        });
                     }
                 }
                 _ => {}
@@ -459,9 +447,9 @@ impl Reducer for OrderReducer {
                 state.processed_request_ids.insert(request_id.clone());
 
                 // ... continue with order placement
-                vec![/* ... */]
+                smallvec![/* ... */]
             }
-            _ => vec![],
+            _ => smallvec![],
         }
     }
 }
@@ -487,11 +475,11 @@ match action {
     OrderAction::PlaceOrder { customer_id, items } => {
         // Validate in reducer
         if items.is_empty() {
-            return smallvec![Effect::Future(Box::pin(async move {
+            return smallvec![async_effect! {
                 Some(OrderAction::OrderRejected {
                     reason: "Order must contain at least one item".into(),
                 })
-            }))];
+            }];
         }
 
         // ... continue processing
@@ -502,20 +490,18 @@ match action {
 ### Retry Policies for Transient Failures
 
 ```rust
-Effect::Future(Box::pin({
+async_effect! {
     let retry_policy = env.retry_policy.clone();
     let payment_gateway = env.payment_gateway.clone();
-    async move {
-        let result = retry_policy
-            .retry(|| payment_gateway.charge(&payment))
-            .await;
+    let result = retry_policy
+        .retry(|| payment_gateway.charge(&payment))
+        .await;
 
-        match result {
-            Ok(charge_id) => Some(OrderAction::PaymentCharged { charge_id }),
-            Err(e) => Some(OrderAction::PaymentFailed { reason: e.to_string() }),
-        }
+    match result {
+        Ok(charge_id) => Some(OrderAction::PaymentCharged { charge_id }),
+        Err(e) => Some(OrderAction::PaymentFailed { reason: e.to_string() }),
     }
-}))
+}
 ```
 
 **Key Points**:
