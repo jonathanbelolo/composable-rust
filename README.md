@@ -114,13 +114,18 @@ impl Reducer for OrderReducer {
 
 ```
 composable-rust/
-├── core/           # Core traits and types
-├── runtime/        # Store and effect execution
-├── testing/        # Test utilities and mocks
-├── examples/       # Reference implementations
-├── docs/           # Documentation and guides
-├── specs/          # Architecture specification
-└── plans/          # Implementation roadmap
+├── core/              # Core traits and types
+├── runtime/           # Store and effect execution
+├── testing/           # Test utilities and mocks
+├── postgres/          # PostgreSQL event store
+├── redpanda/          # Redpanda/Kafka event bus
+├── web/               # HTTP and WebSocket framework
+├── auth/              # Authentication framework
+├── examples/          # Reference implementations
+├── docs/              # Documentation and guides (21 comprehensive docs)
+├── specs/             # Architecture specification
+├── plans/             # Implementation roadmap
+└── .claude/skills/    # 7 Claude Code expert skills
 ```
 
 ## Crates
@@ -137,6 +142,27 @@ composable-rust/
 ### Web & Authentication Crates
 - **`composable-rust-web`**: HTTP API and WebSocket framework (Axum integration)
 - **`composable-rust-auth`**: Authentication framework (magic links, OAuth, passkeys, email providers)
+
+## Claude Code Skills
+
+This repository includes **7 expert skills** for Claude Code (`.claude/skills/`) to accelerate development:
+
+1. **`modern-rust-expert`**: Rust Edition 2024, clippy compliance, async patterns (1200+ lines)
+2. **`composable-rust-architecture`**: Core patterns, reducers, effects, developer macros (850+ lines)
+3. **`composable-rust-event-sourcing`**: EventStore, fat events, versioning, data guidelines (650+ lines)
+4. **`composable-rust-sagas`**: Distributed sagas, compensation, nested workflows (1000+ lines)
+5. **`composable-rust-web`**: HTTP APIs, WebSocket protocol, authentication (600+ lines)
+6. **`composable-rust-testing`**: Unit tests, integration tests, ReducerTest builder (550+ lines)
+7. **`composable-rust-production`**: Migrations, connection pools, monitoring, disaster recovery (400+ lines)
+
+**Total**: ~5,250 lines of expert knowledge covering the complete development lifecycle from first line of code to production deployment.
+
+These skills enable Claude Code to:
+- Write idiomatic Rust 2024 code with zero clippy warnings
+- Implement reducers, sagas, and event sourcing patterns correctly
+- Use developer macros for 40-60% code reduction
+- Set up production infrastructure (databases, backups, monitoring)
+- Debug issues and optimize performance
 
 ## Quick Start
 

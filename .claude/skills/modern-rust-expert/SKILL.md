@@ -1,3 +1,8 @@
+---
+name: modern-rust-expert
+description: Expert knowledge for writing cutting-edge, idiomatic Rust code with Rust Edition 2024, strict clippy compliance, and functional-but-pragmatic philosophy. Use when writing any Rust code, fixing clippy warnings, structuring modules or crates, reviewing or refactoring Rust code, or questions about Rust 2024 features, async patterns, documentation standards, or performance optimization.
+---
+
 # Modern Rust Expert
 
 Expert knowledge for writing cutting-edge, idiomatic Rust code with Rust edition 2024, strict clippy compliance, and functional-but-pragmatic philosophy.

@@ -4,19 +4,60 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ---
 
-## ⚡ **Critical: Modern Rust Expert Skill**
+## ⚡ **Critical: Claude Code Skills**
 
-**Before writing any code, consult:** `.claude/skills/modern-rust-expert.md`
+This repository includes **7 expert skills** that provide comprehensive guidance for all aspects of development:
 
-This skill is the **authoritative source** for all Rust coding standards in this project. It embeds:
-- Rust Edition 2024 features and patterns
-- Clippy compliance patterns (pedantic + strict denies)
-- Documentation standards
-- Modern async patterns (async fn in traits, RPITIT)
-- Functional-but-pragmatic philosophy
-- Common gotchas and fixes
+### Core Skills (Use for Every Task)
 
-**Everything in this file defers to the Modern Rust Expert skill for coding standards.**
+1. **`modern-rust-expert`** (`.claude/skills/modern-rust-expert/SKILL.md`)
+   - **Use for**: All Rust code writing, clippy fixes, async patterns
+   - Rust Edition 2024 features and patterns
+   - Clippy compliance (pedantic + strict denies)
+   - Documentation standards, async fn in traits
+   - 1200+ lines of patterns and examples
+
+2. **`composable-rust-architecture`** (`.claude/skills/composable-rust-architecture/SKILL.md`)
+   - **Use for**: Implementing reducers, effects, state machines
+   - Core architectural patterns (State, Action, Reducer, Effect, Environment)
+   - Developer experience macros (#[derive(State)], #[derive(Action)], append_events!)
+   - 850+ lines covering 40-60% code reduction techniques
+
+### Domain-Specific Skills
+
+3. **`composable-rust-event-sourcing`** (`.claude/skills/composable-rust-event-sourcing/SKILL.md`)
+   - **Use for**: Event-sourced aggregates, EventStore, event design
+   - Fat vs thin events with data inclusion checklist
+   - Event versioning and schema evolution
+   - 650+ lines with comprehensive patterns
+
+4. **`composable-rust-sagas`** (`.claude/skills/composable-rust-sagas/SKILL.md`)
+   - **Use for**: Multi-aggregate coordination, compensation logic
+   - Saga state machines, nested sagas (parent-child coordination)
+   - EventBus integration, timeout handling
+   - 1000+ lines covering simple to complex workflows
+
+5. **`composable-rust-web`** (`.claude/skills/composable-rust-web/SKILL.md`)
+   - **Use for**: HTTP APIs, WebSocket, authentication
+   - Axum patterns, WebSocket JSON protocol
+   - Authentication (magic links, OAuth, passkeys)
+   - 600+ lines with production-ready patterns
+
+6. **`composable-rust-testing`** (`.claude/skills/composable-rust-testing/SKILL.md`)
+   - **Use for**: Unit tests, integration tests, test utilities
+   - ReducerTest builder (Given-When-Then API)
+   - TestStore, FixedClock, mocks, property-based testing
+   - 550+ lines of testing patterns
+
+7. **`composable-rust-production`** (`.claude/skills/composable-rust-production/SKILL.md`)
+   - **Use for**: Production operations, migrations, monitoring
+   - Database migrations (sqlx), connection pooling, backup/restore
+   - Performance tuning, disaster recovery, troubleshooting
+   - 400+ lines of operational excellence
+
+**Total**: ~5,250 lines covering the complete development lifecycle.
+
+**These skills are automatically activated based on context.** You don't need to invoke them manually.
 
 ---
 
@@ -65,12 +106,23 @@ This creates a self-sustaining event loop where everything is an Action.
 composable-rust/
 ├── core/              # Core traits: Reducer, Effect, Environment (no I/O)
 ├── runtime/           # Store implementation and effect execution
-├── testing/           # Test utilities and mock implementations (FixedClock, etc.)
-├── examples/          # Reference implementations (Phase 5)
-├── docs/              # Documentation (placeholders until Phase 1)
-├── specs/             # Architecture specification and design docs
+├── testing/           # Test utilities and mock implementations
+├── postgres/          # PostgreSQL event store
+├── redpanda/          # Redpanda/Kafka event bus
+├── web/               # HTTP and WebSocket framework (Axum)
+├── auth/              # Authentication framework
+├── examples/          # Reference implementations (10+ examples)
+├── docs/              # Documentation (21 comprehensive guides)
+├── specs/             # Architecture specification (2,800+ lines)
 ├── plans/             # Implementation roadmap and phase TODOs
-└── .claude/skills/    # Claude Code skills (modern-rust-expert.md)
+└── .claude/skills/    # 7 Claude Code expert skills (5,250+ lines)
+   ├── modern-rust-expert/
+   ├── composable-rust-architecture/
+   ├── composable-rust-event-sourcing/
+   ├── composable-rust-sagas/
+   ├── composable-rust-web/
+   ├── composable-rust-testing/
+   └── composable-rust-production/
 ```
 
 ### Crate Dependencies
@@ -81,9 +133,15 @@ composable-rust/
 
 ### Critical Files
 
-- `specs/architecture.md`: Complete architectural design (2800+ lines)
-- `plans/implementation-roadmap.md`: Phase-by-phase development plan
-- `.claude/skills/modern-rust-expert.md`: Rust 2024 + clippy patterns
+- **`.claude/skills/`**: 7 expert skills (5,250+ lines total)
+  - Start here for any development task
+  - Skills are automatically activated by context
+- **`specs/architecture.md`**: Complete architectural design (2,800+ lines)
+- **`plans/implementation-roadmap.md`**: Phase-by-phase development plan
+- **`docs/`**: 21 comprehensive documentation files
+  - `concepts.md`: Core architecture deep dive
+  - `consistency-patterns.md`: Critical for multi-aggregate patterns
+  - `production-database.md`: Operations guide (800+ lines)
 
 ## Development Commands
 
@@ -428,23 +486,39 @@ impl State {
 
 ### Debugging & Reference Hierarchy
 
-**Start here and work down:**
+**The 7 skills are your first stop.** They're automatically activated by context, but you can also reference them directly:
 
-1. **Rust/Clippy errors?** → `.claude/skills/modern-rust-expert.md` (patterns, fixes, examples)
-2. **Architecture questions?** → `specs/architecture.md` (2800+ lines, comprehensive)
-3. **Phase-specific guidance?** → `plans/implementation-roadmap.md` (what to build when)
-4. **Catching issues early?** → `./scripts/check.sh` (runs all quality checks)
+**By Task Type:**
 
-### Common Issues Quick Reference
+| Task | Primary Skill | Backup Resources |
+|------|---------------|------------------|
+| Writing Rust code | `modern-rust-expert` | - |
+| Implementing reducers/effects | `composable-rust-architecture` | `docs/concepts.md` |
+| Event-sourced aggregates | `composable-rust-event-sourcing` | `docs/event-design-guidelines.md` |
+| Multi-aggregate workflows | `composable-rust-sagas` | `docs/saga-patterns.md` |
+| HTTP/WebSocket APIs | `composable-rust-web` | `docs/websocket.md` |
+| Writing tests | `composable-rust-testing` | - |
+| Production operations | `composable-rust-production` | `docs/production-database.md` |
 
-| Issue | Solution Location |
-|-------|-------------------|
-| Clippy warning/error | Modern Rust Expert skill → search for the lint name |
-| Async trait patterns | Modern Rust Expert skill → "Async Functions in Traits" |
-| Documentation format | Modern Rust Expert skill → "Documentation Standards" |
-| Architectural pattern | `specs/architecture.md` → search for pattern (saga, effect, etc.) |
-| Phase requirements | `plans/implementation-roadmap.md` → find current phase |
+**By Problem Type:**
+
+| Problem | Solution Location |
+|---------|-------------------|
+| Clippy warning/error | `modern-rust-expert` skill → search lint name |
+| Async trait patterns | `modern-rust-expert` skill → "Async Functions in Traits" |
+| Documentation format | `modern-rust-expert` skill → "Documentation Standards" |
+| Reducer patterns | `composable-rust-architecture` skill → "Reducer Pattern" |
+| Event schema design | `composable-rust-event-sourcing` skill → "Data Inclusion Checklist" |
+| Saga compensation | `composable-rust-sagas` skill → "Compensation Pattern" |
+| WebSocket protocol | `composable-rust-web` skill → "Message Protocol" |
+| Database migrations | `composable-rust-production` skill → "Database Migrations" |
 | Build/test failure | Run `./scripts/check.sh` → see which check fails |
+
+**If skills don't answer your question:**
+
+1. Check `specs/architecture.md` (2,800+ lines, comprehensive design)
+2. Check `docs/` directory (21 specialized guides)
+3. Check `plans/implementation-roadmap.md` (phase-specific context)
 
 ## Architecture Deep Dive
 
@@ -460,24 +534,41 @@ The architecture document is comprehensive (2800+ lines) and should be reference
 
 ## 🎯 Before Starting Any Work
 
-**Checklist for every coding session:**
+**The skills handle most of this automatically, but for manual reference:**
 
-1. ✅ **Read**: `.claude/skills/modern-rust-expert.md` (if writing Rust code)
-2. ✅ **Review**: Current phase in `plans/implementation-roadmap.md`
-3. ✅ **Check**: `specs/architecture.md` for architectural patterns
-4. ✅ **Run**: `./scripts/check.sh` after changes
-5. ✅ **Document**: Update CLAUDE.md if adding new patterns
+1. ✅ **Skills are active**: All 7 skills automatically activate based on context
+2. ✅ **Rust code?** → `modern-rust-expert` skill (Rust 2024, clippy compliance)
+3. ✅ **Architecture?** → `composable-rust-architecture` skill (reducers, effects, macros)
+4. ✅ **Domain logic?** → Relevant skill (event-sourcing, sagas, web, testing, production)
+5. ✅ **Quality checks**: Run `./scripts/check.sh` after changes
 
-**The Modern Rust Expert skill is your first and most important reference for all Rust code.**
+**The 7 skills contain 5,250+ lines of expert knowledge covering everything you need.**
 
 ---
 
 ## Summary
 
-This project follows a **documentation-driven, type-safe, functional architecture**. The three key documents are:
+This project follows a **documentation-driven, type-safe, functional architecture** supported by comprehensive automation:
 
-1. **`.claude/skills/modern-rust-expert.md`** → How to write Rust code correctly
-2. **`specs/architecture.md`** → What to build and why (architecture)
-3. **`plans/implementation-roadmap.md`** → When to build it (phases)
+### Knowledge Layers (In Order of Priority)
 
-Everything else supports these three core references.
+1. **`.claude/skills/`** (7 skills, 5,250+ lines)
+   - **Primary resource for all development tasks**
+   - Automatically activated by context
+   - Covers: Rust, architecture, event sourcing, sagas, web, testing, production
+
+2. **`docs/`** (21 comprehensive guides)
+   - Deep dives into specific topics
+   - Referenced by skills when needed
+   - Key: `concepts.md`, `consistency-patterns.md`, `production-database.md`
+
+3. **`specs/architecture.md`** (2,800+ lines)
+   - Complete architectural specification
+   - For non-trivial design decisions
+   - Referenced by skills and docs
+
+4. **`plans/implementation-roadmap.md`**
+   - Phase-by-phase development plan
+   - Current status and next steps
+
+**The skills are self-sufficient for 95% of tasks. Skills reference docs/specs when needed.**
