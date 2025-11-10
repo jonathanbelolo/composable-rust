@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE users_projection\n                SET email_verified = true,\n                    updated_at = $2,\n                    last_event_timestamp = $3\n                WHERE user_id = $1\n                  AND last_event_timestamp < $3\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5fa1a99bd5579a292c3174af5d366caf4d10b68e41f4a2f9346a57a50851207a"
+}

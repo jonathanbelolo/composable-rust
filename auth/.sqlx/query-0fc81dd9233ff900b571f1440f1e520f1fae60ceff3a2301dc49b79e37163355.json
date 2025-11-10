@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "TRUNCATE TABLE passkeys_projection CASCADE",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "0fc81dd9233ff900b571f1440f1e520f1fae60ceff3a2301dc49b79e37163355"
+}

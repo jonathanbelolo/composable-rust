@@ -1310,12 +1310,315 @@ Future phases will add:
 
 ---
 
+---
+
+## Module: `composable_rust_postgres`
+
+PostgreSQL event store implementation.
+
+### Struct: `PostgresEventStore`
+
+Production event store using PostgreSQL.
+
+```rust
+pub struct PostgresEventStore {
+    pool: PgPool,
+}
+```
+
+#### Constructor: `new`
+
+Creates event store and runs migrations.
+
+```rust
+pub async fn new(pool: PgPool) -> Result<Self>
+```
+
+**Parameters:**
+- `pool: PgPool` - SQLx connection pool
+
+**Returns:**
+- `Result<PostgresEventStore>` - Event store instance
+
+**Example:**
+
+```rust
+use composable_rust_postgres::PostgresEventStore;
+use sqlx::postgres::PgPoolOptions;
+
+let pool = PgPoolOptions::new()
+    .max_connections(5)
+    .connect("postgresql://localhost/db").await?;
+
+let event_store = PostgresEventStore::new(pool).await?;
+```
+
+#### Method: `append_events`
+
+Appends events to a stream.
+
+```rust
+async fn append_events(
+    &self,
+    stream_id: &StreamId,
+    events: Vec<SerializedEvent>,
+    expected_version: Option<Version>,
+) -> Result<Version>
+```
+
+**Parameters:**
+- `stream_id: &StreamId` - Stream identifier
+- `events: Vec<SerializedEvent>` - Events to append
+- `expected_version: Option<Version>` - Expected current version (optimistic concurrency)
+
+**Returns:**
+- `Result<Version>` - New version after append
+
+**Errors:**
+- `EventStoreError::VersionMismatch` - Expected version doesn't match actual
+- `EventStoreError::Database` - PostgreSQL error
+
+#### Method: `append_batch`
+
+Efficiently appends multiple event batches.
+
+```rust
+async fn append_batch(
+    &self,
+    batches: Vec<EventBatch>,
+) -> Result<Vec<Version>>
+```
+
+**Performance:** 10-100x faster than individual appends for bulk operations.
+
+**See:** [Production Database Guide](./production-database.md) for details.
+
+---
+
+## Module: `composable_rust_redpanda`
+
+Redpanda/Kafka event bus implementation.
+
+### Struct: `RedpandaEventBus`
+
+Kafka-compatible event bus using Redpanda.
+
+```rust
+pub struct RedpandaEventBus {
+    // Internal fields (private)
+}
+```
+
+#### Constructor: `builder`
+
+Creates builder for configuration.
+
+```rust
+pub fn builder() -> RedpandaEventBusBuilder
+```
+
+**Example:**
+
+```rust
+use composable_rust_redpanda::RedpandaEventBus;
+
+let event_bus = RedpandaEventBus::builder()
+    .broker("localhost:9092")
+    .group_id("order-service")
+    .build()
+    .await?;
+```
+
+#### Method: `publish`
+
+Publishes event to topic.
+
+```rust
+async fn publish(&self, topic: &str, payload: Vec<u8>) -> Result<()>
+```
+
+**Delivery:** At-least-once semantics with manual offset commits.
+
+#### Method: `subscribe`
+
+Subscribes to topic, returns receiver for events.
+
+```rust
+async fn subscribe(&self, topic: &str) -> Result<Receiver<Vec<u8>>>
+```
+
+**See:** [Event Bus Guide](./event-bus.md) and [Redpanda Setup](./redpanda-setup.md)
+
+---
+
+## Module: `composable_rust_auth`
+
+Production-ready authentication framework.
+
+### Email Providers
+
+#### Trait: `EmailProvider`
+
+Abstraction for email sending.
+
+```rust
+#[async_trait]
+pub trait EmailProvider: Send + Sync {
+    async fn send_magic_link(
+        &self,
+        to: &str,
+        token: &str,
+        base_url: &str,
+        expires_at: DateTime<Utc>,
+    ) -> Result<()>;
+
+    async fn send_password_reset(
+        &self,
+        to: &str,
+        token: &str,
+        base_url: &str,
+        expires_at: DateTime<Utc>,
+    ) -> Result<()>;
+}
+```
+
+#### Struct: `SmtpEmailProvider`
+
+SMTP email provider for production.
+
+```rust
+pub struct SmtpEmailProvider {
+    // Internal fields (private)
+}
+```
+
+**Constructor:**
+
+```rust
+pub fn new(
+    smtp_server: String,
+    smtp_port: u16,
+    smtp_username: String,
+    smtp_password: String,
+    from_email: String,
+    from_name: String,
+) -> Result<Self>
+```
+
+**See:** [Email Providers Guide](./email-providers.md)
+
+#### Struct: `ConsoleEmailProvider`
+
+Console email provider for development.
+
+```rust
+#[derive(Clone, Debug, Default)]
+pub struct ConsoleEmailProvider;
+```
+
+Logs emails to console with box-drawing characters.
+
+---
+
+## Module: `composable_rust_web`
+
+Axum web framework integration.
+
+### Struct: `AppError`
+
+HTTP-friendly error type.
+
+```rust
+pub struct AppError {
+    status_code: StatusCode,
+    message: String,
+}
+```
+
+**Constructors:**
+
+```rust
+pub fn bad_request(msg: impl Into<String>) -> Self
+pub fn unauthorized(msg: impl Into<String>) -> Self
+pub fn forbidden(msg: impl Into<String>) -> Self
+pub fn not_found(resource: &str, id: impl Display) -> Self
+pub fn conflict(msg: impl Into<String>) -> Self
+pub fn internal(msg: impl Into<String>) -> Self
+pub fn timeout(msg: impl Into<String>) -> Self
+```
+
+### HTTP Extractors
+
+#### Struct: `CorrelationId`
+
+Extracts or generates correlation ID.
+
+```rust
+pub struct CorrelationId(pub String);
+```
+
+**Header:** `X-Correlation-ID` (generates UUID if missing)
+
+#### Struct: `ClientIp`
+
+Extracts client IP address.
+
+```rust
+pub struct ClientIp(pub String);
+```
+
+**Headers checked:** `X-Forwarded-For`, `X-Real-IP`, connection info
+
+#### Struct: `UserAgent`
+
+Extracts User-Agent header.
+
+```rust
+pub struct UserAgent(pub String);
+```
+
+### WebSocket Support (Feature: `ws`)
+
+#### Function: `websocket::handle`
+
+Generic WebSocket handler for real-time communication.
+
+```rust
+pub async fn handle<S, A, E, R>(
+    ws: WebSocketUpgrade,
+    State(store): State<Arc<Store<S, A, E, R>>>,
+) -> Response
+where
+    S: Clone + Send + Sync + 'static,
+    A: Serialize + for<'de> Deserialize<'de> + Clone + Send + Sync + Debug + 'static,
+    E: Clone + Send + Sync + 'static,
+    R: Reducer<State = S, Action = A, Environment = E> + Clone + Send + Sync + 'static,
+```
+
+**Message Protocol:**
+
+```typescript
+type WsMessage<A> =
+  | { type: "command", action: A }  // Client → Server
+  | { type: "event", action: A }    // Server → Client
+  | { type: "error", message: string }
+  | { type: "ping" }
+  | { type: "pong" }
+```
+
+**See:** [WebSocket Guide](./websocket.md)
+
+---
+
 ## Version
 
-This API reference documents Composable Rust through **Phase 2** and **Section 3**:
+This API reference documents Composable Rust through **Phase 5**:
 
 - ✅ **Phase 1**: Core abstractions (Reducer, Effect, Store, Environment)
-- ✅ **Phase 2**: Event sourcing & persistence (EventStore, Version tracking)
+- ✅ **Phase 2**: Event sourcing & persistence (EventStore, PostgreSQL)
+- ✅ **Phase 3**: Multi-aggregate coordination (EventBus, Redpanda, Sagas)
+- ✅ **Phase 4**: Production hardening (observability, error handling, performance)
+- ✅ **Phase 5**: Developer experience (HTTP/WebSocket, authentication, email)
 - ✅ **Section 3**: Developer tools & macros (`#[derive(Action)]`, `#[derive(State)]`, effect macros, ReducerTest)
 
 **Stability:** APIs are subject to change before 1.0 release. Semantic versioning will be followed once published to crates.io.

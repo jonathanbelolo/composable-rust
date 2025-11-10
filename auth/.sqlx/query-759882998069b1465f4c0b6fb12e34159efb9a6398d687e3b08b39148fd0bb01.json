@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE devices_projection\n            SET trust_level = $2\n            WHERE device_id = $1 AND user_id = $3\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        {
+          "Custom": {
+            "name": "device_trust_level",
+            "kind": {
+              "Enum": [
+                "unknown",
+                "recognized",
+                "familiar",
+                "trusted",
+                "highly_trusted"
+              ]
+            }
+          }
+        },
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "759882998069b1465f4c0b6fb12e34159efb9a6398d687e3b08b39148fd0bb01"
+}

@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE users_projection\n                SET name = $2,\n                    updated_at = $3,\n                    last_event_timestamp = $4\n                WHERE user_id = $1\n                  AND last_event_timestamp < $4\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1a7b4a2434ea6b5a7bcee4f89b45c35f57de5fdc9acdcddd8811f42027f0bf89"
+}

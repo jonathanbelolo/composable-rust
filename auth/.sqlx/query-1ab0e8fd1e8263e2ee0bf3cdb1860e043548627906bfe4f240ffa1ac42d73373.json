@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                SELECT first_seen, trust_level AS \"trust_level: DeviceTrustLevel\", login_count\n                FROM devices_projection\n                WHERE device_id = $1\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "first_seen",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 1,
+        "name": "trust_level: DeviceTrustLevel",
+        "type_info": {
+          "Custom": {
+            "name": "device_trust_level",
+            "kind": {
+              "Enum": [
+                "unknown",
+                "recognized",
+                "familiar",
+                "trusted",
+                "highly_trusted"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "login_count",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "1ab0e8fd1e8263e2ee0bf3cdb1860e043548627906bfe4f240ffa1ac42d73373"
+}

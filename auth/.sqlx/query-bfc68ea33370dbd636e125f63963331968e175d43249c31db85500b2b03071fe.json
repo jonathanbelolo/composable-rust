@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "TRUNCATE TABLE oauth_links_projection CASCADE",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "bfc68ea33370dbd636e125f63963331968e175d43249c31db85500b2b03071fe"
+}

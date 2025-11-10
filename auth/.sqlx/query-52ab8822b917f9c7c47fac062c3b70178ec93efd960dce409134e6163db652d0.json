@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE devices_projection\n            SET last_seen = $2,\n                login_count = login_count + 1\n            WHERE device_id = $1 AND user_id = $3\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "52ab8822b917f9c7c47fac062c3b70178ec93efd960dce409134e6163db652d0"
+}

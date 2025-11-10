@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE users_projection\n            SET email = $2,\n                name = $3,\n                email_verified = $4,\n                updated_at = $5\n            WHERE user_id = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Bool",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "33224a0f0ecff602ce8a17d951d6f920a17bc90b4d483783c1fbcd495eb1ccf7"
+}

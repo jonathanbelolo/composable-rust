@@ -174,8 +174,8 @@ impl OrderReducer {
 
     /// Creates an `EventStore` effect to append events
     fn create_append_effect(
-        event_store: Arc<dyn EventStore>,
-        stream_id: StreamId,
+        event_store: &Arc<dyn EventStore>,
+        stream_id: &StreamId,
         expected_version: Option<Version>,
         event: OrderAction,
     ) -> Effect<OrderAction> {
@@ -189,7 +189,7 @@ impl OrderReducer {
         };
 
         append_events! {
-            store: event_store,
+            store: Arc::clone(event_store),
             stream: stream_id.as_str(),
             expected_version: expected_version,
             events: vec![serialized_event],
@@ -262,8 +262,8 @@ impl Reducer for OrderReducer {
                 let expected_version = state.version;
 
                 smallvec![Self::create_append_effect(
-                    Arc::clone(&env.event_store),
-                    stream_id,
+                    &env.event_store,
+                    &stream_id,
                     expected_version,
                     event,
                 )]
@@ -296,8 +296,8 @@ impl Reducer for OrderReducer {
                 let expected_version = state.version;
 
                 smallvec![Self::create_append_effect(
-                    Arc::clone(&env.event_store),
-                    stream_id,
+                    &env.event_store,
+                    &stream_id,
                     expected_version,
                     event,
                 )]
@@ -330,8 +330,8 @@ impl Reducer for OrderReducer {
                 let expected_version = state.version;
 
                 smallvec![Self::create_append_effect(
-                    Arc::clone(&env.event_store),
-                    stream_id,
+                    &env.event_store,
+                    &stream_id,
                     expected_version,
                     event,
                 )]
@@ -451,7 +451,8 @@ mod tests {
     #[allow(clippy::unwrap_used)] // Test verified result is Err above
     fn validate_place_order_empty_items() {
         let state = OrderState::new();
-        let result = OrderReducer::validate_place_order(&state, &[]);
+        let order_id = OrderId::new("order-123".to_string());
+        let result = OrderReducer::validate_place_order(&state, &order_id, &[]);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("at least one item"));
     }
@@ -460,10 +461,11 @@ mod tests {
     #[allow(clippy::unwrap_used)] // Test verified result is Err above
     fn validate_place_order_already_placed() {
         let mut state = OrderState::new();
-        state.order_id = Some(OrderId::new("order-123".to_string()));
+        let order_id = OrderId::new("order-123".to_string());
+        state.order_id = Some(order_id.clone());
 
         let items = vec![create_test_item()];
-        let result = OrderReducer::validate_place_order(&state, &items);
+        let result = OrderReducer::validate_place_order(&state, &order_id, &items);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("already placed"));
     }
@@ -601,8 +603,8 @@ mod tests {
                     .contains("at least one item"));
             })
             .then_effects(|effects| {
-                // Should produce no effects (validation failed)
-                assertions::assert_no_effects(effects);
+                // Should produce a Future effect that returns ValidationFailed
+                assertions::assert_effects_count(effects, 1);
             })
             .run();
     }
@@ -625,7 +627,10 @@ mod tests {
                     .unwrap()
                     .contains("Order ID mismatch"));
             })
-            .then_effects(assertions::assert_no_effects)
+            .then_effects(|effects| {
+                // Should produce a Future effect that returns ValidationFailed
+                assertions::assert_effects_count(effects, 1);
+            })
             .run();
     }
 

@@ -134,6 +134,9 @@ pub struct Device {
     /// Trust level (progressive trust).
     pub trust_level: DeviceTrustLevel,
 
+    /// Number of successful logins from this device.
+    pub login_count: i32,
+
     /// Passkey credential ID (if registered).
     pub passkey_credential_id: Option<String>,
 

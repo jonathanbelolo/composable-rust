@@ -62,7 +62,7 @@ impl Reducer for OrderReducer {
 }
 ```
 
-## Current Status: Phase 4 - Production Hardening ✅ COMPLETE
+## Current Status: Phase 5 - Developer Experience (~75% Complete) 🚧
 
 ✅ **Phase 0**: Foundation & Tooling
 ✅ **Phase 1**: Core Abstractions
@@ -95,7 +95,20 @@ impl Reducer for OrderReducer {
   - 156 library tests + 15 integration tests passing
   - Production-ready with comprehensive documentation
 
-**Next**: Phase 5 - Developer Experience (macros, testing utilities, more examples)
+🚧 **Phase 5**: Developer Experience (~75% Complete)
+  - ✅ HTTP API framework (`composable-rust-web` crate with Axum)
+  - ✅ WebSocket real-time events (bidirectional, type-safe)
+  - ✅ Authentication framework (`composable-rust-auth` crate)
+    - Magic link authentication with email providers
+    - OAuth 2.0 (Google, GitHub)
+    - Passkey/WebAuthn support
+    - Email providers (SMTP for production, Console for development)
+    - Rate limiting, risk scoring
+  - ✅ Comprehensive documentation (websocket.md, email-providers.md, consistency-patterns.md)
+  - ✅ Order Processing example with HTTP + WebSocket + Node.js integration tests
+  - ⏸️ Project templates and CLI scaffolding (remaining)
+
+**Framework is production-ready**. Phase 5 work focuses on developer ergonomics.
 
 ## Project Structure
 
@@ -112,11 +125,18 @@ composable-rust/
 
 ## Crates
 
+### Core Crates
 - **`composable-rust-core`**: Core traits (Reducer, Effect, Environment, EventBus, EventStore)
 - **`composable-rust-runtime`**: Store runtime and effect execution
 - **`composable-rust-testing`**: Testing utilities (TestStore, InMemoryEventBus, InMemoryEventStore)
+
+### Infrastructure Crates
 - **`composable-rust-postgres`**: PostgreSQL event store implementation
 - **`composable-rust-redpanda`**: Redpanda/Kafka event bus implementation
+
+### Web & Authentication Crates
+- **`composable-rust-web`**: HTTP API and WebSocket framework (Axum integration)
+- **`composable-rust-auth`**: Authentication framework (magic links, OAuth, passkeys, email providers)
 
 ## Quick Start
 
@@ -146,21 +166,42 @@ cat examples/counter/README.md
 
 ## Documentation
 
-### Phase 1 Documentation (Complete)
+### Comprehensive Guides
 
-- **[Getting Started Guide](docs/getting-started.md)**: Tutorial walkthrough with Counter example
+**Start here**: [Documentation Index](docs/README.md) - Complete guide to all documentation
+
+**Getting Started**:
+- **[Getting Started Guide](docs/getting-started.md)**: Tutorial walkthrough with Counter + HTTP APIs
 - **[Core Concepts](docs/concepts.md)**: Deep dive into the five fundamental types
 - **[API Reference](docs/api-reference.md)**: Complete API documentation
-- **[Error Handling](docs/error-handling.md)**: Three-tier error model
+
+**Architecture & Patterns** (Critical for AI agents):
+- **[Consistency Patterns](docs/consistency-patterns.md)** ⚠️ **Required Reading**
+  - When to use projections vs event store
+  - Saga patterns avoiding dependencies
+  - WebSocket real-time updates, email notifications
+- **[Saga Patterns](docs/saga-patterns.md)**: Multi-aggregate coordination
+- **[Event Design Guidelines](docs/event-design-guidelines.md)**: Event schema best practices
+
+**Web & Real-Time**:
+- **[WebSocket Guide](docs/websocket.md)**: Real-time bidirectional communication
+- **[Email Providers Guide](docs/email-providers.md)**: SMTP and Console providers
+
+**Production**:
+- **[Error Handling](docs/error-handling.md)**: Three-tier error model, retries, circuit breakers
+- **[Observability](docs/observability.md)**: Tracing, metrics, OpenTelemetry
+- **[Production Database](docs/production-database.md)**: Migrations, backups, monitoring
+- **[Redpanda Setup](docs/redpanda-setup.md)**: Kafka-compatible event bus
+
+**Reference**:
 - **[Implementation Decisions](docs/implementation-decisions.md)**: Architectural choices and trade-offs
-- **[Counter Example](examples/counter/README.md)**: Architecture reference using Counter
+- **[Counter Example](examples/counter/README.md)**: Architecture reference
+- **[Order Processing Example](examples/order-processing/)**: HTTP + WebSocket + Event Sourcing
 
 ### Architecture & Planning
 
 - **[Architecture Specification](specs/architecture.md)**: Comprehensive architectural design (2,800+ lines)
-- **[Implementation Roadmap](plans/implementation-roadmap.md)**: Development plan and timeline
-- **[Phase 1 Review](plans/phase-1/PHASE1_REVIEW.md)**: Completion assessment and readiness for Phase 2
-- **[Phase 1 TODO](plans/phase-1/TODO.md)**: Phase 1 checklist (complete)
+- **[Implementation Roadmap](plans/implementation-roadmap.md)**: Development plan and timeline (Phases 0-7)
 
 ## Development
 
@@ -261,11 +302,16 @@ at your option.
 - ✅ Database migrations and production setup
 - ✅ Battle-tested with benchmarks
 
-### Phase 5: Developer Experience (Next)
-- Macros and code generation
-- Additional testing utilities
-- More example applications
-- Enhanced documentation
+### Phase 5: Developer Experience (~75% Complete) 🚧
+- ✅ HTTP API framework (`composable-rust-web`)
+- ✅ WebSocket real-time events
+- ✅ Authentication framework (`composable-rust-auth`)
+  - Magic link authentication
+  - OAuth 2.0 (Google, GitHub)
+  - Passkey/WebAuthn support
+  - Email providers (SMTP, Console)
+- ✅ Comprehensive documentation (WebSocket, email, consistency patterns)
+- ⏸️ Project templates and CLI scaffolding (remaining)
 
 ## Acknowledgments
 

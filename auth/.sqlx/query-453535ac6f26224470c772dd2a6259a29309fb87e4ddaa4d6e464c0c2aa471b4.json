@@ -1,0 +1,108 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT device_id, user_id, name, device_type AS \"device_type: DeviceType\",\n                   platform, first_seen, last_seen, trust_level AS \"trust_level: DeviceTrustLevel\",\n                   login_count, passkey_credential_id, public_key\n            FROM devices_projection\n            WHERE user_id = $1\n              AND platform = $2\n            ORDER BY last_seen DESC\n            LIMIT 1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "device_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "device_type: DeviceType",
+        "type_info": {
+          "Custom": {
+            "name": "device_type",
+            "kind": {
+              "Enum": [
+                "mobile",
+                "desktop",
+                "tablet",
+                "unknown"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "platform",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "first_seen",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "last_seen",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "trust_level: DeviceTrustLevel",
+        "type_info": {
+          "Custom": {
+            "name": "device_trust_level",
+            "kind": {
+              "Enum": [
+                "unknown",
+                "recognized",
+                "familiar",
+                "trusted",
+                "highly_trusted"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "login_count",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 9,
+        "name": "passkey_credential_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "public_key",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "453535ac6f26224470c772dd2a6259a29309fb87e4ddaa4d6e464c0c2aa471b4"
+}

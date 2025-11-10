@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO oauth_links_projection\n                (user_id, provider, provider_user_id, linked_at)\n            VALUES ($1, $2, $3, $4)\n            ON CONFLICT (user_id, provider)\n            DO UPDATE SET\n                provider_user_id = EXCLUDED.provider_user_id,\n                linked_at = EXCLUDED.linked_at\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "89acf61c623759345d7f5ee8765c7cb4534acf469d276aa0a674512f5966d70f"
+}

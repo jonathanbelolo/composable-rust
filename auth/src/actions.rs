@@ -802,6 +802,8 @@ pub enum AuthLevel {
 
 /// Device trust level (progressive trust).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "postgres", derive(sqlx::Type))]
+#[cfg_attr(feature = "postgres", sqlx(type_name = "device_trust_level", rename_all = "snake_case"))]
 pub enum DeviceTrustLevel {
     /// Unknown device (first login).
     Unknown = 0,

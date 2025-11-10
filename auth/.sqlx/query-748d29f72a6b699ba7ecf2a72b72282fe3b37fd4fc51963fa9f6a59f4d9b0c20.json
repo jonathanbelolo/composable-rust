@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM oauth_links_projection\n            WHERE user_id = $1 AND provider = $2\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "748d29f72a6b699ba7ecf2a72b72282fe3b37fd4fc51963fa9f6a59f4d9b0c20"
+}

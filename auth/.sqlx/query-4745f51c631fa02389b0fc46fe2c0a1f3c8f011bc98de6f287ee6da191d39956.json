@@ -1,0 +1,48 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE devices_projection\n            SET name = $2,\n                device_type = $3,\n                platform = $4,\n                last_seen = $5,\n                trust_level = $6,\n                login_count = $7,\n                passkey_credential_id = $8,\n                public_key = $9\n            WHERE device_id = $1 AND user_id = $10\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        {
+          "Custom": {
+            "name": "device_type",
+            "kind": {
+              "Enum": [
+                "mobile",
+                "desktop",
+                "tablet",
+                "unknown"
+              ]
+            }
+          }
+        },
+        "Text",
+        "Timestamptz",
+        {
+          "Custom": {
+            "name": "device_trust_level",
+            "kind": {
+              "Enum": [
+                "unknown",
+                "recognized",
+                "familiar",
+                "trusted",
+                "highly_trusted"
+              ]
+            }
+          }
+        },
+        "Int4",
+        "Text",
+        "Bytea",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4745f51c631fa02389b0fc46fe2c0a1f3c8f011bc98de6f287ee6da191d39956"
+}

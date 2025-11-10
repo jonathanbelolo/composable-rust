@@ -49,6 +49,7 @@
 
 use crate::actions::DeviceTrustLevel;
 use crate::events::AuthEvent;
+use chrono::{DateTime, Utc};
 use composable_rust_core::projection::{Projection, ProjectionError, Result};
 
 #[cfg(feature = "postgres")]
@@ -181,7 +182,7 @@ impl AuthProjection {
         } = event
         {
             // ✅ IDEMPOTENCY: Use ON CONFLICT DO UPDATE with timestamp check
-            sqlx::query!(
+            sqlx::query_unchecked!(
                 r#"
                 INSERT INTO devices_projection
                     (device_id, user_id, name, device_type, platform, first_seen, last_seen, trust_level, login_count, last_event_timestamp)
@@ -236,7 +237,7 @@ impl AuthProjection {
             };
 
             // ✅ IDEMPOTENCY: Only update if timestamp is newer
-            sqlx::query!(
+            sqlx::query_unchecked!(
                 r#"
                 UPDATE devices_projection
                 SET trust_level = $2::device_trust_level,
@@ -266,23 +267,52 @@ impl AuthProjection {
             timestamp,
         } = event
         {
-            // ✅ IDEMPOTENCY: Only update if timestamp is newer
-            sqlx::query!(
+            // First, fetch the device to calculate new trust level
+            let device = sqlx::query!(
                 r#"
-                UPDATE devices_projection
-                SET last_seen = $2,
-                    login_count = login_count + 1,
-                    last_event_timestamp = $3
+                SELECT first_seen, trust_level AS "trust_level: DeviceTrustLevel", login_count
+                FROM devices_projection
                 WHERE device_id = $1
-                  AND last_event_timestamp < $3
                 "#,
-                device_id.0,
-                timestamp,
-                timestamp
+                device_id.0
             )
-            .execute(&self.pool)
+            .fetch_optional(&self.pool)
             .await
-            .map_err(|e| ProjectionError::Storage(format!("Failed to update device access: {e}")))?;
+            .map_err(|e| ProjectionError::Storage(format!("Failed to fetch device: {e}")))?;
+
+            if let Some(device) = device {
+                // Calculate new trust level (only if not manually set to Trusted/HighlyTrusted)
+                let new_trust_level = if matches!(
+                    device.trust_level,
+                    DeviceTrustLevel::Trusted | DeviceTrustLevel::HighlyTrusted
+                ) {
+                    // Don't override manually-set trust levels
+                    device.trust_level
+                } else {
+                    // Recalculate progressive trust with incremented login_count
+                    calculate_progressive_trust(device.login_count + 1, device.first_seen)
+                };
+
+                // ✅ IDEMPOTENCY: Only update if timestamp is newer
+                sqlx::query!(
+                    r#"
+                    UPDATE devices_projection
+                    SET last_seen = $2,
+                        login_count = login_count + 1,
+                        trust_level = $3,
+                        last_event_timestamp = $4
+                    WHERE device_id = $1
+                      AND last_event_timestamp < $4
+                    "#,
+                    device_id.0,
+                    timestamp,
+                    new_trust_level as DeviceTrustLevel,
+                    timestamp
+                )
+                .execute(&self.pool)
+                .await
+                .map_err(|e| ProjectionError::Storage(format!("Failed to update device access: {e}")))?;
+            }
         }
 
         Ok(())
@@ -475,14 +505,39 @@ impl Projection for AuthProjection {
     }
 }
 
+/// Calculate progressive trust level based on usage metrics.
+///
+/// This implements the automatic trust progression algorithm:
+/// - **Unknown**: New device (< 7 days, < 5 logins)
+/// - **Recognized**: Seen before (7-30 days or 5-20 logins)
+/// - **Familiar**: Regular device (30+ days or 20+ logins)
+///
+/// # Arguments
+///
+/// * `login_count` - Number of successful logins from this device
+/// * `first_seen` - When the device was first registered
+///
+/// # Returns
+///
+/// The calculated trust level (Unknown, Recognized, or Familiar).
+/// Does NOT return Trusted or HighlyTrusted (those are set manually).
+fn calculate_progressive_trust(
+    login_count: i32,
+    first_seen: DateTime<Utc>,
+) -> DeviceTrustLevel {
+    let age_days = (Utc::now() - first_seen).num_days();
+
+    // Progressive trust based on usage patterns
+    match (age_days, login_count) {
+        (days, count) if days >= 30 || count >= 20 => DeviceTrustLevel::Familiar,
+        (days, count) if days >= 7 || count >= 5 => DeviceTrustLevel::Recognized,
+        _ => DeviceTrustLevel::Unknown,
+    }
+}
+
 #[cfg(test)]
 #[cfg(feature = "postgres")]
 mod tests {
-    use super::*;
-    use crate::state::{DeviceId, OAuthProvider, UserId};
-    use chrono::Utc;
-    use std::net::{IpAddr, Ipv4Addr};
-
     // Tests would require a test database setup
     // For now, we just verify the code compiles
 

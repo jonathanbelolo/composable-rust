@@ -356,6 +356,172 @@ vec![
 - **Time-travel debugging** (replay without re-execution)
 - **Effect composition** (combine/transform effects)
 
+## Building HTTP APIs with WebSocket Support
+
+Once you understand the fundamentals, you can expose your Store via HTTP endpoints and WebSocket for real-time updates. The `composable-rust-web` crate provides ready-to-use handlers.
+
+### Adding HTTP API (with Axum)
+
+```toml
+[dependencies]
+composable-rust-core = { path = "../core" }
+composable-rust-runtime = { path = "../runtime" }
+composable-rust-web = { path = "../web" }
+axum = { version = "0.7", features = ["macros", "ws"] }
+tokio = { version = "1.43", features = ["full"] }
+```
+
+### Create HTTP Handlers
+
+```rust
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    Json,
+};
+use composable_rust_runtime::Store;
+use std::sync::Arc;
+
+// Place order endpoint
+pub async fn place_order(
+    State(store): State<Arc<Store<OrderState, OrderAction, OrderEnvironment, OrderReducer>>>,
+    Json(req): Json<PlaceOrderRequest>,
+) -> Result<Json<OrderResponse>, (StatusCode, String)> {
+    // Dispatch action to store
+    store
+        .send(OrderAction::PlaceOrder {
+            customer_id: req.customer_id,
+            items: req.items,
+        })
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Return immediate response
+    Ok(Json(OrderResponse {
+        status: "pending".to_string(),
+        message: "Order is being processed".to_string(),
+    }))
+}
+
+// Get order endpoint
+pub async fn get_order(
+    State(store): State<Arc<Store<OrderState, OrderAction, OrderEnvironment, OrderReducer>>>,
+    Path(id): Path<String>,
+) -> Result<Json<Order>, (StatusCode, String)> {
+    // Read from state
+    let order = store
+        .state(|s| s.orders.get(&id).cloned())
+        .await
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "Order not found".to_string()))?;
+
+    Ok(Json(order))
+}
+```
+
+### Add WebSocket for Real-Time Updates
+
+The `composable-rust-web` crate provides a generic WebSocket handler that automatically broadcasts all actions:
+
+```rust
+use composable_rust_web::handlers::websocket;
+use axum::{routing::get, Router};
+
+pub fn create_router(
+    store: Arc<Store<OrderState, OrderAction, OrderEnvironment, OrderReducer>>,
+) -> Router {
+    Router::new()
+        // HTTP endpoints
+        .route("/orders", post(place_order))
+        .route("/orders/:id", get(get_order))
+        // WebSocket endpoint for real-time events
+        .route("/ws", get(websocket::handle::<OrderState, OrderAction, _, _>))
+        .with_state(store)
+}
+```
+
+**How it works:**
+1. **Client connects** to `ws://localhost:3000/ws`
+2. **Any action dispatched to the Store** is broadcast to all connected WebSocket clients
+3. **Clients receive real-time updates** as JSON messages
+
+**Client-side JavaScript:**
+
+```javascript
+const ws = new WebSocket('ws://localhost:3000/api/v1/ws');
+
+// Receive real-time events
+ws.onmessage = (event) => {
+  const message = JSON.parse(event.data);
+
+  if (message.type === "event") {
+    const action = message.action;
+
+    if (action.OrderPlaced) {
+      console.log("Order placed:", action.OrderPlaced.order_id);
+      updateUI(action.OrderPlaced);
+    } else if (action.OrderShipped) {
+      console.log("Order shipped:", action.OrderShipped.order_id);
+      showNotification("Your order has shipped!");
+    }
+  }
+};
+
+// Send commands through WebSocket (optional)
+ws.send(JSON.stringify({
+  type: "command",
+  action: {
+    PlaceOrder: {
+      customer_id: "cust-123",
+      items: [...]
+    }
+  }
+}));
+```
+
+### Complete Example: Order Processing
+
+See `examples/order-processing/` for a complete working example with:
+- ✅ HTTP API (place order, get order, cancel order, ship order)
+- ✅ WebSocket real-time events
+- ✅ Event sourcing with PostgreSQL
+- ✅ Node.js integration tests
+- ✅ Proper error handling
+
+```bash
+# Run the order processing example
+cd examples/order-processing
+cargo run --features http
+
+# In another terminal, test the API
+curl -X POST http://localhost:3000/api/v1/orders \
+  -H "Content-Type: application/json" \
+  -d '{
+    "customer_id": "cust-123",
+    "items": [{
+      "product_id": "prod-1",
+      "name": "Widget",
+      "quantity": 2,
+      "unit_price_cents": 1000
+    }]
+  }'
+
+# Run integration tests
+cd tests/integration
+npm install
+node test.js
+```
+
+**Key Architectural Points:**
+
+1. **Store is the single source of truth**: Both HTTP and WebSocket handlers use the same Store
+2. **Actions are broadcast automatically**: No manual pub/sub - the Store handles it
+3. **Type-safe**: Same Action types for HTTP, WebSocket, and business logic
+4. **Testable**: Integration tests can verify HTTP and WebSocket behavior
+
+**See Also:**
+- [WebSocket Guide](./websocket.md) - Complete WebSocket documentation
+- [Order Processing Example](../examples/order-processing/) - Full working implementation
+
 ## Core Architectural Patterns
 
 ### Pattern 1: Functional Core, Imperative Shell
@@ -440,7 +606,14 @@ See `docs/error-handling.md` for details.
 
 ### Q: Can I use this in production?
 
-**A:** Yes! Core abstractions (Phase 1), event sourcing with PostgreSQL (Phase 2), and developer tools (Section 3) are production-ready and battle-tested. Future phases will add event bus (Phase 3) and enhanced observability (Phase 4). The current feature set is sufficient for building production event-sourced systems.
+**A:** Yes! Composable Rust is production-ready:
+- ✅ **Phase 1-4 Complete**: Core abstractions, PostgreSQL event sourcing, Redpanda event bus, sagas, observability, error handling
+- ✅ **Web Framework Ready**: HTTP APIs (Axum), WebSocket real-time events, authentication (magic links, OAuth, passkeys)
+- ✅ **Email Support**: SMTP providers for production, console provider for development
+- ✅ **Battle-Tested**: 156 library tests + 15 integration tests, comprehensive error handling (retries, circuit breakers, DLQ)
+- ✅ **Production Database**: Migrations, connection pooling, batch operations
+
+Phase 5 (Developer Experience) is ~75% complete and focused on developer ergonomics (templates, CLI tools), not core functionality.
 
 ## Developer Experience Enhancements
 
@@ -653,20 +826,25 @@ cargo test     # See tests in action
 
 The Counter README is the **primary reference document** for Phase 1 architecture.
 
-### Read Core Concepts
+### Explore Advanced Topics
 
-See `docs/concepts.md` for deeper explanations of:
-- State, Action, Reducer, Effect, Environment
-- Effect composition (map, chain, merge)
-- TestStore for deterministic testing
-- Error handling strategy
+**Web Integration & Real-Time Communication:**
+- [WebSocket Guide](./websocket.md) - Real-time bidirectional communication
+- [Order Processing Example](../examples/order-processing/) - Complete HTTP + WebSocket + Event Sourcing
 
-### Review API Reference
+**Authentication & Email:**
+- [Email Providers Guide](./email-providers.md) - SMTP and Console email providers
+- [Auth Handlers](../auth/) - Magic links, OAuth, passkeys
 
-See `docs/api-reference.md` for detailed API documentation:
-- `Store::new()`, `Store::send()`, `Store::state()`
-- `Effect` variants and methods
-- Environment traits (`Clock`, etc.)
+**Architecture & Patterns:**
+- [Consistency Patterns](./consistency-patterns.md) - Handling eventual consistency correctly
+- [Saga Patterns](./saga-patterns.md) - Multi-aggregate coordination
+- [Event Bus Guide](./event-bus.md) - Cross-aggregate communication
+
+**Core Concepts:**
+- `docs/concepts.md` - Deep dive into State, Action, Reducer, Effect, Environment
+- `docs/api-reference.md` - Complete API documentation
+- `docs/error-handling.md` - Error handling strategies
 
 ### Study Implementation Decisions
 
@@ -686,12 +864,18 @@ Try implementing a simple TODO list:
 
 ### Phase Progress
 
+- **Phase 0**: Workspace setup, CI/CD ✅ COMPLETE
 - **Phase 1**: Core abstractions (Reducer, Effect, Store, Environment) ✅ COMPLETE
 - **Phase 2**: PostgreSQL event store, event sourcing ✅ COMPLETE
-- **Section 3**: Developer tools (derive macros, effect helpers, testing utilities) ✅ COMPLETE
-- **Phase 3**: Redpanda event bus, sagas for distributed transactions - Coming soon
-- **Phase 4**: Observability, circuit breakers, production hardening - Future
-- **Phase 5**: Additional examples and documentation - Future
+- **Phase 3**: Redpanda event bus, sagas, multi-aggregate coordination ✅ COMPLETE
+- **Phase 4**: Observability, error handling, production hardening ✅ COMPLETE
+- **Phase 5**: Developer Experience (macros, docs, templates) 🚧 IN PROGRESS (~75% complete)
+  - ✅ HTTP API framework (`composable-rust-web`)
+  - ✅ WebSocket real-time events
+  - ✅ Email providers (SMTP + Console)
+  - ✅ Auth handlers (magic link, OAuth, passkeys)
+  - ✅ Comprehensive documentation
+  - ⏸️ Templates and CLI tools (remaining)
 
 ## Key Takeaways
 

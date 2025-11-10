@@ -1,12 +1,32 @@
 # composable-rust-web
 
-Generic Axum web framework integration for Composable Rust.
+**Axum web framework integration for Composable Rust.**
 
-## Purpose
+## Overview
 
-This crate provides **generic HTTP utilities** that work with ANY domain. It implements the "Functional Core, Imperative Shell" pattern, keeping HTTP concerns separate from business logic.
+Generic HTTP and WebSocket utilities for building real-time, event-driven web applications. This crate implements the **"Functional Core, Imperative Shell"** pattern, keeping web concerns separate from business logic.
 
 **Domain-specific handlers should NOT go in this crate.** They belong in domain crates (e.g., `composable-rust-auth`).
+
+## Installation
+
+```toml
+[dependencies]
+composable-rust-web = { path = "../web" }
+axum = "0.7"
+tokio = { version = "1.43", features = ["full"] }
+
+# For WebSocket support
+composable-rust-web = { path = "../web", features = ["ws"] }
+```
+
+## Features
+
+- ✅ **Generic error handling** - HTTP-friendly `AppError` type
+- ✅ **HTTP extractors** - CorrelationId, ClientIp, UserAgent
+- ✅ **Health checks** - Liveness and readiness endpoints
+- ✅ **WebSocket support** - Real-time bidirectional communication (feature: `ws`)
+- ✅ **Store integration** - Generic handlers for any `Store<S, A, E, R>`
 
 ## What's Included
 
@@ -86,6 +106,76 @@ let app = Router::new()
     .route("/health/ready", get(health_check_with_store))
     .with_state(store);
 ```
+
+### 4. WebSocket Handlers (Feature: `ws`)
+
+Generic WebSocket handler for real-time bidirectional communication.
+
+**Installation**:
+```toml
+[dependencies]
+composable-rust-web = { path = "../web", features = ["ws"] }
+```
+
+**Usage**:
+```rust
+use composable_rust_web::handlers::websocket;
+use axum::{Router, routing::get};
+
+let app = Router::new()
+    .route("/ws", get(websocket::handle::<OrderState, OrderAction, OrderEnv, OrderReducer>))
+    .with_state(store);
+```
+
+**Message Protocol**:
+```typescript
+// Client → Server (Commands)
+{ "type": "command", "action": { /* OrderAction */ } }
+
+// Server → Client (Events)
+{ "type": "event", "action": { /* OrderAction */ } }
+
+// Errors
+{ "type": "error", "message": "Error description" }
+
+// Keepalive
+{ "type": "ping" }
+{ "type": "pong" }
+```
+
+**Features**:
+- **Automatic event broadcasting**: All actions dispatched to the Store are streamed to connected clients
+- **Command processing**: Clients can send commands as actions
+- **Type-safe**: Generic over `Store<S, A, E, R>` with proper trait bounds
+- **Bidirectional**: Real-time push and pull
+- **Keepalive**: Ping/pong for connection health
+
+**Example client (JavaScript)**:
+```javascript
+const ws = new WebSocket('ws://localhost:3000/ws');
+
+// Receive events
+ws.onmessage = (event) => {
+  const message = JSON.parse(event.data);
+
+  if (message.type === 'event') {
+    console.log('Order updated:', message.action);
+  }
+};
+
+// Send commands
+ws.send(JSON.stringify({
+  type: 'command',
+  action: {
+    PlaceOrder: {
+      customer_id: 'cust-123',
+      items: [/* ... */]
+    }
+  }
+}));
+```
+
+For detailed WebSocket guide, see [`docs/websocket.md`](../docs/websocket.md).
 
 ## Usage Pattern
 
@@ -206,7 +296,28 @@ cargo test -p composable-rust-web
 
 ## Examples
 
-See the auth crate for complete examples of domain-specific handlers using these utilities.
+### Complete Working Examples
+
+1. **Auth Handlers** - See `auth/src/handlers/` for domain-specific handlers:
+   - `magic_link.rs` - Magic link authentication flow
+   - `oauth.rs` - OAuth 2.0 provider integration
+   - `passkey.rs` - WebAuthn/passkey authentication
+
+2. **Order Processing** - See `examples/order-processing/src/router.rs`:
+   - HTTP API with `send_and_wait_for()` pattern
+   - WebSocket endpoint for real-time order updates
+   - Health checks with Store diagnostics
+
+3. **Ticketing System** (Planned) - See `examples/ticketing/`:
+   - Complete CRUD with event sourcing
+   - Real-time ticket updates via WebSocket
+   - Multi-aggregate coordination
+
+## Further Reading
+
+- [WebSocket Guide](../docs/websocket.md) - Complete WebSocket implementation guide
+- [Getting Started](../docs/getting-started.md) - Framework basics with HTTP examples
+- [Consistency Patterns](../docs/consistency-patterns.md) - Real-time updates and eventual consistency
 
 ## License
 

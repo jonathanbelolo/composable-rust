@@ -153,6 +153,13 @@ pub struct GetOrderResponse {
 ///   "placed_at": "2024-01-01T00:00:00Z"
 /// }
 /// ```
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - Order validation fails (empty items, invalid prices, etc.)
+/// - Event store persistence fails
+/// - Internal timeout waiting for event confirmation
 pub async fn place_order(
     State(store): State<Arc<Store<OrderState, OrderAction, OrderEnvironment, OrderReducer>>>,
     _correlation_id: CorrelationId,
@@ -237,6 +244,12 @@ pub async fn place_order(
 ///   "total_cents": 2000
 /// }
 /// ```
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - Order ID does not match the current order in state
+/// - Order has not been placed yet
 pub async fn get_order(
     State(store): State<Arc<Store<OrderState, OrderAction, OrderEnvironment, OrderReducer>>>,
     Path(order_id): Path<String>,
@@ -248,8 +261,7 @@ pub async fn get_order(
     if state
         .order_id
         .as_ref()
-        .map(|id| id.as_str() != order_id.as_str())
-        .unwrap_or(true)
+        .map_or(true, |id| id.as_str() != order_id.as_str())
     {
         return Err(AppError::not_found("Order", &order_id));
     }
@@ -296,6 +308,14 @@ pub async fn get_order(
 ///   "cancelled_at": "2024-01-01T00:00:00Z"
 /// }
 /// ```
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - Order ID mismatch
+/// - Order cannot be cancelled in its current status
+/// - Event store persistence fails
+/// - Internal timeout waiting for event confirmation
 pub async fn cancel_order(
     State(store): State<Arc<Store<OrderState, OrderAction, OrderEnvironment, OrderReducer>>>,
     Path(order_id): Path<String>,
@@ -365,6 +385,15 @@ pub async fn cancel_order(
 ///   "shipped_at": "2024-01-01T00:00:00Z"
 /// }
 /// ```
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - Order ID mismatch
+/// - Order cannot be shipped in its current status
+/// - Tracking number is empty
+/// - Event store persistence fails
+/// - Internal timeout waiting for event confirmation
 pub async fn ship_order(
     State(store): State<Arc<Store<OrderState, OrderAction, OrderEnvironment, OrderReducer>>>,
     Path(order_id): Path<String>,

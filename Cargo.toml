@@ -20,6 +20,27 @@ members = [
     "web",
 ]
 
+# Default members excludes auth which requires DATABASE_URL for sqlx query verification
+# To work on auth: set DATABASE_URL and explicitly build with -p composable-rust-auth
+default-members = [
+    "core",
+    "runtime",
+    "testing",
+    "postgres",
+    "redpanda",
+    "projections",
+    "macros",
+    "examples/counter",
+    "examples/order-processing",
+    "examples/order-projection",
+    "examples/checkout-saga",
+    "examples/metrics-demo",
+    "examples/todo",
+    "examples/banking",
+    "examples/ticketing",
+    "web",
+]
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"

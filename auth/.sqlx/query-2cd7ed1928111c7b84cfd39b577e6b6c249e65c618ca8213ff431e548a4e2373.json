@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT user_id, provider, provider_user_id, linked_at\n            FROM oauth_links_projection\n            WHERE provider = $1 AND provider_user_id = $2\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "provider",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "provider_user_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "linked_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "2cd7ed1928111c7b84cfd39b577e6b6c249e65c618ca8213ff431e548a4e2373"
+}

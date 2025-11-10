@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE devices_projection\n                SET passkey_credential_id = $2,\n                    last_event_timestamp = $3\n                WHERE device_id = $1\n                  AND last_event_timestamp < $3\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "bf5e44928370ea8cd751d4a44ff2c0e647350aac63046ae2832b7346950d94ba"
+}

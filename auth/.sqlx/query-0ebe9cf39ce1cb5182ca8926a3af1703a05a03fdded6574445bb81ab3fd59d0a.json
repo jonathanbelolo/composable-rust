@@ -1,0 +1,108 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT device_id, user_id, name, device_type AS \"device_type: DeviceType\",\n                   platform, first_seen, last_seen, trust_level AS \"trust_level: DeviceTrustLevel\",\n                   login_count, passkey_credential_id, public_key\n            FROM devices_projection\n            WHERE device_id = $1 AND user_id = $2\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "device_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "device_type: DeviceType",
+        "type_info": {
+          "Custom": {
+            "name": "device_type",
+            "kind": {
+              "Enum": [
+                "mobile",
+                "desktop",
+                "tablet",
+                "unknown"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "platform",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "first_seen",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "last_seen",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "trust_level: DeviceTrustLevel",
+        "type_info": {
+          "Custom": {
+            "name": "device_trust_level",
+            "kind": {
+              "Enum": [
+                "unknown",
+                "recognized",
+                "familiar",
+                "trusted",
+                "highly_trusted"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "login_count",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 9,
+        "name": "passkey_credential_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "public_key",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "0ebe9cf39ce1cb5182ca8926a3af1703a05a03fdded6574445bb81ab3fd59d0a"
+}

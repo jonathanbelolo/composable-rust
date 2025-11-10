@@ -50,18 +50,26 @@
 //!   -d '{"tracking": "TRACK123"}'
 //! ```
 
-#![cfg(feature = "http")]
-
+#[cfg(feature = "http")]
 use axum::Router;
+#[cfg(feature = "http")]
 use composable_rust_core::environment::SystemClock;
+#[cfg(feature = "http")]
 use composable_rust_runtime::Store;
+#[cfg(feature = "http")]
 use composable_rust_testing::mocks::InMemoryEventStore;
+#[cfg(feature = "http")]
 use composable_rust_web::handlers::health::health_check;
+#[cfg(feature = "http")]
 use order_processing::{OrderEnvironment, OrderReducer, OrderState};
+#[cfg(feature = "http")]
 use std::sync::Arc;
+#[cfg(feature = "http")]
 use tracing::{info, Level};
+#[cfg(feature = "http")]
 use tracing_subscriber::FmtSubscriber;
 
+#[cfg(feature = "http")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Set up tracing
@@ -78,11 +86,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         {
             if let Ok(database_url) = std::env::var("DATABASE_URL") {
                 info!("Using PostgreSQL event store: {}", database_url);
-                Arc::new(
-                    composable_rust_postgres::PostgresEventStore::new(&database_url)
-                        .await
-                        .expect("Failed to connect to PostgreSQL"),
-                )
+                let event_store = composable_rust_postgres::PostgresEventStore::new(&database_url)
+                    .await
+                    .map_err(|e| format!("Failed to connect to PostgreSQL: {e}"))?;
+                Arc::new(event_store)
             } else {
                 info!("DATABASE_URL not set, using in-memory event store");
                 Arc::new(InMemoryEventStore::new())

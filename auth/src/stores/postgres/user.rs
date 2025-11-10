@@ -24,7 +24,6 @@
 use crate::error::{AuthError, Result};
 use crate::providers::{User, UserRepository, OAuthLink, MagicLinkToken, PasskeyCredential};
 use crate::state::{OAuthProvider, UserId, DeviceId};
-use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
 /// PostgreSQL user repository.

@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE devices_projection\n                SET trust_level = $2::device_trust_level,\n                    last_event_timestamp = $3\n                WHERE device_id = $1\n                  AND last_event_timestamp < $3\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        {
+          "Custom": {
+            "name": "device_trust_level",
+            "kind": {
+              "Enum": [
+                "unknown",
+                "recognized",
+                "familiar",
+                "trusted",
+                "highly_trusted"
+              ]
+            }
+          }
+        },
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "033249a92ebacbdedde2f50f77409d6991859a4cfbcd292459314e8d00825438"
+}

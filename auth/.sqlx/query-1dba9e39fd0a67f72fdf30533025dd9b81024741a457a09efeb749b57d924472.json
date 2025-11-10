@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE passkeys_projection\n            SET counter = $2,\n                last_used = NOW()\n            WHERE credential_id = $1 AND counter = $3\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1dba9e39fd0a67f72fdf30533025dd9b81024741a457a09efeb749b57d924472"
+}

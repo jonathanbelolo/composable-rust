@@ -69,9 +69,9 @@ impl DeviceRepository for PostgresDeviceRepository {
         let row = sqlx::query!(
             r#"
             SELECT device_id, user_id, name, device_type AS "device_type: DeviceType",
-                   platform, first_seen, last_seen, user_marked_trusted,
-                   requires_mfa, passkey_credential_id, public_key, login_count
-            FROM registered_devices
+                   platform, first_seen, last_seen, trust_level AS "trust_level: DeviceTrustLevel",
+                   login_count, passkey_credential_id, public_key
+            FROM devices_projection
             WHERE device_id = $1 AND user_id = $2
             "#,
             device_id.0,
@@ -82,12 +82,6 @@ impl DeviceRepository for PostgresDeviceRepository {
         .map_err(|e| AuthError::DatabaseError(format!("Failed to get device: {e}")))?
         .ok_or(AuthError::ResourceNotFound)?; // Returns ResourceNotFound for both missing and unauthorized
 
-        let trust_level = calculate_trust_level(
-            row.user_marked_trusted,
-            row.login_count,
-            row.first_seen,
-        );
-
         Ok(Device {
             device_id: DeviceId(row.device_id),
             user_id: UserId(row.user_id),
@@ -96,7 +90,8 @@ impl DeviceRepository for PostgresDeviceRepository {
             platform: row.platform,
             first_seen: row.first_seen,
             last_seen: row.last_seen,
-            trust_level,
+            trust_level: row.trust_level,
+            login_count: row.login_count,
             passkey_credential_id: row.passkey_credential_id,
             public_key: row.public_key,
             fingerprint: None, // TODO: Add to schema and query
@@ -120,9 +115,9 @@ impl DeviceRepository for PostgresDeviceRepository {
         let rows = sqlx::query!(
             r#"
             SELECT device_id, user_id, name, device_type AS "device_type: DeviceType",
-                   platform, first_seen, last_seen, user_marked_trusted,
-                   requires_mfa, passkey_credential_id, public_key, login_count
-            FROM registered_devices
+                   platform, first_seen, last_seen, trust_level AS "trust_level: DeviceTrustLevel",
+                   login_count, passkey_credential_id, public_key
+            FROM devices_projection
             WHERE user_id = $1
             ORDER BY last_seen DESC
             LIMIT $2 OFFSET $3
@@ -137,27 +132,20 @@ impl DeviceRepository for PostgresDeviceRepository {
 
         let devices = rows
             .into_iter()
-            .map(|row| {
-                let trust_level = calculate_trust_level(
-                    row.user_marked_trusted,
-                    row.login_count,
-                    row.first_seen,
-                );
-
-                Device {
-                    device_id: DeviceId(row.device_id),
-                    user_id: UserId(row.user_id),
-                    name: row.name,
-                    device_type: row.device_type,
-                    platform: row.platform,
-                    first_seen: row.first_seen,
-                    last_seen: row.last_seen,
-                    trust_level,
-                    passkey_credential_id: row.passkey_credential_id,
-                    public_key: row.public_key,
-                    fingerprint: None, // TODO: Add to schema and query
-                    fingerprint_hash: None, // TODO: Add to schema and query
-                }
+            .map(|row| Device {
+                device_id: DeviceId(row.device_id),
+                user_id: UserId(row.user_id),
+                name: row.name,
+                device_type: row.device_type,
+                platform: row.platform,
+                first_seen: row.first_seen,
+                last_seen: row.last_seen,
+                trust_level: row.trust_level,
+                login_count: row.login_count,
+                passkey_credential_id: row.passkey_credential_id,
+                public_key: row.public_key,
+                fingerprint: None, // TODO: Add to schema and query
+                fingerprint_hash: None, // TODO: Add to schema and query
             })
             .collect();
 
@@ -169,29 +157,22 @@ impl DeviceRepository for PostgresDeviceRepository {
         crate::utils::validate_device_name(&device.name)?;
         crate::utils::validate_platform(&device.platform)?;
 
-        let device_type_str = match device.device_type {
-            DeviceType::Mobile => "mobile",
-            DeviceType::Desktop => "desktop",
-            DeviceType::Tablet => "tablet",
-            DeviceType::Other => "unknown",
-        };
-
         sqlx::query!(
             r#"
-            INSERT INTO registered_devices
+            INSERT INTO devices_projection
                 (device_id, user_id, name, device_type, platform, first_seen, last_seen,
-                 user_marked_trusted, requires_mfa, passkey_credential_id, public_key)
-            VALUES ($1, $2, $3, $4::device_type, $5, $6, $7, $8, $9, $10, $11)
+                 trust_level, login_count, passkey_credential_id, public_key)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             "#,
             device.device_id.0,
             device.user_id.0,
             device.name,
-            device_type_str,
+            device.device_type as DeviceType,
             device.platform,
             device.first_seen,
             device.last_seen,
-            false, // user_marked_trusted starts as false
-            false, // requires_mfa starts as false
+            device.trust_level as DeviceTrustLevel,
+            device.login_count,
             device.passkey_credential_id,
             device.public_key,
         )
@@ -203,31 +184,28 @@ impl DeviceRepository for PostgresDeviceRepository {
     }
 
     async fn update_device(&self, user_id: UserId, device: &Device) -> Result<Device> {
-        let device_type_str = match device.device_type {
-            DeviceType::Mobile => "mobile",
-            DeviceType::Desktop => "desktop",
-            DeviceType::Tablet => "tablet",
-            DeviceType::Other => "unknown",
-        };
-
         // ✅ Authorization: Filter by both device_id AND user_id
         // Also verify device.user_id == user_id (prevent device transfer)
         let result = sqlx::query!(
             r#"
-            UPDATE registered_devices
+            UPDATE devices_projection
             SET name = $2,
-                device_type = $3::device_type,
+                device_type = $3,
                 platform = $4,
                 last_seen = $5,
-                passkey_credential_id = $6,
-                public_key = $7
-            WHERE device_id = $1 AND user_id = $8
+                trust_level = $6,
+                login_count = $7,
+                passkey_credential_id = $8,
+                public_key = $9
+            WHERE device_id = $1 AND user_id = $10
             "#,
             device.device_id.0,
             device.name,
-            device_type_str,
+            device.device_type as DeviceType,
             device.platform,
             device.last_seen,
+            device.trust_level as DeviceTrustLevel,
+            device.login_count,
             device.passkey_credential_id,
             device.public_key,
             user_id.0, // ✅ Authorization check
@@ -240,7 +218,7 @@ impl DeviceRepository for PostgresDeviceRepository {
             return Err(AuthError::ResourceNotFound); // Device not found or unauthorized
         }
 
-        // ✅ Additional check: Verify device.user_id matches user_id (prevent transfer)
+        // ✅ Additional check: Verify device.user_id matches user_id (prevent device transfer)
         if device.user_id != user_id {
             return Err(AuthError::ResourceNotFound);
         }
@@ -254,18 +232,15 @@ impl DeviceRepository for PostgresDeviceRepository {
         device_id: DeviceId,
         trust_level: DeviceTrustLevel,
     ) -> Result<()> {
-        // Store user marking as trusted (all other trust levels are calculated)
-        let user_marked = matches!(trust_level, DeviceTrustLevel::Trusted | DeviceTrustLevel::HighlyTrusted);
-
         // ✅ Authorization: Filter by both device_id AND user_id
         let result = sqlx::query!(
             r#"
-            UPDATE registered_devices
-            SET user_marked_trusted = $2
+            UPDATE devices_projection
+            SET trust_level = $2
             WHERE device_id = $1 AND user_id = $3
             "#,
             device_id.0,
-            user_marked,
+            trust_level as DeviceTrustLevel,
             user_id.0, // ✅ Authorization check
         )
         .execute(&self.pool)
@@ -288,7 +263,7 @@ impl DeviceRepository for PostgresDeviceRepository {
         // ✅ Authorization: Filter by both device_id AND user_id
         let result = sqlx::query!(
             r#"
-            UPDATE registered_devices
+            UPDATE devices_projection
             SET last_seen = $2,
                 login_count = login_count + 1
             WHERE device_id = $1 AND user_id = $3
@@ -312,7 +287,7 @@ impl DeviceRepository for PostgresDeviceRepository {
         // ✅ Authorization: Filter by both device_id AND user_id
         let result = sqlx::query!(
             r#"
-            DELETE FROM registered_devices
+            DELETE FROM devices_projection
             WHERE device_id = $1 AND user_id = $2
             "#,
             device_id.0,
@@ -338,9 +313,9 @@ impl DeviceRepository for PostgresDeviceRepository {
         let row = sqlx::query!(
             r#"
             SELECT device_id, user_id, name, device_type AS "device_type: DeviceType",
-                   platform, first_seen, last_seen, user_marked_trusted,
-                   requires_mfa, passkey_credential_id, public_key, login_count
-            FROM registered_devices
+                   platform, first_seen, last_seen, trust_level AS "trust_level: DeviceTrustLevel",
+                   login_count, passkey_credential_id, public_key
+            FROM devices_projection
             WHERE user_id = $1
               AND platform = $2
             ORDER BY last_seen DESC
@@ -359,12 +334,6 @@ impl DeviceRepository for PostgresDeviceRepository {
                 let ua_match = user_agent.contains(&row.platform) || row.platform.contains(user_agent);
 
                 if ua_match {
-                    let trust_level = calculate_trust_level(
-                        row.user_marked_trusted,
-                        row.login_count,
-                        row.first_seen,
-                    );
-
                     Ok(Some(Device {
                         device_id: DeviceId(row.device_id),
                         user_id: UserId(row.user_id),
@@ -373,7 +342,8 @@ impl DeviceRepository for PostgresDeviceRepository {
                         platform: row.platform,
                         first_seen: row.first_seen,
                         last_seen: row.last_seen,
-                        trust_level,
+                        trust_level: row.trust_level,
+                        login_count: row.login_count,
                         passkey_credential_id: row.passkey_credential_id,
                         public_key: row.public_key,
                         fingerprint: None, // TODO: Add to schema and query
@@ -388,26 +358,42 @@ impl DeviceRepository for PostgresDeviceRepository {
     }
 }
 
-/// Calculate device trust level based on metrics.
+/// Calculate device trust level based on usage metrics.
 ///
-/// # Trust Levels
-///
+/// This function implements the progressive trust algorithm:
 /// - **Unknown**: New device (< 7 days, < 5 logins)
-/// - **Recognized**: Seen before but not trusted (7-30 days or 5-20 logins)
+/// - **Recognized**: Seen before (7-30 days or 5-20 logins)
 /// - **Familiar**: Regular device (30+ days or 20+ logins)
-/// - **Trusted**: User explicitly marked as trusted
-/// - **HighlyTrusted**: Trusted + has passkey
+///
+/// **Note**: This does NOT handle `Trusted` or `HighlyTrusted` levels,
+/// which are set manually via `DeviceTrustedByUser` events.
+///
+/// **Note**: This function is primarily used for testing. The actual projection
+/// uses `calculate_progressive_trust` in `projection.rs`.
+///
+/// # Arguments
+///
+/// * `user_marked_trusted` - Whether user explicitly marked device as trusted
+/// * `login_count` - Number of successful logins from this device
+/// * `first_seen` - When the device was first registered
+///
+/// # Returns
+///
+/// The calculated trust level (Unknown, Recognized, Familiar, or Trusted)
+#[cfg(test)]
 fn calculate_trust_level(
     user_marked_trusted: bool,
     login_count: i32,
     first_seen: DateTime<Utc>,
 ) -> DeviceTrustLevel {
+    // Manual trust override
     if user_marked_trusted {
         return DeviceTrustLevel::Trusted;
     }
 
     let age_days = (Utc::now() - first_seen).num_days();
 
+    // Progressive trust based on usage patterns
     match (age_days, login_count) {
         (days, count) if days >= 30 || count >= 20 => DeviceTrustLevel::Familiar,
         (days, count) if days >= 7 || count >= 5 => DeviceTrustLevel::Recognized,

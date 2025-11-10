@@ -269,6 +269,7 @@ mod tests {
             first_seen: chrono::Utc::now(),
             last_seen: chrono::Utc::now(),
             trust_level: DeviceTrustLevel::Unknown,
+            login_count: 0,
             passkey_credential_id: None,
             public_key: None,
             fingerprint: None,
@@ -435,10 +436,11 @@ mod tests {
                 first_seen: chrono::Utc::now(),
                 last_seen: chrono::Utc::now() + chrono::Duration::seconds(i),
                 trust_level: DeviceTrustLevel::Unknown,
+                login_count: 0,
                 passkey_credential_id: None,
                 public_key: None,
-            fingerprint: None,
-            fingerprint_hash: None,
+                fingerprint: None,
+                fingerprint_hash: None,
             };
             repo.create_device(&device).await.unwrap();
         }
@@ -464,10 +466,11 @@ mod tests {
                 first_seen: chrono::Utc::now(),
                 last_seen: chrono::Utc::now() + chrono::Duration::seconds(i),
                 trust_level: DeviceTrustLevel::Unknown,
+                login_count: 0,
                 passkey_credential_id: None,
                 public_key: None,
-            fingerprint: None,
-            fingerprint_hash: None,
+                fingerprint: None,
+                fingerprint_hash: None,
             };
             repo.create_device(&device).await.unwrap();
         }
@@ -493,10 +496,11 @@ mod tests {
                 first_seen: chrono::Utc::now(),
                 last_seen: chrono::Utc::now(),
                 trust_level: DeviceTrustLevel::Unknown,
+                login_count: 0,
                 passkey_credential_id: None,
                 public_key: None,
-            fingerprint: None,
-            fingerprint_hash: None,
+                fingerprint: None,
+                fingerprint_hash: None,
             };
             repo.create_device(&device).await.unwrap();
         }
@@ -526,10 +530,11 @@ mod tests {
                 first_seen: chrono::Utc::now(),
                 last_seen: chrono::Utc::now() + chrono::Duration::seconds(i),
                 trust_level: DeviceTrustLevel::Unknown,
+                login_count: 0,
                 passkey_credential_id: None,
                 public_key: None,
-            fingerprint: None,
-            fingerprint_hash: None,
+                fingerprint: None,
+                fingerprint_hash: None,
             };
             repo.create_device(&device).await.unwrap();
         }
@@ -573,10 +578,11 @@ mod tests {
                 first_seen: chrono::Utc::now(),
                 last_seen: chrono::Utc::now(),
                 trust_level: DeviceTrustLevel::Unknown,
+                login_count: 0,
                 passkey_credential_id: None,
                 public_key: None,
-            fingerprint: None,
-            fingerprint_hash: None,
+                fingerprint: None,
+                fingerprint_hash: None,
             };
             repo.create_device(&device).await.unwrap();
         }

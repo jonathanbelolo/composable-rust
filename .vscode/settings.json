@@ -1,5 +1,11 @@
 {
   "rust-analyzer.cargo.features": "all",
-  "rust-analyzer.checkOnSave.allTargets": true,
-  "rust-analyzer.checkOnSave.command": "check"
+  "rust-analyzer.check.allTargets": true,
+  "rust-analyzer.check.command": "check",
+  "rust-analyzer.cargo.extraEnv": {
+    "SQLX_OFFLINE": "true"
+  },
+  "rust-analyzer.server.extraEnv": {
+    "SQLX_OFFLINE": "true"
+  }
 }

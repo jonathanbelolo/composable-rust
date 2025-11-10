@@ -587,6 +587,239 @@ async fn poll_order_status(order_id: &str) -> Result<OrderStatus> {
 - Polling (check every few seconds)
 - WebSocket updates (push when ready)
 
+### Pattern 4: Real-Time Updates with WebSockets (Recommended for Modern UIs)
+
+The best way to handle eventual consistency in modern UIs is **real-time event streaming**:
+
+```rust
+use composable_rust_web::handlers::websocket;
+use axum::{Router, routing::get};
+
+// Server: Add WebSocket endpoint to your router
+pub fn order_router(
+    store: Arc<Store<OrderState, OrderAction, OrderEnvironment, OrderReducer>>,
+) -> Router {
+    Router::new()
+        // HTTP endpoints for commands
+        .route("/orders", post(handlers::place_order))
+        .route("/orders/:id", get(handlers::get_order))
+        // WebSocket for real-time events
+        .route("/ws", get(websocket::handle::<OrderState, OrderAction, _, _>))
+        .with_state(store)
+}
+```
+
+**Client-side JavaScript**:
+
+```javascript
+// 1. Connect to WebSocket
+const ws = new WebSocket('ws://localhost:3000/api/v1/ws');
+
+// 2. Send commands through WebSocket
+function placeOrder(orderData) {
+  ws.send(JSON.stringify({
+    type: "command",
+    action: {
+      PlaceOrder: orderData
+    }
+  }));
+
+  // ✅ Show optimistic UI immediately
+  showOrderProcessing(orderData);
+}
+
+// 3. Receive real-time events
+ws.onmessage = (event) => {
+  const message = JSON.parse(event.data);
+
+  if (message.type === "event") {
+    const action = message.action;
+
+    // ✅ Update UI immediately when event arrives
+    if (action.OrderPlaced) {
+      updateOrderStatus(action.OrderPlaced.order_id, 'pending');
+    } else if (action.OrderShipped) {
+      updateOrderStatus(action.OrderShipped.order_id, 'shipped');
+      showNotification('Your order has shipped!');
+    }
+  }
+};
+```
+
+**How It Works**:
+
+1. **Client sends command** → WebSocket → Store dispatch
+2. **Store processes action** → State updated → Events saved
+3. **Store broadcasts action** → All WebSocket clients receive it
+4. **Clients update UI** in real-time (10-50ms)
+
+**Benefits over Polling**:
+- **Lower latency**: ~10-50ms vs 2-5 seconds for polling
+- **Less load**: No repeated HTTP requests
+- **Better UX**: Instant updates, live collaboration
+- **Efficient**: Push-based, not pull-based
+
+**Real-World Example** (from `examples/order-processing`):
+
+```rust
+// Server automatically broadcasts all actions
+let store = Store::new(
+    OrderState::new(),
+    OrderReducer::new(),
+    environment,
+);
+
+// Any action dispatched to the store is broadcast to all WebSocket clients:
+store.send(OrderAction::PlaceOrder { /* ... */ }).await?;
+// ↓
+// All connected WebSocket clients receive:
+// {"type": "event", "action": {"OrderPlaced": {...}}}
+```
+
+**When to Use**:
+- Real-time dashboards (order tracking, analytics)
+- Collaborative editing (multiple users see changes)
+- Live notifications (order shipped, payment completed)
+- Progress tracking (saga steps, processing status)
+- Chat/messaging features
+
+**See Also**:
+- [WebSocket Guide](./websocket.md) - Complete WebSocket implementation guide
+- [Order Processing Example](../examples/order-processing/) - Working WebSocket integration
+
+### Pattern 5: Email Notifications with Eventual Consistency
+
+Email notifications naturally work well with eventual consistency because they are **asynchronous and non-blocking**:
+
+```rust
+use composable_rust_auth::providers::EmailProvider;
+
+// Email effect in reducer
+impl Reducer for OrderReducer {
+    fn reduce(
+        &self,
+        state: &mut Self::State,
+        action: Self::Action,
+        env: &Self::Environment,
+    ) -> Vec<Effect<Self::Action>> {
+        match action {
+            OrderAction::OrderShipped { order_id, tracking_number } => {
+                // Update state
+                state.status = OrderStatus::Shipped;
+                state.tracking_number = Some(tracking_number.clone());
+
+                // ✅ Send email notification (async, eventual)
+                vec![
+                    Effect::Future(Box::pin({
+                        let email = env.email_provider.clone();
+                        let customer_email = state.customer_email.clone();
+                        async move {
+                            email.send_security_alert(
+                                &customer_email,
+                                "Your order has shipped!",
+                                &format!("Tracking: {tracking_number}"),
+                            ).await.ok();
+                            None // No follow-up action
+                        }
+                    })),
+                    Effect::PublishEvent(OrderAction::OrderShipped {
+                        order_id,
+                        tracking_number,
+                    }),
+                ]
+            }
+            // ...
+        }
+    }
+}
+```
+
+**Key Characteristics**:
+- **Fire-and-forget**: Email delivery doesn't block the workflow
+- **Eventual**: Email arrives seconds/minutes later (acceptable)
+- **Best-effort**: Failed emails don't fail the command
+- **Non-critical**: User gets email eventually, or checks UI
+
+**Environment Setup**:
+
+```rust
+use composable_rust_auth::providers::{SmtpEmailProvider, ConsoleEmailProvider};
+
+// Development: Console email (logs to terminal)
+let email_provider = ConsoleEmailProvider::new();
+
+// Production: Real SMTP email
+let email_provider = SmtpEmailProvider::new(
+    env::var("SMTP_SERVER")?,
+    env::var("SMTP_PORT")?.parse()?,
+    env::var("SMTP_USERNAME")?,
+    env::var("SMTP_PASSWORD")?,
+    env::var("FROM_EMAIL")?,
+    env::var("FROM_NAME")?,
+)?;
+
+let environment = OrderEnvironment {
+    email_provider,
+    event_store,
+    // ... other dependencies
+};
+```
+
+**Email Design Guidelines**:
+
+1. **Include complete data in email** (don't query projections):
+   ```rust
+   // ❌ BAD: Query projection for email data
+   async fn send_order_confirmation(order_id: &str) -> Result<()> {
+       let order = projection.get_order(order_id).await?; // Race!
+       email.send_order_confirmation(&order).await?;
+   }
+
+   // ✅ GOOD: Saga state has all email data
+   async fn send_order_confirmation(state: &SagaState) -> Result<()> {
+       email.send_order_confirmation(
+           &state.customer_email,
+           &state.order_id,
+           &state.items,          // Already in saga state
+           &state.shipping_address, // Already in saga state
+       ).await?;
+   }
+   ```
+
+2. **Make emails idempotent** (users might receive duplicates):
+   ```text
+   Subject: [Order #12345] Shipped
+
+   Your order #12345 has shipped!
+
+   Track your package: https://example.com/track/ABC123
+
+   (If you've already received this email, please discard it)
+   ```
+
+3. **Use emails for confirmation, not coordination**:
+   - ✅ "Your order has been placed" (confirmation)
+   - ✅ "Your order has shipped" (notification)
+   - ❌ "Click here to complete your order" (coordination - use UI instead)
+
+**Email vs WebSocket**:
+
+| Notification Type | Use Email | Use WebSocket |
+|-------------------|-----------|---------------|
+| User offline | ✅ Yes | ❌ No |
+| Important record | ✅ Yes | ❌ No |
+| Real-time critical | ❌ No | ✅ Yes |
+| Active user in UI | ⚠️ Both | ✅ Yes |
+| User must act | ✅ Yes (with link) | ⚠️ Maybe |
+
+**Best Practice**: Use **both** for important events:
+- WebSocket → Immediate UI update (10-50ms)
+- Email → Durable notification + offline users
+
+**See Also**:
+- [Email Providers Guide](./email-providers.md) - Complete email setup and configuration
+- [Auth Example](../auth/) - Email in magic link authentication
+
 ---
 
 ## Testing Patterns
@@ -1014,13 +1247,28 @@ async fn test_checkout_saga() {
 
 ## Further Reading
 
+### Composable Rust Documentation
+
+- [WebSocket Guide](./websocket.md) - Real-time event streaming with WebSockets
+- [Email Providers Guide](./email-providers.md) - Email notifications with SMTP and console providers
 - [Saga Patterns Guide](./saga-patterns.md) - Detailed saga implementation patterns
 - [Event Design Guidelines](./event-design-guidelines.md) - Event schema best practices
 - [Projections Guide](./projections.md) - Complete projection documentation
+- [Getting Started](./getting-started.md) - Complete tutorial for building your first app
+
+### Working Examples
+
+- [Order Processing Example](../examples/order-processing/) - HTTP API + WebSocket + Event Sourcing
+- [Checkout Saga Example](../examples/checkout-saga/) - Multi-aggregate coordination
+- [Auth Example](../auth/) - Authentication with email providers and magic links
+
+### External Resources
+
 - [CQRS Pattern](https://martinfowler.com/bliki/CQRS.html) - Martin Fowler's CQRS introduction
 - [Event Sourcing](https://martinfowler.com/eaaDev/EventSourcing.html) - Event Sourcing fundamentals
+- [Eventual Consistency](https://www.allthingsdistributed.com/2008/12/eventually_consistent.html) - Werner Vogels on eventual consistency
 
 ---
 
-**Last Updated**: 2025-01-07
+**Last Updated**: 2025-01-09
 **Status**: ✅ Production Ready

@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "TRUNCATE TABLE devices_projection CASCADE",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "0252c660fdac77c3ee514af3a5e38168fa8fa048a6c9b0d071fe34acefcc0552"
+}

@@ -1,0 +1,58 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT credential_id, user_id, device_id, public_key, counter, registered_at, last_used\n            FROM passkeys_projection\n            WHERE credential_id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "credential_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "device_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "public_key",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 4,
+        "name": "counter",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "registered_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "last_used",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "e693e7c17bacfe6221f1091b09cf631c73740c0614e6dd35834bf187f1ee36ea"
+}
