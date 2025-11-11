@@ -1,28 +1,175 @@
 version: '3.8'
 
+# Docker Compose Profiles:
+#   default: Agent + Observability (Prometheus, Grafana, Jaeger)
+#   full: Everything including PostgreSQL, Redis, Redpanda
+#
+# Usage:
+#   docker-compose up                           # Minimal stack
+#   docker-compose --profile full up             # Full infrastructure
+
 services:
-  # Production Agent
+  # =============================================================================
+  # Infrastructure Services (Future Integration)
+  # =============================================================================
+  # These services are ready for Phase 9 Parts 2-4 integration
+  # Currently NOT used by the agent (no PostgreSQL, Redis, Kafka dependencies yet)
+
+  # PostgreSQL for event store and audit logs (Phase 9 Part 2)
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["full"]
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: production_agent
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init-db:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - agent-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+        reservations:
+          memory: 256M
+          cpus: '0.5'
+
+  # Redis for sessions and caching (Phase 9 Part 3)
+  redis:
+    image: redis:7-alpine
+    profiles: ["full"]
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - agent-network
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+          cpus: '0.25'
+
+  # Redpanda for event bus - Kafka-compatible (Phase 9 Part 4)
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:latest
+    profiles: ["full"]
+    command:
+      - redpanda
+      - start
+      - --smp
+      - "1"
+      - --reserve-memory
+      - 0M
+      - --overprovisioned
+      - --node-id
+      - "0"
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+      - --advertise-kafka-addr
+      - PLAINTEXT://redpanda:29092,OUTSIDE://localhost:9092
+    ports:
+      - "9092:9092"      # Kafka API
+      - "9644:9644"      # Admin API
+      - "8081:8081"      # Schema Registry
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - agent-network
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+
+  # =============================================================================
+  # Application Services
+  # =============================================================================
+
+  # Production Agent - AI agent with Claude API integration
   production-agent:
     build:
-      context: ../..
+      context: ../../..  # Workspace root
       dockerfile: examples/production-agent/Dockerfile
+      args:
+        - RUST_LOG=${RUST_LOG:-production_agent=info,composable_rust_agent_patterns=info}
     ports:
       - "8080:8080"   # HTTP API
       - "9090:9090"   # Prometheus metrics
     environment:
-      - RUST_LOG=production_agent=info,composable_rust_agent_patterns=info
+      # Core configuration
+      - RUST_LOG=${RUST_LOG:-production_agent=info,composable_rust_agent_patterns=info,tower_http=debug}
+      - HTTP_PORT=8080
+      - METRICS_PORT=9090
+
+      # Anthropic API (REQUIRED - set in .env file)
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+
+      # Infrastructure (for future integration - currently unused)
+      - DATABASE_URL=postgres://postgres:password@postgres:5432/production_agent
+      - REDIS_URL=redis://redis:6379
+      - KAFKA_BROKERS=redpanda:29092
+
+      # Observability
+      - JAEGER_ENDPOINT=http://jaeger:14268/api/traces
+      - SERVICE_NAME=production-agent
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health/live"]
       interval: 10s
       timeout: 3s
       retries: 3
-      start_period: 10s
+      start_period: 15s
     depends_on:
       prometheus:
         condition: service_started
     restart: unless-stopped
     networks:
       - agent-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+        reservations:
+          memory: 256M
+          cpus: '0.5'
+
+  # =============================================================================
+  # Observability Stack
+  # =============================================================================
 
   # Prometheus for metrics collection
   prometheus:
@@ -35,11 +182,27 @@ services:
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=7d'
       - '--web.console.libraries=/usr/share/prometheus/console_libraries'
       - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
     networks:
       - agent-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
 
   # Grafana for visualization
   grafana:
@@ -49,33 +212,83 @@ services:
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
       - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     depends_on:
-      - prometheus
+      prometheus:
+        condition: service_healthy
     restart: unless-stopped
     networks:
       - agent-network
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+          cpus: '0.25'
 
-  # Jaeger for distributed tracing (optional)
+  # Jaeger for distributed tracing
   jaeger:
     image: jaegertracing/all-in-one:latest
     ports:
-      - "6831:6831/udp"  # Jaeger agent
+      - "6831:6831/udp"  # Jaeger agent (Thrift compact)
       - "16686:16686"    # Jaeger UI
-      - "14268:14268"    # Jaeger collector
+      - "14268:14268"    # Jaeger collector (HTTP)
+      - "14250:14250"    # Jaeger collector (gRPC)
     environment:
       - COLLECTOR_OTLP_ENABLED=true
+      - SPAN_STORAGE_TYPE=memory
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:14269/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
     networks:
       - agent-network
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+          cpus: '0.25'
+
+# =============================================================================
+# Volumes
+# =============================================================================
 
 volumes:
+  # Infrastructure data (full profile only)
+  postgres-data:
+  redis-data:
+  redpanda-data:
+
+  # Observability data (always available)
   prometheus-data:
   grafana-data:
+
+# =============================================================================
+# Networks
+# =============================================================================
 
 networks:
   agent-network:
     driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: agent-br0

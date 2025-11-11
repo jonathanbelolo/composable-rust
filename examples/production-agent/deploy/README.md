@@ -2,17 +2,58 @@
 
 This directory contains deployment configurations and scripts for running the production-agent in various environments.
 
+---
+
+## 🚀 Quick Start
+
+Choose your deployment method:
+
+1. **Fly.io** (5 minutes) - Recommended for getting started
+   ```bash
+   ./scripts/deploy-fly.sh setup && ./scripts/deploy-fly.sh deploy
+   ```
+   See [fly/DEPLOY.md](./fly/DEPLOY.md)
+
+2. **Docker Compose** (Local development)
+   ```bash
+   ./scripts/deploy-docker.sh up
+   ```
+   See [docker/README.md](./docker/README.md)
+
+3. **Kubernetes** (Production at scale)
+   ```bash
+   ./scripts/deploy-k8s.sh deploy
+   ```
+   See [Kubernetes Deployment](#kubernetes-deployment) below
+
+---
+
+## 📋 Before You Deploy
+
+**Run the validation script**:
+```bash
+./scripts/validate-deployment.sh
+```
+
+**Use the deployment checklist**: See [DEPLOYMENT-CHECKLIST.md](../DEPLOYMENT-CHECKLIST.md)
+
+---
+
 ## Directory Structure
 
 ```
 deploy/
-├── docker/              # Docker Compose deployment
+├── docker/              # Docker Compose deployment (local)
 │   ├── docker-compose.yml
+│   ├── init-db/         # PostgreSQL initialization
 │   ├── prometheus.yml
-│   └── grafana/
-│       ├── datasources/
-│       └── dashboards/
-├── k8s/                 # Kubernetes manifests
+│   ├── grafana/
+│   │   ├── datasources/
+│   │   └── dashboards/
+│   └── README.md
+├── fly/                 # Fly.io deployment (cloud)
+│   └── DEPLOY.md
+├── k8s/                 # Kubernetes manifests (production)
 │   ├── deployment.yaml
 │   ├── service.yaml
 │   ├── configmap.yaml
@@ -21,7 +62,10 @@ deploy/
 │   └── hpa.yaml
 └── scripts/             # Deployment automation scripts
     ├── deploy-docker.sh
-    └── deploy-k8s.sh
+    ├── deploy-fly.sh
+    ├── deploy-k8s.sh
+    ├── build.sh
+    └── validate-deployment.sh
 ```
 
 ## Quick Start

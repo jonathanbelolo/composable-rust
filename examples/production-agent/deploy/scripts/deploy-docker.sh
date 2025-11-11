@@ -31,20 +31,44 @@ ACTION="${1:-up}"
 case "${ACTION}" in
     up)
         log_info "Starting production-agent with Docker Compose..."
+
+        # Check if .env file exists
+        if [ ! -f "${SCRIPT_DIR}/../../.env" ]; then
+            log_warn ".env file not found. Creating from .env.example..."
+            cp "${SCRIPT_DIR}/../../.env.example" "${SCRIPT_DIR}/../../.env"
+            log_warn "Please edit .env and add your ANTHROPIC_API_KEY"
+        fi
+
         cd "${DOCKER_DIR}"
         docker-compose up -d
+
         log_info "Waiting for services to be healthy..."
-        sleep 5
+        sleep 10
+
+        log_info "Service status:"
         docker-compose ps
+
         log_info ""
-        log_info "Services available at:"
+        log_info "Infrastructure Services:"
+        log_info "  - PostgreSQL: localhost:5432 (user: postgres, db: production_agent)"
+        log_info "  - Redis: localhost:6379"
+        log_info "  - Redpanda Kafka: localhost:9092"
+        log_info "  - Redpanda Admin: http://localhost:9644"
+        log_info ""
+        log_info "Application Services:"
         log_info "  - Production Agent API: http://localhost:8080"
         log_info "  - Production Agent Metrics: http://localhost:9090/metrics"
+        log_info ""
+        log_info "Observability Stack:"
         log_info "  - Prometheus UI: http://localhost:9091"
         log_info "  - Grafana UI: http://localhost:3000 (admin/admin)"
         log_info "  - Jaeger UI: http://localhost:16686"
         log_info ""
-        log_info "Test with: curl http://localhost:8080/health"
+        log_info "Quick tests:"
+        log_info "  Health check: curl http://localhost:8080/health/live"
+        log_info "  Chat test:    curl -X POST http://localhost:8080/chat -H 'Content-Type: application/json' -d '{\"user_id\":\"test\",\"session_id\":\"s1\",\"message\":\"Hello\"}'"
+        log_info ""
+        log_info "View logs with: $0 logs"
         ;;
 
     down)
@@ -84,6 +108,29 @@ case "${ACTION}" in
     health)
         log_info "Checking service health..."
 
+        cd "${DOCKER_DIR}"
+
+        # Check PostgreSQL
+        if docker-compose exec -T postgres pg_isready -U postgres &>/dev/null; then
+            log_info "✓ PostgreSQL is healthy"
+        else
+            log_error "✗ PostgreSQL is not responding"
+        fi
+
+        # Check Redis
+        if docker-compose exec -T redis redis-cli ping &>/dev/null; then
+            log_info "✓ Redis is healthy"
+        else
+            log_error "✗ Redis is not responding"
+        fi
+
+        # Check Redpanda
+        if docker-compose exec -T redpanda rpk cluster health &>/dev/null; then
+            log_info "✓ Redpanda is healthy"
+        else
+            log_error "✗ Redpanda is not responding"
+        fi
+
         # Check production-agent
         if curl -f http://localhost:8080/health/live &>/dev/null; then
             log_info "✓ Production Agent is healthy"
@@ -103,6 +150,13 @@ case "${ACTION}" in
             log_info "✓ Grafana is healthy"
         else
             log_warn "✗ Grafana is not responding"
+        fi
+
+        # Check Jaeger
+        if curl -f http://localhost:16686/ &>/dev/null; then
+            log_info "✓ Jaeger is healthy"
+        else
+            log_warn "✗ Jaeger is not responding"
         fi
         ;;
 

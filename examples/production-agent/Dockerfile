@@ -16,6 +16,7 @@ COPY core ./core
 COPY runtime ./runtime
 COPY testing ./testing
 COPY agent-patterns ./agent-patterns
+COPY anthropic ./anthropic
 
 # Copy production-agent
 COPY examples/production-agent ./examples/production-agent
@@ -30,6 +31,7 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
