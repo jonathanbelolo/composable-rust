@@ -1,0 +1,11 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: production-agent
+  labels:
+    app: production-agent
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: production-agent

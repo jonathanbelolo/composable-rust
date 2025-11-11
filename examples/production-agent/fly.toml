@@ -1,0 +1,84 @@
+# Fly.io Configuration for Production Agent
+# Documentation: https://fly.io/docs/reference/configuration/
+
+app = "production-agent"
+primary_region = "cdg"  # Paris - change this to your preferred region
+
+# Build configuration
+[build]
+  dockerfile = "Dockerfile"
+
+# Environment variables (non-sensitive)
+[env]
+  RUST_LOG = "production_agent=info,composable_rust_agent_patterns=info"
+  HTTP_PORT = "8080"
+  METRICS_PORT = "9090"
+
+# HTTP service configuration
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  # HTTP port (redirects to HTTPS)
+  [[services.ports]]
+    handlers = ["http"]
+    port = 80
+    force_https = true
+
+  # HTTPS port (main entry point)
+  [[services.ports]]
+    handlers = ["tls", "http"]
+    port = 443
+
+  # Health checks
+  [services.http_checks]
+    interval = "10s"
+    timeout = "2s"
+    grace_period = "30s"
+    method = "GET"
+    path = "/health/live"
+
+  # Concurrency limits
+  [services.concurrency]
+    type = "connections"
+    hard_limit = 1000
+    soft_limit = 500
+
+# Metrics service (internal only, accessible via fly proxy)
+[[services]]
+  internal_port = 9090
+  protocol = "tcp"
+
+  # Only accessible via `fly proxy 9090`
+  [[services.ports]]
+    port = 9090
+
+# VM resources
+# Options: shared-cpu-1x (256MB), shared-cpu-2x (512MB)
+#          dedicated-cpu-1x (2GB), dedicated-cpu-2x (4GB)
+[vm]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256
+
+# Scaling configuration
+[metrics]
+  port = 9090
+  path = "/metrics"
+
+# Deployment configuration
+[deploy]
+  release_command = "echo 'Production Agent Starting...'"
+  strategy = "rolling"
+
+# Regional deployment (add more regions as you scale)
+# Uncomment regions as you expand:
+#
+# [regions]
+#   cdg = "Paris"        # Europe - Primary
+#   # nrt = "Tokyo"      # Asia - Uncomment when you expand to Asia
+#   # sjc = "San Jose"   # US West - Uncomment for US West Coast
+#   # ewr = "New York"   # US East - Uncomment for US East Coast

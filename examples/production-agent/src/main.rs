@@ -1,0 +1,268 @@
+//! Production Agent - Complete Phase 8.4 Example
+//!
+//! This example demonstrates all Phase 8.4 features:
+//! - OpenTelemetry tracing with span propagation
+//! - Health checks (startup, liveness, readiness)
+//! - Graceful shutdown coordination
+//! - Circuit breakers, rate limiting, bulkheads
+//! - Prometheus metrics
+//! - Configuration management
+//! - Audit logging
+//! - Security monitoring
+//!
+//! Run with: cargo run --bin production-agent
+//! Health: http://localhost:8080/health
+//! Metrics: http://localhost:9090/metrics
+//! Chat: POST http://localhost:8080/chat
+
+mod environment;
+mod reducer;
+mod server;
+mod types;
+
+use composable_rust_agent_patterns::{
+    audit::InMemoryAuditLogger,
+    health::{HealthCheckable, SystemHealthCheck, HealthStatus},
+    AgentMetrics,
+    security::SecurityMonitor,
+    shutdown::ShutdownCoordinator,
+};
+use environment::ProductionEnvironment;
+use metrics_exporter_prometheus::PrometheusBuilder;
+use reducer::ProductionAgentReducer;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::signal;
+use tracing::{error, info, warn};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+/// Simple health check
+struct SimpleHealthCheck {
+    name: String,
+}
+
+#[async_trait::async_trait]
+impl HealthCheckable for SimpleHealthCheck {
+    async fn check_health(&self) -> composable_rust_agent_patterns::health::ComponentHealth {
+        // Simulate startup check
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        composable_rust_agent_patterns::health::ComponentHealth::healthy("Service is healthy")
+    }
+
+    fn component_name(&self) -> &str {
+        &self.name
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Load environment variables from .env file (if present)
+    let _ = dotenvy::dotenv();
+
+    // Initialize tracing
+    init_tracing()?;
+
+    info!("🚀 Starting Production Agent with all Phase 8.4 features");
+
+    // Initialize Prometheus metrics exporter
+    let prometheus_handle = PrometheusBuilder::new()
+        .install_recorder()
+        .expect("Failed to install Prometheus recorder");
+
+    // Create shutdown coordinator
+    let shutdown = Arc::new(ShutdownCoordinator::new(Duration::from_secs(30)));
+
+    // Initialize audit logger
+    let audit_logger = Arc::new(InMemoryAuditLogger::new());
+    info!("✅ Audit logger initialized");
+
+    // Initialize security monitor
+    let security_monitor = Arc::new(SecurityMonitor::new());
+    info!("✅ Security monitor initialized");
+
+    // Create environment (loads Anthropic API key from ANTHROPIC_API_KEY env var)
+    let environment = Arc::new(ProductionEnvironment::from_env(
+        audit_logger.clone(),
+        security_monitor.clone(),
+    ));
+    info!("✅ Agent environment created with resilience features");
+
+    // Create reducer
+    let reducer = Arc::new(ProductionAgentReducer::new(
+        audit_logger.clone(),
+        security_monitor.clone(),
+    ));
+    info!("✅ Agent reducer initialized");
+
+    // Create metrics
+    let metrics = Arc::new(AgentMetrics::new());
+    info!("✅ Metrics initialized");
+
+    // Create health check registry
+    let mut health_registry = SystemHealthCheck::new();
+
+    // Register health checks
+    health_registry.add_check(Arc::new(SimpleHealthCheck {
+        name: "agent".to_string(),
+    }));
+    health_registry.add_check(Arc::new(SimpleHealthCheck {
+        name: "llm_connection".to_string(),
+    }));
+    health_registry.add_check(Arc::new(SimpleHealthCheck {
+        name: "audit_system".to_string(),
+    }));
+    info!("✅ Health checks registered");
+
+    // Wrap in Arc after adding checks
+    let health_registry = Arc::new(health_registry);
+
+    // Run startup checks
+    info!("🔍 Running startup health checks...");
+    let startup_results = health_registry.check_all().await;
+    let all_healthy = startup_results
+        .values()
+        .all(|r| r.status == HealthStatus::Healthy);
+
+    if !all_healthy {
+        error!("❌ Startup health checks failed:");
+        for (name, health) in &startup_results {
+            if health.status != HealthStatus::Healthy {
+                error!("  - {} is unhealthy: {}", name, health.message);
+            }
+        }
+        return Err("Startup health checks failed".into());
+    }
+    info!("✅ All startup checks passed");
+
+    // Create HTTP server
+    let app = server::create_server(
+        reducer.clone(),
+        environment.clone(),
+        metrics.clone(),
+        health_registry.clone(),
+    )
+    .await;
+
+    // Start HTTP server
+    let addr: SocketAddr = "127.0.0.1:8080".parse()?;
+    info!("🌐 Starting HTTP server on {}", addr);
+
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+
+    // Subscribe to shutdown signal
+    let mut shutdown_rx = shutdown.subscribe();
+
+    // Spawn server task
+    let server_handle = tokio::spawn(async move {
+        info!("✅ HTTP server listening on {}", addr);
+        info!("📊 Endpoints:");
+        info!("  - Health: http://{}/health", addr);
+        info!("  - Liveness: http://{}/health/live", addr);
+        info!("  - Readiness: http://{}/health/ready", addr);
+        info!("  - Metrics: http://{}/metrics", addr);
+        info!("  - Chat: POST http://{}/chat", addr);
+
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                let _ = shutdown_rx.recv().await;
+            })
+            .await
+            .expect("Server error");
+    });
+
+    // Start metrics server
+    let metrics_addr: SocketAddr = "127.0.0.1:9090".parse()?;
+    info!("📊 Prometheus metrics available at http://{}/metrics", metrics_addr);
+
+    let metrics_app = axum::Router::new().route(
+        "/metrics",
+        axum::routing::get(|| async move {
+            prometheus_handle.render()
+        }),
+    );
+
+    let metrics_listener = tokio::net::TcpListener::bind(metrics_addr).await?;
+    let mut metrics_shutdown_rx = shutdown.subscribe();
+
+    let metrics_handle = tokio::spawn(async move {
+        axum::serve(metrics_listener, metrics_app)
+            .with_graceful_shutdown(async move {
+                let _ = metrics_shutdown_rx.recv().await;
+            })
+            .await
+            .expect("Metrics server error");
+    });
+
+    info!("✨ Production Agent fully initialized and ready!");
+    info!("Press Ctrl+C to shut down gracefully...");
+
+    // Wait for shutdown signal
+    match signal::ctrl_c().await {
+        Ok(()) => {
+            info!("🛑 Shutdown signal received, initiating graceful shutdown...");
+        }
+        Err(err) => {
+            error!("Unable to listen for shutdown signal: {}", err);
+        }
+    }
+
+    // Initiate shutdown (this broadcasts to all subscribers)
+    if let Err(e) = shutdown.shutdown().await {
+        error!("Shutdown errors: {:?}", e);
+    }
+
+    // Wait for tasks to complete
+    info!("⏳ Waiting for HTTP server to shut down...");
+    if let Err(e) = server_handle.await {
+        warn!("Server task error during shutdown: {}", e);
+    }
+
+    info!("⏳ Waiting for metrics server to shut down...");
+    if let Err(e) = metrics_handle.await {
+        warn!("Metrics server task error during shutdown: {}", e);
+    }
+
+    // Display final metrics
+    let final_snapshot = metrics.snapshot();
+    info!("📈 Final metrics:");
+    info!("  Total tool calls: {}", final_snapshot.total_tool_calls);
+    info!("  Successful tool calls: {}", final_snapshot.total_successes);
+    info!("  Failed tool calls: {}", final_snapshot.total_failures);
+
+    // Display security summary
+    let security_dashboard = security_monitor.get_dashboard().await?;
+    info!("🔒 Security summary:");
+    info!("  Total incidents: {}", security_dashboard.total_incidents);
+    info!("  Active incidents: {}", security_dashboard.active_incidents);
+
+    // Display audit summary
+    let audit_count = audit_logger.count().await;
+    info!("📝 Audit summary:");
+    info!("  Total events logged: {}", audit_count);
+
+    info!("✅ Shutdown complete. Goodbye!");
+    Ok(())
+}
+
+/// Initialize tracing with OpenTelemetry support
+fn init_tracing() -> Result<(), Box<dyn std::error::Error>> {
+    // For production, you would configure OpenTelemetry exporter here
+    // Example with Jaeger:
+    // let tracer = opentelemetry_jaeger::new_pipeline()
+    //     .with_service_name("production-agent")
+    //     .install_batch(opentelemetry::runtime::Tokio)?;
+    //
+    // let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
+
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "production_agent=info,composable_rust_agent_patterns=info".into()),
+        )
+        .with(tracing_subscriber::fmt::layer().with_target(false))
+        // .with(telemetry)  // Add OpenTelemetry layer in production
+        .init();
+
+    Ok(())
+}

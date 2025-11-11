@@ -1,0 +1,44 @@
+# ServiceMonitor for Prometheus Operator
+# This tells Prometheus to scrape metrics from agent-system pods
+#
+# Note: Requires Prometheus Operator to be installed
+# If not using Prometheus Operator, use pod annotations instead:
+#   prometheus.io/scrape: "true"
+#   prometheus.io/port: "9090"
+#   prometheus.io/path: "/metrics"
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: agent-system
+  namespace: agent-system
+  labels:
+    app: agent-system
+    prometheus: kube-prometheus  # Match your Prometheus selector
+spec:
+  selector:
+    matchLabels:
+      app: agent-system
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
+      relabelings:
+        # Add namespace label
+        - sourceLabels: [__meta_kubernetes_namespace]
+          targetLabel: namespace
+        # Add pod name label
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod
+        # Add service name label
+        - sourceLabels: [__meta_kubernetes_service_name]
+          targetLabel: service
+        # Add node name label
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: node
+      metricRelabelings:
+        # Drop high-cardinality metrics if needed
+        # - sourceLabels: [__name__]
+        #   regex: 'go_.*'
+        #   action: drop

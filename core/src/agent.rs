@@ -46,6 +46,7 @@ pub use composable_rust_anthropic::{
 /// This state manages:
 /// - Conversation message history
 /// - Pending tool results (for parallel tool execution)
+/// - Streaming tool results (for tools that produce incremental output)
 /// - Agent configuration
 #[derive(Clone, Debug)]
 pub struct BasicAgentState {
@@ -59,6 +60,12 @@ pub struct BasicAgentState {
     /// conversation with Claude.
     pub pending_tool_results: HashMap<String, Option<ToolResult>>,
 
+    /// Streaming tool results (accumulating chunks)
+    ///
+    /// When a tool produces streaming output, we accumulate chunks here until
+    /// the tool completes. Key is `tool_use_id`, value is accumulated content.
+    pub streaming_tools: HashMap<String, String>,
+
     /// Agent configuration
     pub config: AgentConfig,
 }
@@ -70,6 +77,7 @@ impl BasicAgentState {
         Self {
             messages: Vec::new(),
             pending_tool_results: HashMap::new(),
+            streaming_tools: HashMap::new(),
             config,
         }
     }
@@ -134,7 +142,7 @@ impl AgentConfig {
 pub type ToolResult = Result<String, ToolError>;
 
 /// Tool execution errors
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolError {
     /// Error message
     pub message: String,
@@ -185,11 +193,27 @@ pub enum AgentAction {
         usage: Usage,
     },
 
-    /// Tool result received
+    /// Tool result received (complete, non-streaming)
     ToolResult {
         /// ID of the tool use this responds to
         tool_use_id: String,
         /// Result from tool execution
+        result: ToolResult,
+    },
+
+    /// Streaming tool chunk received
+    ToolChunk {
+        /// ID of the tool use this responds to
+        tool_use_id: String,
+        /// Incremental content chunk
+        content: String,
+    },
+
+    /// Streaming tool complete
+    ToolComplete {
+        /// ID of the tool use this responds to
+        tool_use_id: String,
+        /// Final result (Ok with accumulated content, or Err)
         result: ToolResult,
     },
 
@@ -228,11 +252,22 @@ pub trait AgentEnvironment: Send + Sync {
     /// arrive, followed by a `StreamComplete` action.
     fn call_claude_streaming(&self, request: MessagesRequest) -> Effect<AgentAction>;
 
-    /// Create effect to execute a tool
+    /// Create effect to execute a tool (non-streaming)
     ///
     /// Returns an `Effect::Future` that will yield a `ToolResult` action when
     /// the tool execution completes.
     fn execute_tool(
+        &self,
+        tool_use_id: String,
+        tool_name: String,
+        tool_input: String,
+    ) -> Effect<AgentAction>;
+
+    /// Create effect to execute a tool with streaming output
+    ///
+    /// Returns an `Effect::Stream` that yields `ToolChunk` actions as the tool
+    /// produces output, followed by a `ToolComplete` action when finished.
+    fn execute_tool_streaming(
         &self,
         tool_use_id: String,
         tool_name: String,
@@ -251,6 +286,34 @@ pub trait ToolExecutor: Send + Sync {
     /// Returns `ToolError` if the tool execution fails
     fn execute(&self, input: &str) -> impl std::future::Future<Output = ToolResult> + Send;
 }
+
+/// Function pointer type for tool executors
+///
+/// Since `ToolExecutor` trait uses RPITIT (Return Position Impl Trait In Traits)
+/// and cannot be used as `dyn Trait`, we use function pointers instead.
+///
+/// This type enables dynamic tool registration in registries and environments
+/// while maintaining zero-cost abstractions through `Arc`.
+///
+/// ## Usage
+///
+/// ```ignore
+/// use composable_rust_core::agent::{ToolExecutorFn, ToolResult};
+/// use std::sync::Arc;
+/// use std::pin::Pin;
+/// use std::future::Future;
+///
+/// let executor: ToolExecutorFn = Arc::new(|input: String| {
+///     Box::pin(async move {
+///         Ok(format!("Processed: {}", input))
+///     }) as Pin<Box<dyn Future<Output = ToolResult> + Send>>
+/// });
+/// ```
+pub type ToolExecutorFn = std::sync::Arc<
+    dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send>>
+        + Send
+        + Sync,
+>;
 
 #[cfg(test)]
 mod tests {
@@ -284,6 +347,7 @@ mod tests {
 
         assert_eq!(state.messages.len(), 0);
         assert!(state.pending_tool_results.is_empty());
+        assert!(state.streaming_tools.is_empty());
 
         state.add_message(Message::user("Hello"));
         assert_eq!(state.messages.len(), 1);
@@ -313,5 +377,52 @@ mod tests {
         };
 
         assert_eq!(error.to_string(), "Tool failed");
+    }
+
+    #[test]
+    fn test_streaming_tools_accumulation() {
+        let config = AgentConfig::default();
+        let mut state = BasicAgentState::new(config);
+
+        // Start streaming tool
+        state.streaming_tools.insert("tool_1".to_string(), String::new());
+        assert!(state.streaming_tools.contains_key("tool_1"));
+
+        // Accumulate chunks
+        state.streaming_tools.get_mut("tool_1").map(|s| s.push_str("chunk1 "));
+        state.streaming_tools.get_mut("tool_1").map(|s| s.push_str("chunk2 "));
+        state.streaming_tools.get_mut("tool_1").map(|s| s.push_str("chunk3"));
+
+        assert_eq!(state.streaming_tools.get("tool_1"), Some(&"chunk1 chunk2 chunk3".to_string()));
+
+        // Complete streaming tool
+        state.streaming_tools.remove("tool_1");
+        assert!(!state.streaming_tools.contains_key("tool_1"));
+    }
+
+    #[test]
+    fn test_agent_action_variants() {
+        // Test ToolChunk variant
+        let chunk = AgentAction::ToolChunk {
+            tool_use_id: "tool_1".to_string(),
+            content: "chunk data".to_string(),
+        };
+        assert!(matches!(chunk, AgentAction::ToolChunk { .. }));
+
+        // Test ToolComplete variant
+        let complete = AgentAction::ToolComplete {
+            tool_use_id: "tool_1".to_string(),
+            result: Ok("final result".to_string()),
+        };
+        assert!(matches!(complete, AgentAction::ToolComplete { .. }));
+
+        // Test ToolComplete with error
+        let error = AgentAction::ToolComplete {
+            tool_use_id: "tool_2".to_string(),
+            result: Err(ToolError {
+                message: "Tool failed".to_string(),
+            }),
+        };
+        assert!(matches!(error, AgentAction::ToolComplete { .. }));
     }
 }

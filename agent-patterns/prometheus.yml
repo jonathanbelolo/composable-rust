@@ -1,0 +1,123 @@
+# Prometheus configuration for Agent System metrics
+
+global:
+  scrape_interval: 15s      # How frequently to scrape targets
+  evaluation_interval: 15s  # How frequently to evaluate rules
+  external_labels:
+    cluster: 'agent-dev'
+    environment: 'development'
+
+# Alertmanager configuration (optional)
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ['alertmanager:9093']
+
+# Load rules once and periodically evaluate them
+rule_files:
+  # - "recording_rules.yml"
+  # - "alerting_rules.yml"
+
+# Scrape configurations
+scrape_configs:
+  # Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Agent system metrics
+  # Adjust this to your agent application's metrics endpoint
+  - job_name: 'agent-system'
+    scrape_interval: 10s
+    metrics_path: '/metrics'
+    static_configs:
+      - targets:
+          # Add your agent service here when running
+          # - 'agent-app:9090'
+          # For local development (host.docker.internal works on Docker Desktop)
+          - 'host.docker.internal:8080'
+        labels:
+          service: 'agent-system'
+          environment: 'dev'
+
+  # Redpanda metrics (if you want to monitor the event bus)
+  - job_name: 'redpanda'
+    scrape_interval: 30s
+    static_configs:
+      - targets: ['redpanda:9644']
+        labels:
+          service: 'redpanda'
+
+  # PostgreSQL metrics (requires postgres_exporter)
+  # - job_name: 'postgres'
+  #   static_configs:
+  #     - targets: ['postgres-exporter:9187']
+  #       labels:
+  #         service: 'postgres'
+
+  # Redis metrics (requires redis_exporter)
+  # - job_name: 'redis'
+  #   static_configs:
+  #     - targets: ['redis-exporter:9121']
+  #       labels:
+  #         service: 'redis'
+
+# Example recording rules (uncomment and save to recording_rules.yml)
+# groups:
+#   - name: agent_aggregations
+#     interval: 30s
+#     rules:
+#       - record: agent:execution_duration:p50
+#         expr: histogram_quantile(0.50, sum(rate(agent_execution_duration_seconds_bucket[5m])) by (le, agent_name))
+#
+#       - record: agent:execution_duration:p95
+#         expr: histogram_quantile(0.95, sum(rate(agent_execution_duration_seconds_bucket[5m])) by (le, agent_name))
+#
+#       - record: agent:execution_duration:p99
+#         expr: histogram_quantile(0.99, sum(rate(agent_execution_duration_seconds_bucket[5m])) by (le, agent_name))
+#
+#       - record: agent:success_rate
+#         expr: |
+#           sum(rate(agent_execution_duration_seconds_count{status="success"}[5m])) by (agent_name)
+#           /
+#           sum(rate(agent_execution_duration_seconds_count[5m])) by (agent_name)
+
+# Example alerting rules (uncomment and save to alerting_rules.yml)
+# groups:
+#   - name: agent_alerts
+#     rules:
+#       - alert: HighErrorRate
+#         expr: |
+#           sum(rate(agent_errors_total[5m])) > 1
+#         for: 5m
+#         labels:
+#           severity: warning
+#         annotations:
+#           summary: "High error rate detected"
+#           description: "Agent error rate is {{ $value }} errors/sec"
+#
+#       - alert: SuccessRateBelowSLO
+#         expr: |
+#           (
+#             sum(rate(agent_execution_duration_seconds_count{status="success"}[5m]))
+#             /
+#             sum(rate(agent_execution_duration_seconds_count[5m]))
+#           ) < 0.999
+#         for: 5m
+#         labels:
+#           severity: critical
+#         annotations:
+#           summary: "Success rate below 99.9% SLO"
+#           description: "Current success rate: {{ $value | humanizePercentage }}"
+#
+#       - alert: HighLatency
+#         expr: |
+#           histogram_quantile(0.99,
+#             sum(rate(agent_execution_duration_seconds_bucket[5m])) by (le, agent_name)
+#           ) > 1
+#         for: 5m
+#         labels:
+#           severity: warning
+#         annotations:
+#           summary: "P99 latency above 1s threshold"
+#           description: "Agent {{ $labels.agent_name }} P99 latency: {{ $value }}s"

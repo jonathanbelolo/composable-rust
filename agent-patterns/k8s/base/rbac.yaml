@@ -1,0 +1,57 @@
+---
+# ServiceAccount for agent pods
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-system
+  namespace: agent-system
+  labels:
+    app: agent-system
+
+---
+# Role for agent system (namespace-scoped permissions)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agent-system
+  namespace: agent-system
+  labels:
+    app: agent-system
+rules:
+  # Allow reading ConfigMaps (for dynamic configuration)
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+
+  # Allow reading Secrets (if needed for dynamic secrets)
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+
+  # Allow creating/updating own status
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+
+  # Allow creating events for auditing
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+
+---
+# RoleBinding to bind Role to ServiceAccount
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agent-system
+  namespace: agent-system
+  labels:
+    app: agent-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: agent-system
+subjects:
+  - kind: ServiceAccount
+    name: agent-system
+    namespace: agent-system

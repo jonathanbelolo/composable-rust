@@ -1,0 +1,55 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: agent-system
+  namespace: agent-system
+  labels:
+    app: agent-system
+  annotations:
+    # Nginx Ingress Controller annotations
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+
+    # Rate limiting
+    nginx.ingress.kubernetes.io/limit-rps: "100"
+    nginx.ingress.kubernetes.io/limit-connections: "50"
+
+    # Timeouts
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+
+    # CORS (if needed)
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "https://yourdomain.com"
+
+    # cert-manager annotation for automatic TLS
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - agent-system.yourdomain.com
+      secretName: agent-system-tls
+  rules:
+    - host: agent-system.yourdomain.com
+      http:
+        paths:
+          # API endpoints
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: agent-system
+                port:
+                  name: http
+
+          # Health checks (no auth required)
+          - path: /health
+            pathType: Prefix
+            backend:
+              service:
+                name: agent-system
+                port:
+                  name: http

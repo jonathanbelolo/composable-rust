@@ -1,0 +1,55 @@
+# Grafana datasource provisioning configuration
+# Automatically configures Prometheus and Jaeger datasources
+
+apiVersion: 1
+
+datasources:
+  # Prometheus datasource for metrics
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+    jsonData:
+      httpMethod: POST
+      timeInterval: 15s
+      queryTimeout: 60s
+      # Enable exemplars (links from metrics to traces)
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: jaeger
+    uid: prometheus
+
+  # Jaeger datasource for distributed tracing
+  - name: Jaeger
+    type: jaeger
+    access: proxy
+    url: http://jaeger:16686
+    editable: true
+    jsonData:
+      # Optional: Configure trace to logs integration
+      tracesToLogs:
+        datasourceUid: 'loki'  # If you add Loki later
+        filterByTraceID: true
+        filterBySpanID: false
+      # Optional: Configure node graph
+      nodeGraph:
+        enabled: true
+    uid: jaeger
+
+  # Optional: Loki for log aggregation (uncomment if you add Loki to docker-compose)
+  # - name: Loki
+  #   type: loki
+  #   access: proxy
+  #   url: http://loki:3100
+  #   editable: true
+  #   jsonData:
+  #     maxLines: 1000
+  #     # Optional: Configure derived fields (extract trace IDs from logs)
+  #     derivedFields:
+  #       - datasourceUid: jaeger
+  #         matcherRegex: "trace_id=(\\w+)"
+  #         name: TraceID
+  #         url: "$${__value.raw}"
+  #   uid: loki

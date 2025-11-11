@@ -1,0 +1,40 @@
+[package]
+name = "agent-patterns-demo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+composable-rust-core = { path = "../../core" }
+composable-rust-runtime = { path = "../../runtime" }
+composable-rust-agent-patterns = { path = "../../agent-patterns" }
+composable-rust-anthropic = { path = "../../anthropic" }
+tokio = { workspace = true, features = ["full"] }
+smallvec = { workspace = true }
+
+[[bin]]
+name = "prompt_chain_demo"
+path = "src/prompt_chain_demo.rs"
+
+[[bin]]
+name = "routing_demo"
+path = "src/routing_demo.rs"
+
+[[bin]]
+name = "parallelization_demo"
+path = "src/parallelization_demo.rs"
+
+[[bin]]
+name = "orchestrator_demo"
+path = "src/orchestrator_demo.rs"
+
+[[bin]]
+name = "evaluator_demo"
+path = "src/evaluator_demo.rs"
+
+[[bin]]
+name = "aggregation_demo"
+path = "src/aggregation_demo.rs"
+
+[[bin]]
+name = "memory_demo"
+path = "src/memory_demo.rs"

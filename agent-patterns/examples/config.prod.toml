@@ -1,0 +1,32 @@
+# Production Configuration Example
+# This file demonstrates production-ready settings
+# In practice, use AgentConfig::load(Environment::Production) instead
+
+environment = "production"
+
+[llm]
+model = "claude-sonnet-4-5-20250929"
+max_tokens = 4096
+temperature = 0.7
+timeout_secs = 60  # Longer timeout for production
+max_retries = 5    # More retries for reliability
+
+[observability]
+tracing_enabled = true
+# jaeger_endpoint set via JAEGER_ENDPOINT env var
+metrics_enabled = true
+metrics_port = 9090
+log_level = "warn"  # Less verbose in production
+
+[resilience]
+circuit_breaker_threshold = 3     # Stricter in production
+circuit_breaker_timeout_secs = 120
+rate_limit_rps = 10               # Conservative for production
+bulkhead_max_concurrent = 100
+
+[database]
+# DATABASE_URL must be set via environment variable
+# Never commit database credentials to version control
+max_connections = 20  # Higher for production load
+connect_timeout_secs = 10
+idle_timeout_secs = 300  # Shorter to reclaim connections

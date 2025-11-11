@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: production-agent-config
+  labels:
+    app: production-agent
+data:
+  config.toml: |
+    # Production Agent Configuration
+    # This is a placeholder - customize for your environment
+
+    [agent]
+    name = "production-agent"
+    version = "0.1.0"
+
+    [logging]
+    level = "info"
+    format = "json"
+
+    [metrics]
+    enabled = true
+    port = 9090
+
+    [health]
+    enabled = true
+    port = 8080

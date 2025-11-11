@@ -1,0 +1,32 @@
+# Development Configuration Example
+# This file demonstrates the structure of agent configuration
+# In practice, use AgentConfig::load(Environment::Development) instead
+
+environment = "development"
+
+[llm]
+model = "claude-sonnet-4-5-20250929"
+max_tokens = 4096
+temperature = 0.7
+timeout_secs = 30
+max_retries = 3
+
+[observability]
+tracing_enabled = true
+# jaeger_endpoint = "localhost:6831"  # Optional
+metrics_enabled = true
+metrics_port = 9090
+log_level = "debug"  # Verbose for development
+
+[resilience]
+circuit_breaker_threshold = 5
+circuit_breaker_timeout_secs = 60
+rate_limit_rps = 100  # More permissive in dev
+bulkhead_max_concurrent = 100
+
+[database]
+# Note: url is loaded from DATABASE_URL environment variable
+# This keeps secrets out of config files
+max_connections = 10
+connect_timeout_secs = 10
+idle_timeout_secs = 600

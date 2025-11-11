@@ -1,0 +1,10 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: agent-system
+  namespace: agent-system-prod
+spec:
+  minAvailable: 2  # Always keep at least 2 pods running during disruptions
+  selector:
+    matchLabels:
+      app: agent-system

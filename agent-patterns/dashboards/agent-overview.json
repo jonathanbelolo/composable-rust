@@ -1,0 +1,344 @@
+{
+  "dashboard": {
+    "title": "Agent System Overview",
+    "tags": ["agents", "production"],
+    "timezone": "browser",
+    "schemaVersion": 38,
+    "version": 1,
+    "refresh": "10s",
+    "panels": [
+      {
+        "id": 1,
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+        "type": "graph",
+        "title": "Agent Execution Duration (p50, p95, p99)",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.50, sum(rate(agent_execution_duration_seconds_bucket{status=\"success\"}[5m])) by (le, agent_name))",
+            "legendFormat": "p50 - {{agent_name}}",
+            "refId": "A"
+          },
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(agent_execution_duration_seconds_bucket{status=\"success\"}[5m])) by (le, agent_name))",
+            "legendFormat": "p95 - {{agent_name}}",
+            "refId": "B"
+          },
+          {
+            "expr": "histogram_quantile(0.99, sum(rate(agent_execution_duration_seconds_bucket{status=\"success\"}[5m])) by (le, agent_name))",
+            "legendFormat": "p99 - {{agent_name}}",
+            "refId": "C"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "s",
+            "label": "Duration"
+          },
+          {
+            "format": "short"
+          }
+        ],
+        "xaxis": {
+          "show": true,
+          "mode": "time"
+        },
+        "legend": {
+          "show": true,
+          "alignAsTable": true,
+          "values": true,
+          "current": true
+        }
+      },
+      {
+        "id": 2,
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+        "type": "stat",
+        "title": "Active Agents",
+        "targets": [
+          {
+            "expr": "agent_active_count",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "reduceOptions": {
+            "values": false,
+            "calcs": ["lastNotNull"]
+          },
+          "orientation": "auto",
+          "textMode": "value_and_name",
+          "colorMode": "value",
+          "graphMode": "area",
+          "justifyMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "palette-classic"
+            },
+            "mappings": [],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                { "value": null, "color": "green" },
+                { "value": 50, "color": "yellow" },
+                { "value": 100, "color": "red" }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 3,
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+        "type": "graph",
+        "title": "Tool Invocation Rate (per minute)",
+        "targets": [
+          {
+            "expr": "sum(rate(agent_tool_invocations_total[1m])) by (tool_name, status)",
+            "legendFormat": "{{tool_name}} - {{status}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "ops",
+            "label": "Invocations/min"
+          },
+          {
+            "format": "short"
+          }
+        ],
+        "xaxis": {
+          "show": true,
+          "mode": "time"
+        },
+        "legend": {
+          "show": true,
+          "alignAsTable": true,
+          "values": true,
+          "current": true
+        },
+        "seriesOverrides": [
+          {
+            "alias": "/.*error/",
+            "color": "#F2495C"
+          },
+          {
+            "alias": "/.*success/",
+            "color": "#73BF69"
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+        "type": "piechart",
+        "title": "Pattern Usage Distribution",
+        "targets": [
+          {
+            "expr": "sum(agent_pattern_usage_total) by (pattern_name)",
+            "legendFormat": "{{pattern_name}}",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "right",
+            "values": ["value"]
+          },
+          "pieType": "pie",
+          "displayLabels": ["name", "percent"]
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short"
+          }
+        }
+      },
+      {
+        "id": 5,
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+        "type": "graph",
+        "title": "Error Rate by Type",
+        "targets": [
+          {
+            "expr": "sum(rate(agent_errors_total[5m])) by (error_type)",
+            "legendFormat": "{{error_type}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "ops",
+            "label": "Errors/sec"
+          },
+          {
+            "format": "short"
+          }
+        ],
+        "xaxis": {
+          "show": true,
+          "mode": "time"
+        },
+        "legend": {
+          "show": true,
+          "alignAsTable": true,
+          "values": true,
+          "current": true,
+          "max": true
+        },
+        "seriesOverrides": [
+          {
+            "alias": "/.*/",
+            "color": "#F2495C"
+          }
+        ],
+        "alert": {
+          "name": "High Error Rate",
+          "conditions": [
+            {
+              "evaluator": {
+                "params": [1],
+                "type": "gt"
+              },
+              "operator": {
+                "type": "and"
+              },
+              "query": {
+                "params": ["A", "5m", "now"]
+              },
+              "reducer": {
+                "params": [],
+                "type": "avg"
+              },
+              "type": "query"
+            }
+          ],
+          "executionErrorState": "alerting",
+          "for": "5m",
+          "frequency": "1m",
+          "message": "Agent error rate is above threshold",
+          "noDataState": "no_data"
+        }
+      },
+      {
+        "id": 6,
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+        "type": "graph",
+        "title": "LLM Token Usage by Model",
+        "targets": [
+          {
+            "expr": "sum(rate(agent_llm_tokens_total[5m])) by (model, token_type)",
+            "legendFormat": "{{model}} - {{token_type}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "short",
+            "label": "Tokens/sec"
+          },
+          {
+            "format": "short"
+          }
+        ],
+        "xaxis": {
+          "show": true,
+          "mode": "time"
+        },
+        "legend": {
+          "show": true,
+          "alignAsTable": true,
+          "values": true,
+          "current": true,
+          "total": true
+        },
+        "stack": true
+      },
+      {
+        "id": 7,
+        "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
+        "type": "table",
+        "title": "Agent Execution Summary",
+        "targets": [
+          {
+            "expr": "sum(rate(agent_execution_duration_seconds_count[5m])) by (agent_name, status)",
+            "format": "table",
+            "instant": true,
+            "refId": "A"
+          }
+        ],
+        "transformations": [
+          {
+            "id": "organize",
+            "options": {
+              "excludeByName": {
+                "Time": true
+              },
+              "indexByName": {
+                "agent_name": 0,
+                "status": 1,
+                "Value": 2
+              },
+              "renameByName": {
+                "agent_name": "Agent Name",
+                "status": "Status",
+                "Value": "Requests/sec"
+              }
+            }
+          }
+        ],
+        "options": {
+          "showHeader": true,
+          "footer": {
+            "show": false
+          }
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "align": "auto",
+              "displayMode": "auto"
+            },
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                { "value": null, "color": "green" },
+                { "value": 10, "color": "yellow" },
+                { "value": 50, "color": "red" }
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "timepicker": {
+      "refresh_intervals": ["5s", "10s", "30s", "1m", "5m"]
+    },
+    "annotations": {
+      "list": [
+        {
+          "datasource": "-- Grafana --",
+          "enable": true,
+          "hide": true,
+          "iconColor": "rgba(0, 211, 255, 1)",
+          "name": "Annotations & Alerts",
+          "type": "dashboard"
+        }
+      ]
+    },
+    "editable": true,
+    "gnetId": null,
+    "graphTooltip": 1,
+    "links": [],
+    "liveNow": false,
+    "panels": []
+  },
+  "overwrite": false
+}

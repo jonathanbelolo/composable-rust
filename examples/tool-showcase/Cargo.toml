@@ -1,0 +1,21 @@
+[package]
+name = "tool-showcase"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Composable Rust
+composable-rust-tools = { path = "../../tools" }
+
+# Async runtime
+tokio = { workspace = true, features = ["full"] }
+
+# Serialization
+serde_json = "1"
+
+# Observability
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

@@ -106,7 +106,7 @@ impl WeatherEnvironment {
                 Ok(weather_data.to_string())
             })
                 as Pin<Box<dyn std::future::Future<Output = ToolResult> + Send>>
-        }) as basic_agent::environment::ToolExecutorFn;
+        }) as composable_rust_core::agent::ToolExecutorFn;
 
         // Create environment with the tool
         let inner = basic_agent::environment::ProductionAgentEnvironment::new(config)?
@@ -146,6 +146,15 @@ impl composable_rust_core::agent::AgentEnvironment for WeatherEnvironment {
         tool_input: String,
     ) -> composable_rust_core::effect::Effect<AgentAction> {
         self.inner.execute_tool(tool_use_id, tool_name, tool_input)
+    }
+
+    fn execute_tool_streaming(
+        &self,
+        tool_use_id: String,
+        tool_name: String,
+        tool_input: String,
+    ) -> composable_rust_core::effect::Effect<AgentAction> {
+        self.inner.execute_tool_streaming(tool_use_id, tool_name, tool_input)
     }
 }
 

@@ -9,6 +9,8 @@ members = [
     "projections",
     "macros",
     "anthropic",
+    "tools",
+    "agent-patterns",
     "examples/counter",
     "examples/order-processing",
     "examples/order-projection",
@@ -19,6 +21,9 @@ members = [
     "examples/ticketing",
     "examples/basic-agent",
     "examples/weather-agent",
+    "examples/tool-showcase",
+    "examples/agent-patterns-demo",
+    "examples/production-agent",
     "auth",
     "web",
 ]
@@ -34,6 +39,8 @@ default-members = [
     "projections",
     "macros",
     "anthropic",
+    "tools",
+    "agent-patterns",
     "examples/counter",
     "examples/order-processing",
     "examples/order-projection",
@@ -44,6 +51,9 @@ default-members = [
     "examples/ticketing",
     "examples/basic-agent",
     "examples/weather-agent",
+    "examples/tool-showcase",
+    "examples/agent-patterns-demo",
+    "examples/production-agent",
     "web",
 ]
 

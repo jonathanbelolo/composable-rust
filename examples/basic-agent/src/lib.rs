@@ -204,6 +204,12 @@ where
                 smallvec![Effect::None]
             }
 
+            AgentAction::ToolChunk { .. } | AgentAction::ToolComplete { .. } => {
+                // Tool streaming not used in this basic example
+                // (Tool streaming is for long-running tools with progress updates)
+                smallvec![Effect::None]
+            }
+
             AgentAction::Error { error } => {
                 // Log error, but don't crash
                 eprintln!("Agent error: {error}");
@@ -288,6 +294,16 @@ mod tests {
             Effect::Future(Box::pin(async move {
                 Some(AgentAction::ToolResult { tool_use_id, result })
             }))
+        }
+
+        fn execute_tool_streaming(
+            &self,
+            _tool_use_id: String,
+            _tool_name: String,
+            _tool_input: String,
+        ) -> Effect<AgentAction> {
+            // Not used in basic example
+            Effect::None
         }
     }
 

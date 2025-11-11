@@ -1,0 +1,62 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-config
+  namespace: agent-system
+  labels:
+    app: agent-system
+data:
+  # Rust logging configuration
+  RUST_LOG: "info,agent_patterns=debug"
+  RUST_BACKTRACE: "0"
+
+  # Application configuration
+  API_PORT: "8080"
+  METRICS_PORT: "9090"
+  METRICS_PATH: "/metrics"
+
+  # Health check endpoints
+  HEALTH_LIVENESS_PATH: "/health/liveness"
+  HEALTH_READINESS_PATH: "/health/readiness"
+
+  # Database configuration (non-sensitive)
+  DATABASE_HOST: "postgres-service"
+  DATABASE_PORT: "5432"
+  DATABASE_NAME: "agent_system"
+  DATABASE_POOL_MAX_SIZE: "20"
+  DATABASE_POOL_MIN_IDLE: "5"
+  DATABASE_CONNECTION_TIMEOUT: "30"
+
+  # Redpanda/Kafka configuration
+  KAFKA_BROKERS: "redpanda-service:9092"
+  KAFKA_CONSUMER_GROUP: "agent-system"
+  KAFKA_AUTO_OFFSET_RESET: "earliest"
+  KAFKA_SESSION_TIMEOUT_MS: "10000"
+
+  # Tracing configuration
+  JAEGER_AGENT_HOST: "jaeger-agent"
+  JAEGER_AGENT_PORT: "6831"
+  JAEGER_SAMPLER_TYPE: "probabilistic"
+  JAEGER_SAMPLER_PARAM: "0.1"
+  OTEL_SERVICE_NAME: "agent-system"
+
+  # Redis configuration (if used)
+  REDIS_HOST: "redis-service"
+  REDIS_PORT: "6379"
+  REDIS_POOL_SIZE: "10"
+
+  # Circuit breaker configuration
+  CIRCUIT_BREAKER_FAILURE_THRESHOLD: "5"
+  CIRCUIT_BREAKER_SUCCESS_THRESHOLD: "2"
+  CIRCUIT_BREAKER_TIMEOUT_SECONDS: "30"
+
+  # Rate limiter configuration
+  RATE_LIMITER_CAPACITY: "100"
+  RATE_LIMITER_REFILL_RATE: "10.0"
+
+  # Bulkhead configuration
+  BULKHEAD_MAX_CONCURRENT: "10"
+  BULKHEAD_ACQUIRE_TIMEOUT_SECONDS: "5"
+
+  # Graceful shutdown timeout
+  SHUTDOWN_TIMEOUT_SECONDS: "60"

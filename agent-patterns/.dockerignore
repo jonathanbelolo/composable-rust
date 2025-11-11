@@ -1,0 +1,93 @@
+# Rust build artifacts
+target/
+**/target/
+
+# Cargo lock (include in Dockerfile for reproducible builds)
+# Cargo.lock
+
+# Rust debug info
+**/*.pdb
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Documentation (not needed in image)
+*.md
+!README.md
+docs/
+specs/
+plans/
+
+# Test files
+**/tests/
+**/*_test.rs
+**/*_tests.rs
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
+# Docker files (no need to include in image)
+Dockerfile
+.dockerignore
+docker-compose*.yml
+
+# Examples (optional, remove if you want examples in image)
+examples/
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Environment files (secrets should not be in image)
+.env
+.env.*
+*.secret
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Backup files
+*.bak
+*.backup
+
+# OS files
+Thumbs.db
+Desktop.ini
+
+# Node modules (if you have any JS tooling)
+node_modules/
+
+# Python cache (if you have any Python tooling)
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Coverage reports
+coverage/
+*.profdata
+*.profraw
+
+# Benchmark results
+benches/results/
+
+# sqlx cache (keep sqlx-data.json for SQLX_OFFLINE builds)
+# .sqlx/

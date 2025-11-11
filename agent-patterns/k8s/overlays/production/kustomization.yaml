@@ -1,0 +1,55 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Reference base configuration
+bases:
+  - ../../base
+
+# Production-specific namespace
+namespace: agent-system-prod
+
+# Production labels
+commonLabels:
+  environment: production
+  tier: production
+
+# Production annotations
+commonAnnotations:
+  environment: "production"
+  owner: "platform-team"
+  contact: "oncall@yourdomain.com"
+
+# Production image (specific tag, not 'latest')
+images:
+  - name: agent-system
+    newName: your-registry.io/agent-system
+    newTag: v1.2.3  # Use actual version tags in production
+
+# Patch replicas for production scale
+patchesStrategicMerge:
+  - deployment-patch.yaml
+  - hpa-patch.yaml
+  - ingress-patch.yaml
+
+# Production-specific resources
+resources:
+  - networkpolicy.yaml
+  - poddisruptionbudget.yaml
+
+# Production ConfigMap overrides
+configMapGenerator:
+  - name: agent-config
+    behavior: merge
+    literals:
+      - RUST_LOG=info
+      - ENVIRONMENT=production
+      - CIRCUIT_BREAKER_FAILURE_THRESHOLD=3
+      - RATE_LIMITER_CAPACITY=1000
+
+# Production secrets (use external-secrets or sealed-secrets in real deployment)
+# secretGenerator:
+#   - name: agent-secrets
+#     behavior: replace
+#     files:
+#       - DATABASE_PASSWORD=secrets/db-password.txt
+#       - API_KEY=secrets/api-key.txt

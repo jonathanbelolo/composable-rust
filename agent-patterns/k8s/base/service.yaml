@@ -1,0 +1,47 @@
+---
+# ClusterIP service for internal communication
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-system
+  namespace: agent-system
+  labels:
+    app: agent-system
+spec:
+  type: ClusterIP
+  selector:
+    app: agent-system
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+      protocol: TCP
+  sessionAffinity: None
+
+---
+# Headless service for StatefulSet or direct pod access
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-system-headless
+  namespace: agent-system
+  labels:
+    app: agent-system
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app: agent-system
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+      protocol: TCP

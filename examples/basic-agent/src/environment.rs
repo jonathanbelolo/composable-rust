@@ -5,20 +5,13 @@
 
 use composable_rust_anthropic::AnthropicClient;
 use composable_rust_core::{
-    agent::{AgentAction, AgentConfig, AgentEnvironment, MessagesRequest, Tool, ToolResult},
+    agent::{
+        AgentAction, AgentConfig, AgentEnvironment, MessagesRequest, Tool, ToolExecutorFn,
+    },
     effect::Effect,
 };
 use std::collections::HashMap;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
-
-/// Tool executor function type
-///
-/// Since `ToolExecutor` trait uses RPITIT and cannot be used as `dyn Trait`,
-/// we use function pointers instead.
-pub type ToolExecutorFn =
-    Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = ToolResult> + Send>> + Send + Sync>;
 
 /// Production agent environment that calls the real Anthropic API
 #[derive(Clone)]
@@ -168,6 +161,30 @@ impl AgentEnvironment for ProductionAgentEnvironment {
             };
 
             Some(AgentAction::ToolResult { tool_use_id, result })
+        }))
+    }
+
+    fn execute_tool_streaming(
+        &self,
+        tool_use_id: String,
+        tool_name: String,
+        tool_input: String,
+    ) -> Effect<AgentAction> {
+        // For this basic example, tool streaming is not implemented
+        // A full implementation would use Effect::Stream to yield ToolChunk
+        // actions as the tool executes, followed by ToolComplete
+        let executor = self.tool_executors.get(&tool_name).cloned();
+
+        Effect::Future(Box::pin(async move {
+            let result = match executor {
+                Some(executor) => executor(tool_input).await,
+                None => Err(composable_rust_core::agent::ToolError {
+                    message: format!("Tool not found: {tool_name}"),
+                }),
+            };
+
+            // Return complete result directly (not streaming)
+            Some(AgentAction::ToolComplete { tool_use_id, result })
         }))
     }
 }
