@@ -310,6 +310,7 @@ impl HealthCheckable for TimeoutHealthCheck {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Test code can use unwrap/expect
 mod tests {
     use super::*;
 
@@ -480,7 +481,7 @@ mod tests {
                 ComponentHealth::healthy("Should timeout before this")
             }
 
-            fn component_name(&self) -> &str {
+            fn component_name(&self) -> &'static str {
                 "slow"
             }
         }

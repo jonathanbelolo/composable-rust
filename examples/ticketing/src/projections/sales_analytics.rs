@@ -78,10 +78,10 @@ impl SalesMetrics {
 /// ```
 #[derive(Default)]
 pub struct SalesAnalyticsProjection {
-    /// Sales metrics indexed by event_id
+    /// Sales metrics indexed by `event_id`
     metrics: HashMap<EventId, SalesMetrics>,
     /// Reservation amount tracking (for when reservation completes)
-    /// Maps reservation_id -> (event_id, section, amount, ticket_count)
+    /// Maps `reservation_id` -> (`event_id`, section, amount, `ticket_count`)
     pending_reservations: HashMap<
         crate::types::ReservationId,
         (EventId, String, Money, u32),

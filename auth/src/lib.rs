@@ -48,6 +48,10 @@
 #![deny(clippy::expect_used)]
 #![deny(clippy::panic)]
 #![deny(clippy::todo)]
+// Auth code has legitimate complexity - allow pedantic warnings
+#![allow(clippy::cognitive_complexity)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::type_complexity)]
 #![deny(clippy::unimplemented)]
 
 // Public modules

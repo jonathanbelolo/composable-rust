@@ -38,12 +38,13 @@ pub enum AppError {
 /// Main ticketing application.
 ///
 /// Coordinates all components:
-/// - Event store (PostgreSQL)
-/// - Event bus (RedPanda)
+/// - Event store (`PostgreSQL`)
+/// - Event bus (`RedPanda`)
 /// - Aggregate services
 /// - Projection managers
 pub struct TicketingApp {
     /// Event store
+    #[allow(dead_code)] // Will be used for event sourcing in future
     event_store: Arc<PostgresEventStore>,
     /// Event bus
     event_bus: Arc<dyn EventBus>,
@@ -69,6 +70,7 @@ impl TicketingApp {
     /// # Errors
     ///
     /// Returns error if database or event bus connection fails.
+    #[allow(clippy::cognitive_complexity)] // Application initialization with multiple components
     pub async fn new(config: Config) -> Result<Self, AppError> {
         tracing::info!("Initializing Ticketing Application...");
 
@@ -146,6 +148,7 @@ impl TicketingApp {
     /// # Errors
     ///
     /// Returns error if subscription fails.
+    #[allow(clippy::cognitive_complexity)] // Event processing loop with multiple event types
     pub async fn start(&self) -> Result<(), AppError> {
         tracing::info!("Starting Ticketing Application...");
 
@@ -221,7 +224,8 @@ impl TicketingApp {
     }
 
     /// Get the application configuration
-    pub fn config(&self) -> &Config {
+    #[must_use] 
+    pub const fn config(&self) -> &Config {
         &self.config
     }
 }

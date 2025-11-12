@@ -196,6 +196,7 @@ pub fn current_span_context() -> Option<opentelemetry::Context> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Test code can use unwrap/expect
 mod tests {
     use super::*;
     use composable_rust_core::agent::{

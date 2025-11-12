@@ -139,9 +139,9 @@ impl CustomerProfile {
 /// ```
 #[derive(Default)]
 pub struct CustomerHistoryProjection {
-    /// Customer profiles indexed by customer_id
+    /// Customer profiles indexed by `customer_id`
     profiles: HashMap<CustomerId, CustomerProfile>,
-    /// Pending reservations: reservation_id -> (customer_id, event_id, section, amount, tickets)
+    /// Pending reservations: `reservation_id` -> (`customer_id`, `event_id`, section, amount, tickets)
     pending_reservations: HashMap<
         ReservationId,
         (CustomerId, EventId, String, u32, Money),
@@ -169,7 +169,7 @@ impl CustomerHistoryProjection {
     pub fn has_attended_event(&self, customer_id: &CustomerId, event_id: &EventId) -> bool {
         self.profiles
             .get(customer_id)
-            .map_or(false, |profile| profile.events_attended.contains(event_id))
+            .is_some_and(|profile| profile.events_attended.contains(event_id))
     }
 
     /// Get all customers who attended a specific event

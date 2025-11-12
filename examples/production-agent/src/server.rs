@@ -56,6 +56,7 @@ pub struct ChatResponse {
 
 /// Error response
 #[derive(Debug, Serialize)]
+#[allow(dead_code)] // Demo example - may not be used in basic flows
 pub struct ErrorResponse {
     /// Error message
     pub error: String,
@@ -198,6 +199,7 @@ async fn metrics_handler<A: AuditLogger + Send + Sync + Clone + 'static>(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Test code can use unwrap/expect
 mod tests {
     use super::*;
     use composable_rust_agent_patterns::audit::InMemoryAuditLogger;

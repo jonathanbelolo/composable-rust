@@ -50,7 +50,7 @@ impl SeatAvailability {
     }
 
     /// Update availability counts after a change
-    fn recalculate_available(&mut self) {
+    const fn recalculate_available(&mut self) {
         self.available = self.total_capacity.saturating_sub(self.reserved + self.sold);
     }
 }
@@ -71,7 +71,7 @@ impl SeatAvailability {
 /// ```
 #[derive(Default)]
 pub struct AvailableSeatsProjection {
-    /// Seat availability indexed by (event_id, section)
+    /// Seat availability indexed by (`event_id`, section)
     availability: HashMap<(EventId, String), SeatAvailability>,
     /// Processed reservation IDs for idempotency (prevents double-processing)
     processed_reservations: std::collections::HashSet<crate::types::ReservationId>,
@@ -97,7 +97,7 @@ impl AvailableSeatsProjection {
     #[must_use]
     pub fn has_availability(&self, event_id: &EventId, section: &str, quantity: u32) -> bool {
         self.get_availability(event_id, section)
-            .map_or(false, |avail| avail.available >= quantity)
+            .is_some_and(|avail| avail.available >= quantity)
     }
 
     /// Get all sections for an event

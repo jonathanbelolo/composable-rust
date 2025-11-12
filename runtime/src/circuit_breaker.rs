@@ -370,6 +370,7 @@ impl CircuitBreakerMetrics {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Test code can use unwrap/expect
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -492,6 +493,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::float_cmp)] // Test uses exact float comparison
     async fn test_circuit_breaker_metrics() {
         let config = CircuitBreakerConfig::default();
         let breaker = CircuitBreaker::new(config);

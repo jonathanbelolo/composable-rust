@@ -9,7 +9,7 @@
 //! cargo run --bin order-processing --features http
 //! ```
 //!
-//! Run with PostgreSQL event store:
+//! Run with `PostgreSQL` event store:
 //! ```bash
 //! DATABASE_URL=postgres://user:pass@localhost/db \
 //!   cargo run --bin order-processing --features http,postgres

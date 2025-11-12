@@ -600,7 +600,8 @@ impl PostgresAuditLogger {
             .await
             .map_err(|e| AuditError::QueryError(format!("Failed to count audit events: {e}")))?;
 
-        Ok(row.0 as usize)
+        usize::try_from(row.0)
+            .map_err(|e| AuditError::QueryError(format!("Count overflow: {e}")))
     }
 }
 
@@ -701,7 +702,7 @@ impl AuditLogger for PostgresAuditLogger {
             .map_err(|e| AuditError::QueryError(format!("Failed to query audit events: {e}")))?;
 
         rows.into_iter()
-            .map(|row| row.into_audit_event())
+            .map(AuditEventRow::into_audit_event)
             .collect()
     }
 
@@ -712,7 +713,7 @@ impl AuditLogger for PostgresAuditLogger {
             .await
             .map_err(|e| AuditError::QueryError(format!("Failed to get audit event: {e}")))?;
 
-        Ok(row.map(|r| r.into_audit_event()).transpose()?)
+        row.map(AuditEventRow::into_audit_event).transpose()
     }
 }
 
@@ -779,6 +780,7 @@ impl AuditEventRow {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Test code can use unwrap/expect
 mod tests {
     use super::*;
 

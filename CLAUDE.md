@@ -208,7 +208,7 @@ cargo test --test test_name
 # Run tests in specific crate
 cargo test -p composable-rust-core
 
-# Lint with strict warnings
+# Lint with strict warnings (ALWAYS use --all-targets!)
 cargo clippy --all-targets --all-features -- -D warnings
 
 # Format code
@@ -231,6 +231,27 @@ cargo doc --no-deps --all-features --open
 5. Documentation (`RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features`)
 
 **Always run this before committing.**
+
+### Critical: Always Use --all-targets for Clippy
+
+⚠️ **IMPORTANT**: Always run clippy with `--all-targets`:
+
+```bash
+# ✅ CORRECT - Checks library, tests, benches, examples
+cargo clippy --all-targets --all-features -- -D warnings
+
+# ❌ WRONG - Only checks library code, misses test warnings!
+cargo clippy --lib -- -D warnings
+```
+
+**Why this matters:**
+- `--lib` only type-checks library code
+- `--all-targets` checks tests, benches, examples, and integration tests
+- Rust-analyzer in your editor checks ALL code (including tests)
+- If you only check `--lib`, test code warnings will show as yellow dots in your editor
+- This creates technical debt and wastes time fixing warnings later
+
+**Rule**: After writing ANY code (including tests), run clippy with `--all-targets` before committing.
 
 ## Code Standards
 

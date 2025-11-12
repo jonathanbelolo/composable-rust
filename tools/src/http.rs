@@ -386,6 +386,7 @@ pub fn http_get_markdown_tool() -> (Tool, ToolExecutorFn) {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)] // Test code can use expect
 mod tests {
     use super::*;
 

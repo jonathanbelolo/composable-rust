@@ -65,6 +65,7 @@ where
     type Action = AgentAction;
     type Environment = E;
 
+    #[allow(clippy::too_many_lines)] // Complex agent logic with tool handling
     fn reduce(
         &self,
         state: &mut Self::State,

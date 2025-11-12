@@ -168,6 +168,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Test code can use unwrap/expect
 mod tests {
     use super::*;
     use axum::http::{Request, header};
@@ -180,7 +181,7 @@ mod tests {
             .body(())
             .expect("Valid request");
 
-        let (mut parts, _) = req.into_parts();
+        let (mut parts, ()) = req.into_parts();
         let correlation_id = CorrelationId::from_request_parts(&mut parts, &())
             .await
             .expect("Should extract");
@@ -194,7 +195,7 @@ mod tests {
             .body(())
             .expect("Valid request");
 
-        let (mut parts, _) = req.into_parts();
+        let (mut parts, ()) = req.into_parts();
         let correlation_id = CorrelationId::from_request_parts(&mut parts, &())
             .await
             .expect("Should extract");
@@ -210,7 +211,7 @@ mod tests {
             .body(())
             .expect("Valid request");
 
-        let (mut parts, _) = req.into_parts();
+        let (mut parts, ()) = req.into_parts();
         let client_ip = ClientIp::from_request_parts(&mut parts, &())
             .await
             .expect("Should extract");
@@ -225,7 +226,7 @@ mod tests {
             .body(())
             .expect("Valid request");
 
-        let (mut parts, _) = req.into_parts();
+        let (mut parts, ()) = req.into_parts();
         let client_ip = ClientIp::from_request_parts(&mut parts, &())
             .await
             .expect("Should extract");
@@ -239,7 +240,7 @@ mod tests {
             .body(())
             .expect("Valid request");
 
-        let (mut parts, _) = req.into_parts();
+        let (mut parts, ()) = req.into_parts();
         let client_ip = ClientIp::from_request_parts(&mut parts, &())
             .await
             .expect("Should extract");
@@ -255,7 +256,7 @@ mod tests {
             .body(())
             .expect("Valid request");
 
-        let (mut parts, _) = req.into_parts();
+        let (mut parts, ()) = req.into_parts();
         let user_agent = UserAgent::from_request_parts(&mut parts, &())
             .await
             .expect("Should extract");
@@ -269,7 +270,7 @@ mod tests {
             .body(())
             .expect("Valid request");
 
-        let (mut parts, _) = req.into_parts();
+        let (mut parts, ()) = req.into_parts();
         let user_agent = UserAgent::from_request_parts(&mut parts, &())
             .await
             .expect("Should extract");

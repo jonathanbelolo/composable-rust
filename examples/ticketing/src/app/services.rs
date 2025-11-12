@@ -2,8 +2,8 @@
 //!
 //! Services coordinate between reducers, event store, and event bus:
 //! 1. Execute reducer with command
-//! 2. Persist resulting events to PostgreSQL (source of truth)
-//! 3. Publish events to RedPanda (distribution)
+//! 2. Persist resulting events to `PostgreSQL` (source of truth)
+//! 3. Publish events to `RedPanda` (distribution)
 //! 4. Return result
 
 use crate::aggregates::{
@@ -77,6 +77,10 @@ impl InventoryService {
     /// 2. Execute reducer
     /// 3. Persist new events
     /// 4. Publish to event bus
+    ///
+    /// # Errors
+    ///
+    /// Returns error if event store or event bus operations fail.
     pub async fn handle(
         &self,
         stream_id: StreamId,
@@ -101,7 +105,7 @@ impl InventoryService {
         let _effects = self.reducer.reduce(&mut state, action.clone(), &self.env);
 
         // 3. Serialize and persist events
-        let serialized = self.serialize_action(&action)?;
+        let serialized = Self::serialize_action(&action)?;
         let _version = self.event_store.append_events(
             stream_id,
             None, // Optimistic concurrency - would use version in production
@@ -119,8 +123,8 @@ impl InventoryService {
         Ok(())
     }
 
-    fn serialize_action(&self, action: &InventoryAction) -> Result<SerializedEvent, ServiceError> {
-        let event_type = format!("Inventory{:?}", action).split('(').next().unwrap_or("Unknown").to_string();
+    fn serialize_action(action: &InventoryAction) -> Result<SerializedEvent, ServiceError> {
+        let event_type = format!("Inventory{action:?}").split('(').next().unwrap_or("Unknown").to_string();
 
         // Wrap in TicketingEvent for unified event stream
         let ticketing_event = TicketingEvent::Inventory(action.clone());
@@ -157,6 +161,10 @@ impl ReservationService {
     }
 
     /// Handle a reservation command
+    ///
+    /// # Errors
+    ///
+    /// Returns error if event store or event bus operations fail.
     pub async fn handle(
         &self,
         stream_id: StreamId,
@@ -180,7 +188,7 @@ impl ReservationService {
         let _effects = self.reducer.reduce(&mut state, action.clone(), &self.env);
 
         // 3. Persist and publish
-        let serialized = self.serialize_action(&action)?;
+        let serialized = Self::serialize_action(&action)?;
         let _version = self.event_store.append_events(
             stream_id,
             None,
@@ -197,8 +205,8 @@ impl ReservationService {
         Ok(())
     }
 
-    fn serialize_action(&self, action: &ReservationAction) -> Result<SerializedEvent, ServiceError> {
-        let event_type = format!("Reservation{:?}", action).split('(').next().unwrap_or("Unknown").to_string();
+    fn serialize_action(action: &ReservationAction) -> Result<SerializedEvent, ServiceError> {
+        let event_type = format!("Reservation{action:?}").split('(').next().unwrap_or("Unknown").to_string();
 
         // Wrap in TicketingEvent for unified event stream
         let ticketing_event = TicketingEvent::Reservation(action.clone());
@@ -235,6 +243,10 @@ impl PaymentService {
     }
 
     /// Handle a payment command
+    ///
+    /// # Errors
+    ///
+    /// Returns error if event store or event bus operations fail.
     pub async fn handle(
         &self,
         stream_id: StreamId,
@@ -258,7 +270,7 @@ impl PaymentService {
         let _effects = self.reducer.reduce(&mut state, action.clone(), &self.env);
 
         // 3. Persist and publish
-        let serialized = self.serialize_action(&action)?;
+        let serialized = Self::serialize_action(&action)?;
         let _version = self.event_store.append_events(
             stream_id,
             None,
@@ -275,8 +287,8 @@ impl PaymentService {
         Ok(())
     }
 
-    fn serialize_action(&self, action: &PaymentAction) -> Result<SerializedEvent, ServiceError> {
-        let event_type = format!("Payment{:?}", action).split('(').next().unwrap_or("Unknown").to_string();
+    fn serialize_action(action: &PaymentAction) -> Result<SerializedEvent, ServiceError> {
+        let event_type = format!("Payment{action:?}").split('(').next().unwrap_or("Unknown").to_string();
 
         // Wrap in TicketingEvent for unified event stream
         let ticketing_event = TicketingEvent::Payment(action.clone());

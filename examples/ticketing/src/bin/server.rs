@@ -3,8 +3,8 @@
 //! Main server process that runs the ticketing application.
 //!
 //! This binary:
-//! - Initializes PostgreSQL event store
-//! - Connects to RedPanda event bus
+//! - Initializes `PostgreSQL` event store
+//! - Connects to `RedPanda` event bus
 //! - Starts aggregate services
 //! - Subscribes projections to event streams
 //! - Runs indefinitely processing events

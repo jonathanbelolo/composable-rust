@@ -1,5 +1,7 @@
 //! Integration tests for audit and security modules
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // Test code can use unwrap/expect/panic
+
 use composable_rust_agent_patterns::audit::{AuditEvent, AuditLogger, InMemoryAuditLogger};
 use composable_rust_agent_patterns::security::{SecurityMonitor, ThreatLevel};
 
@@ -51,7 +53,7 @@ async fn test_multiple_ips_separate_incidents() {
                 "login",
                 false,
             )
-            .with_source_ip(&format!("192.168.1.{ip_suffix}"));
+            .with_source_ip(format!("192.168.1.{ip_suffix}"));
 
             audit_logger.log(event).await.unwrap();
         }

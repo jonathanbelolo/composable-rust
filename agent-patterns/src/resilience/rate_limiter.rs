@@ -198,6 +198,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Test code can use unwrap/expect
 mod tests {
     use super::*;
     use std::time::Duration;
@@ -314,6 +315,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)] // Test uses exact float comparison
     fn test_rate_limiter_getters() {
         let config = RateLimiterConfig {
             capacity: 50,

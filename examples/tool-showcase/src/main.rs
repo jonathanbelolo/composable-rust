@@ -1,12 +1,12 @@
 //! Tool Showcase Example
 //!
 //! Demonstrates all built-in tools from composable-rust-tools:
-//! - HTTP tools (http_request, http_get, http_get_markdown)
-//! - Time tools (current_time)
+//! - HTTP tools (`http_request`, `http_get`, `http_get_markdown`)
+//! - Time tools (`current_time`)
 //! - Calculation tools (calculate)
-//! - Data tools (json_query, string_transform)
-//! - Todo tools (todo_add, todo_list, todo_complete, todo_delete)
-//! - Mock tools (memory_search, web_search)
+//! - Data tools (`json_query`, `string_transform`)
+//! - Todo tools (`todo_add`, `todo_list`, `todo_complete`, `todo_delete`)
+//! - Mock tools (`memory_search`, `web_search`)
 //! - Tool registry for dynamic tool management
 //! - Retry policies and timeout handling
 
@@ -23,6 +23,8 @@ use serde_json::json;
 use std::time::Duration;
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)] // Example showcase with many demonstrations
+#[allow(clippy::expect_used)] // Example code for demonstration
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing
     tracing_subscriber::fmt::init();
@@ -205,7 +207,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_timeout(Duration::from_secs(5));
 
     let retry_result = composable_rust_tools::execute_with_retry(&config, || async {
-        let result = registry
+        
+        registry
             .execute(
                 "calculate",
                 json!({
@@ -213,8 +216,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
                 .to_string(),
             )
-            .await;
-        result
+            .await
     })
     .await?;
     println!("Result with retry: {}\n", pretty_json(&retry_result));

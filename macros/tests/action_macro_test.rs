@@ -97,8 +97,8 @@ fn test_all_commands_identified() {
     ];
 
     for cmd in commands {
-        assert!(cmd.is_command(), "Expected command: {:?}", cmd);
-        assert!(!cmd.is_event(), "Should not be event: {:?}", cmd);
+        assert!(cmd.is_command(), "Expected command: {cmd:?}");
+        assert!(!cmd.is_event(), "Should not be event: {cmd:?}");
     }
 }
 
@@ -121,8 +121,8 @@ fn test_all_events_identified() {
     ];
 
     for event in events {
-        assert!(!event.is_command(), "Should not be command: {:?}", event);
-        assert!(event.is_event(), "Expected event: {:?}", event);
+        assert!(!event.is_command(), "Should not be command: {event:?}");
+        assert!(event.is_event(), "Expected event: {event:?}");
     }
 }
 

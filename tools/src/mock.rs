@@ -217,6 +217,7 @@ pub fn web_search_tool() -> (Tool, ToolExecutorFn) {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)] // Test code can use expect
 mod tests {
     use super::*;
 
@@ -249,7 +250,7 @@ mod tests {
         let output: serde_json::Value = serde_json::from_str(&result.expect("should succeed")).expect("valid JSON");
         assert_eq!(output["query"], "weather");
         assert!(output["results"].is_array());
-        assert!(output["results"].as_array().expect("is array").len() >= 1);
+        assert!(!output["results"].as_array().expect("is array").is_empty());
     }
 
     #[tokio::test]
@@ -267,7 +268,7 @@ mod tests {
         let output: serde_json::Value = serde_json::from_str(&result.expect("should succeed")).expect("valid JSON");
         assert_eq!(output["query"], "Rust programming");
         assert!(output["results"].is_array());
-        assert!(output["results"].as_array().expect("is array").len() >= 1);
+        assert!(!output["results"].as_array().expect("is array").is_empty());
 
         // Verify result structure
         let first_result = &output["results"][0];

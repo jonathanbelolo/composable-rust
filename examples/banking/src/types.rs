@@ -277,7 +277,10 @@ pub enum TransferStatus {
     /// Credit applied to destination account, transfer complete
     Completed,
     /// Transfer failed, needs compensation
-    Failed { reason: String },
+    Failed {
+        /// The reason why the transfer failed
+        reason: String,
+    },
     /// Transfer was compensated (rolled back)
     Compensated,
 }

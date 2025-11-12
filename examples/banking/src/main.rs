@@ -11,6 +11,8 @@ use composable_rust_runtime::Store;
 use std::sync::Arc;
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)] // Example demonstration with multiple scenarios
+#[allow(clippy::unwrap_used)] // Example code for demonstration
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Banking Example: Money Transfers ===\n");
 
@@ -40,7 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     // Show initial balances
-    let state = account_store.state(|s| s.clone()).await;
+    let state = account_store.state(std::clone::Clone::clone).await;
     println!("\nInitial balances:");
     for account in state.accounts.values() {
         println!("  {}: {}", account.holder_name, account.balance);
@@ -56,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     // Show updated balances
-    let state = account_store.state(|s| s.clone()).await;
+    let state = account_store.state(std::clone::Clone::clone).await;
     println!("\nAfter deposit:");
     for account in state.accounts.values() {
         println!("  {}: {}", account.holder_name, account.balance);
@@ -72,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     // Show updated balances
-    let state = account_store.state(|s| s.clone()).await;
+    let state = account_store.state(std::clone::Clone::clone).await;
     println!("\nAfter withdrawal:");
     for account in state.accounts.values() {
         println!("  {}: {}", account.holder_name, account.balance);
@@ -96,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     // Check transfer state
-    let transfer_state = transfer_store.state(|s| s.clone()).await;
+    let transfer_state = transfer_store.state(std::clone::Clone::clone).await;
     if let Some(transfer) = transfer_state.get(&transfer_id) {
         println!("Transfer status: {:?}", transfer.status);
         println!("Transfer amount: {}", transfer.amount);
@@ -124,7 +126,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     // Show final balances
-    let state = account_store.state(|s| s.clone()).await;
+    let state = account_store.state(std::clone::Clone::clone).await;
     println!("\nFinal balances:");
     for account in state.accounts.values() {
         println!("  {}: {}", account.holder_name, account.balance);
@@ -144,7 +146,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?;
 
-    let state = account_store.state(|s| s.clone()).await;
+    let state = account_store.state(std::clone::Clone::clone).await;
     if let Some(error) = &state.last_error {
         println!("Error (as expected): {error}");
     }

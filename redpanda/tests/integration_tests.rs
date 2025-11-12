@@ -85,7 +85,7 @@ async fn ensure_topic_exists(event_bus: &RedpandaEventBus, topic: &str) {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires Docker and takes 15-60 seconds"]
 async fn test_publish_and_subscribe_round_trip() {
     // Start Kafka container
     let kafka = Kafka::default()
@@ -158,7 +158,7 @@ async fn test_publish_and_subscribe_round_trip() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires Docker and takes 15-60 seconds"]
 async fn test_consumer_groups_load_balancing() {
     // Start Kafka container
     let kafka = Kafka::default()
@@ -264,7 +264,7 @@ async fn test_consumer_groups_load_balancing() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires Docker and takes 15-60 seconds"]
 async fn test_multiple_topics() {
     // Start Kafka container
     let kafka = Kafka::default()
@@ -337,7 +337,7 @@ async fn test_multiple_topics() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires Docker and takes 15-60 seconds"]
 async fn test_at_least_once_delivery() {
     // Start Kafka container
     let kafka = Kafka::default()
@@ -403,7 +403,7 @@ async fn test_at_least_once_delivery() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires Docker and takes 15-60 seconds"]
 async fn test_event_ordering_within_partition() {
     // Start Kafka container
     let kafka = Kafka::default()
@@ -471,7 +471,7 @@ async fn test_event_ordering_within_partition() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires Docker and takes 15-60 seconds"]
 async fn test_producer_configuration() {
     // Start Kafka container
     let kafka = Kafka::default()

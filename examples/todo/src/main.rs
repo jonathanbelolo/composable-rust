@@ -44,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     // List todos
-    let state = store.state(|s| s.clone()).await;
+    let state = store.state(std::clone::Clone::clone).await;
     println!("\nTodos created: {}", state.count());
     for todo in state.todos.values() {
         let status = if todo.completed { "✓" } else { " " };
@@ -58,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     // List todos again
-    let state = store.state(|s| s.clone()).await;
+    let state = store.state(std::clone::Clone::clone).await;
     println!("\nCurrent status:");
     for todo in state.todos.values() {
         let status = if todo.completed { "✓" } else { " " };
@@ -75,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     store.send(TodoAction::DeleteTodo { id: id3 }).await?;
 
     // Final state
-    let state = store.state(|s| s.clone()).await;
+    let state = store.state(std::clone::Clone::clone).await;
     println!("\nFinal todos: {}", state.count());
     for todo in state.todos.values() {
         let status = if todo.completed { "✓" } else { " " };

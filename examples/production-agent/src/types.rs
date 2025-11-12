@@ -234,6 +234,7 @@ pub trait AgentEnvironment: Send + Sync {
 
 /// Agent error
 #[derive(Debug, thiserror::Error)]
+#[allow(dead_code)] // Demo example - not all error variants used
 pub enum AgentError {
     /// LLM error
     #[error("LLM error: {0}")]

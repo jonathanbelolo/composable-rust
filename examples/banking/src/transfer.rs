@@ -124,7 +124,8 @@ impl TransferReducer {
     }
 
     /// Creates effects for account operations
-    fn withdraw_from_source(
+    #[allow(dead_code)] // Placeholder for future event bus integration
+    const fn withdraw_from_source(
         _transfer_id: &TransferId,
         _from_account: &AccountId,
         _amount: Money,
@@ -135,7 +136,8 @@ impl TransferReducer {
     }
 
     /// Creates effects for account operations
-    fn deposit_to_destination(
+    #[allow(dead_code)] // Placeholder for future event bus integration
+    const fn deposit_to_destination(
         _transfer_id: &TransferId,
         _to_account: &AccountId,
         _amount: Money,
@@ -145,7 +147,8 @@ impl TransferReducer {
     }
 
     /// Creates compensation effect (return money to source)
-    fn compensate_transfer(
+    #[allow(dead_code)] // Placeholder for future event bus integration
+    const fn compensate_transfer(
         _transfer_id: &TransferId,
         _to_account: &AccountId,
         _amount: Money,
@@ -229,12 +232,11 @@ impl Reducer for TransferReducer {
                 Self::apply_event(state, &action);
 
                 // Debit successful, now credit the destination
-                if let Some(transfer) = state.get(transfer_id) {
-                    if transfer.status == TransferStatus::Debited {
+                if let Some(transfer) = state.get(transfer_id)
+                    && transfer.status == TransferStatus::Debited {
                         // Emit effect to deposit to destination
                         // Placeholder - will return deposit effect
                     }
-                }
 
                 SmallVec::new()
             }
@@ -267,6 +269,7 @@ impl Reducer for TransferReducer {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)] // Test code can use unwrap for assertions
 mod tests {
     use super::*;
     use chrono::Utc;

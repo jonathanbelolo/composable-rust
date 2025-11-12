@@ -83,7 +83,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://postgres:password@localhost:5432/composable_auth".to_string());
 
-    info!("🔌 Connecting to PostgreSQL: {}", database_url.split('@').last().unwrap_or("unknown"));
+    info!("🔌 Connecting to PostgreSQL: {}", database_url.split('@').next_back().unwrap_or("unknown"));
 
     // Create database connection pool
     let db_pool = PgPoolOptions::new()

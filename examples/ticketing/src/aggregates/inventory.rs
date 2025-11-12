@@ -312,7 +312,7 @@ impl InventoryReducer {
             .collect()
     }
 
-    /// Finds event_id and section for a reservation
+    /// Finds `event_id` and section for a reservation
     /// Returns None if reservation not found
     fn find_reservation_location(
         state: &InventoryState,

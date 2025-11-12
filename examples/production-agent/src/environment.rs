@@ -13,6 +13,7 @@ use tracing::{info, warn};
 
 /// Production environment with all Phase 8.4 features
 #[derive(Clone)]
+#[allow(dead_code)] // Demo example - not all features used in basic example
 pub struct ProductionEnvironment<A: AuditLogger + Send + Sync + 'static> {
     /// Anthropic API client (optional - if None, use mock)
     anthropic_client: Option<Arc<AnthropicClient>>,
@@ -39,6 +40,7 @@ pub struct ProductionEnvironment<A: AuditLogger + Send + Sync + 'static> {
     llm_timeout: Duration,
 }
 
+#[allow(dead_code)] // Demo example - not all methods used in basic example
 impl<A: AuditLogger + Send + Sync + 'static> ProductionEnvironment<A> {
     /// Create new production environment without Anthropic client (uses mock)
     #[must_use]
@@ -263,6 +265,7 @@ impl<A: AuditLogger + Send + Sync + 'static> ProductionEnvironment<A> {
     }
 }
 
+#[allow(dead_code)] // Demo example - trait methods may not all be used
 impl<A: AuditLogger + Send + Sync + 'static> AgentEnvironment for ProductionEnvironment<A> {
     fn event_store(&self) -> &Arc<dyn composable_rust_core::event_store::EventStore> {
         &self.event_store
@@ -351,6 +354,7 @@ impl<A: AuditLogger + Send + Sync + 'static> AgentEnvironment for ProductionEnvi
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Test code can use unwrap/expect
 mod tests {
     use super::*;
     use composable_rust_agent_patterns::audit::InMemoryAuditLogger;

@@ -177,7 +177,7 @@ impl Money {
     ///
     /// # Panics
     ///
-    /// Panics if the conversion would overflow (dollars * 100 > u64::MAX).
+    /// Panics if the conversion would overflow (dollars * 100 > `u64::MAX`).
     /// Use `checked_from_dollars` for non-panicking conversion.
     #[must_use]
     #[allow(clippy::panic)]

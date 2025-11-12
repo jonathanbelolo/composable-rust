@@ -513,7 +513,7 @@ impl UserRepository for PostgresUserRepository {
 
         // Step 1: Acquire exclusive lock on the credential row
         // This blocks concurrent updates until our transaction completes
-        let _lock = sqlx::query!(
+        let lock = sqlx::query!(
             r#"
             SELECT counter
             FROM passkeys_projection
@@ -527,7 +527,7 @@ impl UserRepository for PostgresUserRepository {
         .map_err(|e| AuthError::DatabaseError(format!("Failed to lock credential: {e}")))?;
 
         // If credential doesn't exist, rollback and return error
-        if _lock.is_none() {
+        if lock.is_none() {
             let _ = tx.rollback().await; // Ignore rollback errors
             return Err(AuthError::PasskeyNotFound);
         }

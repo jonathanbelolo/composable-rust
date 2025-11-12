@@ -558,6 +558,7 @@ impl SecurityMonitor {
 
     /// Clear all incidents (for testing)
     #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Test code can use unwrap/expect
     pub async fn clear(&self) {
         self.incidents.write().await.clear();
         self.alerts.write().await.clear();
@@ -594,6 +595,7 @@ impl fmt::Display for SecurityError {
 impl std::error::Error for SecurityError {}
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Test code can use unwrap/expect
 mod tests {
     use super::*;
 

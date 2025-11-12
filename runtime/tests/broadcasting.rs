@@ -3,6 +3,9 @@
 //! Tests the action observation features that enable HTTP request-response
 //! patterns and WebSocket event streaming without coupling to HTTP layer.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // Test code can use unwrap/expect/panic
+#![allow(clippy::redundant_continue, clippy::match_same_arms, clippy::collapsible_if)] // Test code - allow pedantic warnings
+
 use composable_rust_core::{effect::Effect, reducer::Reducer, smallvec, SmallVec};
 use composable_rust_runtime::Store;
 use std::sync::Arc;
@@ -430,10 +433,10 @@ async fn test_initial_actions_not_broadcast() {
     assert!(matches!(actions[0], TestAction::Incremented { .. }));
 }
 
-/// Test Effect::Delay broadcasting
+/// Test `Effect::Delay` broadcasting
 ///
-/// Verifies that actions produced by Effect::Delay are also broadcast,
-/// not just Effect::Future.
+/// Verifies that actions produced by `Effect::Delay` are also broadcast,
+/// not just `Effect::Future`.
 #[tokio::test]
 async fn test_effect_delay_broadcasting() {
     // New action type with delay
@@ -487,7 +490,7 @@ async fn test_effect_delay_broadcasting() {
 
 /// Test nested effects (Parallel containing Futures)
 ///
-/// Verifies that actions produced by effects inside Effect::Parallel
+/// Verifies that actions produced by effects inside `Effect::Parallel`
 /// are correctly broadcast.
 #[tokio::test]
 async fn test_parallel_effects_broadcasting() {
@@ -560,7 +563,7 @@ async fn test_parallel_effects_broadcasting() {
 
 /// Test nested effects (Sequential containing Futures)
 ///
-/// Verifies that actions produced by effects inside Effect::Sequential
+/// Verifies that actions produced by effects inside `Effect::Sequential`
 /// are correctly broadcast in order.
 #[tokio::test]
 async fn test_sequential_effects_broadcasting() {
@@ -626,9 +629,9 @@ async fn test_sequential_effects_broadcasting() {
     assert_eq!(action2, SeqAction::Step2);
 }
 
-/// Test ChannelClosed error when Store is dropped
+/// Test `ChannelClosed` error when Store is dropped
 ///
-/// Verifies that subscribers waiting for actions receive ChannelClosed
+/// Verifies that subscribers waiting for actions receive `ChannelClosed`
 /// error when the Store is dropped.
 #[tokio::test]
 async fn test_channel_closed_on_store_drop() {
@@ -652,9 +655,9 @@ async fn test_channel_closed_on_store_drop() {
     assert!(result.is_err()); // Either Timeout or ChannelClosed
 }
 
-/// Test ChannelClosed error (proper test with concurrent drop)
+/// Test `ChannelClosed` error (proper test with concurrent drop)
 ///
-/// Verifies that ChannelClosed error is returned when Store is dropped
+/// Verifies that `ChannelClosed` error is returned when Store is dropped
 /// while a subscriber is actively waiting.
 #[tokio::test]
 async fn test_channel_closed_concurrent_drop() {
@@ -699,7 +702,7 @@ async fn test_channel_closed_concurrent_drop() {
 
 /// Test custom broadcast capacity
 ///
-/// Verifies that with_broadcast_capacity creates a store with the
+/// Verifies that `with_broadcast_capacity` creates a store with the
 /// specified buffer size.
 #[tokio::test]
 async fn test_custom_broadcast_capacity() {
@@ -742,7 +745,7 @@ async fn test_custom_broadcast_capacity() {
 
 /// Test saga failure scenario
 ///
-/// Verifies that error actions (SagaFailed) are also broadcast correctly.
+/// Verifies that error actions (`SagaFailed`) are also broadcast correctly.
 #[tokio::test]
 async fn test_saga_failure_broadcasting() {
     #[derive(Debug, Clone, PartialEq)]

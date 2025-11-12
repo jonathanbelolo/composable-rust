@@ -213,12 +213,14 @@ where
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)] // Test code can use expect
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
 
     #[test]
+    #[allow(clippy::panic)] // Test validates enum variant
     fn test_retry_policy_default() {
         let policy = RetryPolicy::default();
         match policy {

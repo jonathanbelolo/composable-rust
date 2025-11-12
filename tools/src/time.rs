@@ -75,6 +75,7 @@ pub fn current_time_tool() -> (Tool, ToolExecutorFn) {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)] // Test code can use expect
 mod tests {
     use super::*;
 

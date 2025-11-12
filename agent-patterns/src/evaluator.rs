@@ -308,6 +308,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)] // Test uses exact float comparison
     fn test_evaluator_state() {
         let state = EvaluatorState::new();
         assert_eq!(state.iteration(), 0);
@@ -331,6 +332,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)] // Test uses exact float comparison
     fn test_evaluated_quality_threshold_met() {
         let config = EvaluatorConfig {
             max_iterations: 5,

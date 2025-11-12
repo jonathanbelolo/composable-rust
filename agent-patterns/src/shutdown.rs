@@ -112,6 +112,7 @@ impl ShutdownCoordinator {
     /// # Errors
     ///
     /// Returns list of errors if any component fails to shut down
+    #[allow(clippy::cognitive_complexity)] // Complex shutdown logic best kept together
     pub async fn shutdown(&self) -> Result<(), Vec<String>> {
         info!(
             "Initiating graceful shutdown for {} components (timeout: {:?})",
@@ -277,6 +278,7 @@ pub async fn wait_for_signal() {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Test code can use unwrap/expect
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -411,7 +413,7 @@ mod tests {
 
         #[async_trait]
         impl ShutdownHandler for SlowShutdownHandler {
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "slow"
             }
 

@@ -1,10 +1,13 @@
 //! Integration test demonstrating full CQRS flow with Event Sourcing.
 //!
 //! This test shows:
-//! 1. Writing events to PostgreSQL event store
+//! 1. Writing events to `PostgreSQL` event store
 //! 2. Rebuilding projections from event history
 //! 3. Querying projections for fast reads
 //! 4. Complete separation of write and read models
+
+#![allow(clippy::expect_used)] // Integration tests can use expect for setup
+#![allow(clippy::too_many_lines)] // Integration tests demonstrate complex scenarios
 
 use chrono::Utc;
 use composable_rust_core::event::SerializedEvent;
@@ -19,7 +22,7 @@ use ticketing::{
     types::{Capacity, CustomerId, EventId, Money, ReservationId, SeatId, TicketId},
 };
 
-/// Helper to create a PostgreSQL test container and event store
+/// Helper to create a `PostgreSQL` test container and event store
 ///
 /// # Panics
 /// Panics if container setup fails (test environment issue).
@@ -68,7 +71,7 @@ async fn create_event_store() -> PostgresEventStore {
 }
 
 #[tokio::test]
-#[ignore] // Requires Docker - run with: cargo test --test cqrs_integration -- --ignored
+#[ignore = "requires Docker - run with: cargo test --test cqrs_integration -- --ignored"]
 async fn test_full_cqrs_flow_with_event_sourcing() {
     // ========== Setup ==========
     let event_store = create_event_store().await;
@@ -81,7 +84,7 @@ async fn test_full_cqrs_flow_with_event_sourcing() {
     // ========== Write Side: Generate Events ==========
     println!("📝 Write Side: Generating events...");
 
-    let events = vec![
+    let events = [
         // 1. Initialize inventory
         TicketingEvent::Inventory(InventoryAction::InventoryInitialized {
             event_id,
@@ -273,7 +276,7 @@ async fn test_full_cqrs_flow_with_event_sourcing() {
 }
 
 #[tokio::test]
-#[ignore] // Requires Docker
+#[ignore = "requires Docker"]
 async fn test_concurrent_reservations_with_event_store() {
     let event_store = create_event_store().await;
     let stream_id = StreamId::new("ticketing-concurrent-test");

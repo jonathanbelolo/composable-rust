@@ -167,6 +167,7 @@ mod tests {
     use std::time::Duration;
 
     #[derive(Clone, Debug)]
+    #[allow(dead_code)] // Test enum - fields used for structure
     enum TestAction {
         AsyncResult { value: i32 },
         TimeoutExpired,

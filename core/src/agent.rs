@@ -389,9 +389,9 @@ mod tests {
         assert!(state.streaming_tools.contains_key("tool_1"));
 
         // Accumulate chunks
-        state.streaming_tools.get_mut("tool_1").map(|s| s.push_str("chunk1 "));
-        state.streaming_tools.get_mut("tool_1").map(|s| s.push_str("chunk2 "));
-        state.streaming_tools.get_mut("tool_1").map(|s| s.push_str("chunk3"));
+        if let Some(s) = state.streaming_tools.get_mut("tool_1") { s.push_str("chunk1 "); }
+        if let Some(s) = state.streaming_tools.get_mut("tool_1") { s.push_str("chunk2 "); }
+        if let Some(s) = state.streaming_tools.get_mut("tool_1") { s.push_str("chunk3"); }
 
         assert_eq!(state.streaming_tools.get("tool_1"), Some(&"chunk1 chunk2 chunk3".to_string()));
 

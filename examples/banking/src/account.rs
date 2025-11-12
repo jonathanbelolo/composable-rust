@@ -255,6 +255,7 @@ impl Reducer for AccountReducer {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)] // Test code can use unwrap for assertions
 mod tests {
     use super::*;
     use chrono::Utc;

@@ -200,6 +200,7 @@ pub fn create_child_span(context: OtelContext, operation_name: &str) -> Span {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Test code can use unwrap/expect
 mod tests {
     use super::*;
     use tracing::Level;

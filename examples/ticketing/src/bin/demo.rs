@@ -26,6 +26,7 @@ use ticketing::{
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)] // Demo with complete workflow demonstration
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing
     tracing_subscriber::registry()

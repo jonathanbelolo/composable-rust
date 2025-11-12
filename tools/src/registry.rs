@@ -261,6 +261,7 @@ impl Default for ToolRegistry {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)] // Test code can use expect
 mod tests {
     use super::*;
     use crate::mock::{memory_search_tool, web_search_tool};
@@ -295,6 +296,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::similar_names)]
     fn test_registry_list_tools() {
         let registry = ToolRegistry::new();
         let (tool1, executor1) = memory_search_tool();
@@ -310,6 +312,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::similar_names)]
     fn test_registry_get_tools() {
         let registry = ToolRegistry::new();
         let (tool1, executor1) = memory_search_tool();

@@ -75,7 +75,7 @@ impl TodoItem {
     }
 
     /// Marks the todo as completed
-    pub fn complete(&mut self, completed_at: DateTime<Utc>) {
+    pub const fn complete(&mut self, completed_at: DateTime<Utc>) {
         self.completed = true;
         self.completed_at = Some(completed_at);
     }
@@ -195,6 +195,7 @@ pub enum TodoAction {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Test code can use unwrap/expect
 mod tests {
     use super::*;
 

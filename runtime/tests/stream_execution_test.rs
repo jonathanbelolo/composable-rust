@@ -1,7 +1,9 @@
-//! Integration tests for Effect::Stream execution in Store runtime
+//! Integration tests for `Effect::Stream` execution in Store runtime
 //!
 //! Tests validate that streams are correctly executed, items are fed back
 //! to reducers, and metrics are properly tracked.
+
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // Test code can use unwrap/expect/panic
 
 use composable_rust_core::{effect::Effect, reducer::Reducer, SmallVec};
 use composable_rust_runtime::Store;
@@ -9,19 +11,14 @@ use futures::stream;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug, PartialEq)]
+#[derive(Default)]
 struct StreamState {
     items_received: Vec<String>,
 }
 
-impl Default for StreamState {
-    fn default() -> Self {
-        Self {
-            items_received: Vec::new(),
-        }
-    }
-}
 
 #[derive(Clone, Debug, PartialEq)]
+#[allow(dead_code)] // Test enum - not all variants used in every test
 enum StreamAction {
     StartStream { items: Vec<String> },
     StreamItem { text: String },
@@ -118,7 +115,7 @@ async fn test_stream_large_volume() {
     let store = Store::new(StreamState::default(), StreamReducer, ());
 
     // Create 100 items
-    let items: Vec<String> = (0..100).map(|i| format!("item{}", i)).collect();
+    let items: Vec<String> = (0..100).map(|i| format!("item{i}")).collect();
 
     store
         .send(StreamAction::StartStream {
@@ -430,7 +427,7 @@ impl Reducer for BackpressureReducer {
                 let log = state.processing_log.clone();
                 let effect = Effect::Future(Box::pin(async move {
                     tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
-                    log.lock().unwrap().push(format!("processed_{}", id));
+                    log.lock().unwrap().push(format!("processed_{id}"));
                     None
                 }));
 
@@ -461,7 +458,8 @@ async fn test_stream_backpressure() {
     assert_eq!(log.len(), 10);
 
     // Verify sequential order (backpressure working)
+    #[allow(clippy::needless_range_loop)] // Index needed for assert message
     for i in 0..10 {
-        assert_eq!(log[i], format!("processed_{}", i));
+        assert_eq!(log[i], format!("processed_{i}"));
     }
 }

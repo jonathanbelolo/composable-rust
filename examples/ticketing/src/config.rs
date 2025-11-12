@@ -8,7 +8,7 @@ use std::env;
 /// Application configuration loaded from environment variables.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    /// PostgreSQL configuration
+    /// `PostgreSQL` configuration
     pub postgres: PostgresConfig,
     /// RedPanda/Kafka configuration
     pub redpanda: RedpandaConfig,
@@ -16,10 +16,10 @@ pub struct Config {
     pub server: ServerConfig,
 }
 
-/// PostgreSQL configuration
+/// `PostgreSQL` configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PostgresConfig {
-    /// PostgreSQL connection URL
+    /// `PostgreSQL` connection URL
     pub url: String,
     /// Maximum number of connections in the pool
     pub max_connections: u32,
@@ -50,7 +50,7 @@ pub struct RedpandaConfig {
     pub reservation_topic: String,
     /// Topic for payment events
     pub payment_topic: String,
-    /// Security protocol: plaintext, ssl, sasl_plaintext, sasl_ssl
+    /// Security protocol: plaintext, ssl, `sasl_plaintext`, `sasl_ssl`
     pub security_protocol: String,
     /// SASL mechanism: PLAIN, SCRAM-SHA-256, SCRAM-SHA-512
     pub sasl_mechanism: Option<String>,
@@ -95,6 +95,7 @@ impl Config {
     /// # Panics
     ///
     /// Panics if required environment variables are missing or invalid.
+    #[must_use] 
     pub fn from_env() -> Self {
         Self {
             postgres: PostgresConfig {
@@ -152,7 +153,7 @@ impl Config {
                 max_poll_interval_ms: env::var("REDPANDA_MAX_POLL_INTERVAL_MS")
                     .ok()
                     .and_then(|s| s.parse().ok())
-                    .unwrap_or(300000),
+                    .unwrap_or(300_000),
                 enable_auto_commit: env::var("REDPANDA_ENABLE_AUTO_COMMIT")
                     .ok()
                     .and_then(|s| s.parse().ok())
@@ -186,6 +187,7 @@ impl Config {
     }
 
     /// Get all event topics
+    #[must_use] 
     pub fn all_topics(&self) -> Vec<&str> {
         vec![
             &self.redpanda.inventory_topic,

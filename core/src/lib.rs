@@ -1378,7 +1378,7 @@ mod tests {
         let effect: Effect<TestAction> =
             Effect::Stream(Box::pin(stream::iter(vec![TestAction::Action1])));
 
-        let debug_str = format!("{:?}", effect);
+        let debug_str = format!("{effect:?}");
         assert!(debug_str.contains("Effect::Stream(<stream>)"));
     }
 

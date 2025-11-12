@@ -261,7 +261,7 @@ pub async fn get_order(
     if state
         .order_id
         .as_ref()
-        .map_or(true, |id| id.as_str() != order_id.as_str())
+        .is_none_or(|id| id.as_str() != order_id.as_str())
     {
         return Err(AppError::not_found("Order", &order_id));
     }
