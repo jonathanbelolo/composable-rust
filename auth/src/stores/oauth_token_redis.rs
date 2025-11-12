@@ -365,7 +365,7 @@ mod tests {
 
         // Manually retrieve raw encrypted data from Redis
         let mut conn = store.conn_manager.clone();
-        let token_key = RedisOAuthTokenStore::token_key(&user_id, &provider);
+        let token_key = RedisOAuthTokenStore::token_key(&user_id, provider);
         let raw_data: Vec<u8> = conn
             .get(&token_key)
             .await
