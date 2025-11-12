@@ -6,15 +6,15 @@ use crate::state::OAuthProvider;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-/// Google OAuth 2.0 provider.
+/// Google `OAuth` 2.0 provider.
 ///
 /// Implements the `OAuth2Provider` trait for Google Identity Platform.
 ///
 /// # Configuration
 ///
-/// To use Google OAuth:
+/// To use Google `OAuth`:
 ///
-/// 1. Create OAuth 2.0 credentials in Google Cloud Console
+/// 1. Create `OAuth` 2.0 credentials in Google Cloud Console
 /// 2. Configure authorized redirect URIs
 /// 3. Set environment variables:
 ///    - `GOOGLE_CLIENT_ID`
@@ -32,10 +32,10 @@ use serde::{Deserialize, Serialize};
 /// ```
 #[derive(Clone, Debug)]
 pub struct GoogleOAuthProvider {
-    /// OAuth 2.0 client ID from Google Cloud Console.
+    /// `OAuth` 2.0 client ID from Google Cloud Console.
     client_id: String,
 
-    /// OAuth 2.0 client secret (keep confidential).
+    /// `OAuth` 2.0 client secret (keep confidential).
     client_secret: String,
 
     /// HTTP client for making requests.
@@ -61,12 +61,12 @@ pub struct GoogleOAuthProvider {
 }
 
 impl GoogleOAuthProvider {
-    /// Create a new Google OAuth provider.
+    /// Create a new Google `OAuth` provider.
     ///
     /// # Arguments
     ///
-    /// * `client_id` - OAuth 2.0 client ID from Google Cloud Console
-    /// * `client_secret` - OAuth 2.0 client secret
+    /// * `client_id` - `OAuth` 2.0 client ID from Google Cloud Console
+    /// * `client_secret` - `OAuth` 2.0 client secret
     ///
     /// # Example
     ///
@@ -357,7 +357,7 @@ struct GoogleTokenResponse {
     #[allow(dead_code)]
     token_type: String,
 
-    /// ID token (JWT) containing user claims (only with openid scope).
+    /// ID token (`JWT`) containing user claims (only with openid scope).
     #[allow(dead_code)]
     id_token: Option<String>,
 }

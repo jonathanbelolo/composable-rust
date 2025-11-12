@@ -30,21 +30,21 @@ use crate::state::{DeviceId, UserId};
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
-/// PostgreSQL device repository.
+/// `PostgreSQL` device repository.
 ///
-/// Provides persistent storage for device registry using PostgreSQL.
+/// Provides persistent storage for device registry using `PostgreSQL`.
 #[derive(Clone)]
 pub struct PostgresDeviceRepository {
-    /// PostgreSQL connection pool.
+    /// `PostgreSQL` connection pool.
     pool: PgPool,
 }
 
 impl PostgresDeviceRepository {
-    /// Create a new PostgreSQL device repository.
+    /// Create a new `PostgreSQL` device repository.
     ///
     /// # Arguments
     ///
-    /// * `pool` - PostgreSQL connection pool
+    /// * `pool` - `PostgreSQL` connection pool
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
     }

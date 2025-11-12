@@ -20,7 +20,7 @@ use redis::aio::ConnectionManager;
 use redis::{AsyncCommands, Client};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// Redis-based rate limiter using sliding window algorithm.
+/// `Redis`-based rate limiter using sliding window algorithm.
 ///
 /// # Example
 ///
@@ -43,15 +43,15 @@ pub struct RedisRateLimiter {
 }
 
 impl RedisRateLimiter {
-    /// Create a new Redis rate limiter.
+    /// Create a new `Redis` rate limiter.
     ///
     /// # Arguments
     ///
-    /// * `redis_url` - Redis connection URL (e.g., "redis://127.0.0.1:6379")
+    /// * `redis_url` - `Redis` connection URL (e.g., "redis://127.0.0.1:6379")
     ///
     /// # Errors
     ///
-    /// Returns error if connection to Redis fails.
+    /// Returns error if connection to `Redis` fails.
     pub async fn new(redis_url: &str) -> Result<Self> {
         let client = Client::open(redis_url).map_err(|e| {
             AuthError::InternalError(format!("Failed to create Redis client: {e}"))
@@ -64,7 +64,7 @@ impl RedisRateLimiter {
         Ok(Self { conn_manager })
     }
 
-    /// Get the Redis key for rate limiting.
+    /// Get the `Redis` key for rate limiting.
     fn rate_limit_key(key: &str) -> String {
         format!("rate_limit:{key}")
     }

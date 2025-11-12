@@ -34,12 +34,12 @@ use chrono::{Duration, Utc};
 use redis::aio::ConnectionManager;
 use redis::{AsyncCommands, Client};
 
-/// Redis-based WebAuthn challenge store with atomic consumption.
+/// `Redis`-based `WebAuthn` challenge store with atomic consumption.
 ///
 /// Provides:
 /// - Single-use challenge storage (atomic GETDEL)
 /// - Automatic expiration via TTL
-/// - User isolation (challenges scoped to user_id)
+/// - User isolation (challenges scoped to `user_id`)
 /// - Connection pooling via `ConnectionManager`
 pub struct RedisChallengeStore {
     /// Connection manager for connection pooling.
@@ -47,15 +47,15 @@ pub struct RedisChallengeStore {
 }
 
 impl RedisChallengeStore {
-    /// Create a new Redis challenge store.
+    /// Create a new `Redis` challenge store.
     ///
     /// # Arguments
     ///
-    /// * `redis_url` - Redis connection URL (e.g., "redis://127.0.0.1:6379")
+    /// * `redis_url` - `Redis` connection URL (e.g., "redis://127.0.0.1:6379")
     ///
     /// # Errors
     ///
-    /// Returns error if connection to Redis fails.
+    /// Returns error if connection to `Redis` fails.
     pub async fn new(redis_url: &str) -> Result<Self> {
         let client = Client::open(redis_url).map_err(|e| {
             AuthError::InternalError(format!("Failed to create Redis client: {e}"))
@@ -68,7 +68,7 @@ impl RedisChallengeStore {
         Ok(Self { conn_manager })
     }
 
-    /// Get the Redis key for a challenge.
+    /// Get the `Redis` key for a challenge.
     fn challenge_key(user_id: &UserId, challenge: &str) -> String {
         format!("webauthn_challenge:{}:{}", user_id.0, challenge)
     }

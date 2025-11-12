@@ -6,13 +6,13 @@ use crate::error::Result;
 use crate::state::{OAuthProvider, UserId};
 use chrono::{DateTime, Utc};
 
-/// OAuth token data.
+/// `OAuth` token data.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OAuthTokenData {
     /// User ID.
     pub user_id: UserId,
 
-    /// OAuth provider.
+    /// `OAuth` provider.
     pub provider: OAuthProvider,
 
     /// Access token (encrypted at rest).
@@ -28,9 +28,9 @@ pub struct OAuthTokenData {
     pub stored_at: DateTime<Utc>,
 }
 
-/// OAuth token store.
+/// `OAuth` token store.
 ///
-/// This trait abstracts over OAuth token storage.
+/// This trait abstracts over `OAuth` token storage.
 ///
 /// # Security
 ///
@@ -39,8 +39,8 @@ pub struct OAuthTokenData {
 /// # Implementation Notes
 ///
 /// **Production**:
-/// - PostgreSQL: Store in `oauth_tokens` table with encryption
-/// - Redis: Store with TTL matching token expiry
+/// - `PostgreSQL`: Store in `oauth_tokens` table with encryption
+/// - `Redis`: Store with `TTL` matching token expiry
 ///
 /// **Testing**:
 /// - In-memory store with plain-text tokens (tests only!)
@@ -48,9 +48,9 @@ pub struct OAuthTokenData {
 /// # Example
 ///
 /// ```ignore
-/// // Store tokens after OAuth success
+/// // Store tokens after `OAuth` success
 /// let token_data = OAuthTokenData {
-///     user_id,
+///     `user_id`,
 ///     provider: OAuthProvider::Google,
 ///     access_token: "encrypted_access_token".to_string(),
 ///     refresh_token: Some("encrypted_refresh_token".to_string()),
@@ -61,10 +61,10 @@ pub struct OAuthTokenData {
 /// token_store.store_tokens(&token_data).await?;
 ///
 /// // Retrieve tokens later
-/// let tokens = token_store.get_tokens(user_id, OAuthProvider::Google).await?;
+/// let tokens = token_store.get_tokens(`user_id`, OAuthProvider::Google).await?;
 /// ```
 pub trait OAuthTokenStore: Send + Sync {
-    /// Store OAuth tokens for a user.
+    /// Store `OAuth` tokens for a user.
     ///
     /// # Security
     ///
@@ -78,7 +78,7 @@ pub trait OAuthTokenStore: Send + Sync {
         tokens: &OAuthTokenData,
     ) -> impl std::future::Future<Output = Result<()>> + Send;
 
-    /// Get OAuth tokens for a user and provider.
+    /// Get `OAuth` tokens for a user and provider.
     ///
     /// # Returns
     ///
@@ -94,7 +94,7 @@ pub trait OAuthTokenStore: Send + Sync {
         provider: OAuthProvider,
     ) -> impl std::future::Future<Output = Result<Option<OAuthTokenData>>> + Send;
 
-    /// Delete OAuth tokens for a user and provider.
+    /// Delete `OAuth` tokens for a user and provider.
     ///
     /// Used during logout or token revocation.
     ///

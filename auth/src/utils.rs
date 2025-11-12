@@ -602,7 +602,7 @@ pub fn sanitize_ip_for_logging(ip: &str) -> String {
 /// Calculate SHA-256 hash of a device fingerprint.
 ///
 /// This creates a deterministic hash of the fingerprint for fast comparison.
-/// The hash is calculated from a canonicalized JSON representation to ensure
+/// The hash is calculated from a canonicalized `JSON` representation to ensure
 /// consistency regardless of field order.
 ///
 /// # Arguments

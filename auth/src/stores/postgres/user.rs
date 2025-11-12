@@ -26,21 +26,21 @@ use crate::providers::{User, UserRepository, OAuthLink, MagicLinkToken, PasskeyC
 use crate::state::{OAuthProvider, UserId, DeviceId};
 use sqlx::PgPool;
 
-/// PostgreSQL user repository.
+/// `PostgreSQL` user repository.
 ///
-/// Provides persistent storage for user accounts and related data using PostgreSQL.
+/// Provides persistent storage for user accounts and related data using `PostgreSQL`.
 #[derive(Clone)]
 pub struct PostgresUserRepository {
-    /// PostgreSQL connection pool.
+    /// `PostgreSQL` connection pool.
     pool: PgPool,
 }
 
 impl PostgresUserRepository {
-    /// Create a new PostgreSQL user repository.
+    /// Create a new `PostgreSQL` user repository.
     ///
     /// # Arguments
     ///
-    /// * `pool` - PostgreSQL connection pool
+    /// * `pool` - `PostgreSQL` connection pool
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
     }

@@ -58,24 +58,24 @@ pub enum AuthEffect {
     // ═══════════════════════════════════════════════════════════════════════
     // OAuth2 / OIDC Effects
     // ═══════════════════════════════════════════════════════════════════════
-    /// Redirect user to OAuth provider.
+    /// Redirect user to `OAuth` provider.
     ///
     /// # Executor Responsibility
     ///
     /// 1. Build authorization URL with state parameter
     /// 2. Return HTTP redirect response (302)
     RedirectToOAuthProvider {
-        /// OAuth provider.
+        /// `OAuth` provider.
         provider: OAuthProvider,
 
-        /// CSRF state parameter.
+        /// `CSRF` state parameter.
         state_param: String,
 
         /// Redirect URI (callback URL).
         redirect_uri: String,
     },
 
-    /// Exchange OAuth authorization code for access token.
+    /// Exchange `OAuth` authorization code for access token.
     ///
     /// # Executor Responsibility
     ///
@@ -83,7 +83,7 @@ pub enum AuthEffect {
     /// 2. Validate response
     /// 3. Dispatch `OAuthSuccess` or `OAuthFailed`
     ExchangeOAuthCode {
-        /// OAuth provider.
+        /// `OAuth` provider.
         provider: OAuthProvider,
 
         /// Authorization code from callback.
@@ -99,7 +99,7 @@ pub enum AuthEffect {
         user_agent: String,
     },
 
-    /// Fetch user info from OAuth provider.
+    /// Fetch user info from `OAuth` provider.
     ///
     /// # Executor Responsibility
     ///
@@ -107,7 +107,7 @@ pub enum AuthEffect {
     /// 2. Parse response (email, name, etc.)
     /// 3. Dispatch action with user info
     FetchOAuthUserInfo {
-        /// OAuth provider.
+        /// `OAuth` provider.
         provider: OAuthProvider,
 
         /// Access token from token exchange.
@@ -129,7 +129,7 @@ pub enum AuthEffect {
         /// Email address.
         email: String,
 
-        /// TTL for token (typically 5-15 minutes).
+        /// `TTL` for token (typically 5-15 minutes).
         ttl_minutes: u32,
     },
 
@@ -138,7 +138,7 @@ pub enum AuthEffect {
     /// # Executor Responsibility
     ///
     /// 1. Build email with magic link URL
-    /// 2. Send via email provider (SendGrid, AWS SES, etc.)
+    /// 2. Send via email provider (`SendGrid`, AWS `SES`, etc.)
     /// 3. Dispatch `MagicLinkSent` or error action
     SendMagicLinkEmail {
         /// Email address.
@@ -147,7 +147,7 @@ pub enum AuthEffect {
         /// Magic link token.
         token: String,
 
-        /// Base URL for magic link (e.g., "https://app.example.com/auth/verify").
+        /// Base URL for magic link (e.g., `<https://app.example.com/auth/verify>`).
         base_url: String,
 
         /// Expiration timestamp.
@@ -190,12 +190,12 @@ pub enum AuthEffect {
     // ═══════════════════════════════════════════════════════════════════════
     // WebAuthn / Passkey Effects
     // ═══════════════════════════════════════════════════════════════════════
-    /// Generate WebAuthn challenge.
+    /// Generate `WebAuthn` challenge.
     ///
     /// # Executor Responsibility
     ///
     /// 1. Generate 32 bytes of cryptographic randomness
-    /// 2. Store challenge in Redis (5-minute TTL)
+    /// 2. Store challenge in `Redis` (5-minute `TTL`)
     /// 3. Return challenge to client
     GenerateWebAuthnChallenge {
         /// User ID.
@@ -205,7 +205,7 @@ pub enum AuthEffect {
         challenge_type: WebAuthnChallengeType,
     },
 
-    /// Verify WebAuthn attestation (registration).
+    /// Verify `WebAuthn` attestation (registration).
     ///
     /// # Executor Responsibility
     ///
@@ -221,17 +221,17 @@ pub enum AuthEffect {
         /// Device ID.
         device_id: DeviceId,
 
-        /// Attestation response (JSON from client).
+        /// Attestation response (`JSON` from client).
         attestation_response: String,
 
-        /// Expected origin (e.g., "https://app.example.com").
+        /// Expected origin (e.g., `<https://app.example.com>`).
         expected_origin: String,
 
         /// Expected RP ID (e.g., "app.example.com").
         expected_rp_id: String,
     },
 
-    /// Verify WebAuthn assertion (login).
+    /// Verify `WebAuthn` assertion (login).
     ///
     /// # Executor Responsibility
     ///
@@ -245,7 +245,7 @@ pub enum AuthEffect {
         /// Credential ID.
         credential_id: String,
 
-        /// Assertion response (JSON from client).
+        /// Assertion response (`JSON` from client).
         assertion_response: String,
 
         /// Expected origin.
@@ -264,23 +264,23 @@ pub enum AuthEffect {
     // ═══════════════════════════════════════════════════════════════════════
     // Session Management Effects (Redis)
     // ═══════════════════════════════════════════════════════════════════════
-    /// Create session in Redis.
+    /// Create session in `Redis`.
     ///
     /// # Executor Responsibility
     ///
     /// 1. Serialize session
-    /// 2. Store in Redis with TTL
+    /// 2. Store in `Redis` with TTL
     /// 3. Set up sliding expiration
     /// 4. Dispatch `SessionCreated`
     CreateSession {
         /// Session to create.
         session: Session,
 
-        /// TTL in seconds (typically 24 hours).
+        /// `TTL` in seconds (typically 24 hours).
         ttl_seconds: u32,
     },
 
-    /// Get session from Redis.
+    /// Get session from `Redis`.
     ///
     /// # Executor Responsibility
     ///
@@ -292,19 +292,19 @@ pub enum AuthEffect {
         session_id: SessionId,
     },
 
-    /// Update session in Redis.
+    /// Update session in `Redis`.
     ///
     /// # Executor Responsibility
     ///
-    /// 1. Update session fields (e.g., last_active)
-    /// 2. Refresh TTL (sliding expiration)
+    /// 1. Update session fields (e.g., `last_active`)
+    /// 2. Refresh `TTL` (sliding expiration)
     /// 3. Save back to Redis
     UpdateSession {
         /// Session to update.
         session: Session,
     },
 
-    /// Delete session from Redis.
+    /// Delete session from `Redis`.
     ///
     /// # Executor Responsibility
     ///
@@ -319,7 +319,7 @@ pub enum AuthEffect {
     ///
     /// # Executor Responsibility
     ///
-    /// 1. Scan Redis for user's sessions
+    /// 1. Scan `Redis` for user's sessions
     /// 2. Delete all matches
     /// 3. Optionally publish logout events
     DeleteAllUserSessions {
@@ -459,12 +459,12 @@ pub enum AuthEffect {
         counter: u32,
     },
 
-    /// Store OAuth link (user ↔ provider).
+    /// Store `OAuth` link (user ↔ provider).
     StoreOAuthLink {
         /// User ID.
         user_id: UserId,
 
-        /// OAuth provider.
+        /// `OAuth` provider.
         provider: OAuthProvider,
 
         /// Provider user ID.
@@ -539,10 +539,10 @@ pub enum AuthEffect {
         /// Event type.
         event_type: String,
 
-        /// Event payload (JSON).
+        /// Event payload (`JSON`).
         payload: String,
 
-        /// Aggregate ID (user_id or session_id).
+        /// Aggregate ID (`user_id` or `session_id`).
         aggregate_id: String,
     },
 
@@ -566,7 +566,7 @@ pub enum AuthEffect {
         /// Secure flag.
         secure: bool,
 
-        /// SameSite policy.
+        /// `SameSite` policy.
         same_site: SameSitePolicy,
 
         /// Cookie path.
@@ -589,7 +589,7 @@ pub enum AuthEffect {
     },
 }
 
-/// WebAuthn challenge type.
+/// `WebAuthn` challenge type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WebAuthnChallengeType {
     /// Registration (creating a passkey).
@@ -618,17 +618,17 @@ pub enum DeviceType {
 /// Authentication method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuthMethod {
-    /// OAuth2/OIDC.
+    /// `OAuth2`/`OIDC`.
     OAuth,
 
     /// Magic link.
     MagicLink,
 
-    /// WebAuthn/Passkey.
+    /// `WebAuthn`/Passkey.
     Passkey,
 }
 
-/// SameSite cookie policy.
+/// `SameSite` cookie policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SameSitePolicy {
     /// Strict (same-site only).

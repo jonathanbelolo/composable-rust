@@ -71,7 +71,7 @@ use composable_rust_core::stream::StreamId;
 use composable_rust_core::{smallvec, SmallVec};
 use std::sync::Arc;
 
-/// WebAuthn/Passkey authentication reducer.
+/// `WebAuthn`/Passkey authentication reducer.
 ///
 /// Handles passkey registration and login flows.
 #[derive(Debug, Clone)]
@@ -88,7 +88,7 @@ impl<O, E, W, S, T, U, D, R, OT, C, RL> PasskeyReducer<O, E, W, S, T, U, D, R, O
     /// Default configuration:
     /// - Origin: http://localhost:3000
     /// - RP ID: localhost
-    /// - Challenge TTL: 5 minutes
+    /// - Challenge `TTL`: 5 minutes
     /// - Session duration: 24 hours
     ///
     /// For production, use `with_config()` to provide proper configuration.
@@ -113,7 +113,7 @@ impl<O, E, W, S, T, U, D, R, OT, C, RL> PasskeyReducer<O, E, W, S, T, U, D, R, O
     /// use composable_rust_auth::reducers::PasskeyReducer;
     ///
     /// let config = PasskeyConfig::new(
-    ///     "https://app.example.com".to_string(),
+    ///     `<https://app.example.com>`.to_string(),
     ///     "app.example.com".to_string()
     /// ).with_challenge_ttl(10);
     ///
@@ -1258,7 +1258,7 @@ mod tests {
     /// ✅ SECURITY TEST: Comprehensive counter rollback detection
     ///
     /// This tests the critical algorithm that detects cloned authenticators
-    /// using WebAuthn's signature counter. The counter MUST always increment.
+    /// using `WebAuthn`'s signature counter. The counter MUST always increment.
     /// If it goes backward (rolls back), it indicates a cloned authenticator
     /// or replay attack.
     ///

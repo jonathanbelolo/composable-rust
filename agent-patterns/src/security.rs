@@ -355,6 +355,10 @@ impl SecurityMonitor {
     }
 
     /// Report a security incident
+    ///
+    /// # Errors
+    ///
+    /// Currently never returns an error, but returns `Result` for future extensibility.
     pub async fn report_incident(&self, incident: SecurityIncident) -> Result<String, SecurityError> {
         let incident_id = incident.id.clone();
 
@@ -379,6 +383,10 @@ impl SecurityMonitor {
     }
 
     /// Update incident status
+    ///
+    /// # Errors
+    ///
+    /// Returns `SecurityError::IncidentNotFound` if the incident ID does not exist.
     pub async fn update_incident_status(
         &self,
         id: &str,
@@ -423,6 +431,10 @@ impl SecurityMonitor {
     }
 
     /// Get security dashboard
+    ///
+    /// # Errors
+    ///
+    /// Currently never returns an error, but returns `Result` for future extensibility.
     pub async fn get_dashboard(&self) -> Result<SecurityDashboard, SecurityError> {
         let incidents = self.incidents.read().await;
 
@@ -502,6 +514,11 @@ impl SecurityMonitor {
     }
 
     /// Analyze audit events for security incidents
+    ///
+    /// # Errors
+    ///
+    /// Returns `SecurityError::AuditQueryError` if querying audit logs fails.
+    #[allow(clippy::cast_possible_truncation)]
     pub async fn analyze_audit_events<L: AuditLogger>(
         &self,
         audit_logger: &L,

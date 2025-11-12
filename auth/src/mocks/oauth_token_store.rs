@@ -6,7 +6,7 @@ use crate::state::{OAuthProvider, UserId};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-/// Mock OAuth token store.
+/// Mock `OAuth` token store.
 ///
 /// In-memory implementation for testing. Tokens stored in plain-text.
 ///
@@ -17,7 +17,7 @@ pub struct MockOAuthTokenStore {
 }
 
 impl MockOAuthTokenStore {
-    /// Create a new mock OAuth token store.
+    /// Create a new mock `OAuth` token store.
     #[must_use]
     pub fn new() -> Self {
         Self {

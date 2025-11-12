@@ -65,7 +65,7 @@ impl Bulkhead {
     ///
     /// # Arguments
     ///
-    /// * `name` - Name for logging (e.g., "llm_calls", "database_queries")
+    /// * `name` - Name for logging (e.g., "`llm_calls`", "`database_queries`")
     /// * `config` - Bulkhead configuration
     #[must_use]
     pub fn new(name: String, config: BulkheadConfig) -> Self {
@@ -185,6 +185,7 @@ impl BulkheadRegistry {
     }
 
     /// Get all bulkhead names
+    #[must_use]
     pub fn names(&self) -> Vec<&String> {
         self.bulkheads.keys().collect()
     }

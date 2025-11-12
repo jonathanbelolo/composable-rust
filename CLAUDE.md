@@ -109,9 +109,14 @@ composable-rust/
 ├── testing/           # Test utilities and mock implementations
 ├── postgres/          # PostgreSQL event store
 ├── redpanda/          # Redpanda/Kafka event bus
+├── projections/       # PostgreSQL projection store for CQRS read models
 ├── web/               # HTTP and WebSocket framework (Axum)
-├── auth/              # Authentication framework
-├── examples/          # Reference implementations (10+ examples)
+├── auth/              # Authentication framework (magic links, OAuth, passkeys)
+├── anthropic/         # Claude API client for LLM integration
+├── agent-patterns/    # Production agent patterns (resilience, observability, security)
+├── tools/             # Tool execution framework for agents
+├── macros/            # Proc macros for derive(State), derive(Action)
+├── examples/          # Reference implementations (15+ examples)
 ├── docs/              # Documentation (21 comprehensive guides)
 ├── specs/             # Architecture specification (2,800+ lines)
 ├── plans/             # Implementation roadmap and phase TODOs
@@ -124,6 +129,49 @@ composable-rust/
    ├── composable-rust-testing/
    └── composable-rust-production/
 ```
+
+### Library Crates
+
+**Core Framework** (8 crates):
+- `composable-rust-core` - Core traits and types (Reducer, Effect, Environment) ✅ 0 clippy errors
+- `composable-rust-runtime` - Store implementation and effect execution ✅ 0 clippy errors
+- `composable-rust-testing` - Test utilities (TestStore, InMemoryEventStore, mocks) 🔧 7 clippy errors
+- `composable-rust-postgres` - PostgreSQL event store implementation ✅ 0 clippy errors
+- `composable-rust-redpanda` - Redpanda/Kafka event bus implementation ✅ 0 clippy errors
+- `composable-rust-projections` - PostgreSQL projection store for CQRS read models ✅ 0 clippy errors
+- `composable-rust-web` - HTTP API and WebSocket framework (Axum) 🔧 5 clippy errors
+- `composable-rust-auth` - Authentication (magic links, OAuth 2.0, passkeys, WebAuthn) 🔧 156 clippy errors
+
+**AI Agent Framework** (3 crates):
+- `composable-rust-anthropic` - Claude API client for LLM integration ✅ 0 clippy errors
+- `composable-rust-agent-patterns` - Production patterns (resilience, observability, security) ✅ 0 clippy errors
+- `composable-rust-tools` - Tool execution framework for agents 🔧 55 clippy errors
+
+**Developer Experience** (1 crate):
+- `composable-rust-macros` - Proc macros (#[derive(State)], #[derive(Action)]) ✅ 0 clippy errors
+
+**Clippy Status**: 8/12 crates clean (67%), 223 total errors remaining across 4 crates
+
+### Example Applications
+
+**Core Examples**:
+- `counter` - Simple counter demonstrating core architecture
+- `order-processing` - Event-sourced order management
+- `checkout-saga` - Multi-aggregate saga with compensation
+- `order-projection-example` - CQRS read model projections
+
+**AI Agent Examples**:
+- `production-agent` - Full production agent with event sourcing + EventBus
+- `basic-agent` - Simple LLM agent with interactive Q&A
+- `weather-agent` - Agent with tool use (weather API)
+- `tool-showcase` - Demonstrates tool framework
+- `agent-patterns-demo` - Resilience patterns demo
+
+**Domain Examples**:
+- `banking` - Banking domain with transactions
+- `ticketing` - Ticket management system
+- `todo` - Todo application
+- `metrics-demo` - Metrics and observability demo
 
 ### Crate Dependencies
 

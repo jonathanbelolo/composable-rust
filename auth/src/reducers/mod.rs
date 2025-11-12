@@ -18,7 +18,7 @@ pub use passkey::PasskeyReducer;
 
 /// Unified authentication reducer.
 ///
-/// Combines OAuth, Magic Link, and Passkey flows into a single reducer.
+/// Combines `OAuth`, Magic Link, and Passkey flows into a single reducer.
 /// Routes actions to the appropriate sub-reducer based on action type.
 #[derive(Clone, Debug)]
 pub struct AuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>

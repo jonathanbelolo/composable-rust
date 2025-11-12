@@ -27,7 +27,7 @@ use chrono::{DateTime, Duration, Utc};
 use redis::aio::ConnectionManager;
 use redis::{AsyncCommands, Client};
 
-/// Redis-based session store with TTL-based expiration.
+/// `Redis`-based session store with `TTL`-based expiration.
 ///
 /// Provides:
 /// - Session storage with automatic expiration
@@ -41,15 +41,15 @@ pub struct RedisSessionStore {
 }
 
 impl RedisSessionStore {
-    /// Create a new Redis session store.
+    /// Create a new `Redis` session store.
     ///
     /// # Arguments
     ///
-    /// * `redis_url` - Redis connection URL (e.g., "redis://127.0.0.1:6379")
+    /// * `redis_url` - `Redis` connection URL (e.g., "redis://127.0.0.1:6379")
     ///
     /// # Errors
     ///
-    /// Returns error if connection to Redis fails.
+    /// Returns error if connection to `Redis` fails.
     pub async fn new(redis_url: &str) -> Result<Self> {
         let client = Client::open(redis_url).map_err(|e| {
             AuthError::InternalError(format!("Failed to create Redis client: {e}"))
@@ -62,12 +62,12 @@ impl RedisSessionStore {
         Ok(Self { conn_manager })
     }
 
-    /// Get the Redis key for a session.
+    /// Get the `Redis` key for a session.
     fn session_key(session_id: &SessionId) -> String {
         format!("session:{}", session_id.0)
     }
 
-    /// Get the Redis key for user sessions set.
+    /// Get the `Redis` key for user sessions set.
     fn user_sessions_key(user_id: &UserId) -> String {
         format!("user:{}:sessions", user_id.0)
     }
@@ -510,7 +510,7 @@ impl SessionStore for RedisSessionStore {
         // 5. Result: Thread B's session is orphaned (exists but not tracked)
         //
         // With Lua script: All operations happen atomically on Redis server
-        let lua_script = r#"
+        let lua_script = r"
             local user_set_key = KEYS[1]
             local session_ids = redis.call('SMEMBERS', user_set_key)
             local deleted_count = 0
@@ -524,7 +524,7 @@ impl SessionStore for RedisSessionStore {
 
             redis.call('DEL', user_set_key)
             return deleted_count
-        "#;
+        ";
 
         let script = redis::Script::new(lua_script);
         let deleted_count: usize = script
@@ -674,7 +674,7 @@ impl SessionStore for RedisSessionStore {
         let ttl_seconds = ttl.num_seconds().max(0) as u64;
 
         // Atomic rotation using Lua script
-        let lua_script = r#"
+        let lua_script = r"
             local old_key = KEYS[1]
             local new_key = KEYS[2]
             local user_set_key = KEYS[3]
@@ -699,7 +699,7 @@ impl SessionStore for RedisSessionStore {
             redis.call('SADD', user_set_key, new_session_id)
 
             return 'OK'
-        "#;
+        ";
 
         let mut conn = self.conn_manager.clone();
         let script = redis::Script::new(lua_script);

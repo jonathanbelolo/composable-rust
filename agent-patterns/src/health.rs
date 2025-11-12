@@ -4,9 +4,9 @@
 //!
 //! ## Architecture
 //!
-//! - **HealthCheckable trait**: Components implement this to report health
-//! - **SystemHealthCheck**: Aggregates multiple component health checks
-//! - **K8sHealthEndpoints**: Provides /health/liveness and /health/readiness
+//! - **`HealthCheckable` trait**: Components implement this to report health
+//! - **`SystemHealthCheck`**: Aggregates multiple component health checks
+//! - **`K8sHealthEndpoints`**: Provides /health/liveness and /health/readiness
 //!
 //! ## Usage
 //!
@@ -234,6 +234,7 @@ impl K8sHealthEndpoints {
     /// `(status_code, body)` where:
     /// - `200 OK` = alive
     /// - `503 Service Unavailable` = dead (restart needed)
+    #[allow(clippy::unused_async)]
     pub async fn liveness(&self) -> (u16, &'static str) {
         // Basic liveness - just check if we can respond
         // If this function executes, the process is alive
@@ -286,6 +287,7 @@ impl TimeoutHealthCheck {
 
 #[async_trait]
 impl HealthCheckable for TimeoutHealthCheck {
+    #[allow(clippy::cast_possible_truncation)]
     async fn check_health(&self) -> ComponentHealth {
         let start = Instant::now();
 

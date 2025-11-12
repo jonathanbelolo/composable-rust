@@ -14,13 +14,13 @@ pub enum TokenType {
     /// Magic link email verification token.
     MagicLink,
 
-    /// OAuth CSRF state parameter.
+    /// `OAuth` `CSRF` state parameter.
     OAuthState,
 
-    /// WebAuthn registration challenge.
+    /// `WebAuthn` registration challenge.
     PasskeyRegistrationChallenge,
 
-    /// WebAuthn authentication challenge.
+    /// `WebAuthn` authentication challenge.
     PasskeyAuthenticationChallenge,
 }
 
@@ -33,7 +33,7 @@ pub struct TokenData {
     /// Token value (the actual token string or state parameter).
     pub token: String,
 
-    /// Associated data (e.g., email for magic link, provider for OAuth).
+    /// Associated data (e.g., email for magic link, provider for `OAuth`).
     pub data: serde_json::Value,
 
     /// Expiration time.
@@ -68,8 +68,8 @@ impl TokenData {
 ///
 /// # Implementation Notes
 ///
-/// - Tokens are ephemeral (5-15 minute TTL typically)
-/// - **CRITICAL**: `consume_token()` MUST be atomic (use Redis GETDEL or database transactions)
+/// - Tokens are ephemeral (5-15 minute `TTL` typically)
+/// - **CRITICAL**: `consume_token()` MUST be atomic (use `Redis` GETDEL or database transactions)
 /// - Tokens are single-use (consumed on first successful verification)
 /// - Fast lookups (<5ms target)
 ///
@@ -84,7 +84,7 @@ pub trait TokenStore: Send + Sync {
     ///
     /// # Arguments
     ///
-    /// - `token_id`: Unique identifier for this token (e.g., random UUID)
+    /// - `token_id`: Unique identifier for this token (e.g., random `UUID`)
     /// - `token_data`: Token data to store
     ///
     /// # Errors
@@ -116,8 +116,8 @@ pub trait TokenStore: Send + Sync {
     /// # Security
     ///
     /// **CRITICAL**: This must be implemented using:
-    /// - Redis: `GETDEL` command (atomic get-and-delete)
-    /// - PostgreSQL: `DELETE ... RETURNING` in a transaction
+    /// - `Redis`: `GETDEL` command (atomic get-and-delete)
+    /// - `PostgreSQL`: `DELETE ... RETURNING` in a transaction
     /// - In-memory: Mutex-protected check-and-delete
     ///
     /// Non-atomic implementations will allow token reuse attacks.

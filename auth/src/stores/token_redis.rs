@@ -59,14 +59,14 @@ use chrono::Utc;
 use redis::aio::ConnectionManager;
 use redis::{AsyncCommands, Client};
 
-/// Redis-based token store with atomic consumption.
+/// `Redis`-based token store with atomic consumption.
 ///
 /// Provides:
 /// - Single-use token storage (atomic GETDEL)
 /// - Automatic expiration via TTL
 /// - Constant-time token validation
 /// - Connection pooling via `ConnectionManager`
-/// - Defense-in-depth security (TTL + expiration validation)
+/// - Defense-in-depth security (`TTL` + expiration validation)
 ///
 /// # Thread Safety
 ///
@@ -78,11 +78,11 @@ pub struct RedisTokenStore {
 }
 
 impl RedisTokenStore {
-    /// Create a new Redis token store.
+    /// Create a new `Redis` token store.
     ///
     /// # Arguments
     ///
-    /// * `redis_url` - Redis connection URL (e.g., "redis://127.0.0.1:6379")
+    /// * `redis_url` - `Redis` connection URL (e.g., "redis://127.0.0.1:6379")
     ///
     /// # Connection URL Format
     ///
@@ -93,8 +93,8 @@ impl RedisTokenStore {
     /// # Errors
     ///
     /// Returns error if:
-    /// - Redis URL is malformed
-    /// - Connection to Redis server fails
+    /// - `Redis` URL is malformed
+    /// - Connection to `Redis` server fails
     /// - Authentication fails
     ///
     /// # Example
@@ -129,7 +129,7 @@ impl RedisTokenStore {
         Ok(Self { conn_manager })
     }
 
-    /// Get the Redis key for a token.
+    /// Get the `Redis` key for a token.
     ///
     /// # Key Format
     ///
@@ -137,8 +137,8 @@ impl RedisTokenStore {
     ///
     /// # Namespacing
     ///
-    /// The `auth:token:` prefix prevents collisions with other Redis keys
-    /// in shared Redis instances.
+    /// The `auth:token:` prefix prevents collisions with other `Redis` keys
+    /// in shared `Redis` instances.
     fn token_key(token_id: &str) -> String {
         format!("auth:token:{token_id}")
     }

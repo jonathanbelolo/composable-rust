@@ -1,7 +1,7 @@
 //! Span Context Propagation for Agents (Phase 8.4 Part 1.2)
 //!
 //! This module provides utilities for propagating trace context through
-//! agent actions without modifying the AgentAction enum. It uses tracing's
+//! agent actions without modifying the `AgentAction` enum. It uses tracing's
 //! span context which is automatically propagated via thread-local storage.
 //!
 //! ## Design
@@ -33,7 +33,7 @@ impl SpanContext {
     ///
     /// # Arguments
     ///
-    /// * `action_type` - Type of action (e.g., "user_message", "claude_response")
+    /// * `action_type` - Type of action (e.g., `"user_message"`, `"claude_response"`)
     ///
     /// # Returns
     ///
@@ -74,7 +74,7 @@ impl SpanContext {
     ///
     /// # Arguments
     ///
-    /// * `pattern_type` - Type of pattern (e.g., "prompt_chain", "routing")
+    /// * `pattern_type` - Type of pattern (e.g., "`prompt_chain`", "`routing`")
     /// * `pattern_id` - Unique ID for this pattern execution
     #[must_use]
     pub fn for_pattern(pattern_type: &str, pattern_id: &str) -> Span {

@@ -7,12 +7,12 @@ pub mod login_methods {
     /// Magic link (passwordless email) authentication.
     pub const MAGIC_LINK: &str = "magic_link";
 
-    /// OAuth prefix for OAuth-based authentication.
+    /// `OAuth` prefix for `OAuth`-based authentication.
     ///
-    /// Full method format: `oauth_{provider}` (e.g., "oauth_google", "oauth_github").
+    /// Full method format: `oauth_{provider}` (e.g., `"oauth_google"`, `"oauth_github"`).
     pub const OAUTH_PREFIX: &str = "oauth_";
 
-    /// WebAuthn/FIDO2 passkey authentication.
+    /// `WebAuthn`/`FIDO2` passkey authentication.
     pub const PASSKEY: &str = "passkey";
 }
 

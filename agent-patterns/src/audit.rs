@@ -12,13 +12,13 @@
 //! # Current Implementation (Phase 8.4)
 //!
 //! This phase provides the core audit framework with `InMemoryAuditLogger` for
-//! development and testing. Production backends (PostgreSQL, file-based) are planned
+//! development and testing. Production backends (`PostgreSQL`, file-based) are planned
 //! for future phases.
 //!
 //! # Future Work
 //!
 //! - Cryptographic integrity (event signatures, Merkle trees)
-//! - PostgreSQL backend for persistent storage
+//! - `PostgreSQL` backend for persistent storage
 //! - File-based backend with log rotation
 //! - Syslog and cloud provider integrations
 //!
@@ -123,7 +123,7 @@ pub struct AuditEvent {
     pub severity: Severity,
     /// Actor (user ID, service account, API key ID)
     pub actor: String,
-    /// Action performed (e.g., "login", "read_document", "update_config")
+    /// Action performed (e.g., "`login`", "`read_document`", "`update_config`")
     pub action: String,
     /// Resource affected (e.g., "user:123", "document:456")
     pub resource: Option<String>,

@@ -49,7 +49,7 @@ use redis::aio::ConnectionManager;
 use redis::{AsyncCommands, Client};
 use std::sync::Arc;
 
-/// Redis-based OAuth token store with AES-256-GCM encryption at rest.
+/// `Redis`-based `OAuth` token store with AES-256-GCM encryption at rest.
 ///
 /// Provides:
 /// - Secure token storage with encryption
@@ -66,17 +66,17 @@ pub struct RedisOAuthTokenStore {
 }
 
 impl RedisOAuthTokenStore {
-    /// Create a new Redis OAuth token store with encryption.
+    /// Create a new `Redis` `OAuth` token store with encryption.
     ///
     /// # Arguments
     ///
-    /// * `redis_url` - Redis connection URL (e.g., "redis://127.0.0.1:6379")
+    /// * `redis_url` - `Redis` connection URL (e.g., "redis://127.0.0.1:6379")
     /// * `encryption_key` - 32-byte AES-256 encryption key (MUST be from secure source)
     ///
     /// # Errors
     ///
     /// Returns error if:
-    /// - Connection to Redis fails
+    /// - Connection to `Redis` fails
     /// - Encryption key is invalid (not 32 bytes)
     ///
     /// # Security
@@ -112,7 +112,7 @@ impl RedisOAuthTokenStore {
         })
     }
 
-    /// Get the Redis key for OAuth tokens.
+    /// Get the `Redis` key for `OAuth` tokens.
     fn token_key(user_id: &UserId, provider: &OAuthProvider) -> String {
         format!("oauth_token:{}:{}", user_id.0, provider.as_str())
     }
@@ -154,7 +154,7 @@ impl RedisOAuthTokenStore {
         Ok(plaintext)
     }
 
-    /// Calculate TTL for token storage.
+    /// Calculate `TTL` for token storage.
     ///
     /// If token has expiration, use it. Otherwise, default to 30 days.
     fn calculate_ttl(token_data: &OAuthTokenData) -> u64 {

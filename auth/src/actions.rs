@@ -12,8 +12,8 @@ use std::net::IpAddr;
 /// Authentication action.
 ///
 /// This enum represents all possible inputs to the auth reducer:
-/// - **Commands**: User requests (InitiateOAuth, SendMagicLink, etc.)
-/// - **Events**: Results of async operations (OAuthSuccess, EmailSent, etc.)
+/// - **Commands**: User requests (`InitiateOAuth`, `SendMagicLink`, etc.)
+/// - **Events**: Results of async operations (`OAuthSuccess`, `EmailSent`, etc.)
 ///
 /// # Architecture Note
 ///
@@ -24,11 +24,11 @@ pub enum AuthAction {
     // ═══════════════════════════════════════════════════════════════════════
     // OAuth2 / OIDC Flow
     // ═══════════════════════════════════════════════════════════════════════
-    /// Initiate OAuth login flow.
+    /// Initiate `OAuth` login flow.
     ///
     /// # Flow
     ///
-    /// 1. Reducer generates CSRF state
+    /// 1. Reducer generates `CSRF` state
     /// 2. Returns `Effect::RedirectToOAuthProvider`
     /// 3. User authorizes at provider
     /// 4. Provider redirects to callback with code
@@ -36,7 +36,7 @@ pub enum AuthAction {
         /// Correlation ID for request tracing.
         correlation_id: uuid::Uuid,
 
-        /// OAuth provider to use.
+        /// `OAuth` provider to use.
         provider: OAuthProvider,
 
         /// Client IP address for risk assessment.
@@ -45,15 +45,15 @@ pub enum AuthAction {
         /// User agent string for device fingerprinting.
         user_agent: String,
 
-        /// Device fingerprint (optional, from client-side FingerprintJS or similar).
+        /// Device fingerprint (optional, from client-side `FingerprintJS` or similar).
         fingerprint: Option<crate::providers::DeviceFingerprint>,
     },
 
-    /// Handle OAuth callback.
+    /// Handle `OAuth` callback.
     ///
     /// # Flow
     ///
-    /// 1. Validate state parameter (CSRF protection)
+    /// 1. Validate state parameter (`CSRF` protection)
     /// 2. Exchange code for access token
     /// 3. Fetch user info from provider
     /// 4. Create or link user account
@@ -74,11 +74,11 @@ pub enum AuthAction {
         /// User agent string.
         user_agent: String,
 
-        /// Device fingerprint (optional, from client-side FingerprintJS or similar).
+        /// Device fingerprint (optional, from client-side `FingerprintJS` or similar).
         fingerprint: Option<crate::providers::DeviceFingerprint>,
     },
 
-    /// OAuth token exchange succeeded.
+    /// `OAuth` token exchange succeeded.
     ///
     /// This is an **event** produced by the effect executor.
     OAuthSuccess {
@@ -91,7 +91,7 @@ pub enum AuthAction {
         /// User's name from provider (if available).
         name: Option<String>,
 
-        /// OAuth provider.
+        /// `OAuth` provider.
         provider: OAuthProvider,
 
         /// Provider's unique user ID (e.g., Google sub claim, GitHub user ID).
@@ -113,7 +113,7 @@ pub enum AuthAction {
         fingerprint: Option<crate::providers::DeviceFingerprint>,
     },
 
-    /// OAuth flow failed.
+    /// `OAuth` flow failed.
     OAuthFailed {
         /// Correlation ID for request tracing.
         correlation_id: uuid::Uuid,
@@ -125,9 +125,9 @@ pub enum AuthAction {
         error_description: Option<String>,
     },
 
-    /// OAuth authorization URL ready.
+    /// `OAuth` authorization URL ready.
     ///
-    /// This is an **event** produced by the reducer after OAuth state is stored.
+    /// This is an **event** produced by the reducer after `OAuth` state is stored.
     /// The web framework should intercept this action and perform an HTTP redirect (302).
     ///
     /// # Web Framework Integration
@@ -141,21 +141,21 @@ pub enum AuthAction {
         /// Correlation ID for request tracing.
         correlation_id: uuid::Uuid,
 
-        /// OAuth provider.
+        /// `OAuth` provider.
         provider: OAuthProvider,
 
         /// Full authorization URL to redirect to.
         authorization_url: String,
     },
 
-    /// Refresh OAuth access token.
+    /// Refresh `OAuth` access token.
     ///
     /// This action triggers token refresh using the stored refresh token.
     ///
     /// # Flow
     ///
     /// 1. Get stored tokens from `OAuthTokenStore`
-    /// 2. Call OAuth provider's `refresh_token()` method
+    /// 2. Call `OAuth` provider's `refresh_token()` method
     /// 3. Update stored tokens with new access token
     /// 4. Emit `OAuthTokenRefreshed` event
     ///
@@ -171,11 +171,11 @@ pub enum AuthAction {
         /// User ID.
         user_id: UserId,
 
-        /// OAuth provider.
+        /// `OAuth` provider.
         provider: OAuthProvider,
     },
 
-    /// OAuth token refreshed successfully.
+    /// `OAuth` token refreshed successfully.
     ///
     /// This is an **event** produced by the effect executor.
     OAuthTokenRefreshed {
@@ -185,7 +185,7 @@ pub enum AuthAction {
         /// User ID.
         user_id: UserId,
 
-        /// OAuth provider.
+        /// `OAuth` provider.
         provider: OAuthProvider,
 
         /// New access token.
@@ -289,7 +289,7 @@ pub enum AuthAction {
     ///
     /// # Flow
     ///
-    /// 1. Generate WebAuthn challenge
+    /// 1. Generate `WebAuthn` challenge
     /// 2. Return challenge to client
     /// 3. Client calls `navigator.credentials.create()`
     /// 4. Client sends attestation response
@@ -322,13 +322,13 @@ pub enum AuthAction {
         /// Device ID.
         device_id: DeviceId,
 
-        /// Credential ID from WebAuthn.
+        /// Credential ID from `WebAuthn`.
         credential_id: String,
 
         /// Public key (bytes).
         public_key: Vec<u8>,
 
-        /// Attestation response (JSON).
+        /// Attestation response (`JSON`).
         attestation_response: String,
     },
 
@@ -338,7 +338,7 @@ pub enum AuthAction {
     ///
     /// 1. User provides username/email
     /// 2. Look up user's passkeys
-    /// 3. Generate WebAuthn challenge
+    /// 3. Generate `WebAuthn` challenge
     /// 4. Return challenge + credential IDs
     InitiatePasskeyLogin {
         /// Correlation ID for request tracing.
@@ -368,7 +368,7 @@ pub enum AuthAction {
         /// Credential ID used.
         credential_id: String,
 
-        /// Assertion response (JSON).
+        /// Assertion response (`JSON`).
         assertion_response: String,
 
         /// Client IP address.
@@ -384,7 +384,7 @@ pub enum AuthAction {
     /// Passkey registration challenge generated.
     ///
     /// Returned after `InitiatePasskeyRegistration`.
-    /// Contains WebAuthn challenge for client to use in `navigator.credentials.create()`.
+    /// Contains `WebAuthn` challenge for client to use in `navigator.credentials.create()`.
     PasskeyRegistrationChallengeGenerated {
         /// Correlation ID for request tracing.
         correlation_id: uuid::Uuid,
@@ -392,16 +392,16 @@ pub enum AuthAction {
         /// User ID.
         user_id: UserId,
 
-        /// WebAuthn challenge (base64-encoded).
+        /// `WebAuthn` challenge (base64-encoded).
         challenge: String,
 
         /// Relying Party ID.
         rp_id: String,
 
-        /// User email for WebAuthn.
+        /// User email for `WebAuthn`.
         user_email: String,
 
-        /// User display name for WebAuthn.
+        /// User display name for `WebAuthn`.
         user_display_name: String,
     },
 
@@ -436,12 +436,12 @@ pub enum AuthAction {
     /// Passkey login challenge generated.
     ///
     /// Returned after `InitiatePasskeyLogin`.
-    /// Contains WebAuthn challenge for client to use in `navigator.credentials.get()`.
+    /// Contains `WebAuthn` challenge for client to use in `navigator.credentials.get()`.
     PasskeyLoginChallengeGenerated {
         /// Correlation ID for request tracing.
         correlation_id: uuid::Uuid,
 
-        /// WebAuthn challenge (base64-encoded).
+        /// `WebAuthn` challenge (base64-encoded).
         challenge: String,
 
         /// Allowed credential IDs for this user.
@@ -511,9 +511,9 @@ pub enum AuthAction {
     ///
     /// # Security
     ///
-    /// - Only the credential owner can delete it (enforced by DB query with user_id)
+    /// - Only the credential owner can delete it (enforced by DB query with `user_id`)
     /// - Prevents users from deleting other users' credentials
-    /// - Credential ID must belong to the user_id
+    /// - Credential ID must belong to the `user_id`
     ///
     /// # Note
     ///
@@ -580,7 +580,7 @@ pub enum AuthAction {
     /// Called on every authenticated request to:
     /// 1. Verify session exists in Redis
     /// 2. Check not expired
-    /// 3. Update last_active timestamp
+    /// 3. Update `last_active` timestamp
     /// 4. Refresh sliding expiration
     ValidateSession {
         /// Correlation ID for request tracing.
@@ -602,7 +602,7 @@ pub enum AuthAction {
         session: Session,
     },
 
-    /// Session expired (TTL reached or explicit expiration).
+    /// Session expired (`TTL` reached or explicit expiration).
     SessionExpired {
         /// Correlation ID for request tracing.
         correlation_id: uuid::Uuid,
@@ -682,7 +682,7 @@ pub enum AuthAction {
 
     /// Session creation failed.
     ///
-    /// Triggered when Redis session store fails to create a session.
+    /// Triggered when `Redis` session store fails to create a session.
     SessionCreationFailed {
         /// Correlation ID for request tracing.
         correlation_id: uuid::Uuid,
@@ -787,7 +787,7 @@ pub enum AuthAction {
 /// Authentication level for step-up auth.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum AuthLevel {
-    /// Basic authentication (password, magic link, OAuth).
+    /// Basic authentication (password, magic link, `OAuth`).
     Basic = 1,
 
     /// Multi-factor authentication.

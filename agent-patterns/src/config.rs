@@ -71,11 +71,12 @@ pub enum Environment {
 }
 
 impl Environment {
-    /// Get environment from string
+    /// Parse environment from string
     ///
     /// # Errors
     ///
     /// Returns error if environment string is invalid
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Result<Self, ConfigError> {
         match s.to_lowercase().as_str() {
             "dev" | "development" => Ok(Self::Development),

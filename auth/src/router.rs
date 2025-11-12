@@ -20,8 +20,8 @@ use std::sync::Arc;
 /// - `GET /magic-link/verify` - Verify magic link token
 ///
 /// ## OAuth
-/// - `GET /oauth/:provider/authorize` - Redirect to OAuth provider
-/// - `GET /oauth/:provider/callback` - Handle OAuth callback
+/// - `GET /oauth/:provider/authorize` - Redirect to `OAuth` provider
+/// - `GET /oauth/:provider/callback` - Handle `OAuth` callback
 ///
 /// ## Passkey
 /// - `POST /passkey/register/begin` - Begin passkey registration

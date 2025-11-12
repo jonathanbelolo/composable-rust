@@ -25,18 +25,17 @@
 //! let metrics_text = registry.export_prometheus();
 //! ```
 
-use once_cell::sync::Lazy;
 use prometheus::{
     core::{AtomicU64, GenericGauge},
     opts, CounterVec, HistogramOpts, HistogramVec, Registry, TextEncoder,
 };
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 /// Global metrics registry (singleton)
 ///
 /// Initialized once on first access, uses default Prometheus registry.
-pub static AGENT_METRICS: Lazy<AgentMetricsRegistry> = Lazy::new(AgentMetricsRegistry::default);
+pub static AGENT_METRICS: LazyLock<AgentMetricsRegistry> = LazyLock::new(AgentMetricsRegistry::default);
 
 /// Agent metrics registry for Prometheus
 ///
@@ -48,17 +47,17 @@ pub struct AgentMetricsRegistry {
 
     /// Agent execution time histogram (ms)
     ///
-    /// Labels: agent_name, status (success, error)
+    /// Labels: `agent_name`, `status` (success, error)
     agent_execution_duration: HistogramVec,
 
     /// Tool invocation counter
     ///
-    /// Labels: tool_name, status (success, error)
+    /// Labels: `tool_name`, `status` (success, error)
     tool_invocations: CounterVec,
 
     /// Pattern usage counter
     ///
-    /// Labels: pattern_name (routing, orchestrator, prompt_chain, etc.)
+    /// Labels: `pattern_name` (routing, orchestrator, `prompt_chain`, etc.)
     pattern_usage: CounterVec,
 
     /// Active agents gauge (currently executing)
@@ -66,12 +65,12 @@ pub struct AgentMetricsRegistry {
 
     /// Total agent errors counter
     ///
-    /// Labels: error_type
+    /// Labels: `error_type`
     agent_errors: CounterVec,
 
     /// LLM token usage counter
     ///
-    /// Labels: model, token_type (prompt, completion)
+    /// Labels: `model`, `token_type` (prompt, completion)
     llm_tokens: CounterVec,
 }
 
@@ -161,7 +160,7 @@ impl AgentMetricsRegistry {
     ///
     /// # Arguments
     ///
-    /// * `agent_name` - Name of the agent (e.g., "customer_support", "code_reviewer")
+    /// * `agent_name` - Name of the agent (e.g., "`customer_support`", "`code_reviewer`")
     /// * `duration` - Execution duration
     /// * `status` - "success" or "error"
     pub fn record_agent_execution(&self, agent_name: &str, duration: Duration, status: &str) {
@@ -174,7 +173,7 @@ impl AgentMetricsRegistry {
     ///
     /// # Arguments
     ///
-    /// * `tool_name` - Name of the tool (e.g., "web_search", "code_interpreter")
+    /// * `tool_name` - Name of the tool (e.g., "`web_search`", "`code_interpreter`")
     /// * `status` - "success" or "error"
     pub fn record_tool_call(&self, tool_name: &str, status: &str) {
         self.tool_invocations
@@ -213,7 +212,7 @@ impl AgentMetricsRegistry {
     ///
     /// # Arguments
     ///
-    /// * `error_type` - Type of error (e.g., "timeout", "tool_failure", "llm_error")
+    /// * `error_type` - Type of error (e.g., "timeout", "`tool_failure`", "`llm_error`")
     pub fn record_error(&self, error_type: &str) {
         self.agent_errors.with_label_values(&[error_type]).inc();
     }
@@ -225,6 +224,7 @@ impl AgentMetricsRegistry {
     /// * `model` - Model name (e.g., "gpt-4", "claude-3")
     /// * `token_type` - "prompt" or "completion"
     /// * `count` - Number of tokens
+    #[allow(clippy::cast_precision_loss)]
     pub fn record_llm_tokens(&self, model: &str, token_type: &str, count: u64) {
         self.llm_tokens
             .with_label_values(&[model, token_type])
@@ -254,6 +254,12 @@ impl AgentMetricsRegistry {
 }
 
 impl Default for AgentMetricsRegistry {
+    /// Create default metrics registry
+    ///
+    /// # Panics
+    ///
+    /// Panics if metrics registration fails (e.g., duplicate metric names).
+    #[allow(clippy::expect_used)]
     fn default() -> Self {
         Self::new().expect("Failed to create default metrics registry")
     }

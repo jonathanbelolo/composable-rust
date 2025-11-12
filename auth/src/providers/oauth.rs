@@ -4,15 +4,15 @@ use crate::error::Result;
 use crate::state::OAuthProvider;
 use super::OAuthUserInfo;
 
-/// OAuth2/OIDC provider.
+/// `OAuth2`/`OIDC` provider.
 ///
-/// This trait abstracts over OAuth2 provider implementations
+/// This trait abstracts over `OAuth2` provider implementations
 /// (Google, GitHub, Microsoft, etc.).
 ///
 /// # Implementation Notes
 ///
-/// - Use the `oauth2` crate for OAuth2 flows
-/// - Use the `openidconnect` crate for OIDC flows
+/// - Use the `oauth2` crate for `OAuth2` flows
+/// - Use the `openidconnect` crate for `OIDC` flows
 /// - Handle provider-specific quirks (scopes, endpoints, etc.)
 pub trait OAuth2Provider: Send + Sync {
     /// Build authorization URL.
@@ -87,7 +87,7 @@ pub trait OAuth2Provider: Send + Sync {
     ) -> impl std::future::Future<Output = Result<OAuthTokenResponse>> + Send;
 }
 
-/// OAuth token response.
+/// `OAuth` token response.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OAuthTokenResponse {
     /// Access token.

@@ -17,15 +17,15 @@ use std::sync::Arc;
 ///
 /// # Type Parameters
 ///
-/// - `O`: OAuth2 provider
+/// - `O`: `OAuth2` provider
 /// - `E`: Email provider
-/// - `W`: WebAuthn provider
+/// - `W`: `WebAuthn` provider
 /// - `S`: Session store
 /// - `T`: Token store
 /// - `U`: User repository
 /// - `D`: Device repository
 /// - `R`: Risk calculator
-/// - `OT`: OAuth token store
+/// - `OT`: `OAuth` token store
 /// - `C`: Challenge store
 /// - `RL`: Rate limiter
 #[derive(Clone)]
@@ -43,40 +43,40 @@ where
     C: ChallengeStore + Clone,
     RL: RateLimiter + Clone,
 {
-    /// OAuth2 provider.
+    /// `OAuth2` provider.
     pub oauth: O,
 
     /// Email provider.
     pub email: E,
 
-    /// WebAuthn provider.
+    /// `WebAuthn` provider.
     pub webauthn: W,
 
-    /// Session store (Redis).
+    /// Session store (`Redis`).
     pub sessions: S,
 
-    /// Token store (Redis - one-time tokens with atomic consumption).
+    /// Token store (`Redis` - one-time tokens with atomic consumption).
     pub tokens: T,
 
-    /// User repository (PostgreSQL projection queries).
+    /// User repository (`PostgreSQL` projection queries).
     pub users: U,
 
-    /// Device repository (PostgreSQL projection queries).
+    /// Device repository (`PostgreSQL` projection queries).
     pub devices: D,
 
     /// Risk calculator.
     pub risk: R,
 
-    /// OAuth token store (PostgreSQL - encrypted access/refresh tokens).
+    /// `OAuth` token store (`PostgreSQL` - encrypted access/refresh tokens).
     pub oauth_tokens: OT,
 
-    /// Challenge store (Redis - WebAuthn challenges with atomic consumption).
+    /// Challenge store (`Redis` - `WebAuthn` challenges with atomic consumption).
     pub challenges: C,
 
-    /// Rate limiter (Redis - brute force protection).
+    /// Rate limiter (`Redis` - brute force protection).
     pub rate_limiter: RL,
 
-    /// Event store for event sourcing (PostgreSQL).
+    /// Event store for event sourcing (`PostgreSQL`).
     pub event_store: Arc<dyn EventStore>,
 }
 

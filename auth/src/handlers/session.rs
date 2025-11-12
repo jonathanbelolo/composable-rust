@@ -61,7 +61,7 @@ pub struct LogoutResponse {
 /// Content-Type: application/json
 ///
 /// {
-///   "session_id": "uuid"
+///   "`session_id`": "uuid"
 /// }
 /// ```
 ///
@@ -69,10 +69,10 @@ pub struct LogoutResponse {
 ///
 /// ```json
 /// {
-///   "session_id": "uuid",
+///   "`session_id`": "uuid",
 ///   "email": "user@example.com",
 ///   "expires_at": "2024-01-01T00:00:00Z",
-///   "last_active": "2024-01-01T00:00:00Z"
+///   "`last_active`": "2024-01-01T00:00:00Z"
 /// }
 /// ```
 pub async fn get_session<O, E, W, S, T, U, D, R, OT, C, RL>(
@@ -145,7 +145,7 @@ where
 /// Content-Type: application/json
 ///
 /// {
-///   "session_id": "uuid"
+///   "`session_id`": "uuid"
 /// }
 /// ```
 ///

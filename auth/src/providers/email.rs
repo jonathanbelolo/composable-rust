@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 /// Email provider.
 ///
 /// This trait abstracts over email delivery services
-/// (SendGrid, AWS SES, Postmark, etc.).
+/// (`SendGrid`, AWS `SES`, Postmark, etc.).
 pub trait EmailProvider: Send + Sync {
     /// Send magic link email.
     ///
@@ -14,7 +14,7 @@ pub trait EmailProvider: Send + Sync {
     ///
     /// - `to`: Recipient email address
     /// - `token`: Magic link token
-    /// - `base_url`: Base URL for magic link (e.g., "https://app.example.com/auth/verify")
+    /// - `base_url`: Base URL for magic link (e.g., `<https://app.example.com/auth/verify>`)
     /// - `expires_at`: Token expiration timestamp
     ///
     /// # Errors

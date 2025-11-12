@@ -64,7 +64,7 @@ impl<O, E, W, S, T, U, D, R, OT, C, RL> MagicLinkReducer<O, E, W, S, T, U, D, R,
     ///
     /// Default configuration:
     /// - Base URL: http://localhost:3000
-    /// - Token TTL: 10 minutes
+    /// - Token `TTL`: 10 minutes
     /// - Session duration: 24 hours
     ///
     /// For production, use `with_config()` to provide proper configuration.
@@ -88,7 +88,7 @@ impl<O, E, W, S, T, U, D, R, OT, C, RL> MagicLinkReducer<O, E, W, S, T, U, D, R,
     /// use composable_rust_auth::config::MagicLinkConfig;
     /// use composable_rust_auth::reducers::MagicLinkReducer;
     ///
-    /// let config = MagicLinkConfig::new("https://app.example.com".to_string())
+    /// let config = MagicLinkConfig::new(`<https://app.example.com>`.to_string())
     ///     .with_token_ttl(15);
     ///
     /// let reducer: MagicLinkReducer<_, _, _, _, _, _, _, _> =
@@ -102,7 +102,7 @@ impl<O, E, W, S, T, U, D, R, OT, C, RL> MagicLinkReducer<O, E, W, S, T, U, D, R,
         }
     }
 
-    /// Create a reducer with custom token TTL.
+    /// Create a reducer with custom token `TTL`.
     ///
     /// # Arguments
     ///

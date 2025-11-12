@@ -30,20 +30,20 @@ pub struct BeginPasskeyRegistrationRequest {
     pub device_name: String,
 }
 
-/// Response with WebAuthn challenge for registration.
+/// Response with `WebAuthn` challenge for registration.
 #[derive(Debug, Clone, Serialize)]
 pub struct BeginPasskeyRegistrationResponse {
-    /// WebAuthn challenge (base64).
+    /// `WebAuthn` challenge (base64).
     pub challenge: String,
 
     /// RP ID.
     pub rp_id: String,
 
-    /// User info for WebAuthn.
+    /// User info for `WebAuthn`.
     pub user: WebAuthnUser,
 }
 
-/// WebAuthn user info.
+/// `WebAuthn` user info.
 #[derive(Debug, Clone, Serialize)]
 pub struct WebAuthnUser {
     /// User ID (base64).
@@ -65,7 +65,7 @@ pub struct CompletePasskeyRegistrationRequest {
     /// Device ID.
     pub device_id: String,
 
-    /// Credential ID from WebAuthn.
+    /// Credential ID from `WebAuthn`.
     pub credential_id: String,
 
     /// Public key (base64).
@@ -92,10 +92,10 @@ pub struct BeginPasskeyLoginRequest {
     pub email: String,
 }
 
-/// Response with WebAuthn challenge for login.
+/// Response with `WebAuthn` challenge for login.
 #[derive(Debug, Clone, Serialize)]
 pub struct BeginPasskeyLoginResponse {
-    /// WebAuthn challenge (base64).
+    /// `WebAuthn` challenge (base64).
     pub challenge: String,
 
     /// Allowed credential IDs.
@@ -140,14 +140,14 @@ pub struct CompletePasskeyLoginResponse {
 /// Content-Type: application/json
 ///
 /// {
-///   "user_id": "uuid",
+///   "`user_id`": "uuid",
 ///   "device_name": "My Phone"
 /// }
 /// ```
 ///
 /// # Response
 ///
-/// Returns WebAuthn challenge for `navigator.credentials.create()`.
+/// Returns `WebAuthn` challenge for `navigator.credentials.create()`.
 pub async fn begin_passkey_registration<O, E, W, S, T, U, D, R, OT, C, RL>(
     State(store): State<Arc<Store<AuthState, AuthAction, AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>, AuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>>>>,
     correlation_id: CorrelationId,
@@ -231,7 +231,7 @@ where
 /// Content-Type: application/json
 ///
 /// {
-///   "user_id": "uuid",
+///   "`user_id`": "uuid",
 ///   "device_id": "uuid",
 ///   "credential_id": "base64...",
 ///   "public_key": "base64...",

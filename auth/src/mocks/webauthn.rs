@@ -9,14 +9,14 @@ use crate::providers::webauthn::{
 use crate::state::UserId;
 use std::future::Future;
 
-/// Mock WebAuthn provider.
+/// Mock `WebAuthn` provider.
 ///
-/// Simulates WebAuthn operations without actual crypto.
+/// Simulates `WebAuthn` operations without actual crypto.
 #[derive(Debug, Clone, Default)]
 pub struct MockWebAuthnProvider;
 
 impl MockWebAuthnProvider {
-    /// Create a new mock WebAuthn provider.
+    /// Create a new mock `WebAuthn` provider.
     #[must_use]
     pub const fn new() -> Self {
         Self

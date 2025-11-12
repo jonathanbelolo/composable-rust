@@ -87,7 +87,7 @@ pub trait UserRepository: Send + Sync {
     // ═══════════════════════════════════════════════════════════════════════
     // OAuth Links
     // ═══════════════════════════════════════════════════════════════════════
-    /// Get OAuth link.
+    /// Get `OAuth` link.
     ///
     /// # Errors
     ///
@@ -100,7 +100,7 @@ pub trait UserRepository: Send + Sync {
         provider: OAuthProvider,
     ) -> impl std::future::Future<Output = Result<OAuthLink>> + Send;
 
-    /// Get OAuth link by provider user ID.
+    /// Get `OAuth` link by provider user ID.
     ///
     /// # Errors
     ///
@@ -113,7 +113,7 @@ pub trait UserRepository: Send + Sync {
         provider_user_id: &str,
     ) -> impl std::future::Future<Output = Result<OAuthLink>> + Send;
 
-    /// Create or update OAuth link.
+    /// Create or update `OAuth` link.
     ///
     /// # Errors
     ///
@@ -123,7 +123,7 @@ pub trait UserRepository: Send + Sync {
         link: &OAuthLink,
     ) -> impl std::future::Future<Output = Result<OAuthLink>> + Send;
 
-    /// Delete OAuth link.
+    /// Delete `OAuth` link.
     ///
     /// # Errors
     ///

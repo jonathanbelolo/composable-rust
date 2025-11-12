@@ -26,7 +26,7 @@
 //!     refill_rate: 10.0,    // Tokens per second
 //! };
 //!
-//! let rate_limiter = RateLimiter::new("api_requests".into(), config);
+//! let rate_limiter = RateLimiter::new("api_requests".into(), &config);
 //!
 //! // Try to acquire tokens
 //! match rate_limiter.try_acquire(1).await {
@@ -87,10 +87,11 @@ impl RateLimiter {
     ///
     /// # Arguments
     ///
-    /// * `name` - Name for logging (e.g., "api_requests", "llm_calls")
+    /// * `name` - Name for logging (e.g., "`api_requests`", "`llm_calls`")
     /// * `config` - Rate limiter configuration
     #[must_use]
-    pub fn new(name: String, config: RateLimiterConfig) -> Self {
+    #[allow(clippy::cast_precision_loss)]
+    pub fn new(name: String, config: &RateLimiterConfig) -> Self {
         Self {
             name,
             config: config.clone(),
@@ -110,6 +111,7 @@ impl RateLimiter {
     /// # Errors
     ///
     /// Returns error if not enough tokens available
+    #[allow(clippy::cast_precision_loss)]
     pub async fn try_acquire(&self, tokens: usize) -> Result<(), String> {
         let mut state = self.state.write().await;
 
@@ -169,6 +171,10 @@ impl RateLimiter {
 ///
 /// Convenience function that checks rate limit before executing.
 ///
+/// # Errors
+///
+/// Returns error if not enough tokens are available (rate limit exceeded).
+///
 /// # Example
 ///
 /// ```ignore
@@ -203,7 +209,7 @@ mod tests {
             refill_rate: 100.0,
         };
 
-        let rate_limiter = RateLimiter::new("test".to_string(), config);
+        let rate_limiter = RateLimiter::new("test".to_string(), &config);
 
         // Should allow 10 requests
         for _ in 0..10 {
@@ -221,7 +227,7 @@ mod tests {
             refill_rate: 10.0, // 10 tokens per second
         };
 
-        let rate_limiter = RateLimiter::new("test".to_string(), config);
+        let rate_limiter = RateLimiter::new("test".to_string(), &config);
 
         // Consume all tokens
         for _ in 0..10 {
@@ -242,7 +248,7 @@ mod tests {
             refill_rate: 10.0,
         };
 
-        let rate_limiter = RateLimiter::new("test".to_string(), config);
+        let rate_limiter = RateLimiter::new("test".to_string(), &config);
 
         // Wait for potential refill
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -259,7 +265,7 @@ mod tests {
             refill_rate: 100.0,
         };
 
-        let rate_limiter = RateLimiter::new("test".to_string(), config);
+        let rate_limiter = RateLimiter::new("test".to_string(), &config);
 
         // Acquire 5 tokens at once
         assert!(rate_limiter.try_acquire(5).await.is_ok());
@@ -282,7 +288,7 @@ mod tests {
             refill_rate: 100.0,
         };
 
-        let rate_limiter = RateLimiter::new("test".to_string(), config);
+        let rate_limiter = RateLimiter::new("test".to_string(), &config);
 
         let result = with_rate_limit(&rate_limiter, 1, async { "success" }).await;
 
@@ -297,7 +303,7 @@ mod tests {
             refill_rate: 0.1, // Very slow refill
         };
 
-        let rate_limiter = RateLimiter::new("test".to_string(), config);
+        let rate_limiter = RateLimiter::new("test".to_string(), &config);
 
         // First request should succeed
         assert!(with_rate_limit(&rate_limiter, 1, async { "ok" }).await.is_ok());
@@ -314,7 +320,7 @@ mod tests {
             refill_rate: 5.0,
         };
 
-        let rate_limiter = RateLimiter::new("test".to_string(), config);
+        let rate_limiter = RateLimiter::new("test".to_string(), &config);
 
         assert_eq!(rate_limiter.name(), "test");
         assert_eq!(rate_limiter.capacity(), 50);

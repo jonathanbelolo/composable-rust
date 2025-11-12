@@ -144,6 +144,7 @@ where
 ///     Ok(())
 /// }
 /// ```
+#[allow(deprecated)] // opentelemetry_jaeger is deprecated but still widely used
 pub fn init_tracing(
     service_name: &str,
     jaeger_endpoint: &str,
@@ -184,6 +185,7 @@ pub fn shutdown_tracing() {
 ///
 /// Use this when you need to manually propagate trace context
 /// (e.g., across non-standard boundaries).
+#[must_use]
 pub fn current_span_context() -> Option<opentelemetry::Context> {
     let span = Span::current();
     if span.is_none() {

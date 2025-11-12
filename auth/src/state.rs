@@ -88,32 +88,32 @@ pub struct AuthState {
     /// Current session (if logged in).
     pub session: Option<Session>,
 
-    /// OAuth state (during OAuth flow).
+    /// `OAuth` state (during `OAuth` flow).
     pub oauth_state: Option<OAuthState>,
 
     /// Magic link state (during magic link flow).
     pub magic_link_state: Option<MagicLinkState>,
 
-    /// WebAuthn challenge (during passkey flow).
+    /// `WebAuthn` challenge (during passkey flow).
     pub webauthn_challenge: Option<WebAuthnChallenge>,
 }
 
 /// User session.
 ///
-/// Sessions are ephemeral (stored in Redis with TTL). They reference
-/// permanent device records (stored in PostgreSQL).
+/// Sessions are ephemeral (stored in `Redis` with `TTL`). They reference
+/// permanent device records (stored in `PostgreSQL`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Session {
     /// Unique session identifier.
     pub session_id: SessionId,
 
-    /// User ID (foreign key to PostgreSQL users table).
+    /// User ID (foreign key to `PostgreSQL` users table).
     pub user_id: UserId,
 
-    /// Device ID (foreign key to PostgreSQL devices table).
+    /// Device ID (foreign key to `PostgreSQL` devices table).
     pub device_id: DeviceId,
 
-    /// User's email (cached from PostgreSQL).
+    /// User's email (cached from `PostgreSQL`).
     pub email: String,
 
     /// Session creation timestamp.
@@ -131,7 +131,7 @@ pub struct Session {
     /// User agent string.
     pub user_agent: String,
 
-    /// OAuth provider (if authenticated via OAuth).
+    /// `OAuth` provider (if authenticated via `OAuth`).
     pub oauth_provider: Option<OAuthProvider>,
 
     /// Risk assessment at login time.
@@ -154,13 +154,13 @@ pub struct Session {
     pub enable_sliding_refresh: bool,
 }
 
-/// Token pair for JWT-based authentication (optional feature).
+/// Token pair for `JWT`-based authentication (optional feature).
 ///
 /// Used for stateless API clients (mobile apps, SPAs).
 /// The refresh token is actually just a session ID.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TokenPair {
-    /// Short-lived access token (JWT, 15 minutes).
+    /// Short-lived access token (`JWT`, 15 minutes).
     pub access_token: String,
 
     /// Long-lived refresh token (session ID, 24 hours).
@@ -174,14 +174,14 @@ pub struct TokenPair {
 // OAuth State
 // ═══════════════════════════════════════════════════════════════════════
 
-/// OAuth provider.
+/// `OAuth` provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum OAuthProvider {
-    /// Google OAuth.
+    /// Google `OAuth`.
     Google,
-    /// GitHub OAuth.
+    /// GitHub `OAuth`.
     GitHub,
-    /// Microsoft OAuth.
+    /// Microsoft `OAuth`.
     Microsoft,
 }
 
@@ -211,21 +211,21 @@ impl OAuthProvider {
     }
 }
 
-/// OAuth flow state.
+/// `OAuth` flow state.
 ///
-/// Stored in `AuthState` during the OAuth authorization code flow
-/// to prevent CSRF attacks.
+/// Stored in `AuthState` during the `OAuth` authorization code flow
+/// to prevent `CSRF` attacks.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OAuthState {
-    /// CSRF protection: random state parameter.
+    /// `CSRF` protection: random state parameter.
     ///
     /// Must be 256 bits of cryptographic randomness.
     pub state_param: String,
 
-    /// OAuth provider.
+    /// `OAuth` provider.
     pub provider: OAuthProvider,
 
-    /// Timestamp when the OAuth flow was initiated.
+    /// Timestamp when the `OAuth` flow was initiated.
     pub initiated_at: DateTime<Utc>,
 }
 
@@ -250,9 +250,9 @@ pub struct MagicLinkState {
 // WebAuthn State
 // ═══════════════════════════════════════════════════════════════════════
 
-/// WebAuthn challenge.
+/// `WebAuthn` challenge.
 ///
-/// Stored in Redis with short TTL (~5 minutes).
+/// Stored in `Redis` with short `TTL` (~5 minutes).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WebAuthnChallenge {
     /// Challenge ID.

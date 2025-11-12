@@ -6,7 +6,7 @@ use crate::providers::oauth::OAuthTokenResponse;
 use crate::state::OAuthProvider;
 use std::future::Future;
 
-/// Mock OAuth2 provider.
+/// Mock `OAuth2` provider.
 ///
 /// Returns predefined responses for testing.
 #[derive(Debug, Clone)]
@@ -16,7 +16,7 @@ pub struct MockOAuth2Provider {
 }
 
 impl MockOAuth2Provider {
-    /// Create a new mock OAuth2 provider that succeeds.
+    /// Create a new mock `OAuth2` provider that succeeds.
     #[must_use]
     pub const fn new() -> Self {
         Self {

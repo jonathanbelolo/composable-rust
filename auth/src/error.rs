@@ -46,31 +46,31 @@ pub enum AuthError {
     #[error("Token consumed: {0}")]
     TokenConsumed(String),
 
-    /// OAuth authorization code is invalid.
+    /// `OAuth` authorization code is invalid.
     #[error("Invalid OAuth authorization code")]
     OAuthCodeInvalid,
 
-    /// OAuth state parameter is invalid (CSRF protection).
+    /// `OAuth` state parameter is invalid (`CSRF` protection).
     #[error("Invalid OAuth state parameter")]
     OAuthStateInvalid,
 
-    /// Invalid OAuth provider for this provider implementation.
+    /// Invalid `OAuth` provider for this provider implementation.
     #[error("Invalid OAuth provider")]
     InvalidOAuthProvider,
 
-    /// OAuth token exchange failed.
+    /// `OAuth` token exchange failed.
     #[error("OAuth token exchange failed: {0}")]
     OAuthTokenExchangeFailed(String),
 
-    /// OAuth user info fetch failed.
+    /// `OAuth` user info fetch failed.
     #[error("OAuth user info fetch failed: {0}")]
     OAuthUserInfoFailed(String),
 
-    /// OAuth token refresh failed.
+    /// `OAuth` token refresh failed.
     #[error("OAuth token refresh failed: {0}")]
     OAuthTokenRefreshFailed(String),
 
-    /// Email not verified by OAuth provider.
+    /// Email not verified by `OAuth` provider.
     #[error("Email not verified by OAuth provider")]
     EmailNotVerified,
 
@@ -132,19 +132,19 @@ pub enum AuthError {
     // WebAuthn Specific
     // ═══════════════════════════════════════════════════════════
 
-    /// WebAuthn challenge has expired.
+    /// `WebAuthn` challenge has expired.
     #[error("WebAuthn challenge has expired")]
     ChallengeExpired,
 
-    /// WebAuthn challenge not found.
+    /// `WebAuthn` challenge not found.
     #[error("WebAuthn challenge not found")]
     ChallengeNotFound,
 
-    /// WebAuthn origin mismatch (phishing protection).
+    /// `WebAuthn` origin mismatch (phishing protection).
     #[error("WebAuthn origin mismatch")]
     OriginMismatch,
 
-    /// WebAuthn RP ID mismatch.
+    /// `WebAuthn` RP ID mismatch.
     #[error("WebAuthn RP ID mismatch")]
     RpIdMismatch,
 

@@ -60,7 +60,7 @@ use sqlx::PgPool;
 /// Maintains read-optimized views of users and devices from auth events.
 #[cfg(feature = "postgres")]
 pub struct AuthProjection {
-    /// PostgreSQL connection pool.
+    /// `PostgreSQL` connection pool.
     pool: PgPool,
 }
 

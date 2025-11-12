@@ -34,9 +34,9 @@ use composable_rust_core::{smallvec, SmallVec};
 use chrono::{Duration, Utc};
 use std::sync::Arc;
 
-/// OAuth2 reducer.
+/// `OAuth2` reducer.
 ///
-/// Handles OAuth2/OIDC authentication flow with CSRF protection.
+/// Handles `OAuth2`/`OIDC` authentication flow with `CSRF` protection.
 #[derive(Debug, Clone)]
 pub struct OAuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>
 where
@@ -52,7 +52,7 @@ where
     C: ChallengeStore + Clone + 'static,
     RL: crate::providers::RateLimiter + Clone + 'static,
 {
-    /// Configuration for OAuth authentication.
+    /// Configuration for `OAuth` authentication.
     config: OAuthConfig,
 
     /// Phantom data to hold type parameters.
@@ -73,11 +73,11 @@ where
     C: ChallengeStore + Clone + 'static,
     RL: crate::providers::RateLimiter + Clone + 'static,
 {
-    /// Create a new OAuth reducer with default configuration.
+    /// Create a new `OAuth` reducer with default configuration.
     ///
     /// Default configuration:
     /// - Base URL: http://localhost:3000
-    /// - State TTL: 5 minutes
+    /// - State `TTL`: 5 minutes
     /// - Session duration: 24 hours
     ///
     /// For production, use `with_config()` to provide proper configuration.
@@ -93,7 +93,7 @@ where
     ///
     /// # Arguments
     ///
-    /// * `config` - OAuth configuration
+    /// * `config` - `OAuth` configuration
     ///
     /// # Example
     ///
@@ -101,7 +101,7 @@ where
     /// use composable_rust_auth::config::OAuthConfig;
     /// use composable_rust_auth::reducers::OAuthReducer;
     ///
-    /// let config = OAuthConfig::new("https://app.example.com".to_string())
+    /// let config = OAuthConfig::new(`<https://app.example.com>`.to_string())
     ///     .with_state_ttl(10);
     ///
     /// let reducer: OAuthReducer<_, _, _, _, _, _, _, _> =
@@ -119,7 +119,7 @@ where
     ///
     /// # Arguments
     ///
-    /// * `base_url` - Base URL for OAuth redirects
+    /// * `base_url` - Base URL for `OAuth` redirects
     ///
     /// # Deprecated
     ///
@@ -132,7 +132,7 @@ where
         }
     }
 
-    /// Generate a cryptographically secure CSRF state parameter.
+    /// Generate a cryptographically secure `CSRF` state parameter.
     ///
     /// Uses 32 bytes of randomness (256 bits).
     fn generate_csrf_state() -> String {
@@ -141,7 +141,7 @@ where
         base64::engine::general_purpose::STANDARD.encode(bytes)
     }
 
-    /// Build redirect URI for OAuth callback.
+    /// Build redirect URI for `OAuth` callback.
     #[allow(dead_code)] // Will be used in Phase 6B for effect execution
     fn redirect_uri(&self) -> String {
         format!("{}/auth/oauth/callback", self.config.base_url)

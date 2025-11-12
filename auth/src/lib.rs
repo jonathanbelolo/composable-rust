@@ -5,7 +5,7 @@
 //!
 //! ## Features
 //!
-//! - **Passwordless-first**: WebAuthn, magic links, OAuth2/OIDC
+//! - **Passwordless-first**: `WebAuthn`, magic links, `OAuth2`/OIDC
 //! - **Composable**: Mix and match auth strategies
 //! - **Type-safe**: Compile-time guarantees for permissions
 //! - **Event-sourced**: Complete audit trail
@@ -19,7 +19,7 @@
 //! Action → Reducer → (State, Effects) → Effect Execution → More Actions
 //! ```
 //!
-//! ## Example: OAuth2 Login
+//! ## Example: `OAuth2` Login
 //!
 //! ```rust,ignore
 //! use composable_rust_auth::*;

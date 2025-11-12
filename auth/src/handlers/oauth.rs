@@ -15,20 +15,20 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Request to initiate OAuth flow (no body, provider in path).
+/// Request to initiate `OAuth` flow (no body, provider in path).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct OAuthAuthorizeRequest {
     /// Optional redirect URL after auth (defaults to /).
     pub redirect_to: Option<String>,
 }
 
-/// OAuth callback query parameters.
+/// `OAuth` callback query parameters.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct OAuthCallbackQuery {
     /// Authorization code from provider.
     pub code: String,
 
-    /// State parameter (CSRF protection).
+    /// State parameter (`CSRF` protection).
     pub state: String,
 
     /// Optional error from provider.
@@ -38,7 +38,7 @@ pub struct OAuthCallbackQuery {
     pub error_description: Option<String>,
 }
 
-/// Response after successful OAuth callback.
+/// Response after successful `OAuth` callback.
 #[derive(Debug, Clone, Serialize)]
 pub struct OAuthCallbackResponse {
     /// Session ID.
@@ -54,7 +54,7 @@ pub struct OAuthCallbackResponse {
     pub expires_at: String,
 }
 
-/// Initiate OAuth authorization flow.
+/// Initiate `OAuth` authorization flow.
 ///
 /// # Endpoint
 ///
@@ -68,11 +68,11 @@ pub struct OAuthCallbackResponse {
 /// 2. Generate correlation_id
 /// 3. Send `InitiateOAuth` action
 /// 4. Wait for `OAuthAuthorizationUrlReady`
-/// 5. Redirect to OAuth provider
+/// 5. Redirect to `OAuth` provider
 ///
 /// # Response
 ///
-/// HTTP 302 redirect to OAuth provider's authorization page.
+/// HTTP 302 redirect to `OAuth` provider's authorization page.
 pub async fn oauth_authorize<O, E, W, S, T, U, D, R, OT, C, RL>(
     State(store): State<Arc<Store<AuthState, AuthAction, AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>, AuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>>>>,
     Path(provider_str): Path<String>,
@@ -135,7 +135,7 @@ where
     }
 }
 
-/// Handle OAuth callback after user authorizes.
+/// Handle `OAuth` callback after user authorizes.
 ///
 /// # Endpoint
 ///
@@ -154,7 +154,7 @@ where
 ///
 /// ```json
 /// {
-///   "session_id": "uuid",
+///   "`session_id`": "uuid",
 ///   "session_token": "token",
 ///   "email": "user@example.com",
 ///   "expires_at": "2024-01-01T00:00:00Z"
@@ -166,7 +166,7 @@ where
 /// ```json
 /// {
 ///   "code": "oauth_failed",
-///   "message": "OAuth authentication failed: invalid_grant"
+///   "message": "`OAuth` authentication failed: invalid_grant"
 /// }
 /// ```
 pub async fn oauth_callback<O, E, W, S, T, U, D, R, OT, C, RL>(

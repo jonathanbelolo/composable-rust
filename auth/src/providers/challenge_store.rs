@@ -40,7 +40,7 @@ use crate::error::Result;
 use crate::state::UserId;
 use chrono::Duration;
 
-/// WebAuthn challenge data.
+/// `WebAuthn` challenge data.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ChallengeData {
     /// User ID associated with this challenge.
@@ -56,20 +56,20 @@ pub struct ChallengeData {
     pub expires_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// WebAuthn challenge store.
+/// `WebAuthn` challenge store.
 ///
-/// This trait abstracts over WebAuthn challenge storage with atomic consumption.
+/// This trait abstracts over `WebAuthn` challenge storage with atomic consumption.
 ///
 /// # Security Properties
 ///
 /// 1. **Single-use**: Challenges are consumed atomically (removed on first use)
-/// 2. **Expiration**: Challenges expire after TTL (default 5 minutes)
+/// 2. **Expiration**: Challenges expire after `TTL` (default 5 minutes)
 /// 3. **No replay**: Challenge cannot be reused after consumption
 /// 4. **Isolation**: Challenges are user-specific
 ///
 /// # Implementation Notes
 ///
-/// **Production** (Redis):
+/// **Production** (`Redis`):
 /// ```ignore
 /// // Store: SET key value EX ttl_seconds
 /// redis.set_ex(key, value, ttl_seconds).await?;
@@ -84,7 +84,7 @@ pub struct ChallengeData {
 /// // Remove expired challenges on access
 /// ```
 pub trait ChallengeStore: Send + Sync {
-    /// Store a WebAuthn challenge with expiration.
+    /// Store a `WebAuthn` challenge with expiration.
     ///
     /// # Arguments
     ///
@@ -94,7 +94,7 @@ pub trait ChallengeStore: Send + Sync {
     ///
     /// # Security
     ///
-    /// Challenges MUST expire after TTL to prevent indefinite replay windows.
+    /// Challenges MUST expire after `TTL` to prevent indefinite replay windows.
     ///
     /// # Errors
     ///
@@ -106,7 +106,7 @@ pub trait ChallengeStore: Send + Sync {
         ttl: Duration,
     ) -> impl std::future::Future<Output = Result<()>> + Send;
 
-    /// Consume a WebAuthn challenge atomically (single-use).
+    /// Consume a `WebAuthn` challenge atomically (single-use).
     ///
     /// This operation is **atomic**: the challenge is removed from storage
     /// if and only if it exists and is valid. Multiple concurrent attempts

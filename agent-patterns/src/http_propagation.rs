@@ -37,7 +37,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 ///
 /// # Arguments
 ///
-/// * `headers` - HTTP headers as HashMap<String, String>
+/// * `headers` - HTTP headers as `HashMap<String, String>`
 ///
 /// # Returns
 ///
@@ -51,7 +51,8 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 ///     // Create child span with this context as parent
 /// }
 /// ```
-pub fn extract_trace_context(headers: &HashMap<String, String>) -> Option<OtelContext> {
+#[must_use]
+pub fn extract_trace_context<S: std::hash::BuildHasher>(headers: &HashMap<String, String, S>) -> Option<OtelContext> {
     let propagator = TraceContextPropagator::new();
 
     // Extract returns the current context if no trace context found
@@ -76,7 +77,7 @@ pub fn extract_trace_context(headers: &HashMap<String, String>) -> Option<OtelCo
 ///
 /// # Returns
 ///
-/// HashMap of headers to add to HTTP request
+/// `HashMap` of headers to add to HTTP request
 ///
 /// # Example
 ///
@@ -90,6 +91,7 @@ pub fn extract_trace_context(headers: &HashMap<String, String>) -> Option<OtelCo
 ///     .send()
 ///     .await?;
 /// ```
+#[must_use]
 pub fn inject_trace_headers(span: &Span) -> HashMap<String, String> {
     let mut headers = HashMap::new();
     let propagator = TraceContextPropagator::new();

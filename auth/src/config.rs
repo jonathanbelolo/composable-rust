@@ -8,7 +8,7 @@ use chrono::Duration;
 /// Magic Link authentication configuration.
 #[derive(Debug, Clone)]
 pub struct MagicLinkConfig {
-    /// Base URL for magic link generation (e.g., "https://app.example.com").
+    /// Base URL for magic link generation (e.g., "<https://app.example.com>").
     ///
     /// Magic links will be formatted as: `{base_url}/auth/verify?token={token}`
     pub base_url: String,
@@ -75,7 +75,7 @@ impl MagicLinkConfig {
     ///
     /// # Arguments
     ///
-    /// * `base_url` - Base URL for your application (e.g., "https://app.example.com")
+    /// * `base_url` - Base URL for your application (e.g., "<https://app.example.com>")
     #[must_use]
     pub const fn new(base_url: String) -> Self {
         Self {
@@ -139,15 +139,15 @@ impl Default for MagicLinkConfig {
     }
 }
 
-/// OAuth2/OIDC authentication configuration.
+/// `OAuth2`/`OIDC` authentication configuration.
 #[derive(Debug, Clone)]
 pub struct OAuthConfig {
-    /// Base URL for OAuth redirect URI (e.g., "https://app.example.com").
+    /// Base URL for `OAuth` redirect URI (e.g., "<https://app.example.com>").
     ///
     /// Redirect URI will be: `{base_url}/auth/oauth/callback`
     pub base_url: String,
 
-    /// CSRF state time-to-live in minutes.
+    /// `CSRF` state time-to-live in minutes.
     ///
     /// Default: 5 minutes
     pub state_ttl_minutes: i64,
@@ -202,11 +202,11 @@ pub struct OAuthConfig {
 }
 
 impl OAuthConfig {
-    /// Create new OAuth configuration.
+    /// Create new `OAuth` configuration.
     ///
     /// # Arguments
     ///
-    /// * `base_url` - Base URL for your application (e.g., "https://app.example.com")
+    /// * `base_url` - Base URL for your application (e.g., "<https://app.example.com>")
     #[must_use]
     pub const fn new(base_url: String) -> Self {
         Self {
@@ -219,7 +219,7 @@ impl OAuthConfig {
         }
     }
 
-    /// Set CSRF state time-to-live.
+    /// Set `CSRF` state time-to-live.
     #[must_use]
     pub const fn with_state_ttl(mut self, minutes: i64) -> Self {
         self.state_ttl_minutes = minutes;
@@ -270,12 +270,12 @@ impl Default for OAuthConfig {
     }
 }
 
-/// WebAuthn/Passkey authentication configuration.
+/// `WebAuthn`/Passkey authentication configuration.
 #[derive(Debug, Clone)]
 pub struct PasskeyConfig {
-    /// Expected origin for WebAuthn (e.g., "https://app.example.com").
+    /// Expected origin for `WebAuthn` (e.g., "<https://app.example.com>").
     ///
-    /// Must match the origin in the client-side WebAuthn call.
+    /// Must match the origin in the client-side `WebAuthn` call.
     pub origin: String,
 
     /// Relying Party ID (e.g., "app.example.com").
@@ -342,7 +342,7 @@ impl PasskeyConfig {
     ///
     /// # Arguments
     ///
-    /// * `origin` - Expected origin (e.g., "https://app.example.com")
+    /// * `origin` - Expected origin (e.g., `<https://app.example.com>`)
     /// * `rp_id` - Relying Party ID (e.g., "app.example.com")
     #[must_use]
     pub const fn new(origin: String, rp_id: String) -> Self {

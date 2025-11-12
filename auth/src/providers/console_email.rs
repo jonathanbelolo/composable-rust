@@ -19,7 +19,7 @@ use tracing::{info, warn};
 /// provider.send_magic_link(
 ///     "user@example.com",
 ///     "abc123",
-///     "https://app.example.com/auth/verify",
+///     `<https://app.example.com/auth/verify>`,
 ///     Utc::now() + chrono::Duration::minutes(15),
 /// ).await?;
 /// ```
@@ -54,15 +54,15 @@ impl EmailProvider for ConsoleEmailProvider {
         println!("\n╔══════════════════════════════════════════════════════════════╗");
         println!("║                   MAGIC LINK EMAIL                           ║");
         println!("╠══════════════════════════════════════════════════════════════╣");
-        println!("║ To: {:<57}║", to);
+        println!("║ To: {to:<57}║");
         println!("║ Subject: Sign in to your account{:<30}║", "");
         println!("╠══════════════════════════════════════════════════════════════╣");
         println!("║                                                              ║");
         println!("║ Click the link below to sign in to your account.            ║");
-        println!("║ This link will expire in {} minutes.{:<23}║", expires_minutes, "");
+        println!("║ This link will expire in {expires_minutes} minutes.{:<23}║", "");
         println!("║                                                              ║");
         println!("║ Magic Link:                                                  ║");
-        println!("║ {:<61}║", magic_link);
+        println!("║ {magic_link:<61}║");
         println!("║                                                              ║");
         println!("╚══════════════════════════════════════════════════════════════╝\n");
 
@@ -88,15 +88,15 @@ impl EmailProvider for ConsoleEmailProvider {
         println!("\n╔══════════════════════════════════════════════════════════════╗");
         println!("║                PASSWORD RESET EMAIL                          ║");
         println!("╠══════════════════════════════════════════════════════════════╣");
-        println!("║ To: {:<57}║", to);
+        println!("║ To: {to:<57}║");
         println!("║ Subject: Reset your password{:<34}║", "");
         println!("╠══════════════════════════════════════════════════════════════╣");
         println!("║                                                              ║");
         println!("║ Click the link below to reset your password.                ║");
-        println!("║ This link will expire in {} minutes.{:<23}║", expires_minutes, "");
+        println!("║ This link will expire in {expires_minutes} minutes.{:<23}║", "");
         println!("║                                                              ║");
         println!("║ Reset Link:                                                  ║");
-        println!("║ {:<61}║", reset_link);
+        println!("║ {reset_link:<61}║");
         println!("║                                                              ║");
         println!("╚══════════════════════════════════════════════════════════════╝\n");
 
@@ -114,7 +114,7 @@ impl EmailProvider for ConsoleEmailProvider {
         println!("\n╔══════════════════════════════════════════════════════════════╗");
         println!("║               EMAIL VERIFICATION                             ║");
         println!("╠══════════════════════════════════════════════════════════════╣");
-        println!("║ To: {:<57}║", to);
+        println!("║ To: {to:<57}║");
         println!("║ Subject: Verify your email address{:<27}║", "");
         println!("╠══════════════════════════════════════════════════════════════╣");
         println!("║                                                              ║");
@@ -122,7 +122,7 @@ impl EmailProvider for ConsoleEmailProvider {
         println!("║ the link below:                                              ║");
         println!("║                                                              ║");
         println!("║ Verification Link:                                           ║");
-        println!("║ {:<61}║", verification_link);
+        println!("║ {verification_link:<61}║");
         println!("║                                                              ║");
         println!("╚══════════════════════════════════════════════════════════════╝\n");
 
@@ -138,8 +138,8 @@ impl EmailProvider for ConsoleEmailProvider {
         println!("\n╔══════════════════════════════════════════════════════════════╗");
         println!("║                   SECURITY ALERT                             ║");
         println!("╠══════════════════════════════════════════════════════════════╣");
-        println!("║ To: {:<57}║", to);
-        println!("║ Subject: {:<51}║", subject);
+        println!("║ To: {to:<57}║");
+        println!("║ Subject: {subject:<51}║");
         println!("╠══════════════════════════════════════════════════════════════╣");
         println!("║                                                              ║");
 
@@ -149,7 +149,7 @@ impl EmailProvider for ConsoleEmailProvider {
             while !remaining.is_empty() {
                 let chunk_len = remaining.len().min(60);
                 let chunk = &remaining[..chunk_len];
-                println!("║ {:<61}║", chunk);
+                println!("║ {chunk:<61}║");
                 remaining = &remaining[chunk_len..];
             }
         }

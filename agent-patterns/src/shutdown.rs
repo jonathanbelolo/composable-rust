@@ -4,9 +4,9 @@
 //!
 //! ## Architecture
 //!
-//! - **ShutdownHandler trait**: Components implement this for cleanup
-//! - **ShutdownCoordinator**: Manages all handlers, handles timeouts
-//! - **wait_for_signal()**: Waits for SIGTERM or Ctrl+C
+//! - **`ShutdownHandler` trait**: Components implement this for cleanup
+//! - **`ShutdownCoordinator`**: Manages all handlers, handles timeouts
+//! - **`wait_for_signal()`**: Waits for SIGTERM or Ctrl+C
 //!
 //! ## Usage
 //!
@@ -187,13 +187,17 @@ impl ShutdownCoordinator {
 ///     database_pool.close().await.map_err(|e| e.to_string())
 /// });
 /// ```
+/// Type alias for shutdown callback
+type ShutdownCallback = Arc<
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// Generic shutdown handler using closures
 pub struct GenericShutdownHandler {
     name: String,
-    on_shutdown: Arc<
-        dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
-            + Send
-            + Sync,
-    >,
+    on_shutdown: ShutdownCallback,
 }
 
 impl GenericShutdownHandler {
@@ -240,6 +244,11 @@ impl ShutdownHandler for GenericShutdownHandler {
 ///     // ... graceful shutdown
 /// }
 /// ```
+///
+/// # Panics
+///
+/// Panics if signal handler registration fails (Unix) or if waiting for Ctrl+C fails (non-Unix).
+#[allow(clippy::expect_used)]
 pub async fn wait_for_signal() {
     #[cfg(unix)]
     {

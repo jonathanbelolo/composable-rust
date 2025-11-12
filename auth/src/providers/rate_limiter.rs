@@ -57,7 +57,7 @@ pub trait RateLimiter: Send + Sync {
     ///
     /// Returns error if:
     /// - Rate limit exceeded → `AuthError::TooManyAttempts`
-    /// - Database/Redis error → `AuthError::InternalError`
+    /// - Database/`Redis` error → `AuthError::InternalError`
     fn check_rate_limit(
         &self,
         key: &str,
@@ -74,7 +74,7 @@ pub trait RateLimiter: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns error if database/Redis operation fails.
+    /// Returns error if database/`Redis` operation fails.
     fn record_attempt(
         &self,
         key: &str,
@@ -99,7 +99,7 @@ pub trait RateLimiter: Send + Sync {
     ///
     /// Returns error if:
     /// - Rate limit exceeded → `AuthError::TooManyAttempts`
-    /// - Database/Redis error → `AuthError::InternalError`
+    /// - Database/`Redis` error → `AuthError::InternalError`
     fn check_and_record(
         &self,
         key: &str,
@@ -120,7 +120,7 @@ pub trait RateLimiter: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns error if database/Redis operation fails.
+    /// Returns error if database/`Redis` operation fails.
     fn reset(
         &self,
         key: &str,
@@ -140,7 +140,7 @@ pub trait RateLimiter: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns error if database/Redis operation fails.
+    /// Returns error if database/`Redis` operation fails.
     fn get_attempts(
         &self,
         key: &str,

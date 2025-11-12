@@ -4,16 +4,16 @@ use crate::error::Result;
 use crate::state::{DeviceId, UserId};
 use super::PasskeyCredential;
 
-/// WebAuthn provider.
+/// `WebAuthn` provider.
 ///
-/// This trait abstracts over WebAuthn/FIDO2 operations.
+/// This trait abstracts over `WebAuthn`/`FIDO2` operations.
 ///
 /// # Implementation Notes
 ///
-/// - Use the `webauthn-rs` crate for WebAuthn protocol
-/// - Handle challenge generation and storage (Redis)
+/// - Use the `webauthn-rs` crate for `WebAuthn` protocol
+/// - Handle challenge generation and storage (`Redis`)
 /// - Verify attestations and assertions
-/// - Manage credential storage (PostgreSQL)
+/// - Manage credential storage (`PostgreSQL`)
 pub trait WebAuthnProvider: Send + Sync {
     /// Generate registration challenge.
     ///
@@ -123,10 +123,10 @@ pub trait WebAuthnProvider: Send + Sync {
     ) -> impl std::future::Future<Output = Result<String>> + Send;
 }
 
-/// WebAuthn challenge.
+/// `WebAuthn` challenge.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WebAuthnChallenge {
-    /// Challenge ID (stored in Redis).
+    /// Challenge ID (stored in `Redis`).
     pub challenge_id: String,
 
     /// Challenge bytes (base64-encoded).
@@ -136,7 +136,7 @@ pub struct WebAuthnChallenge {
     pub expires_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// WebAuthn registration result.
+/// `WebAuthn` registration result.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WebAuthnRegistrationResult {
     /// Credential ID.
@@ -149,7 +149,7 @@ pub struct WebAuthnRegistrationResult {
     pub counter: u32,
 }
 
-/// WebAuthn authentication result.
+/// `WebAuthn` authentication result.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WebAuthnAuthenticationResult {
     /// User ID.

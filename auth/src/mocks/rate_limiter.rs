@@ -29,7 +29,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// # }
 /// ```
 ///
-/// **Production**: Use `RedisRateLimiter` which has automatic TTL-based cleanup.
+/// **Production**: Use `RedisRateLimiter` which has automatic `TTL`-based cleanup.
 #[derive(Debug, Clone)]
 pub struct MockRateLimiter {
     /// Map of key -> Vec<timestamp_ms>
@@ -46,7 +46,13 @@ impl MockRateLimiter {
     }
 
     /// Get current timestamp in milliseconds.
+    ///
+    /// # Panics
+    ///
+    /// This function uses `unwrap_or` to handle clock errors.
+    #[allow(clippy::cast_possible_truncation)]
     fn current_timestamp_ms() -> u64 {
+        // Casting u128 to u64 is safe here: timestamps won't exceed u64::MAX until year 584,554,531 AD
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or(Duration::ZERO)
@@ -73,7 +79,8 @@ impl RateLimiter for MockRateLimiter {
             .map_err(|_| AuthError::InternalError("Mutex lock failed".into()))?;
 
         let now_ms = Self::current_timestamp_ms();
-        let window_ms = window.as_millis() as u64;
+        #[allow(clippy::cast_possible_truncation)]
+        let window_ms = window.as_millis() as u64; // Safe: window is typically seconds/minutes
         let window_start = now_ms.saturating_sub(window_ms);
 
         if let Some(timestamps) = attempts_guard.get(key) {
@@ -118,7 +125,8 @@ impl RateLimiter for MockRateLimiter {
             .map_err(|_| AuthError::InternalError("Mutex lock failed".into()))?;
 
         let now_ms = Self::current_timestamp_ms();
-        let window_ms = window.as_millis() as u64;
+        #[allow(clippy::cast_possible_truncation)]
+        let window_ms = window.as_millis() as u64; // Safe: window is typically seconds/minutes
         let window_start = now_ms.saturating_sub(window_ms);
 
         // Get or create entry

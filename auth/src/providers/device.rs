@@ -84,7 +84,7 @@ pub trait DeviceRepository: Send + Sync {
     ///
     /// This method MUST verify that:
     /// 1. `device.device_id` belongs to `user_id`
-    /// 2. `device.user_id == user_id` (prevent device transfer between accounts)
+    /// 2. `device.`user_id` == user_id` (prevent device transfer between accounts)
     ///
     /// # Errors
     ///
@@ -92,7 +92,7 @@ pub trait DeviceRepository: Send + Sync {
     /// - Database query fails
     /// - Device not found → `AuthError::ResourceNotFound`
     /// - Device belongs to different user → `AuthError::ResourceNotFound`
-    /// - Attempt to change device.user_id → `AuthError::ResourceNotFound`
+    /// - Attempt to change device.`user_id` → `AuthError::ResourceNotFound`
     fn update_device(
         &self,
         user_id: UserId,

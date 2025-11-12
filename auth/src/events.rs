@@ -49,7 +49,7 @@ pub enum AuthEvent {
     // ═══════════════════════════════════════════════════════════════════════
     /// User account was created.
     ///
-    /// Triggered by: Magic link, OAuth, or passkey registration
+    /// Triggered by: Magic link, `OAuth`, or passkey registration
     UserRegistered {
         /// User identifier
         user_id: UserId,
@@ -57,7 +57,7 @@ pub enum AuthEvent {
         email: String,
         /// User name (if provided)
         name: Option<String>,
-        /// Email verified at registration (true for magic link, false for OAuth)
+        /// Email verified at registration (true for magic link, false for `OAuth`)
         email_verified: bool,
         /// When the user was registered
         timestamp: DateTime<Utc>,
@@ -130,7 +130,7 @@ pub enum AuthEvent {
         user_id: UserId,
         /// IP address of access
         ip_address: IpAddr,
-        /// Authentication level used (Basic, MultiFactor, HardwareBacked)
+        /// Authentication level used (Basic, `MultiFactor`, `HardwareBacked`)
         auth_level: AuthLevel,
         /// When the access occurred
         timestamp: DateTime<Utc>,
@@ -153,13 +153,13 @@ pub enum AuthEvent {
     // ═══════════════════════════════════════════════════════════════════════
     // OAuth Events
     // ═══════════════════════════════════════════════════════════════════════
-    /// OAuth account was linked.
+    /// `OAuth` account was linked.
     ///
-    /// Triggered by: Successful OAuth flow
+    /// Triggered by: Successful `OAuth` flow
     OAuthAccountLinked {
         /// User identifier
         user_id: UserId,
-        /// OAuth provider (Google, GitHub, Microsoft)
+        /// `OAuth` provider (Google, GitHub, Microsoft)
         provider: OAuthProvider,
         /// Provider's user ID
         provider_user_id: String,
@@ -169,13 +169,13 @@ pub enum AuthEvent {
         timestamp: DateTime<Utc>,
     },
 
-    /// OAuth account was unlinked.
+    /// `OAuth` account was unlinked.
     ///
-    /// Triggered by: User disconnects OAuth provider
+    /// Triggered by: User disconnects `OAuth` provider
     OAuthAccountUnlinked {
         /// User identifier
         user_id: UserId,
-        /// OAuth provider
+        /// `OAuth` provider
         provider: OAuthProvider,
         /// When the account was unlinked
         timestamp: DateTime<Utc>,
@@ -186,7 +186,7 @@ pub enum AuthEvent {
     // ═══════════════════════════════════════════════════════════════════════
     /// Passkey credential was registered.
     ///
-    /// Triggered by: WebAuthn registration completion
+    /// Triggered by: `WebAuthn` registration completion
     PasskeyRegistered {
         /// Credential identifier
         credential_id: String,
@@ -204,7 +204,7 @@ pub enum AuthEvent {
 
     /// Passkey was used for authentication.
     ///
-    /// Triggered by: WebAuthn assertion verification
+    /// Triggered by: `WebAuthn` assertion verification
     PasskeyUsed {
         /// Credential identifier
         credential_id: String,

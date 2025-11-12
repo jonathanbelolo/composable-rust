@@ -6,11 +6,11 @@ use chrono::Duration;
 
 /// Session store.
 ///
-/// This trait abstracts over session storage (Redis).
+/// This trait abstracts over session storage (`Redis`).
 ///
 /// # Implementation Notes
 ///
-/// - Sessions are ephemeral (24-hour TTL)
+/// - Sessions are ephemeral (24-hour `TTL`)
 /// - Sliding expiration on each access
 /// - Fast lookups (<5ms target)
 pub trait SessionStore: Send + Sync {
@@ -53,7 +53,7 @@ pub trait SessionStore: Send + Sync {
 
     /// Update session.
     ///
-    /// Updates last_active and refreshes TTL.
+    /// Updates `last_active` and refreshes `TTL`.
     ///
     /// # Errors
     ///
@@ -99,7 +99,7 @@ pub trait SessionStore: Send + Sync {
         session_id: SessionId,
     ) -> impl std::future::Future<Output = Result<bool>> + Send;
 
-    /// Get remaining TTL for session.
+    /// Get remaining `TTL` for session.
     ///
     /// # Returns
     ///

@@ -69,9 +69,9 @@ pub enum CircuitState {
 pub struct CircuitBreakerConfig {
     /// Number of consecutive failures before opening circuit
     pub failure_threshold: usize,
-    /// Number of consecutive successes in HalfOpen to close circuit
+    /// Number of consecutive successes in `HalfOpen` to close circuit
     pub success_threshold: usize,
-    /// How long to wait in Open state before trying HalfOpen
+    /// How long to wait in Open state before trying `HalfOpen`
     pub timeout: Duration,
 }
 
@@ -109,7 +109,7 @@ impl CircuitBreaker {
     ///
     /// # Arguments
     ///
-    /// * `name` - Name for logging (e.g., "llm_api", "database")
+    /// * `name` - Name for logging (e.g., "`llm_api`", "`database`")
     /// * `config` - Circuit breaker configuration
     #[must_use]
     pub fn new(name: String, config: CircuitBreakerConfig) -> Self {
@@ -134,7 +134,7 @@ impl CircuitBreaker {
         let mut state = self.state.write().await;
 
         match state.state {
-            CircuitState::Closed => Ok(()),
+            CircuitState::Closed | CircuitState::HalfOpen => Ok(()),
             CircuitState::Open => {
                 // Check if timeout has elapsed
                 if let Some(last_failure) = state.last_failure_time {
@@ -153,7 +153,6 @@ impl CircuitBreaker {
                     Err(format!("Circuit breaker {} is OPEN", self.name))
                 }
             }
-            CircuitState::HalfOpen => Ok(()),
         }
     }
 
@@ -233,7 +232,7 @@ impl CircuitBreaker {
         self.state.read().await.failure_count
     }
 
-    /// Get current success count (in HalfOpen state)
+    /// Get current success count (in `HalfOpen` state)
     pub async fn success_count(&self) -> usize {
         self.state.read().await.success_count
     }
@@ -243,6 +242,11 @@ impl CircuitBreaker {
 ///
 /// Convenience function that checks circuit, executes function,
 /// and records success/failure.
+///
+/// # Errors
+///
+/// Returns error if the circuit breaker rejects the request (circuit is open)
+/// or if the executed function returns an error.
 ///
 /// # Example
 ///

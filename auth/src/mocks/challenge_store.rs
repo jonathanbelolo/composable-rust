@@ -7,7 +7,7 @@ use chrono::{Duration, Utc};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-/// Mock WebAuthn challenge store.
+/// Mock `WebAuthn` challenge store.
 ///
 /// In-memory implementation for testing. Challenges stored with expiration.
 ///

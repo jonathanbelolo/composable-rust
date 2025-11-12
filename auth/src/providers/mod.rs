@@ -83,7 +83,7 @@ pub use rate_limiter::RateLimiter;
 
 /// User data model.
 ///
-/// Stored in PostgreSQL.
+/// Stored in `PostgreSQL`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct User {
     /// User ID.
@@ -107,7 +107,7 @@ pub struct User {
 
 /// Device data model.
 ///
-/// Stored in PostgreSQL (permanent audit trail).
+/// Stored in `PostgreSQL` (permanent audit trail).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Device {
     /// Device ID.
@@ -145,7 +145,7 @@ pub struct Device {
 
     /// Device fingerprint (for enhanced recognition).
     ///
-    /// Stored as JSON to support evolving fingerprinting techniques.
+    /// Stored as `JSON` to support evolving fingerprinting techniques.
     /// Use `fingerprint_hash` for quick comparisons.
     pub fingerprint: Option<DeviceFingerprint>,
 
@@ -263,15 +263,15 @@ pub struct DeviceFingerprint {
     pub custom: std::collections::HashMap<String, serde_json::Value>,
 }
 
-/// OAuth link (user ↔ provider).
+/// `OAuth` link (user ↔ provider).
 ///
-/// Stored in PostgreSQL.
+/// Stored in `PostgreSQL`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OAuthLink {
     /// User ID.
     pub user_id: UserId,
 
-    /// OAuth provider.
+    /// `OAuth` provider.
     pub provider: OAuthProvider,
 
     /// Provider user ID (unique per provider).
@@ -293,7 +293,7 @@ pub struct OAuthLink {
     pub updated_at: DateTime<Utc>,
 }
 
-/// OAuth user info from provider.
+/// `OAuth` user info from provider.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OAuthUserInfo {
     /// Provider user ID.
@@ -335,7 +335,7 @@ pub struct MagicLinkToken {
 
 /// Passkey credential.
 ///
-/// Stored in PostgreSQL.
+/// Stored in `PostgreSQL`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PasskeyCredential {
     /// Credential ID (unique).

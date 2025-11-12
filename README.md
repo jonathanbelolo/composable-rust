@@ -94,6 +94,7 @@ impl Reducer for OrderReducer {
   - Connection pooling, backup/restore documentation
   - 156 library tests + 15 integration tests passing
   - Production-ready with comprehensive documentation
+  - Code quality: 8/12 library crates fully clippy-clean (67%)
 
 🚧 **Phase 5**: Developer Experience (~75% Complete)
   - ✅ HTTP API framework (`composable-rust-web` crate with Axum)
@@ -119,9 +120,14 @@ composable-rust/
 ├── testing/           # Test utilities and mocks
 ├── postgres/          # PostgreSQL event store
 ├── redpanda/          # Redpanda/Kafka event bus
+├── projections/       # PostgreSQL projection store (CQRS read models)
 ├── web/               # HTTP and WebSocket framework
 ├── auth/              # Authentication framework
-├── examples/          # Reference implementations
+├── anthropic/         # Claude API client
+├── agent-patterns/    # Production agent patterns
+├── tools/             # Tool execution framework
+├── macros/            # Proc macros for code generation
+├── examples/          # Reference implementations (15+ examples)
 ├── docs/              # Documentation and guides (21 comprehensive docs)
 ├── specs/             # Architecture specification
 ├── plans/             # Implementation roadmap
@@ -130,18 +136,44 @@ composable-rust/
 
 ## Crates
 
-### Core Crates
+### Core Framework (8 crates)
 - **`composable-rust-core`**: Core traits (Reducer, Effect, Environment, EventBus, EventStore)
 - **`composable-rust-runtime`**: Store runtime and effect execution
-- **`composable-rust-testing`**: Testing utilities (TestStore, InMemoryEventBus, InMemoryEventStore)
-
-### Infrastructure Crates
+- **`composable-rust-testing`**: Testing utilities (TestStore, InMemoryEventBus, InMemoryEventStore, mocks)
 - **`composable-rust-postgres`**: PostgreSQL event store implementation
 - **`composable-rust-redpanda`**: Redpanda/Kafka event bus implementation
-
-### Web & Authentication Crates
+- **`composable-rust-projections`**: PostgreSQL projection store for CQRS read models
 - **`composable-rust-web`**: HTTP API and WebSocket framework (Axum integration)
-- **`composable-rust-auth`**: Authentication framework (magic links, OAuth, passkeys, email providers)
+- **`composable-rust-auth`**: Authentication framework (magic links, OAuth 2.0, passkeys, WebAuthn)
+
+### AI Agent Framework (3 crates)
+- **`composable-rust-anthropic`**: Claude API client for LLM integration
+- **`composable-rust-agent-patterns`**: Production patterns (resilience, observability, security, health checks)
+- **`composable-rust-tools`**: Tool execution framework for agents
+
+### Developer Experience (1 crate)
+- **`composable-rust-macros`**: Proc macros for code generation (#[derive(State)], #[derive(Action)])
+
+### Example Applications
+
+**Core Examples**:
+- `counter` - Simple counter demonstrating core architecture
+- `order-processing` - Event-sourced order management with HTTP + WebSocket
+- `checkout-saga` - Multi-aggregate saga with compensation (Order + Payment + Inventory)
+- `order-projection-example` - CQRS read model projections
+
+**AI Agent Examples**:
+- `production-agent` - Full production agent with event sourcing + EventBus + observability
+- `basic-agent` - Simple LLM agent with interactive Q&A
+- `weather-agent` - Agent with tool use (weather API)
+- `tool-showcase` - Demonstrates tool execution framework
+- `agent-patterns-demo` - Resilience patterns (circuit breakers, rate limiting, bulkheads)
+
+**Domain Examples**:
+- `banking` - Banking domain with transactions
+- `ticketing` - Ticket management system
+- `todo` - Todo application
+- `metrics-demo` - Metrics and observability demonstration
 
 ## Claude Code Skills
 
@@ -327,6 +359,7 @@ at your option.
 - ✅ Observability (tracing, metrics, OpenTelemetry)
 - ✅ Database migrations and production setup
 - ✅ Battle-tested with benchmarks
+- ✅ Code quality: 8/12 library crates fully clippy-clean (67%)
 
 ### Phase 5: Developer Experience (~75% Complete) 🚧
 - ✅ HTTP API framework (`composable-rust-web`)
