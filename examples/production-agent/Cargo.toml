@@ -57,3 +57,4 @@ sqlx = { workspace = true }
 bincode = { workspace = true }
 
 [dev-dependencies]
+composable-rust-testing = { path = "../../testing" }

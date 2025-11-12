@@ -121,7 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "localhost:9092".to_string());
 
     info!("🔌 Connecting to Redpanda: {}", redpanda_brokers);
-    let event_bus = Arc::new(
+    let event_bus: Arc<dyn composable_rust_core::event_bus::EventBus> = Arc::new(
         RedpandaEventBus::builder()
             .brokers(&redpanda_brokers)
             .producer_acks("all")  // Wait for all replicas
@@ -151,6 +151,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         security_monitor.clone(),
         event_store.clone(),
         clock,
+        event_bus,
+        projection_store,
     ));
     info!("✅ Agent environment created with resilience features");
 

@@ -30,7 +30,12 @@ pub struct ProductionEnvironment<A: AuditLogger + Send + Sync + 'static> {
     event_store: Arc<dyn composable_rust_core::event_store::EventStore>,
     /// Clock for timestamps
     clock: Arc<dyn composable_rust_core::environment::Clock>,
-    /// LLM timeout
+    /// Event bus for publishing domain events
+    event_bus: Arc<dyn composable_rust_core::event_bus::EventBus>,
+    /// Projection store for read models
+    projection_store: Arc<composable_rust_projections::PostgresProjectionStore>,
+    /// LLM timeout (reserved for future timeout implementation)
+    #[allow(dead_code)]
     llm_timeout: Duration,
 }
 
@@ -42,8 +47,10 @@ impl<A: AuditLogger + Send + Sync + 'static> ProductionEnvironment<A> {
         security_monitor: Arc<SecurityMonitor>,
         event_store: Arc<dyn composable_rust_core::event_store::EventStore>,
         clock: Arc<dyn composable_rust_core::environment::Clock>,
+        event_bus: Arc<dyn composable_rust_core::event_bus::EventBus>,
+        projection_store: Arc<composable_rust_projections::PostgresProjectionStore>,
     ) -> Self {
-        Self::with_client(None, audit_logger, security_monitor, event_store, clock)
+        Self::with_client(None, audit_logger, security_monitor, event_store, clock, event_bus, projection_store)
     }
 
     /// Create new production environment with Anthropic client
@@ -54,6 +61,8 @@ impl<A: AuditLogger + Send + Sync + 'static> ProductionEnvironment<A> {
         security_monitor: Arc<SecurityMonitor>,
         event_store: Arc<dyn composable_rust_core::event_store::EventStore>,
         clock: Arc<dyn composable_rust_core::environment::Clock>,
+        event_bus: Arc<dyn composable_rust_core::event_bus::EventBus>,
+        projection_store: Arc<composable_rust_projections::PostgresProjectionStore>,
     ) -> Self {
         // Circuit breaker config
         let cb_config = CircuitBreakerConfig {
@@ -83,6 +92,8 @@ impl<A: AuditLogger + Send + Sync + 'static> ProductionEnvironment<A> {
             security_monitor,
             event_store,
             clock,
+            event_bus,
+            projection_store,
             llm_timeout: Duration::from_secs(30),
         }
     }
@@ -96,6 +107,8 @@ impl<A: AuditLogger + Send + Sync + 'static> ProductionEnvironment<A> {
         security_monitor: Arc<SecurityMonitor>,
         event_store: Arc<dyn composable_rust_core::event_store::EventStore>,
         clock: Arc<dyn composable_rust_core::environment::Clock>,
+        event_bus: Arc<dyn composable_rust_core::event_bus::EventBus>,
+        projection_store: Arc<composable_rust_projections::PostgresProjectionStore>,
     ) -> Self {
         let anthropic_client = match AnthropicClient::from_env() {
             Ok(client) => {
@@ -108,7 +121,7 @@ impl<A: AuditLogger + Send + Sync + 'static> ProductionEnvironment<A> {
             }
         };
 
-        Self::with_client(anthropic_client, audit_logger, security_monitor, event_store, clock)
+        Self::with_client(anthropic_client, audit_logger, security_monitor, event_store, clock, event_bus, projection_store)
     }
 
     /// Call LLM with resilience features
@@ -259,6 +272,14 @@ impl<A: AuditLogger + Send + Sync + 'static> AgentEnvironment for ProductionEnvi
         &self.clock
     }
 
+    fn event_bus(&self) -> &Arc<dyn composable_rust_core::event_bus::EventBus> {
+        &self.event_bus
+    }
+
+    fn projection_store(&self) -> &Arc<composable_rust_projections::PostgresProjectionStore> {
+        &self.projection_store
+    }
+
     async fn call_llm(&self, messages: &[Message]) -> Result<String, AgentError> {
         self.call_llm_internal(messages).await
     }
@@ -333,17 +354,25 @@ impl<A: AuditLogger + Send + Sync + 'static> AgentEnvironment for ProductionEnvi
 mod tests {
     use super::*;
     use composable_rust_agent_patterns::audit::InMemoryAuditLogger;
+    use composable_rust_testing::mocks::{InMemoryEventStore, InMemoryEventBus};
 
-    #[tokio::test]
-    async fn test_llm_call_with_circuit_breaker() {
-        use composable_rust_core::environment::{Clock, SystemClock};
-        use composable_rust_testing::InMemoryEventStore;
-
+    // Helper to create test environment
+    fn create_test_env() -> ProductionEnvironment<InMemoryAuditLogger> {
         let audit_logger = Arc::new(InMemoryAuditLogger::new());
         let security_monitor = Arc::new(SecurityMonitor::new());
         let event_store: Arc<dyn composable_rust_core::event_store::EventStore> = Arc::new(InMemoryEventStore::new());
-        let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-        let env = ProductionEnvironment::new(audit_logger, security_monitor, event_store, clock);
+        let clock: Arc<dyn composable_rust_core::environment::Clock> = Arc::new(composable_rust_core::environment::SystemClock);
+        let event_bus: Arc<dyn composable_rust_core::event_bus::EventBus> = Arc::new(InMemoryEventBus::new());
+        // Create a minimal in-memory projection store for tests
+        let pool = sqlx::PgPool::connect_lazy("postgres://test").expect("Test pool");
+        let projection_store = Arc::new(composable_rust_projections::PostgresProjectionStore::new(pool, "test".to_string()));
+
+        ProductionEnvironment::new(audit_logger, security_monitor, event_store, clock, event_bus, projection_store)
+    }
+
+    #[tokio::test]
+    async fn test_llm_call_with_circuit_breaker() {
+        let env = create_test_env();
 
         let messages = vec![];
         let result = env.call_llm(&messages).await;
@@ -353,14 +382,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tool_execution_with_bulkhead() {
-        use composable_rust_core::environment::{Clock, SystemClock};
-        use composable_rust_testing::InMemoryEventStore;
-
-        let audit_logger = Arc::new(InMemoryAuditLogger::new());
-        let security_monitor = Arc::new(SecurityMonitor::new());
-        let event_store: Arc<dyn composable_rust_core::event_store::EventStore> = Arc::new(InMemoryEventStore::new());
-        let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-        let env = ProductionEnvironment::new(audit_logger, security_monitor, event_store, clock);
+        let env = create_test_env();
 
         let result = env.execute_tool("search", "test query").await;
         assert!(result.is_ok());
@@ -374,14 +396,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rate_limiting() {
-        use composable_rust_core::environment::{Clock, SystemClock};
-        use composable_rust_testing::InMemoryEventStore;
-
-        let audit_logger = Arc::new(InMemoryAuditLogger::new());
-        let security_monitor = Arc::new(SecurityMonitor::new());
-        let event_store: Arc<dyn composable_rust_core::event_store::EventStore> = Arc::new(InMemoryEventStore::new());
-        let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-        let env = ProductionEnvironment::new(audit_logger, security_monitor, event_store, clock);
+        let env = create_test_env();
 
         // Make many rapid calls
         for _ in 0..25 {

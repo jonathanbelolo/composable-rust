@@ -460,6 +460,7 @@ impl fmt::Display for AuditError {
 impl std::error::Error for AuditError {}
 
 /// In-memory audit logger (for testing/development)
+#[derive(Clone)]
 pub struct InMemoryAuditLogger {
     events: Arc<RwLock<Vec<AuditEvent>>>,
 }

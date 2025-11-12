@@ -195,6 +195,12 @@ pub trait AgentEnvironment: Send + Sync {
     /// Get clock
     fn clock(&self) -> &std::sync::Arc<dyn composable_rust_core::environment::Clock>;
 
+    /// Get event bus
+    fn event_bus(&self) -> &std::sync::Arc<dyn composable_rust_core::event_bus::EventBus>;
+
+    /// Get projection store
+    fn projection_store(&self) -> &std::sync::Arc<composable_rust_projections::PostgresProjectionStore>;
+
     /// Call LLM
     fn call_llm(
         &self,

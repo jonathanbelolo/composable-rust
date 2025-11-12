@@ -140,7 +140,7 @@ services:
       # Database & Infrastructure
       - DATABASE_URL=postgres://postgres:password@postgres:5432/composable_auth
       - REDIS_URL=redis://redis:6379
-      - REDPANDA_BROKERS=redpanda:9092
+      - REDPANDA_BROKERS=redpanda:29092
       - BIND_ADDR=0.0.0.0
 
       # Observability

@@ -203,7 +203,7 @@ mod tests {
     use composable_rust_agent_patterns::audit::InMemoryAuditLogger;
     use composable_rust_agent_patterns::security::SecurityMonitor;
     use composable_rust_core::environment::{Clock, SystemClock};
-    use composable_rust_testing::InMemoryEventStore;
+    use composable_rust_testing::mocks::InMemoryEventStore;
     use crate::environment::ProductionEnvironment;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -216,12 +216,21 @@ mod tests {
         let event_store: Arc<dyn composable_rust_core::event_store::EventStore> =
             Arc::new(InMemoryEventStore::new());
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+        let event_bus: Arc<dyn composable_rust_core::event_bus::EventBus> =
+            Arc::new(composable_rust_testing::mocks::InMemoryEventBus::new());
+        let pool = sqlx::PgPool::connect_lazy("postgres://test").expect("Test pool");
+        let projection_store = Arc::new(composable_rust_projections::PostgresProjectionStore::new(
+            pool,
+            "test".to_string()
+        ));
 
         let environment = Arc::new(ProductionEnvironment::new(
             audit_logger.clone(),
             security_monitor.clone(),
             event_store,
             clock,
+            event_bus,
+            projection_store,
         ));
         let reducer = ProductionAgentReducer::new(
             audit_logger,
@@ -255,12 +264,21 @@ mod tests {
         let event_store: Arc<dyn composable_rust_core::event_store::EventStore> =
             Arc::new(InMemoryEventStore::new());
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+        let event_bus: Arc<dyn composable_rust_core::event_bus::EventBus> =
+            Arc::new(composable_rust_testing::mocks::InMemoryEventBus::new());
+        let pool = sqlx::PgPool::connect_lazy("postgres://test").expect("Test pool");
+        let projection_store = Arc::new(composable_rust_projections::PostgresProjectionStore::new(
+            pool,
+            "test".to_string()
+        ));
 
         let environment = Arc::new(ProductionEnvironment::new(
             audit_logger.clone(),
             security_monitor.clone(),
             event_store,
             clock,
+            event_bus,
+            projection_store,
         ));
         let reducer = ProductionAgentReducer::new(
             audit_logger,
