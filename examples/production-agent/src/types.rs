@@ -188,6 +188,7 @@ impl AgentAction {
 }
 
 /// Agent environment
+#[allow(dead_code)] // Demo example - not all trait methods used in basic example
 pub trait AgentEnvironment: Send + Sync {
     /// Get event store
     fn event_store(&self) -> &std::sync::Arc<dyn composable_rust_core::event_store::EventStore>;

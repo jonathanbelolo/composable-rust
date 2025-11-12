@@ -4,7 +4,7 @@
 //! patterns and WebSocket event streaming without coupling to HTTP layer.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // Test code can use unwrap/expect/panic
-#![allow(clippy::redundant_continue, clippy::match_same_arms, clippy::collapsible_if)] // Test code - allow pedantic warnings
+#![allow(clippy::needless_continue, clippy::match_same_arms, clippy::collapsible_if, clippy::collapsible_match)] // Test code - allow pedantic warnings
 
 use composable_rust_core::{effect::Effect, reducer::Reducer, smallvec, SmallVec};
 use composable_rust_runtime::Store;
