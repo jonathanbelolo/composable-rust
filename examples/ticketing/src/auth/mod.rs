@@ -10,6 +10,10 @@
 pub mod email;
 // Authentication setup (build environment and store)
 pub mod setup;
+// Authentication middleware (extractors for protected routes)
+pub mod middleware;
+// Examples of using authentication middleware
+pub mod examples;
 
 // Re-export framework components
 pub use composable_rust_auth::{

@@ -32,6 +32,7 @@ tracing-subscriber = { workspace = true }
 futures = { workspace = true }
 sqlx = { workspace = true }
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+axum = { version = "0.7", features = ["macros"] }
 
 [dev-dependencies]
 proptest = { workspace = true }
