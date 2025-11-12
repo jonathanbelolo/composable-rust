@@ -9,7 +9,8 @@
 //! ## Combining Reducers
 //!
 //! ```
-//! use composable_rust_core::{Reducer, Effect};
+//! use composable_rust_core::reducer::Reducer;
+//! use composable_rust_core::effect::Effect;
 //!
 //! #[derive(Clone)]
 //! struct MyState {
@@ -31,13 +32,13 @@
 //!     type Action = MyAction;
 //!     type Environment = ();
 //!
-//!     fn reduce(&self, state: &mut Self::State, action: Self::Action, _env: &Self::Environment) -> Vec<Effect<Self::Action>> {
+//!     fn reduce(&self, state: &mut Self::State, action: Self::Action, _env: &Self::Environment) -> composable_rust_core::SmallVec<[Effect<Self::Action>; 4]> {
 //!         match action {
 //!             MyAction::Increment => {
 //!                 state.count += 1;
-//!                 vec![Effect::None]
+//!                 composable_rust_core::smallvec![Effect::None]
 //!             }
-//!             _ => vec![Effect::None],
+//!             _ => composable_rust_core::smallvec![Effect::None],
 //!         }
 //!     }
 //! }
@@ -47,13 +48,13 @@
 //!     type Action = MyAction;
 //!     type Environment = ();
 //!
-//!     fn reduce(&self, state: &mut Self::State, action: Self::Action, _env: &Self::Environment) -> Vec<Effect<Self::Action>> {
+//!     fn reduce(&self, state: &mut Self::State, action: Self::Action, _env: &Self::Environment) -> composable_rust_core::SmallVec<[Effect<Self::Action>; 4]> {
 //!         match action {
 //!             MyAction::SetName(name) => {
 //!                 state.name = name;
-//!                 vec![Effect::None]
+//!                 composable_rust_core::smallvec![Effect::None]
 //!             }
-//!             _ => vec![Effect::None],
+//!             _ => composable_rust_core::smallvec![Effect::None],
 //!         }
 //!     }
 //! }
@@ -80,7 +81,8 @@ use crate::reducer::Reducer;
 /// # Examples
 ///
 /// ```
-/// use composable_rust_core::{Reducer, Effect};
+/// use composable_rust_core::reducer::Reducer;
+/// use composable_rust_core::effect::Effect;
 /// use composable_rust_core::composition::combine_reducers;
 ///
 /// #[derive(Clone)]
@@ -103,11 +105,11 @@ use crate::reducer::Reducer;
 ///     type Action = AppAction;
 ///     type Environment = ();
 ///
-///     fn reduce(&self, state: &mut Self::State, action: Self::Action, _env: &Self::Environment) -> Vec<Effect<Self::Action>> {
+///     fn reduce(&self, state: &mut Self::State, action: Self::Action, _env: &Self::Environment) -> composable_rust_core::SmallVec<[Effect<Self::Action>; 4]> {
 ///         if matches!(action, AppAction::Increment) {
 ///             state.counter += 1;
 ///         }
-///         vec![Effect::None]
+///         composable_rust_core::smallvec![Effect::None]
 ///     }
 /// }
 ///
@@ -116,11 +118,11 @@ use crate::reducer::Reducer;
 ///     type Action = AppAction;
 ///     type Environment = ();
 ///
-///     fn reduce(&self, state: &mut Self::State, action: Self::Action, _env: &Self::Environment) -> Vec<Effect<Self::Action>> {
+///     fn reduce(&self, state: &mut Self::State, action: Self::Action, _env: &Self::Environment) -> composable_rust_core::SmallVec<[Effect<Self::Action>; 4]> {
 ///         if matches!(action, AppAction::Log) {
 ///             state.logged = true;
 ///         }
-///         vec![Effect::None]
+///         composable_rust_core::smallvec![Effect::None]
 ///     }
 /// }
 ///
@@ -196,7 +198,8 @@ where
 /// # Examples
 ///
 /// ```
-/// use composable_rust_core::{Reducer, Effect};
+/// use composable_rust_core::reducer::Reducer;
+/// use composable_rust_core::effect::Effect;
 /// use composable_rust_core::composition::scope_reducer;
 ///
 /// // Child state and reducer
@@ -218,12 +221,12 @@ where
 ///     type Action = CounterAction;
 ///     type Environment = ();
 ///
-///     fn reduce(&self, state: &mut Self::State, action: Self::Action, _env: &Self::Environment) -> Vec<Effect<Self::Action>> {
+///     fn reduce(&self, state: &mut Self::State, action: Self::Action, _env: &Self::Environment) -> composable_rust_core::SmallVec<[Effect<Self::Action>; 4]> {
 ///         match action {
 ///             CounterAction::Increment => state.count += 1,
 ///             CounterAction::Decrement => state.count -= 1,
 ///         }
-///         vec![Effect::None]
+///         composable_rust_core::smallvec![Effect::None]
 ///     }
 /// }
 ///

@@ -12,10 +12,10 @@
 //! ```rust,no_run
 //! use composable_rust_runtime::metrics::MetricsServer;
 //!
-//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! # fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! // Start metrics server on port 9090
 //! let mut server = MetricsServer::new("0.0.0.0:9090".parse()?);
-//! server.start().await?;
+//! server.start()?;
 //!
 //! // Metrics available at http://localhost:9090/metrics
 //! # Ok(())
