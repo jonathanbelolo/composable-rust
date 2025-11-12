@@ -413,28 +413,27 @@ impl AuditEventFilter {
 }
 
 /// Audit logger trait
-#[allow(async_fn_in_trait)]
 pub trait AuditLogger: Send + Sync {
     /// Log an audit event
     ///
     /// # Errors
     ///
     /// Returns error if logging fails
-    async fn log(&self, event: AuditEvent) -> Result<(), AuditError>;
+    fn log(&self, event: AuditEvent) -> impl std::future::Future<Output = Result<(), AuditError>> + Send;
 
     /// Query audit events
     ///
     /// # Errors
     ///
     /// Returns error if query fails
-    async fn query(&self, filter: AuditEventFilter) -> Result<Vec<AuditEvent>, AuditError>;
+    fn query(&self, filter: AuditEventFilter) -> impl std::future::Future<Output = Result<Vec<AuditEvent>, AuditError>> + Send;
 
     /// Get event by ID
     ///
     /// # Errors
     ///
     /// Returns error if query fails
-    async fn get_by_id(&self, id: &str) -> Result<Option<AuditEvent>, AuditError>;
+    fn get_by_id(&self, id: &str) -> impl std::future::Future<Output = Result<Option<AuditEvent>, AuditError>> + Send;
 }
 
 /// Audit error
@@ -520,6 +519,261 @@ impl AuditLogger for InMemoryAuditLogger {
     async fn get_by_id(&self, id: &str) -> Result<Option<AuditEvent>, AuditError> {
         let events = self.events.read().await;
         Ok(events.iter().find(|e| e.id == id).cloned())
+    }
+}
+
+/// `PostgreSQL`-backed audit logger (for production)
+///
+/// Persists audit events to a `PostgreSQL` database for compliance and security monitoring.
+///
+/// # Schema
+///
+/// Requires the following table:
+///
+/// ```sql
+/// CREATE TABLE audit_logs (
+///     id UUID PRIMARY KEY,
+///     event_type VARCHAR(50) NOT NULL,
+///     severity VARCHAR(20) NOT NULL,
+///     actor VARCHAR(255) NOT NULL,
+///     action VARCHAR(100) NOT NULL,
+///     resource VARCHAR(255),
+///     success BOOLEAN NOT NULL,
+///     error_message TEXT,
+///     source_ip VARCHAR(45),
+///     user_agent TEXT,
+///     session_id VARCHAR(255),
+///     request_id VARCHAR(255),
+///     metadata JSONB,
+///     timestamp TIMESTAMPTZ NOT NULL,
+///     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+/// );
+/// CREATE INDEX idx_audit_actor ON audit_logs(actor);
+/// CREATE INDEX idx_audit_event_type ON audit_logs(event_type);
+/// CREATE INDEX idx_audit_timestamp ON audit_logs(timestamp);
+/// ```
+///
+/// # Example
+///
+/// ```ignore
+/// use composable_rust_agent_patterns::audit::{PostgresAuditLogger, AuditLogger, AuditEvent};
+/// use sqlx::postgres::PgPool;
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let pool = PgPool::connect("postgres://localhost/mydb").await?;
+/// let logger = PostgresAuditLogger::new(pool);
+///
+/// let event = AuditEvent::authentication("user@example.com", "login", true);
+/// logger.log(event).await?;
+/// # Ok(())
+/// # }
+/// ```
+#[cfg(feature = "audit-postgres")]
+#[derive(Clone)]
+pub struct PostgresAuditLogger {
+    pool: sqlx::postgres::PgPool,
+}
+
+#[cfg(feature = "audit-postgres")]
+impl PostgresAuditLogger {
+    /// Create a new `PostgreSQL` audit logger
+    #[must_use]
+    pub const fn new(pool: sqlx::postgres::PgPool) -> Self {
+        Self { pool }
+    }
+
+    /// Get a reference to the connection pool
+    #[must_use]
+    pub const fn pool(&self) -> &sqlx::postgres::PgPool {
+        &self.pool
+    }
+
+    /// Get event count
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database query fails
+    pub async fn count(&self) -> Result<usize, AuditError> {
+        let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM audit_logs")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| AuditError::QueryError(format!("Failed to count audit events: {e}")))?;
+
+        Ok(row.0 as usize)
+    }
+}
+
+#[cfg(feature = "audit-postgres")]
+impl AuditLogger for PostgresAuditLogger {
+    async fn log(&self, event: AuditEvent) -> Result<(), AuditError> {
+        let metadata_json = serde_json::to_value(&event.metadata)
+            .map_err(|e| AuditError::SerializationError(format!("Failed to serialize metadata: {e}")))?;
+
+        // Parse RFC3339 timestamp string to DateTime<Utc>
+        let timestamp = chrono::DateTime::parse_from_rfc3339(&event.timestamp)
+            .map_err(|e| AuditError::SerializationError(format!("Invalid timestamp format: {e}")))?
+            .with_timezone(&chrono::Utc);
+
+        sqlx::query(
+            r"
+            INSERT INTO audit_logs (
+                id, event_type, severity, actor, action, resource,
+                success, error_message, source_ip, user_agent,
+                session_id, request_id, metadata, timestamp
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            "
+        )
+        .bind(&event.id)
+        .bind(event.event_type.to_string())
+        .bind(event.severity.to_string())
+        .bind(&event.actor)
+        .bind(&event.action)
+        .bind(&event.resource)
+        .bind(event.success)
+        .bind(&event.error_message)
+        .bind(&event.source_ip)
+        .bind(&event.user_agent)
+        .bind(&event.session_id)
+        .bind(&event.request_id)
+        .bind(metadata_json)
+        .bind(timestamp)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AuditError::StorageError(format!("Failed to insert audit event: {e}")))?;
+
+        tracing::debug!(
+            event_id = %event.id,
+            event_type = %event.event_type,
+            actor = %event.actor,
+            "Audit event logged to PostgreSQL"
+        );
+
+        Ok(())
+    }
+
+    async fn query(&self, filter: AuditEventFilter) -> Result<Vec<AuditEvent>, AuditError> {
+        let mut query_str = String::from("SELECT * FROM audit_logs WHERE 1=1");
+        let mut bindings: Vec<String> = Vec::new();
+
+        if let Some(event_type) = filter.event_type {
+            bindings.push(event_type.to_string());
+            query_str.push_str(&format!(" AND event_type = ${}", bindings.len()));
+        }
+
+        if let Some(ref actor) = filter.actor {
+            bindings.push(actor.clone());
+            query_str.push_str(&format!(" AND actor = ${}", bindings.len()));
+        }
+
+        if let Some(ref action) = filter.action {
+            bindings.push(action.clone());
+            query_str.push_str(&format!(" AND action = ${}", bindings.len()));
+        }
+
+        if let Some(ref resource) = filter.resource {
+            bindings.push(resource.clone());
+            query_str.push_str(&format!(" AND resource = ${}", bindings.len()));
+        }
+
+        if let Some(success) = filter.success {
+            bindings.push(success.to_string());
+            query_str.push_str(&format!(" AND success = ${}", bindings.len()));
+        }
+
+        query_str.push_str(" ORDER BY timestamp DESC");
+
+        if let Some(limit) = filter.limit {
+            query_str.push_str(&format!(" LIMIT {limit}"));
+        }
+
+        // Build query dynamically based on filter
+        let mut query = sqlx::query_as::<_, AuditEventRow>(&query_str);
+
+        for binding in &bindings {
+            query = query.bind(binding);
+        }
+
+        let rows = query
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| AuditError::QueryError(format!("Failed to query audit events: {e}")))?;
+
+        rows.into_iter()
+            .map(|row| row.into_audit_event())
+            .collect()
+    }
+
+    async fn get_by_id(&self, id: &str) -> Result<Option<AuditEvent>, AuditError> {
+        let row = sqlx::query_as::<_, AuditEventRow>("SELECT * FROM audit_logs WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| AuditError::QueryError(format!("Failed to get audit event: {e}")))?;
+
+        Ok(row.map(|r| r.into_audit_event()).transpose()?)
+    }
+}
+
+#[cfg(feature = "audit-postgres")]
+#[derive(sqlx::FromRow)]
+struct AuditEventRow {
+    id: String,
+    event_type: String,
+    severity: String,
+    actor: String,
+    action: String,
+    resource: Option<String>,
+    success: bool,
+    error_message: Option<String>,
+    source_ip: Option<String>,
+    user_agent: Option<String>,
+    session_id: Option<String>,
+    request_id: Option<String>,
+    metadata: serde_json::Value,
+    timestamp: String,
+}
+
+#[cfg(feature = "audit-postgres")]
+impl AuditEventRow {
+    fn into_audit_event(self) -> Result<AuditEvent, AuditError> {
+        let event_type = match self.event_type.as_str() {
+            "authentication" => AuditEventType::Authentication,
+            "authorization" => AuditEventType::Authorization,
+            "data_access" => AuditEventType::DataAccess,
+            "configuration" => AuditEventType::Configuration,
+            "security" => AuditEventType::Security,
+            "llm_interaction" => AuditEventType::LlmInteraction,
+            _ => return Err(AuditError::QueryError(format!("Unknown event type: {}", self.event_type))),
+        };
+
+        let severity = match self.severity.as_str() {
+            "info" => Severity::Info,
+            "warning" => Severity::Warning,
+            "error" => Severity::Error,
+            "critical" => Severity::Critical,
+            _ => return Err(AuditError::QueryError(format!("Unknown severity: {}", self.severity))),
+        };
+
+        let metadata: HashMap<String, String> = serde_json::from_value(self.metadata)
+            .map_err(|e| AuditError::QueryError(format!("Failed to parse metadata: {e}")))?;
+
+        Ok(AuditEvent {
+            id: self.id,
+            timestamp: self.timestamp,
+            event_type,
+            severity,
+            actor: self.actor,
+            action: self.action,
+            resource: self.resource,
+            success: self.success,
+            error_message: self.error_message,
+            source_ip: self.source_ip,
+            user_agent: self.user_agent,
+            session_id: self.session_id,
+            request_id: self.request_id,
+            metadata,
+        })
     }
 }
 

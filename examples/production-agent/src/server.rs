@@ -1,8 +1,8 @@
-//! HTTP server with health checks and metrics
+//! HTTP server with Store integration
 
 use crate::environment::ProductionEnvironment;
 use crate::reducer::ProductionAgentReducer;
-use crate::types::{AgentAction, AgentState};
+use crate::types::{AgentAction, AgentEnvironment, AgentState};
 use axum::{
     extract::State as AxumState,
     http::StatusCode,
@@ -10,23 +10,22 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use composable_rust_agent_patterns::health::{SystemHealthCheck, HealthStatus};
+use composable_rust_agent_patterns::audit::AuditLogger;
+use composable_rust_agent_patterns::health::{HealthStatus, SystemHealthCheck};
 use composable_rust_agent_patterns::AgentMetrics;
+use composable_rust_runtime::Store;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
 /// Server state
 #[derive(Clone)]
-pub struct ServerState {
-    /// Agent reducer
-    pub reducer: Arc<ProductionAgentReducer>,
-    /// Agent environment
-    pub environment: Arc<ProductionEnvironment>,
-    /// Agent state (per-session, in production use session store)
-    pub agent_state: Arc<RwLock<AgentState>>,
+pub struct ServerState<A: AuditLogger + Send + Sync + Clone + 'static> {
+    /// Agent store (manages state, reducer, environment)
+    pub store: Arc<Store<AgentState, AgentAction, ProductionEnvironment<A>, ProductionAgentReducer<A>>>,
+    /// Environment (for direct access to LLM calls)
+    pub environment: Arc<ProductionEnvironment<A>>,
     /// Metrics
     pub metrics: Arc<AgentMetrics>,
     /// Health check registry
@@ -63,18 +62,15 @@ pub struct ErrorResponse {
 }
 
 /// Create HTTP server
-pub async fn create_server(
-    reducer: Arc<ProductionAgentReducer>,
-    environment: Arc<ProductionEnvironment>,
+pub async fn create_server<A: AuditLogger + Send + Sync + Clone + 'static>(
+    store: Arc<Store<AgentState, AgentAction, ProductionEnvironment<A>, ProductionAgentReducer<A>>>,
+    environment: Arc<ProductionEnvironment<A>>,
     metrics: Arc<AgentMetrics>,
     health_registry: Arc<SystemHealthCheck>,
 ) -> Router {
-    let agent_state = Arc::new(RwLock::new(AgentState::new()));
-
     let state = ServerState {
-        reducer,
+        store,
         environment,
-        agent_state,
         metrics,
         health_registry,
     };
@@ -91,80 +87,76 @@ pub async fn create_server(
 
 /// Chat handler
 #[tracing::instrument(skip(state))]
-async fn chat_handler(
-    AxumState(state): AxumState<ServerState>,
+async fn chat_handler<A: AuditLogger + Send + Sync + Clone + 'static>(
+    AxumState(state): AxumState<ServerState<A>>,
     Json(req): Json<ChatRequest>,
 ) -> Response {
     info!("Received chat request from user: {}", req.user_id);
 
-    // Get agent state
-    let mut agent_state = state.agent_state.write().await;
+    // Get current state
+    let current_state = state.store.state(|s| s.clone()).await;
 
     // Start conversation if needed
-    if agent_state.conversation_id.is_none() {
-        let effects = state.reducer.reduce(
-            &mut agent_state,
-            AgentAction::StartConversation {
+    if current_state.conversation_id.is_none() {
+        let _ = state
+            .store
+            .send(AgentAction::StartConversation {
                 user_id: req.user_id.clone(),
                 session_id: req.session_id.clone(),
-            },
-            state.environment.as_ref(),
-        );
-
-        // Execute effects (simplified - in production use Store)
-        for effect in effects {
-            if let composable_rust_core::effect::Effect::Future(fut) = effect {
-                let _ = fut.await;
-            }
-        }
+            })
+            .await;
     }
 
-    // Send message
-    let effects = state.reducer.reduce(
-        &mut agent_state,
-        AgentAction::SendMessage {
+    // Send message (persists to EventStore)
+    let _ = state
+        .store
+        .send(AgentAction::SendMessage {
             content: req.message.clone(),
             source_ip: req.source_ip,
-        },
-        state.environment.as_ref(),
-    );
+        })
+        .await;
 
-    // Execute effects
-    let mut response_text = String::new();
-    for effect in effects {
-        if let composable_rust_core::effect::Effect::Future(fut) = effect {
-            if let Some(action) = fut.await {
-                if let AgentAction::ProcessResponse { response } = action {
-                    response_text = response;
-                    break;
-                }
-            }
+    // Get updated state (with conversation_id)
+    let current_state = state.store.state(|s| s.clone()).await;
+
+    // Call LLM directly with current messages
+    let response_text = match state.environment.call_llm(&current_state.messages).await {
+        Ok(response) => response,
+        Err(e) => {
+            tracing::error!("LLM call failed: {:?}", e);
+            format!("I apologize, but I encountered an error: {:?}", e)
         }
+    };
+
+    // Process response (persists to EventStore)
+    if !response_text.is_empty() {
+        let _ = state
+            .store
+            .send(AgentAction::ProcessResponse {
+                response: response_text.clone(),
+            })
+            .await;
     }
 
-    // Process response
-    if !response_text.is_empty() {
-        state.reducer.reduce(
-            &mut agent_state,
-            AgentAction::ProcessResponse {
-                response: response_text.clone(),
-            },
-            state.environment.as_ref(),
-        );
-    }
+    // Get final state
+    let final_state = state.store.state(|s| s.clone()).await;
 
     let response = ChatResponse {
         message: response_text,
-        conversation_id: agent_state.conversation_id.clone(),
+        conversation_id: final_state.conversation_id.clone(),
     };
 
     Json(response).into_response()
 }
 
 /// Health check handler
-async fn health_handler(AxumState(state): AxumState<ServerState>) -> Response {
+async fn health_handler<A: AuditLogger + Send + Sync + Clone + 'static>(
+    AxumState(state): AxumState<ServerState<A>>,
+) -> Response {
     let results = state.health_registry.check_all().await;
-    let all_healthy = results.values().all(|r| r.status == HealthStatus::Healthy);
+    let all_healthy = results
+        .values()
+        .all(|r| r.status == HealthStatus::Healthy);
 
     let status = if all_healthy {
         StatusCode::OK
@@ -182,9 +174,13 @@ async fn liveness_handler() -> Response {
 }
 
 /// Readiness handler
-async fn readiness_handler(AxumState(state): AxumState<ServerState>) -> Response {
+async fn readiness_handler<A: AuditLogger + Send + Sync + Clone + 'static>(
+    AxumState(state): AxumState<ServerState<A>>,
+) -> Response {
     let results = state.health_registry.check_all().await;
-    let all_ready = results.values().all(|r| r.status == HealthStatus::Healthy);
+    let all_ready = results
+        .values()
+        .all(|r| r.status == HealthStatus::Healthy);
 
     if all_ready {
         (StatusCode::OK, "ready").into_response()
@@ -194,7 +190,9 @@ async fn readiness_handler(AxumState(state): AxumState<ServerState>) -> Response
 }
 
 /// Metrics handler
-async fn metrics_handler(AxumState(state): AxumState<ServerState>) -> Response {
+async fn metrics_handler<A: AuditLogger + Send + Sync + Clone + 'static>(
+    AxumState(state): AxumState<ServerState<A>>,
+) -> Response {
     let snapshot = state.metrics.snapshot();
     (StatusCode::OK, format!("{:?}", snapshot)).into_response()
 }
@@ -204,6 +202,9 @@ mod tests {
     use super::*;
     use composable_rust_agent_patterns::audit::InMemoryAuditLogger;
     use composable_rust_agent_patterns::security::SecurityMonitor;
+    use composable_rust_core::environment::{Clock, SystemClock};
+    use composable_rust_testing::InMemoryEventStore;
+    use crate::environment::ProductionEnvironment;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
@@ -212,15 +213,27 @@ mod tests {
     async fn test_health_endpoint() {
         let audit_logger = Arc::new(InMemoryAuditLogger::new());
         let security_monitor = Arc::new(SecurityMonitor::new());
+        let event_store: Arc<dyn composable_rust_core::event_store::EventStore> =
+            Arc::new(InMemoryEventStore::new());
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+
         let environment = Arc::new(ProductionEnvironment::new(
             audit_logger.clone(),
             security_monitor.clone(),
+            event_store,
+            clock,
         ));
-        let reducer = Arc::new(ProductionAgentReducer::new(audit_logger, security_monitor));
+        let reducer = ProductionAgentReducer::new(
+            audit_logger,
+            security_monitor,
+        );
+        let state = AgentState::new();
+        let store = Arc::new(Store::new(state, reducer, (*environment).clone()));
+
         let metrics = Arc::new(AgentMetrics::new());
         let health_registry = Arc::new(SystemHealthCheck::new());
 
-        let app = create_server(reducer, environment, metrics, health_registry).await;
+        let app = create_server(store, environment, metrics, health_registry).await;
 
         let response = app
             .oneshot(
@@ -239,15 +252,27 @@ mod tests {
     async fn test_liveness_endpoint() {
         let audit_logger = Arc::new(InMemoryAuditLogger::new());
         let security_monitor = Arc::new(SecurityMonitor::new());
+        let event_store: Arc<dyn composable_rust_core::event_store::EventStore> =
+            Arc::new(InMemoryEventStore::new());
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+
         let environment = Arc::new(ProductionEnvironment::new(
             audit_logger.clone(),
             security_monitor.clone(),
+            event_store,
+            clock,
         ));
-        let reducer = Arc::new(ProductionAgentReducer::new(audit_logger, security_monitor));
+        let reducer = ProductionAgentReducer::new(
+            audit_logger,
+            security_monitor,
+        );
+        let state = AgentState::new();
+        let store = Arc::new(Store::new(state, reducer, (*environment).clone()));
+
         let metrics = Arc::new(AgentMetrics::new());
         let health_registry = Arc::new(SystemHealthCheck::new());
 
-        let app = create_server(reducer, environment, metrics, health_registry).await;
+        let app = create_server(store, environment, metrics, health_registry).await;
 
         let response = app
             .oneshot(

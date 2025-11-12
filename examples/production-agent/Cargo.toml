@@ -6,8 +6,12 @@ edition = "2024"
 [dependencies]
 composable-rust-core = { path = "../../core" }
 composable-rust-runtime = { path = "../../runtime" }
-composable-rust-agent-patterns = { path = "../../agent-patterns" }
+composable-rust-agent-patterns = { path = "../../agent-patterns", features = ["audit-postgres"] }
 composable-rust-anthropic = { path = "../../anthropic" }
+composable-rust-postgres = { path = "../../postgres" }
+composable-rust-redpanda = { path = "../../redpanda" }
+composable-rust-projections = { path = "../../projections" }
+composable-rust-auth = { path = "../../auth" }
 
 # Async runtime
 tokio = { workspace = true }
@@ -47,5 +51,9 @@ dotenvy = "0.15"
 
 # Futures
 futures = { workspace = true }
+
+# Database
+sqlx = { workspace = true }
+bincode = { workspace = true }
 
 [dev-dependencies]
