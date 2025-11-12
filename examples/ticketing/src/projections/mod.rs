@@ -71,10 +71,15 @@
 //! - Fixing bugs in projection logic (replay with fix)
 //! - Experimenting with different views (replay into new projection)
 
+// PostgreSQL-backed projections (framework-compatible)
+pub mod available_seats_postgres;
+
+// In-memory projections (for testing and legacy compatibility)
 pub mod available_seats;
 pub mod customer_history;
 pub mod sales_analytics;
 
+pub use available_seats_postgres::PostgresAvailableSeatsProjection;
 pub use available_seats::{AvailableSeatsProjection, SeatAvailability};
 pub use customer_history::{CustomerHistoryProjection, CustomerPurchase};
 pub use sales_analytics::{SalesAnalyticsProjection, SalesMetrics};

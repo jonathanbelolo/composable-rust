@@ -8,8 +8,10 @@ use std::env;
 /// Application configuration loaded from environment variables.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    /// `PostgreSQL` configuration
+    /// `PostgreSQL` configuration (event store - write side)
     pub postgres: PostgresConfig,
+    /// `PostgreSQL` projection configuration (read side - separate DB for CQRS)
+    pub projections: PostgresConfig,
     /// RedPanda/Kafka configuration
     pub redpanda: RedpandaConfig,
     /// Application server configuration
@@ -134,7 +136,7 @@ impl Config {
         Self {
             postgres: PostgresConfig {
                 url: env::var("DATABASE_URL")
-                    .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/ticketing".to_string()),
+                    .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/ticketing_events".to_string()),
                 max_connections: env::var("DATABASE_MAX_CONNECTIONS")
                     .ok()
                     .and_then(|s| s.parse().ok())
@@ -158,6 +160,33 @@ impl Config {
                 ssl_mode: env::var("DATABASE_SSL_MODE")
                     .unwrap_or_else(|_| "prefer".to_string()),
                 ssl_root_cert: env::var("DATABASE_SSL_ROOT_CERT").ok(),
+            },
+            projections: PostgresConfig {
+                url: env::var("PROJECTION_DATABASE_URL")
+                    .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/ticketing_projections".to_string()),
+                max_connections: env::var("PROJECTION_DATABASE_MAX_CONNECTIONS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(10),
+                min_connections: env::var("PROJECTION_DATABASE_MIN_CONNECTIONS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(2),
+                connect_timeout: env::var("PROJECTION_DATABASE_CONNECT_TIMEOUT")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(30),
+                statement_timeout: env::var("PROJECTION_DATABASE_STATEMENT_TIMEOUT")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(60),
+                idle_timeout: env::var("PROJECTION_DATABASE_IDLE_TIMEOUT")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(600),
+                ssl_mode: env::var("PROJECTION_DATABASE_SSL_MODE")
+                    .unwrap_or_else(|_| "prefer".to_string()),
+                ssl_root_cert: env::var("PROJECTION_DATABASE_SSL_ROOT_CERT").ok(),
             },
             redpanda: RedpandaConfig {
                 brokers: env::var("REDPANDA_BROKERS")
