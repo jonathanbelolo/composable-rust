@@ -73,6 +73,7 @@
 
 // PostgreSQL-backed projections (framework-compatible)
 pub mod available_seats_postgres;
+pub mod manager;
 
 // In-memory projections (for testing and legacy compatibility)
 pub mod available_seats;
@@ -83,6 +84,7 @@ pub use available_seats_postgres::PostgresAvailableSeatsProjection;
 pub use available_seats::{AvailableSeatsProjection, SeatAvailability};
 pub use customer_history::{CustomerHistoryProjection, CustomerPurchase};
 pub use sales_analytics::{SalesAnalyticsProjection, SalesMetrics};
+pub use manager::{setup_projection_managers, ProjectionManagers};
 
 use crate::aggregates::{EventAction, InventoryAction, PaymentAction, ReservationAction};
 use serde::{Deserialize, Serialize};
