@@ -16,6 +16,7 @@ composable-rust-macros = { path = "../../macros" }
 composable-rust-postgres = { path = "../../postgres" }
 composable-rust-redpanda = { path = "../../redpanda" }
 composable-rust-projections = { path = "../../projections" }
+composable-rust-web = { path = "../../web" }
 
 # Workspace dependencies
 tokio = { workspace = true }

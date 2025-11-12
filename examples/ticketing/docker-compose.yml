@@ -1,25 +1,111 @@
 services:
-  # PostgreSQL database for event store and projections
-  postgres:
+  # PostgreSQL Event Store (port 5436)
+  postgres-events:
     image: postgres:16-alpine
-    container_name: ticketing-postgres
+    container_name: ticketing-postgres-events
     environment:
-      POSTGRES_DB: ticketing
+      POSTGRES_DB: ticketing_events
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
+      # WAL archiving for backups
+      POSTGRES_INITDB_ARGS: "-c wal_level=replica -c archive_mode=on"
     ports:
-      - "5433:5432"
+      - "5436:5432"  # Changed to 5436 to avoid conflict with local postgres
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_events_data:/var/lib/postgresql/data
+      - ./backups/wal_events:/var/lib/postgresql/wal_archive
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ticketing_events"]
       interval: 5s
       timeout: 5s
       retries: 5
     networks:
       - ticketing
 
-  # RedPanda (Kafka-compatible event bus)
+  # PostgreSQL Projections Store (port 5433)
+  postgres-projections:
+    image: postgres:16-alpine
+    container_name: ticketing-postgres-projections
+    environment:
+      POSTGRES_DB: ticketing_projections
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_projections_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ticketing_projections"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ticketing
+
+  # PostgreSQL Analytics Store (port 5434)
+  postgres-analytics:
+    image: postgres:16-alpine
+    container_name: ticketing-postgres-analytics
+    environment:
+      POSTGRES_DB: ticketing_analytics
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_analytics_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ticketing_analytics"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ticketing
+
+  # PostgreSQL Auth Store (port 5435)
+  postgres-auth:
+    image: postgres:16-alpine
+    container_name: ticketing-postgres-auth
+    environment:
+      POSTGRES_DB: ticketing_auth
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5435:5432"
+    volumes:
+      - postgres_auth_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ticketing_auth"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ticketing
+
+  # Redis for sessions, tokens, and rate limiting
+  redis:
+    image: redis:7-alpine
+    container_name: ticketing-redis
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --save 900 1
+      --save 300 10
+      --save 60 10000
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - ticketing
+
+  # Redpanda (Kafka-compatible event bus)
   redpanda:
     image: redpandadata/redpanda:v24.2.4
     container_name: ticketing-redpanda
@@ -40,6 +126,8 @@ services:
     ports:
       - "9092:9092"     # Kafka API
       - "9644:9644"     # Admin API
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
     healthcheck:
       test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true'"]
       interval: 5s
@@ -48,14 +136,14 @@ services:
     networks:
       - ticketing
 
-  # RedPanda Console for monitoring
+  # Redpanda Console for monitoring (optional)
   console:
     image: redpandadata/console:v2.7.2
     container_name: ticketing-console
     environment:
       KAFKA_BROKERS: redpanda:29092
     ports:
-      - "8080:8080"
+      - "8081:8080"  # Changed to 8081 to avoid conflict with HTTP server
     depends_on:
       redpanda:
         condition: service_healthy
@@ -67,4 +155,9 @@ networks:
     driver: bridge
 
 volumes:
-  postgres_data:
+  postgres_events_data:
+  postgres_projections_data:
+  postgres_analytics_data:
+  postgres_auth_data:
+  redis_data:
+  redpanda_data:
