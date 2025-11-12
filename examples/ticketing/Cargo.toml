@@ -17,6 +17,7 @@ composable-rust-postgres = { path = "../../postgres" }
 composable-rust-redpanda = { path = "../../redpanda" }
 composable-rust-projections = { path = "../../projections" }
 composable-rust-web = { path = "../../web" }
+composable-rust-auth = { path = "../../auth", features = ["postgres", "axum"] }
 
 # Workspace dependencies
 tokio = { workspace = true }
@@ -30,6 +31,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 futures = { workspace = true }
 sqlx = { workspace = true }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 
 [dev-dependencies]
 proptest = { workspace = true }

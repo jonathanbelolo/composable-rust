@@ -14,6 +14,10 @@ pub struct Config {
     pub redpanda: RedpandaConfig,
     /// Application server configuration
     pub server: ServerConfig,
+    /// Redis configuration (for auth sessions/tokens)
+    pub redis: RedisConfig,
+    /// Authentication configuration
+    pub auth: AuthConfig,
 }
 
 /// `PostgreSQL` configuration
@@ -87,6 +91,36 @@ pub struct ServerConfig {
     pub metrics_port: u16,
     /// Graceful shutdown timeout in seconds
     pub shutdown_timeout: u64,
+}
+
+/// Redis configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RedisConfig {
+    /// Redis connection URL
+    pub url: String,
+    /// Maximum number of connections in the pool
+    pub max_connections: u32,
+    /// Connection timeout in seconds
+    pub connect_timeout: u64,
+}
+
+/// Authentication configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthConfig {
+    /// Base URL for magic links and OAuth callbacks
+    pub base_url: String,
+    /// JWT secret for signing session tokens
+    pub jwt_secret: String,
+    /// Session TTL in seconds (default: 7 days)
+    pub session_ttl: u64,
+    /// Magic link token TTL in seconds (default: 15 minutes)
+    pub magic_link_ttl: u64,
+    /// Maximum concurrent sessions per user (0 = unlimited)
+    pub max_concurrent_sessions: usize,
+    /// Rate limit: requests per window
+    pub rate_limit_requests: u32,
+    /// Rate limit: window duration in seconds
+    pub rate_limit_window: u64,
 }
 
 impl Config {
@@ -182,6 +216,44 @@ impl Config {
                     .ok()
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(30),
+            },
+            redis: RedisConfig {
+                url: env::var("REDIS_URL")
+                    .unwrap_or_else(|_| "redis://localhost:6379".to_string()),
+                max_connections: env::var("REDIS_MAX_CONNECTIONS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(10),
+                connect_timeout: env::var("REDIS_CONNECT_TIMEOUT")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(30),
+            },
+            auth: AuthConfig {
+                base_url: env::var("AUTH_BASE_URL")
+                    .unwrap_or_else(|_| "http://localhost:8080".to_string()),
+                jwt_secret: env::var("AUTH_JWT_SECRET")
+                    .unwrap_or_else(|_| "dev-secret-change-in-production".to_string()),
+                session_ttl: env::var("AUTH_SESSION_TTL")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(604_800), // 7 days
+                magic_link_ttl: env::var("AUTH_MAGIC_LINK_TTL")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(900), // 15 minutes
+                max_concurrent_sessions: env::var("AUTH_MAX_CONCURRENT_SESSIONS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(5),
+                rate_limit_requests: env::var("AUTH_RATE_LIMIT_REQUESTS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(10),
+                rate_limit_window: env::var("AUTH_RATE_LIMIT_WINDOW")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(60), // 1 minute
             },
         }
     }
