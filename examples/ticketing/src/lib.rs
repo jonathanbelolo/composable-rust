@@ -87,6 +87,7 @@ pub mod config;
 pub mod projections;
 pub mod types;
 pub mod server;
+pub mod api;
 
 pub use aggregates::{EventAction, EventReducer, InventoryAction, InventoryReducer};
 pub use app::TicketingApp;

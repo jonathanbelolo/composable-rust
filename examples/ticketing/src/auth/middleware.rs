@@ -29,6 +29,7 @@
 //! ```
 
 use crate::auth::setup::TicketingAuthStore;
+use crate::server::state::AppState;
 use composable_rust_auth::{AuthAction, state::{Session, SessionId, UserId}};
 use composable_rust_web::{
     error::AppError,
@@ -91,6 +92,7 @@ pub struct SessionUser {
     pub session: Session,
 }
 
+// Implementation for Arc<TicketingAuthStore> (used by auth routes)
 #[async_trait]
 impl FromRequestParts<Arc<TicketingAuthStore>> for SessionUser
 {
@@ -154,6 +156,21 @@ impl FromRequestParts<Arc<TicketingAuthStore>> for SessionUser
     }
 }
 
+// Implementation for AppState (used by API routes)
+#[async_trait]
+impl FromRequestParts<AppState> for SessionUser
+{
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        // Delegate to the Arc<TicketingAuthStore> implementation
+        Self::from_request_parts(parts, &state.auth_store).await
+    }
+}
+
 /// Require admin role.
 ///
 /// Validates that the authenticated user has admin privileges.
@@ -198,6 +215,21 @@ impl FromRequestParts<Arc<TicketingAuthStore>> for RequireAdmin
             user_id: session_user.user_id,
             session: session_user.session,
         })
+    }
+}
+
+// Implementation for AppState
+#[async_trait]
+impl FromRequestParts<AppState> for RequireAdmin
+{
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        // Delegate to the Arc<TicketingAuthStore> implementation
+        Self::from_request_parts(parts, &state.auth_store).await
     }
 }
 
@@ -281,6 +313,23 @@ where
             user_id: session_user.user_id,
             resource,
         })
+    }
+}
+
+// Implementation for AppState
+#[async_trait]
+impl<T> FromRequestParts<AppState> for RequireOwnership<T>
+where
+    T: ResourceId,
+{
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        // Delegate to the Arc<TicketingAuthStore> implementation
+        Self::from_request_parts(parts, &state.auth_store).await
     }
 }
 

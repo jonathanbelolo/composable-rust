@@ -10,6 +10,7 @@ use crate::auth::setup::TicketingAuthStore;
 use crate::projections::PostgresAvailableSeatsProjection;
 use composable_rust_core::event_bus::EventBus;
 use composable_rust_postgres::PostgresEventStore;
+use axum::extract::FromRef;
 use std::sync::Arc;
 
 /// Application state shared across all HTTP handlers.
@@ -60,5 +61,12 @@ impl AppState {
             event_bus,
             available_seats_projection,
         }
+    }
+}
+
+// Implement FromRef to allow extractors to get auth_store from AppState
+impl FromRef<AppState> for Arc<TicketingAuthStore> {
+    fn from_ref(app_state: &AppState) -> Self {
+        app_state.auth_store.clone()
     }
 }
