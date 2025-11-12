@@ -1,6 +1,6 @@
-//! PostgreSQL storage implementations.
+//! `PostgreSQL` storage implementations.
 //!
-//! This module provides persistent storage using PostgreSQL for:
+//! This module provides persistent storage using `PostgreSQL` for:
 //! - Device registry (permanent audit trail)
 //! - User accounts
 //! - OAuth links

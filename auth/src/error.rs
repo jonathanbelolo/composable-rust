@@ -133,11 +133,11 @@ pub enum AuthError {
     // ═══════════════════════════════════════════════════════════
 
     /// `WebAuthn` challenge has expired.
-    #[error("WebAuthn challenge has expired")]
+    #[error("`WebAuthn` challenge has expired")]
     ChallengeExpired,
 
     /// `WebAuthn` challenge not found.
-    #[error("WebAuthn challenge not found")]
+    #[error("`WebAuthn` challenge not found")]
     ChallengeNotFound,
 
     /// `WebAuthn` origin mismatch (phishing protection).
@@ -183,6 +183,7 @@ impl AuthError {
     /// assert!(AuthError::InvalidCredentials.is_user_error());
     /// assert!(!AuthError::InternalError("test".to_string()).is_user_error());
     /// ```
+    #[must_use]
     pub const fn is_user_error(&self) -> bool {
         matches!(
             self,
@@ -203,6 +204,7 @@ impl AuthError {
     /// assert!(AuthError::OriginMismatch.is_security_issue());
     /// assert!(!AuthError::SessionExpired.is_security_issue());
     /// ```
+    #[must_use]
     pub const fn is_security_issue(&self) -> bool {
         matches!(
             self,

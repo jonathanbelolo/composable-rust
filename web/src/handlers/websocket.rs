@@ -107,6 +107,7 @@ pub enum WsMessage<A> {
 ///     .route("/ws", get(websocket::handle::<OrderState, OrderAction, _, _>))
 ///     .with_state(store);
 /// ```
+#[allow(clippy::unused_async)] // Axum handler signature requires async
 pub async fn handle<S, A, E, R>(
     ws: WebSocketUpgrade,
     State(store): State<Arc<Store<S, A, E, R>>>,
@@ -126,6 +127,7 @@ where
 /// Spawns two concurrent tasks:
 /// 1. **Receiver**: Process incoming messages from client
 /// 2. **Sender**: Stream action broadcasts to client
+#[allow(clippy::cognitive_complexity)] // WebSocket handler with multiple message types
 async fn handle_socket<S, A, E, R>(socket: WebSocket, store: Arc<Store<S, A, E, R>>)
 where
     S: Clone + Send + Sync + 'static,

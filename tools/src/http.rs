@@ -26,6 +26,7 @@ const MAX_RESPONSE_SIZE: usize = 50 * 1024 * 1024;
 /// }
 /// ```
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn http_request_tool() -> (Tool, ToolExecutorFn) {
     let tool = Tool {
         name: "http_request".to_string(),

@@ -32,7 +32,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// **Production**: Use `RedisRateLimiter` which has automatic `TTL`-based cleanup.
 #[derive(Debug, Clone)]
 pub struct MockRateLimiter {
-    /// Map of key -> Vec<timestamp_ms>
+    /// Map of key -> Vec<`timestamp_ms`>
     attempts: Arc<Mutex<HashMap<String, Vec<u64>>>>,
 }
 

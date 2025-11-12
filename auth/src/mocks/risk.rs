@@ -73,41 +73,39 @@ impl RiskCalculator for MockRiskCalculator {
         }
     }
 
-    fn is_ip_suspicious(
+    async fn is_ip_suspicious(
         &self,
         _ip_address: IpAddr,
-    ) -> impl Future<Output = Result<bool>> + Send {
-        async move { Ok(false) }
+    ) -> Result<bool> {
+        Ok(false)
     }
 
-    fn get_ip_location(
+    async fn get_ip_location(
         &self,
         _ip_address: IpAddr,
-    ) -> impl Future<Output = Result<IpLocation>> + Send {
-        async move {
-            Ok(IpLocation {
-                country: "US".to_string(),
-                region: Some("CA".to_string()),
-                city: Some("San Francisco".to_string()),
-                latitude: 37.7749,
-                longitude: -122.4194,
-            })
-        }
+    ) -> Result<IpLocation> {
+        Ok(IpLocation {
+            country: "US".to_string(),
+            region: Some("CA".to_string()),
+            city: Some("San Francisco".to_string()),
+            latitude: 37.7749,
+            longitude: -122.4194,
+        })
     }
 
-    fn detect_impossible_travel(
+    async fn detect_impossible_travel(
         &self,
         _from_location: &str,
         _to_location: &str,
         _time_delta: chrono::Duration,
-    ) -> impl Future<Output = Result<bool>> + Send {
-        async move { Ok(false) }
+    ) -> Result<bool> {
+        Ok(false)
     }
 
-    fn check_credential_breach(
+    async fn check_credential_breach(
         &self,
         _email: &str,
-    ) -> impl Future<Output = Result<bool>> + Send {
-        async move { Ok(false) }
+    ) -> Result<bool> {
+        Ok(false)
     }
 }

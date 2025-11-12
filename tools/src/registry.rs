@@ -55,6 +55,11 @@ impl ToolRegistry {
     /// let replaced = registry.register(tool, executor);
     /// assert!(!replaced); // First registration
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned (indicates a panic in another thread)
+    #[allow(clippy::expect_used)]
     pub fn register(&self, tool: Tool, executor: ToolExecutorFn) -> bool {
         let mut tools = self
             .tools
@@ -79,6 +84,11 @@ impl ToolRegistry {
     /// # Errors
     ///
     /// Returns `ToolError` if the tool is not found or execution fails
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned (indicates a panic in another thread)
+    #[allow(clippy::expect_used)]
     pub async fn execute(&self, name: &str, input: String) -> ToolResult {
         // Get executor (release lock quickly)
         let executor = {
@@ -109,7 +119,12 @@ impl ToolRegistry {
     ///     println!("Registered tool: {}", tool_name);
     /// }
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned (indicates a panic in another thread)
     #[must_use]
+    #[allow(clippy::expect_used)]
     pub fn list_tools(&self) -> Vec<String> {
         let tools = self
             .tools
@@ -130,7 +145,12 @@ impl ToolRegistry {
     /// let tools = registry.get_tools();
     /// // Pass to Claude API: MessagesRequest { tools: Some(tools), ... }
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned (indicates a panic in another thread)
     #[must_use]
+    #[allow(clippy::expect_used)]
     pub fn get_tools(&self) -> Vec<Tool> {
         let tools = self
             .tools
@@ -152,7 +172,12 @@ impl ToolRegistry {
     ///     println!("Tool description: {}", tool.description);
     /// }
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned (indicates a panic in another thread)
     #[must_use]
+    #[allow(clippy::expect_used)]
     pub fn get_tool(&self, name: &str) -> Option<Tool> {
         let tools = self
             .tools
@@ -171,6 +196,12 @@ impl ToolRegistry {
     /// let removed = registry.unregister("http_get");
     /// assert!(removed);
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned (indicates a panic in another thread)
+    #[must_use]
+    #[allow(clippy::expect_used)]
     pub fn unregister(&self, name: &str) -> bool {
         let mut tools = self
             .tools
@@ -187,6 +218,11 @@ impl ToolRegistry {
     /// registry.clear();
     /// assert_eq!(registry.list_tools().len(), 0);
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned (indicates a panic in another thread)
+    #[allow(clippy::expect_used)]
     pub fn clear(&self) {
         let mut tools = self
             .tools
@@ -203,7 +239,12 @@ impl ToolRegistry {
     /// let count = registry.count();
     /// println!("Registered tools: {}", count);
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned (indicates a panic in another thread)
     #[must_use]
+    #[allow(clippy::expect_used)]
     pub fn count(&self) -> usize {
         let tools = self
             .tools

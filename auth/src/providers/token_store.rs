@@ -1,7 +1,7 @@
 //! Token store trait.
 //!
 //! This module defines the trait for storing and consuming one-time tokens
-//! (magic link tokens, OAuth states, WebAuthn challenges) with atomic
+//! (magic link tokens, OAuth states, ` WebAuthn` challenges) with atomic
 //! single-use semantics.
 
 use crate::error::Result;

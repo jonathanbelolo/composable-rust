@@ -33,6 +33,7 @@ impl Default for MockOAuthTokenStore {
 }
 
 impl OAuthTokenStore for MockOAuthTokenStore {
+    #[allow(clippy::unwrap_used)] // Test mock: mutex poisoning is a test failure
     async fn store_tokens(&self, tokens: &OAuthTokenData) -> Result<()> {
         let mut store = self.tokens.lock().unwrap();
         let key = (tokens.user_id, tokens.provider);
@@ -40,6 +41,7 @@ impl OAuthTokenStore for MockOAuthTokenStore {
         Ok(())
     }
 
+    #[allow(clippy::unwrap_used)] // Test mock: mutex poisoning is a test failure
     async fn get_tokens(
         &self,
         user_id: UserId,
@@ -50,6 +52,7 @@ impl OAuthTokenStore for MockOAuthTokenStore {
         Ok(store.get(&key).cloned())
     }
 
+    #[allow(clippy::unwrap_used)] // Test mock: mutex poisoning is a test failure
     async fn delete_tokens(&self, user_id: UserId, provider: OAuthProvider) -> Result<()> {
         let mut store = self.tokens.lock().unwrap();
         let key = (user_id, provider);

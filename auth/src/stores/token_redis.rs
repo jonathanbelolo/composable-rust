@@ -82,7 +82,7 @@ impl RedisTokenStore {
     ///
     /// # Arguments
     ///
-    /// * `redis_url` - `Redis` connection URL (e.g., "redis://127.0.0.1:6379")
+    /// * `redis_url` - `Redis` connection URL (e.g., "<redis://127.0.0.1:6379>")
     ///
     /// # Connection URL Format
     ///
@@ -200,85 +200,82 @@ impl TokenStore for RedisTokenStore {
             .await
             .map_err(|e| AuthError::InternalError(format!("Failed to consume token: {e}")))?;
 
-        match token_bytes {
-            Some(bytes) => {
-                // Deserialize
-                let token_data: TokenData = bincode::deserialize(&bytes)
-                    .map_err(|e| AuthError::SerializationError(e.to_string()))?;
+        if let Some(bytes) = token_bytes {
+            // Deserialize
+            let token_data: TokenData = bincode::deserialize(&bytes)
+                .map_err(|e| AuthError::SerializationError(e.to_string()))?;
 
-                // ✅ SECURITY: Constant-time token comparison to prevent timing attacks
-                //
-                // Using variable-time comparison (==) would allow attackers to:
-                // 1. Measure response time for different token values
-                // 2. Determine which characters match via timing differences
-                // 3. Gradually reconstruct the token character-by-character
-                //
-                // constant_time_eq prevents this by always taking the same time
-                // regardless of where the first mismatch occurs.
-                let token_matches = constant_time_eq::constant_time_eq(
-                    token.as_bytes(),
-                    token_data.token.as_bytes(),
-                );
+            // ✅ SECURITY: Constant-time token comparison to prevent timing attacks
+            //
+            // Using variable-time comparison (==) would allow attackers to:
+            // 1. Measure response time for different token values
+            // 2. Determine which characters match via timing differences
+            // 3. Gradually reconstruct the token character-by-character
+            //
+            // constant_time_eq prevents this by always taking the same time
+            // regardless of where the first mismatch occurs.
+            let token_matches = constant_time_eq::constant_time_eq(
+                token.as_bytes(),
+                token_data.token.as_bytes(),
+            );
 
-                // ✅ SECURITY: Defense-in-depth expiration check
-                //
-                // Although Redis TTL should automatically delete expired tokens,
-                // we validate expiration here to guard against:
-                // - Clock skew between application and Redis
-                // - Manual Redis TTL manipulation (PERSIST command)
-                // - Redis configuration issues (maxmemory-policy noeviction)
-                let now = Utc::now();
-                let is_expired = token_data.expires_at <= now;
+            // ✅ SECURITY: Defense-in-depth expiration check
+            //
+            // Although Redis TTL should automatically delete expired tokens,
+            // we validate expiration here to guard against:
+            // - Clock skew between application and Redis
+            // - Manual Redis TTL manipulation (PERSIST command)
+            // - Redis configuration issues (maxmemory-policy noeviction)
+            let now = Utc::now();
+            let is_expired = token_data.expires_at <= now;
 
-                // Both conditions must pass
-                let is_valid = token_matches && !is_expired;
+            // Both conditions must pass
+            let is_valid = token_matches && !is_expired;
 
-                if is_valid {
-                    tracing::info!(
-                        token_type = ?token_data.token_type,
-                        token_id = token_id,
-                        "Token consumed successfully (single-use)"
-                    );
-                    Ok(Some(token_data))
-                } else {
-                    // ✅ SECURITY: Generic error path prevents information leakage
-                    //
-                    // We return None for both "wrong token" and "expired token" cases
-                    // to prevent attackers from distinguishing between:
-                    // - Valid but expired tokens (token exists in system)
-                    // - Invalid tokens (token never existed or was consumed)
-                    //
-                    // This prevents token enumeration and timing attacks.
-                    if !token_matches {
-                        tracing::warn!(
-                            token_id = token_id,
-                            "Token consumption failed: token mismatch"
-                        );
-                    } else {
-                        tracing::warn!(
-                            token_id = token_id,
-                            expires_at = %token_data.expires_at,
-                            now = %now,
-                            "Token consumption failed: token expired (TTL should have cleaned this up)"
-                        );
-                    }
-                    Ok(None)
-                }
-            }
-            None => {
-                // Token not found - could be:
-                // 1. Already consumed (single-use semantics)
-                // 2. Expired (Redis TTL deleted it)
-                // 3. Never existed (invalid token_id)
-                //
-                // We don't distinguish between these cases for security
-                // (prevents enumeration of valid token IDs).
-                tracing::debug!(
+            if is_valid {
+                tracing::info!(
+                    token_type = ?token_data.token_type,
                     token_id = token_id,
-                    "Token not found (consumed, expired, or invalid)"
+                    "Token consumed successfully (single-use)"
                 );
+                Ok(Some(token_data))
+            } else {
+                // ✅ SECURITY: Generic error path prevents information leakage
+                //
+                // We return None for both "wrong token" and "expired token" cases
+                // to prevent attackers from distinguishing between:
+                // - Valid but expired tokens (token exists in system)
+                // - Invalid tokens (token never existed or was consumed)
+                //
+                // This prevents token enumeration and timing attacks.
+                if token_matches {
+                    tracing::warn!(
+                        token_id = token_id,
+                        expires_at = %token_data.expires_at,
+                        now = %now,
+                        "Token consumption failed: token expired (TTL should have cleaned this up)"
+                    );
+                } else {
+                    tracing::warn!(
+                        token_id = token_id,
+                        "Token consumption failed: token mismatch"
+                    );
+                }
                 Ok(None)
             }
+        } else {
+            // Token not found - could be:
+            // 1. Already consumed (single-use semantics)
+            // 2. Expired (Redis TTL deleted it)
+            // 3. Never existed (invalid token_id)
+            //
+            // We don't distinguish between these cases for security
+            // (prevents enumeration of valid token IDs).
+            tracing::debug!(
+                token_id = token_id,
+                "Token not found (consumed, expired, or invalid)"
+            );
+            Ok(None)
         }
     }
 

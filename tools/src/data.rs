@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 /// Create the `json_query` tool
 ///
-/// Query JSON data using JSONPath expressions.
+/// Query JSON data using `JSONPath` expressions.
 ///
 /// Returns JSON:
 /// ```json

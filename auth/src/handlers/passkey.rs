@@ -71,7 +71,7 @@ pub struct CompletePasskeyRegistrationRequest {
     /// Public key (base64).
     pub public_key: String,
 
-    /// Attestation response from navigator.credentials.create().
+    /// Attestation response from `navigator.credentials.create()`.
     pub attestation_response: String,
 }
 
@@ -111,7 +111,7 @@ pub struct CompletePasskeyLoginRequest {
     /// Credential ID used.
     pub credential_id: String,
 
-    /// Assertion response from navigator.credentials.get().
+    /// Assertion response from `navigator.credentials.get()`.
     pub assertion_response: String,
 }
 
@@ -140,7 +140,7 @@ pub struct CompletePasskeyLoginResponse {
 /// Content-Type: application/json
 ///
 /// {
-///   "`user_id`": "uuid",
+///   "``user_id``": "uuid",
 ///   "device_name": "My Phone"
 /// }
 /// ```
@@ -231,7 +231,7 @@ where
 /// Content-Type: application/json
 ///
 /// {
-///   "`user_id`": "uuid",
+///   "``user_id``": "uuid",
 ///   "device_id": "uuid",
 ///   "credential_id": "base64...",
 ///   "public_key": "base64...",

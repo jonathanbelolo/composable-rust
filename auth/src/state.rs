@@ -201,6 +201,7 @@ impl OAuthProvider {
     /// # Errors
     ///
     /// Returns error if the provider string is not recognized.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Result<Self, String> {
         match s.to_lowercase().as_str() {
             "google" => Ok(Self::Google),

@@ -81,7 +81,7 @@ impl SessionStore for MockSessionStore {
 
                 for session_id in &user_sessions {
                     if let Some(s) = sessions_guard.get(session_id) {
-                        if oldest_created_at.is_none() || s.created_at < oldest_created_at.unwrap() {
+                        if oldest_created_at.is_none_or(|oldest| s.created_at < oldest) {
                             oldest_created_at = Some(s.created_at);
                             oldest_id = Some(*session_id);
                         }
@@ -214,6 +214,7 @@ impl SessionStore for MockSessionStore {
                 ));
             }
 
+            #[allow(clippy::float_cmp)]
             if existing_session.login_risk_score != session.login_risk_score {
                 tracing::error!(
                     session_id = %session.session_id.0,

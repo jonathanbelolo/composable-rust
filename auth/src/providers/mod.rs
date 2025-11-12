@@ -40,7 +40,7 @@
 //!
 //! This enables:
 //! - **Testing**: Use mocks (in-memory, deterministic)
-//! - **Production**: Use real services (PostgreSQL, Redis, SendGrid, etc.)
+//! - **Production**: Use real services (` PostgreSQL`, `Redis`, `SendGrid`, etc.)
 //! - **Development**: Use instrumented versions (logging, tracing)
 //! - **CQRS**: Clear separation between write (events) and read (projections)
 
@@ -178,7 +178,7 @@ pub enum DeviceType {
 /// Device fingerprint for enhanced device recognition.
 ///
 /// This struct stores browser/device fingerprinting data collected on the client
-/// side (e.g., via FingerprintJS, ClientJS, or custom fingerprinting logic).
+/// side (e.g., via `FingerprintJS`, `ClientJS`, or custom fingerprinting logic).
 ///
 /// # Purpose
 ///
@@ -198,8 +198,8 @@ pub enum DeviceType {
 ///
 /// This is a backend library - fingerprints must be collected client-side.
 /// Example libraries:
-/// - FingerprintJS (commercial, high accuracy)
-/// - ClientJS (open source, basic)
+/// - `FingerprintJS` (commercial, high accuracy)
+/// - `ClientJS` (open source, basic)
 /// - Custom canvas/WebGL/audio fingerprinting
 ///
 /// # Fields

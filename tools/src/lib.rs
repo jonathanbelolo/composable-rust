@@ -23,14 +23,14 @@
 //!
 //! ## Modules
 //!
-//! - `http`: HTTP request tools (request, get, get_markdown)
-//! - `file_io`: File I/O tools (read_file, list_directory)
-//! - `time`: Time tools (current_time)
+//! - `http`: HTTP request tools (request, get, `get_markdown`)
+//! - `file_io`: File I/O tools (`read_file`, `list_directory`)
+//! - `time`: Time tools (`current_time`)
 //! - `calculation`: Calculation tools (calculate)
-//! - `data`: Data manipulation tools (json_query, string_transform)
+//! - `data`: Data manipulation tools (`json_query`, `string_transform`)
 //! - `todo`: Todo management tools (add, list, complete, delete)
-//! - `mock`: Mock tools for testing (memory_search, web_search)
-//! - `streaming`: Streaming tool examples (progress_counter, stream_lines)
+//! - `mock`: Mock tools for testing (`memory_search`, `web_search`)
+//! - `streaming`: Streaming tool examples (`progress_counter`, `stream_lines`)
 //! - `registry`: Tool registry for dynamic tool management
 //! - `retry`: Retry policies and timeout handling
 

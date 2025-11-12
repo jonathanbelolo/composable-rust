@@ -10,14 +10,14 @@
 //! ⚠️ **CRITICAL**: All tokens are encrypted at rest using AES-256-GCM before storing in Redis.
 //! The encryption key MUST be:
 //! - Generated using a CSPRNG (cryptographically secure random number generator)
-//! - Stored securely (e.g., AWS Secrets Manager, HashiCorp Vault, environment variable)
+//! - Stored securely (e.g., AWS Secrets Manager, `HashiCorp` Vault, environment variable)
 //! - Rotated periodically (e.g., every 90 days)
 //! - Never committed to version control
 //!
 //! # Architecture
 //!
 //! Tokens are stored in Redis with:
-//! - **Primary key**: `oauth_token:{user_id}:{provider}` → encrypted bincode-serialized OAuthTokenData
+//! - **Primary key**: `oauth_token:{user_id}:{provider}` → encrypted bincode-serialized `OAuthTokenData`
 //! - **TTL**: Aligned with token expiration (or 30 days default if no expiration)
 //!
 //! # Example
@@ -70,7 +70,7 @@ impl RedisOAuthTokenStore {
     ///
     /// # Arguments
     ///
-    /// * `redis_url` - `Redis` connection URL (e.g., "redis://127.0.0.1:6379")
+    /// * `redis_url` - `Redis` connection URL (e.g., "<redis://127.0.0.1:6379>")
     /// * `encryption_key` - 32-byte AES-256 encryption key (MUST be from secure source)
     ///
     /// # Errors
@@ -113,7 +113,7 @@ impl RedisOAuthTokenStore {
     }
 
     /// Get the `Redis` key for `OAuth` tokens.
-    fn token_key(user_id: &UserId, provider: &OAuthProvider) -> String {
+    fn token_key(user_id: &UserId, provider: OAuthProvider) -> String {
         format!("oauth_token:{}:{}", user_id.0, provider.as_str())
     }
 
@@ -143,12 +143,13 @@ impl RedisOAuthTokenStore {
             ));
         }
 
-        let nonce = Nonce::clone_from_slice(nonce_bytes);
+        #[allow(deprecated)] // generic-array 1.x upgrade needed in aes_gcm crate
+        let nonce = Nonce::from_slice(nonce_bytes);
 
         // Decrypt
         let plaintext = self
             .cipher
-            .decrypt(&nonce, ciphertext)
+            .decrypt(nonce, ciphertext)
             .map_err(|e| AuthError::InternalError(format!("Decryption failed: {e}")))?;
 
         Ok(plaintext)
@@ -185,7 +186,7 @@ impl Clone for RedisOAuthTokenStore {
 impl OAuthTokenStore for RedisOAuthTokenStore {
     async fn store_tokens(&self, tokens: &OAuthTokenData) -> Result<()> {
         let mut conn = self.conn_manager.clone();
-        let token_key = Self::token_key(&tokens.user_id, &tokens.provider);
+        let token_key = Self::token_key(&tokens.user_id, tokens.provider);
 
         // Serialize token data
         let token_bytes =
@@ -226,7 +227,7 @@ impl OAuthTokenStore for RedisOAuthTokenStore {
         provider: OAuthProvider,
     ) -> Result<Option<OAuthTokenData>> {
         let mut conn = self.conn_manager.clone();
-        let token_key = Self::token_key(&user_id, &provider);
+        let token_key = Self::token_key(&user_id, provider);
 
         let encrypted_data: Option<Vec<u8>> = conn.get(&token_key).await.map_err(|e| {
             AuthError::InternalError(format!("Failed to get OAuth tokens from Redis: {e}"))
@@ -258,7 +259,7 @@ impl OAuthTokenStore for RedisOAuthTokenStore {
 
     async fn delete_tokens(&self, user_id: UserId, provider: OAuthProvider) -> Result<()> {
         let mut conn = self.conn_manager.clone();
-        let token_key = Self::token_key(&user_id, &provider);
+        let token_key = Self::token_key(&user_id, provider);
 
         let _: () = conn.del(&token_key).await.map_err(|e| {
             AuthError::InternalError(format!("Failed to delete OAuth tokens from Redis: {e}"))

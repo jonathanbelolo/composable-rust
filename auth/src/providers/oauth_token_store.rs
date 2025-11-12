@@ -50,7 +50,7 @@ pub struct OAuthTokenData {
 /// ```ignore
 /// // Store tokens after `OAuth` success
 /// let token_data = OAuthTokenData {
-///     `user_id`,
+///     ``user_id``,
 ///     provider: OAuthProvider::Google,
 ///     access_token: "encrypted_access_token".to_string(),
 ///     refresh_token: Some("encrypted_refresh_token".to_string()),
@@ -61,7 +61,7 @@ pub struct OAuthTokenData {
 /// token_store.store_tokens(&token_data).await?;
 ///
 /// // Retrieve tokens later
-/// let tokens = token_store.get_tokens(`user_id`, OAuthProvider::Google).await?;
+/// let tokens = token_store.get_tokens(``user_id``, OAuthProvider::Google).await?;
 /// ```
 pub trait OAuthTokenStore: Send + Sync {
     /// Store `OAuth` tokens for a user.

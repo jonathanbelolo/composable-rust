@@ -1,7 +1,7 @@
-//! PostgreSQL user repository implementation.
+//! `PostgreSQL` user repository implementation.
 //!
 //! This module provides persistent storage for user accounts, OAuth links,
-//! magic link tokens, and passkey credentials using PostgreSQL.
+//! magic link tokens, and passkey credentials using `PostgreSQL`.
 //!
 //! # Architecture
 //!
@@ -41,6 +41,7 @@ impl PostgresUserRepository {
     /// # Arguments
     ///
     /// * `pool` - `PostgreSQL` connection pool
+    #[must_use] 
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
     }
@@ -440,8 +441,7 @@ impl UserRepository for PostgresUserRepository {
         // Convert u32 counter to i32 for database
         let counter_i32 = i32::try_from(counter).map_err(|_| {
             AuthError::DatabaseError(format!(
-                "Counter value {} exceeds i32::MAX (implementation limit)",
-                counter
+                "Counter value {counter} exceeds i32::MAX (implementation limit)"
             ))
         })?;
 
@@ -475,14 +475,12 @@ impl UserRepository for PostgresUserRepository {
         // Convert u32 counters to i32 for database
         let expected_old_counter_i32 = i32::try_from(expected_old_counter).map_err(|_| {
             AuthError::DatabaseError(format!(
-                "Expected counter value {} exceeds i32::MAX",
-                expected_old_counter
+                "Expected counter value {expected_old_counter} exceeds i32::MAX"
             ))
         })?;
         let new_counter_i32 = i32::try_from(new_counter).map_err(|_| {
             AuthError::DatabaseError(format!(
-                "New counter value {} exceeds i32::MAX",
-                new_counter
+                "New counter value {new_counter} exceeds i32::MAX"
             ))
         })?;
 

@@ -94,6 +94,9 @@ pub fn parse_device_type(user_agent: &str) -> &'static str {
 pub fn validate_email(email: &str) -> crate::error::Result<()> {
     use crate::error::AuthError;
 
+    // Dangerous characters for validation (XSS/injection prevention)
+    const DANGEROUS_CHARS: &[char] = &['<', '>', '"', '\'', '&', '\\', '\0'];
+
     // Length validation
     if email.is_empty() {
         return Err(AuthError::InvalidInput("Email cannot be empty".into()));
@@ -141,14 +144,13 @@ pub fn validate_email(email: &str) -> crate::error::Result<()> {
     }
 
     // Check for control characters (security)
-    if email.chars().any(|c| c.is_control()) {
+    if email.chars().any(char::is_control) {
         return Err(AuthError::InvalidInput(
             "Email contains control characters".into(),
         ));
     }
 
     // Check for dangerous characters (XSS/injection prevention)
-    const DANGEROUS_CHARS: &[char] = &['<', '>', '"', '\'', '&', '\\', '\0'];
     if email.chars().any(|c| DANGEROUS_CHARS.contains(&c)) {
         return Err(AuthError::InvalidInput(
             "Email contains invalid characters".into(),
@@ -356,6 +358,9 @@ fn is_valid_email_legacy(email: &str) -> bool {
 pub fn validate_device_name(name: &str) -> crate::error::Result<()> {
     use crate::error::AuthError;
 
+    // Dangerous characters for validation (XSS prevention)
+    const DANGEROUS_CHARS: &[char] = &['<', '>', '"', '\'', '&', '\0'];
+
     if name.is_empty() {
         return Err(AuthError::InvalidInput("Device name cannot be empty".into()));
     }
@@ -368,14 +373,13 @@ pub fn validate_device_name(name: &str) -> crate::error::Result<()> {
     }
 
     // Check for control characters
-    if name.chars().any(|c| c.is_control()) {
+    if name.chars().any(char::is_control) {
         return Err(AuthError::InvalidInput(
             "Device name contains control characters".into(),
         ));
     }
 
     // Check for injection characters (stored XSS prevention)
-    const DANGEROUS_CHARS: &[char] = &['<', '>', '"', '\'', '&', '\0'];
     if name.chars().any(|c| DANGEROUS_CHARS.contains(&c)) {
         return Err(AuthError::InvalidInput(
             "Device name contains invalid characters".into(),
@@ -442,7 +446,7 @@ pub fn validate_platform(platform: &str) -> crate::error::Result<()> {
 ///
 /// Limits length to prevent:
 /// - HTTP header injection attacks (e.g., `User-Agent: foo\r\nX-Malicious: bar`)
-/// - DoS via excessive memory usage
+/// - `DoS` via excessive memory usage
 /// - Log injection attacks
 ///
 /// # Examples
@@ -481,7 +485,7 @@ pub fn validate_user_agent(user_agent: &str) -> crate::error::Result<()> {
     }
 
     // Check for control characters (especially \r, \n for header injection)
-    if user_agent.chars().any(|c| c.is_control()) {
+    if user_agent.chars().any(char::is_control) {
         return Err(AuthError::InvalidInput(
             "User-Agent contains control characters (possible header injection)".into(),
         ));
@@ -517,6 +521,9 @@ pub fn validate_user_agent(user_agent: &str) -> crate::error::Result<()> {
 pub fn validate_ip_address(ip: &str) -> crate::error::Result<()> {
     use crate::error::AuthError;
 
+    // Dangerous characters for validation (SQL injection prevention)
+    const DANGEROUS_CHARS: &[char] = &['\'', '"', ';', '-', '\\', '\0'];
+
     if ip.is_empty() {
         return Err(AuthError::InvalidInput("IP address cannot be empty".into()));
     }
@@ -539,7 +546,6 @@ pub fn validate_ip_address(ip: &str) -> crate::error::Result<()> {
     }
 
     // Check for SQL injection patterns (defense-in-depth)
-    const DANGEROUS_CHARS: &[char] = &['\'', '"', ';', '-', '\\', '\0'];
     if ip.chars().any(|c| DANGEROUS_CHARS.contains(&c)) {
         return Err(AuthError::InvalidInput(
             "IP address contains invalid characters".into(),
@@ -641,7 +647,7 @@ pub fn hash_fingerprint(fingerprint: &crate::providers::DeviceFingerprint) -> St
     let result = hasher.finalize();
 
     // Convert to hex string
-    format!("{:x}", result)
+    format!("{result:x}")
 }
 
 /// Compare two device fingerprints and calculate similarity score.
@@ -700,6 +706,7 @@ pub fn hash_fingerprint(fingerprint: &crate::providers::DeviceFingerprint) -> St
 /// ```
 #[must_use]
 #[allow(clippy::too_many_lines)] // Complex scoring logic is intentional
+#[allow(clippy::cognitive_complexity)] // Complex scoring logic is intentional
 pub fn fingerprint_similarity(
     a: &crate::providers::DeviceFingerprint,
     b: &crate::providers::DeviceFingerprint,

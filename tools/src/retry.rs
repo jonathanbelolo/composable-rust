@@ -27,7 +27,7 @@ pub enum RetryPolicy {
 
     /// Exponential backoff
     ///
-    /// Retries with exponentially increasing delays: initial_delay * (multiplier ^ attempt)
+    /// Retries with exponentially increasing delays: `initial_delay` * (multiplier ^ attempt)
     Exponential {
         /// Number of attempts (including the initial attempt)
         attempts: u32,
@@ -68,7 +68,7 @@ impl Default for ToolConfig {
 impl ToolConfig {
     /// Create a config with no retry
     #[must_use]
-    pub fn no_retry() -> Self {
+    pub const fn no_retry() -> Self {
         Self {
             retry_policy: RetryPolicy::None,
             timeout: Duration::from_secs(30),
@@ -131,6 +131,11 @@ impl ToolConfig {
 /// - All retry attempts fail
 /// - Timeout is exceeded
 /// - Underlying tool execution fails
+///
+/// # Panics
+///
+/// Panics if retry loop completes without any attempts (logic invariant, should never happen)
+#[allow(clippy::expect_used)]
 pub async fn execute_with_retry<F, Fut>(config: &ToolConfig, executor: F) -> ToolResult
 where
     F: Fn() -> Fut,

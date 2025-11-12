@@ -8,7 +8,7 @@
 //! The auth system follows the composable-rust event sourcing pattern:
 //!
 //! 1. **Commands** → Reducers validate and produce events
-//! 2. **Events** → Persisted to event store (PostgreSQL)
+//! 2. **Events** → Persisted to event store (` PostgreSQL`)
 //! 3. **Projections** → Read models rebuilt from events
 //! 4. **State** → Derived from event replay
 //!
@@ -268,7 +268,7 @@ pub enum AuthEvent {
     LoginAttempted {
         /// Email attempted
         email: String,
-        /// Authentication method (magic_link, oauth, passkey)
+        /// Authentication method (`magic_link`, oauth, passkey)
         method: String,
         /// IP address of attempt
         ip_address: IpAddr,
@@ -325,7 +325,7 @@ impl AuthEvent {
     /// Event types are versioned (e.g., "UserRegistered.v1") to support
     /// schema evolution.
     #[must_use]
-    pub fn event_type(&self) -> &'static str {
+    pub const fn event_type(&self) -> &'static str {
         match self {
             Self::UserRegistered { .. } => "UserRegistered.v1",
             Self::EmailVerified { .. } => "EmailVerified.v1",

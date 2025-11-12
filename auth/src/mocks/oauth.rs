@@ -1,4 +1,4 @@
-//! Mock OAuth2 provider for testing.
+//! Mock `OAuth2` provider for testing.
 
 use crate::error::{AuthError, Result};
 use crate::providers::{OAuth2Provider, OAuthUserInfo};

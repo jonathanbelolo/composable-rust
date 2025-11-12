@@ -7,34 +7,34 @@
 //! ## Registration Flow
 //!
 //! 1. User initiates passkey registration (must be logged in)
-//! 2. Generate WebAuthn challenge
+//! 2. Generate `WebAuthn` challenge
 //! 3. Client calls `navigator.credentials.create()`
 //! 4. Verify attestation response
-//! 5. Emit PasskeyRegistered event
+//! 5. Emit `PasskeyRegistered` event
 //!
 //! ## Login Flow
 //!
 //! 1. User initiates passkey login with username/email
 //! 2. Look up user's passkeys
-//! 3. Generate WebAuthn challenge
+//! 3. Generate `WebAuthn` challenge
 //! 4. Client calls `navigator.credentials.get()`
 //! 5. Verify assertion response
-//! 6. Emit PasskeyUsed, DeviceAccessed, UserLoggedIn events (batch)
+//! 6. Emit `PasskeyUsed`, `DeviceAccessed`, `UserLoggedIn` events (batch)
 //! 7. Create session
 //!
 //! # Security
 //!
 //! - Challenges expire after 5 minutes
 //! - Origin and RP ID validation
-//! - Counter rollback detection (via PasskeyUsed event)
+//! - Counter rollback detection (via `PasskeyUsed` event)
 //! - Public key cryptography (ECDSA/EdDSA)
 //! - Hardware-backed keys (FIDO2 authenticators)
 //!
 //! # Event Sourcing
 //!
-//! - PasskeyUsed event tracks counter for replay protection
-//! - DeviceAccessed event for device trust calculation
-//! - UserLoggedIn event for audit trail
+//! - `PasskeyUsed` event tracks counter for replay protection
+//! - `DeviceAccessed` event for device trust calculation
+//! - `UserLoggedIn` event for audit trail
 //!
 //! # Example
 //!
@@ -79,6 +79,7 @@ pub struct PasskeyReducer<O, E, W, S, T, U, D, R, OT, C, RL> {
     /// Configuration for passkey authentication.
     config: PasskeyConfig,
     /// Phantom data to hold type parameters.
+    #[allow(clippy::type_complexity)]
     _phantom: std::marker::PhantomData<(O, E, W, S, T, U, D, R, OT, C, RL)>,
 }
 
@@ -86,7 +87,7 @@ impl<O, E, W, S, T, U, D, R, OT, C, RL> PasskeyReducer<O, E, W, S, T, U, D, R, O
     /// Create a new passkey reducer with default configuration.
     ///
     /// Default configuration:
-    /// - Origin: http://localhost:3000
+    /// - Origin: <http://localhost:3000>
     /// - RP ID: localhost
     /// - Challenge `TTL`: 5 minutes
     /// - Session duration: 24 hours
@@ -121,7 +122,7 @@ impl<O, E, W, S, T, U, D, R, OT, C, RL> PasskeyReducer<O, E, W, S, T, U, D, R, O
     ///     PasskeyReducer::with_config(config);
     /// ```
     #[must_use]
-    pub fn with_config(config: PasskeyConfig) -> Self {
+    pub const fn with_config(config: PasskeyConfig) -> Self {
         Self {
             config,
             _phantom: std::marker::PhantomData,
@@ -154,6 +155,7 @@ where
     type Action = AuthAction;
     type Environment = AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>;
 
+    #[allow(clippy::too_many_lines)]
     fn reduce(
         &self,
         state: &mut Self::State,
@@ -966,24 +968,19 @@ where
                     let login_risk_score = risk_assessment.score;
 
                     // Build events to emit (all independent, can be batched)
-                    let mut events = Vec::new();
-
                     // 1. PasskeyUsed event (for counter tracking and audit)
                     // Note: This should have been emitted in CompletePasskeyLogin
                     // but we'll emit it here for now. TODO: Move to CompletePasskeyLogin
                     // once we have proper challenge storage.
 
                     // 2. DeviceAccessed event (for device trust calculation)
-                    events.push(AuthEvent::DeviceAccessed {
+                    let events = [AuthEvent::DeviceAccessed {
                         device_id,
                         user_id,
                         ip_address,
                         auth_level: AuthLevel::HardwareBacked,
                         timestamp: now,
-                    });
-
-                    // 3. UserLoggedIn event (audit trail)
-                    events.push(AuthEvent::UserLoggedIn {
+                    }, AuthEvent::UserLoggedIn {
                         user_id,
                         device_id,
                         session_id,
@@ -991,9 +988,9 @@ where
                         auth_level: AuthLevel::HardwareBacked,
                         ip_address,
                         user_agent: user_agent_clone.clone(),
-                        risk_score: login_risk_score as f64,
+                        risk_score: f64::from(login_risk_score),
                         timestamp: now,
-                    });
+                    }];
 
                     // Serialize all events
                     let serialized_events: Vec<_> = events
@@ -1190,7 +1187,7 @@ where
                                 correlation_id,
                                 user_id,
                                 credential_id: credential_id_clone,
-                                error: format!("Credential not found: {}", e),
+                                error: format!("Credential not found: {e}"),
                             })
                         }
                     }

@@ -11,9 +11,9 @@
 //! 4. Send email with link containing token
 //! 5. User clicks link, submits token
 //! 6. Verify token (not expired, not used)
-//! 7. Emit UserRegistered event (if new user)
-//! 8. Emit DeviceRegistered event
-//! 9. Emit UserLoggedIn event (audit trail)
+//! 7. Emit `UserRegistered` event (if new user)
+//! 8. Emit `DeviceRegistered` event
+//! 9. Emit `UserLoggedIn` event (audit trail)
 //! 10. Create session in Redis (ephemeral, not event-sourced)
 //!
 //! # Security
@@ -26,7 +26,7 @@
 //! # Event Sourcing
 //!
 //! - All user and device state changes are event-sourced
-//! - Events are persisted to PostgreSQL event store
+//! - Events are persisted to `PostgreSQL` event store
 //! - Projections are rebuilt from events for queries
 //! - Sessions are ephemeral (Redis only, not event-sourced)
 
@@ -56,6 +56,7 @@ pub struct MagicLinkReducer<O, E, W, S, T, U, D, R, OT, C, RL> {
     /// Configuration for magic link authentication.
     config: MagicLinkConfig,
     /// Phantom data to hold type parameters.
+    #[allow(clippy::type_complexity)]
     _phantom: std::marker::PhantomData<(O, E, W, S, T, U, D, R, OT, C, RL)>,
 }
 
@@ -63,7 +64,7 @@ impl<O, E, W, S, T, U, D, R, OT, C, RL> MagicLinkReducer<O, E, W, S, T, U, D, R,
     /// Create a new magic link reducer with default settings.
     ///
     /// Default configuration:
-    /// - Base URL: http://localhost:3000
+    /// - Base URL: <http://localhost:3000>
     /// - Token `TTL`: 10 minutes
     /// - Session duration: 24 hours
     ///
@@ -95,7 +96,7 @@ impl<O, E, W, S, T, U, D, R, OT, C, RL> MagicLinkReducer<O, E, W, S, T, U, D, R,
     ///     MagicLinkReducer::with_config(config);
     /// ```
     #[must_use]
-    pub fn with_config(config: MagicLinkConfig) -> Self {
+    pub const fn with_config(config: MagicLinkConfig) -> Self {
         Self {
             config,
             _phantom: std::marker::PhantomData,
@@ -122,6 +123,7 @@ impl<O, E, W, S, T, U, D, R, OT, C, RL> MagicLinkReducer<O, E, W, S, T, U, D, R,
     /// Generate a cryptographically secure random token.
     ///
     /// Returns a 256-bit random token encoded as base64url (43 characters).
+    #[allow(clippy::unused_self)]
     fn generate_token(&self) -> String {
         use base64::Engine;
         use rand::RngCore;
@@ -132,7 +134,8 @@ impl<O, E, W, S, T, U, D, R, OT, C, RL> MagicLinkReducer<O, E, W, S, T, U, D, R,
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(random_bytes)
     }
 
-    /// Apply an event to state (for event replay and EventPersisted handling).
+    /// Apply an event to state (for event replay and `EventPersisted` handling).
+    #[allow(clippy::unused_self)]
     fn apply_event(&self, _state: &mut AuthState, event: &AuthEvent) {
         match event {
             AuthEvent::UserRegistered { user_id, .. } => {
@@ -177,6 +180,7 @@ where
     type Action = AuthAction;
     type Environment = AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>;
 
+    #[allow(clippy::too_many_lines)]
     fn reduce(
         &self,
         state: &mut Self::State,
@@ -498,7 +502,7 @@ where
                         auth_level: AuthLevel::Basic,
                         ip_address,
                         user_agent: user_agent_clone.clone(),
-                        risk_score: login_risk_score as f64,
+                        risk_score: f64::from(login_risk_score),
                         timestamp: now,
                     });
 

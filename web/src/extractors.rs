@@ -131,8 +131,7 @@ fn extract_client_ip(
     }
 
     // Fallback to localhost (connection IP would come from ConnectInfo middleware)
-    // SAFETY: "127.0.0.1" is a valid IP address literal
-    IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1))
+    IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
 }
 
 /// User-Agent header.

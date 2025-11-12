@@ -1,6 +1,6 @@
-//! PostgreSQL device repository implementation.
+//! `PostgreSQL` device repository implementation.
 //!
-//! This module provides persistent device storage using PostgreSQL.
+//! This module provides persistent device storage using `PostgreSQL`.
 //!
 //! # Architecture
 //!
@@ -45,6 +45,7 @@ impl PostgresDeviceRepository {
     /// # Arguments
     ///
     /// * `pool` - `PostgreSQL` connection pool
+    #[must_use] 
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
     }

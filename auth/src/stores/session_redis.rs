@@ -45,7 +45,7 @@ impl RedisSessionStore {
     ///
     /// # Arguments
     ///
-    /// * `redis_url` - `Redis` connection URL (e.g., "redis://127.0.0.1:6379")
+    /// * `redis_url` - `Redis` connection URL (e.g., "<redis://127.0.0.1:6379>")
     ///
     /// # Errors
     ///
@@ -125,7 +125,7 @@ impl SessionStore for RedisSessionStore {
             // Build session keys for MGET
             let session_keys: Vec<String> = active_sessions
                 .iter()
-                .map(|id| Self::session_key(id))
+                .map(Self::session_key)
                 .collect();
 
             // Fetch all sessions in a single MGET operation
@@ -142,7 +142,7 @@ impl SessionStore for RedisSessionStore {
                 if let Some(session_bytes) = session_bytes_opt {
                     // Deserialize the session
                     if let Ok(s) = bincode::deserialize::<Session>(session_bytes) {
-                        if oldest_created_at.is_none() || s.created_at < oldest_created_at.unwrap() {
+                        if oldest_created_at.is_none_or(|oldest| s.created_at < oldest) {
                             oldest_created_at = Some(s.created_at);
                             oldest_session_id = Some(active_sessions[i]);
                         }
@@ -192,8 +192,8 @@ impl SessionStore for RedisSessionStore {
         // Without TTL, user:sessions:{user_id} sets grow unbounded, causing memory leaks.
         // We set TTL to session_ttl + 1 day to ensure the set outlives all sessions
         // but still gets cleaned up eventually.
-        #[allow(clippy::cast_possible_truncation)]
-        let set_ttl_seconds = (ttl_seconds + 86400) as i64; // +1 day buffer
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        let set_ttl_seconds = (ttl_seconds + 86400) as i64; // +1 day buffer, safe: TTL values are always small
 
         let _: () = redis::pipe()
             .atomic()
@@ -323,6 +323,7 @@ impl SessionStore for RedisSessionStore {
                 })?;
 
                 if ttl_seconds > 0 {
+                    #[allow(clippy::cast_sign_loss)] // Safe: checked ttl_seconds > 0
                     let _: () = conn
                         .set_ex(&session_key, updated_bytes, ttl_seconds as u64)
                         .await
@@ -415,6 +416,7 @@ impl SessionStore for RedisSessionStore {
             ));
         }
 
+        #[allow(clippy::float_cmp)]
         if existing_session.login_risk_score != session.login_risk_score {
             tracing::error!(
                 session_id = %session.session_id.0,
@@ -564,8 +566,7 @@ impl SessionStore for RedisSessionStore {
         })?;
 
         match ttl_seconds {
-            -2 => Ok(None), // Key doesn't exist
-            -1 => Ok(None), // Key exists but has no expiration
+            -2 | -1 => Ok(None), // Key doesn't exist (-2) or has no expiration (-1)
             seconds if seconds > 0 => Ok(Some(Duration::seconds(seconds))),
             _ => Ok(None),
         }

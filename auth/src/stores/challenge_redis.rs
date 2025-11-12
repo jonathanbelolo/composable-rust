@@ -1,6 +1,6 @@
-//! Redis-based WebAuthn challenge store implementation.
+//! Redis-based ` WebAuthn` challenge store implementation.
 //!
-//! This module provides secure, single-use challenge storage for WebAuthn operations using Redis.
+//! This module provides secure, single-use challenge storage for `WebAuthn` operations using Redis.
 //!
 //! # Architecture
 //!
@@ -13,7 +13,7 @@
 //!
 //! - **Single-use**: Challenges consumed atomically via GETDEL (get + delete in one operation)
 //! - **Expiration**: Challenges automatically expire after TTL
-//! - **User isolation**: Challenges keyed by (user_id, challenge) to prevent cross-user attacks
+//! - **User isolation**: Challenges keyed by (`user_id`, challenge) to prevent cross-user attacks
 //! - **Replay protection**: Once consumed, challenge cannot be reused
 //!
 //! # Example
@@ -39,7 +39,7 @@ use redis::{AsyncCommands, Client};
 /// Provides:
 /// - Single-use challenge storage (atomic GETDEL)
 /// - Automatic expiration via TTL
-/// - User isolation (challenges scoped to `user_id`)
+/// - User isolation (challenges scoped to ``user_id``)
 /// - Connection pooling via `ConnectionManager`
 pub struct RedisChallengeStore {
     /// Connection manager for connection pooling.
@@ -51,7 +51,7 @@ impl RedisChallengeStore {
     ///
     /// # Arguments
     ///
-    /// * `redis_url` - `Redis` connection URL (e.g., "redis://127.0.0.1:6379")
+    /// * `redis_url` - `Redis` connection URL (e.g., "<redis://127.0.0.1:6379>")
     ///
     /// # Errors
     ///
@@ -118,7 +118,7 @@ impl ChallengeStore for RedisChallengeStore {
             user_id = %user_id.0,
             challenge_len = challenge.len(),
             ttl_seconds = ttl_seconds,
-            "Stored WebAuthn challenge in Redis"
+            "Stored `WebAuthn` challenge in Redis"
         );
 
         Ok(())
@@ -167,7 +167,7 @@ impl ChallengeStore for RedisChallengeStore {
 
                 tracing::info!(
                     user_id = %user_id.0,
-                    "Consumed WebAuthn challenge (single-use)"
+                    "Consumed `WebAuthn` challenge (single-use)"
                 );
 
                 Ok(Some(challenge_data))
@@ -189,7 +189,7 @@ impl ChallengeStore for RedisChallengeStore {
 
         tracing::debug!(
             user_id = %user_id.0,
-            "Deleted WebAuthn challenge from Redis"
+            "Deleted `WebAuthn` challenge from Redis"
         );
 
         Ok(())

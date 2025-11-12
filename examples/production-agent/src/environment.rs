@@ -86,7 +86,7 @@ impl<A: AuditLogger + Send + Sync + 'static> ProductionEnvironment<A> {
         Self {
             anthropic_client,
             llm_circuit_breaker: Arc::new(CircuitBreaker::new("llm".to_string(), cb_config)),
-            rate_limiter: Arc::new(RateLimiter::new("api".to_string(), rl_config)),
+            rate_limiter: Arc::new(RateLimiter::new("api".to_string(), &rl_config)),
             bulkhead: Arc::new(Bulkhead::new("tool_execution".to_string(), bulkhead_config)),
             audit_logger,
             security_monitor,

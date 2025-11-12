@@ -33,7 +33,7 @@ pub trait DeviceRepository: Send + Sync {
     ///
     /// # Authorization
     ///
-    /// This method MUST verify that `device_id` belongs to `user_id`.
+    /// This method MUST verify that `device_id` belongs to ``user_id``.
     /// If the device belongs to a different user, return `AuthError::ResourceNotFound`
     /// (not `Unauthorized` to avoid information leakage).
     ///
@@ -83,8 +83,8 @@ pub trait DeviceRepository: Send + Sync {
     /// # Authorization
     ///
     /// This method MUST verify that:
-    /// 1. `device.device_id` belongs to `user_id`
-    /// 2. `device.`user_id` == user_id` (prevent device transfer between accounts)
+    /// 1. `device.device_id` belongs to ``user_id``
+    /// 2. `device.``user_id`` == user_id` (prevent device transfer between accounts)
     ///
     /// # Errors
     ///
@@ -92,7 +92,7 @@ pub trait DeviceRepository: Send + Sync {
     /// - Database query fails
     /// - Device not found → `AuthError::ResourceNotFound`
     /// - Device belongs to different user → `AuthError::ResourceNotFound`
-    /// - Attempt to change device.`user_id` → `AuthError::ResourceNotFound`
+    /// - Attempt to change device.``user_id`` → `AuthError::ResourceNotFound`
     fn update_device(
         &self,
         user_id: UserId,
@@ -103,7 +103,7 @@ pub trait DeviceRepository: Send + Sync {
     ///
     /// # Authorization
     ///
-    /// This method MUST verify that `device_id` belongs to `user_id`.
+    /// This method MUST verify that `device_id` belongs to ``user_id``.
     ///
     /// # Errors
     ///
@@ -122,7 +122,7 @@ pub trait DeviceRepository: Send + Sync {
     ///
     /// # Authorization
     ///
-    /// This method MUST verify that `device_id` belongs to `user_id`.
+    /// This method MUST verify that `device_id` belongs to ``user_id``.
     ///
     /// # Errors
     ///
@@ -141,7 +141,7 @@ pub trait DeviceRepository: Send + Sync {
     ///
     /// # Authorization
     ///
-    /// This method MUST verify that `device_id` belongs to `user_id`.
+    /// This method MUST verify that `device_id` belongs to ``user_id``.
     ///
     /// # Errors
     ///

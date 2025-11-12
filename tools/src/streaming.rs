@@ -26,6 +26,13 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 
+/// Type alias for streaming tool executor function
+type StreamExecutor = Arc<
+    dyn Fn(String, String) -> std::pin::Pin<Box<dyn futures::Stream<Item = AgentAction> + Send>>
+        + Send
+        + Sync,
+>;
+
 /// Input for progress counter tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ProgressCounterInput {
@@ -46,18 +53,7 @@ struct ProgressCounterInput {
 /// - `Tool` is the tool definition for LLM
 /// - `StreamExecutor` is a function that returns a Stream of `AgentAction`
 #[must_use]
-pub fn progress_counter_tool() -> (
-    Tool,
-    Arc<
-        dyn Fn(
-                String,
-                String,
-            ) -> std::pin::Pin<
-                Box<dyn futures::Stream<Item = AgentAction> + Send>,
-            > + Send
-            + Sync,
-    >,
-) {
+pub fn progress_counter_tool() -> (Tool, StreamExecutor) {
     let tool = Tool {
         name: "progress_counter".to_string(),
         description: "Counts from 0 to N with progress updates. Returns incremental progress as it counts. Useful for demonstrating streaming tools.".to_string(),
@@ -88,7 +84,7 @@ pub fn progress_counter_tool() -> (
                     yield AgentAction::ToolComplete {
                         tool_use_id,
                         result: Err(ToolError {
-                            message: format!("Invalid input: {}", e),
+                            message: format!("Invalid input: {e}"),
                         }),
                     };
                     return;
@@ -104,7 +100,7 @@ pub fn progress_counter_tool() -> (
                 let progress = (i * 100) / steps;
                 yield AgentAction::ToolChunk {
                     tool_use_id: tool_use_id.clone(),
-                    content: format!("Progress: {}% (step {}/{})\n", progress, i, steps),
+                    content: format!("Progress: {progress}% (step {i}/{steps})\n"),
                 };
 
                 // Sleep between steps (except after last)
@@ -116,7 +112,7 @@ pub fn progress_counter_tool() -> (
             // Emit completion
             yield AgentAction::ToolComplete {
                 tool_use_id,
-                result: Ok(format!("Completed: {} steps", steps)),
+                result: Ok(format!("Completed: {steps} steps")),
             };
         })
             as std::pin::Pin<Box<dyn futures::Stream<Item = AgentAction> + Send>>
@@ -142,18 +138,7 @@ struct StreamLinesInput {
 ///
 /// Returns `(Tool, StreamExecutor)` tuple
 #[must_use]
-pub fn stream_lines_tool() -> (
-    Tool,
-    Arc<
-        dyn Fn(
-                String,
-                String,
-            ) -> std::pin::Pin<
-                Box<dyn futures::Stream<Item = AgentAction> + Send>,
-            > + Send
-            + Sync,
-    >,
-) {
+pub fn stream_lines_tool() -> (Tool, StreamExecutor) {
     let tool = Tool {
         name: "stream_lines".to_string(),
         description: "Streams text content line-by-line. Returns each line incrementally with configurable delay. Useful for large text processing.".to_string(),
@@ -184,7 +169,7 @@ pub fn stream_lines_tool() -> (
                     yield AgentAction::ToolComplete {
                         tool_use_id,
                         result: Err(ToolError {
-                            message: format!("Invalid input: {}", e),
+                            message: format!("Invalid input: {e}"),
                         }),
                     };
                     return;
@@ -199,7 +184,7 @@ pub fn stream_lines_tool() -> (
             for (i, line) in lines.iter().enumerate() {
                 yield AgentAction::ToolChunk {
                     tool_use_id: tool_use_id.clone(),
-                    content: format!("{}\n", line),
+                    content: format!("{line}\n"),
                 };
 
                 // Sleep between lines (except after last)
@@ -211,7 +196,7 @@ pub fn stream_lines_tool() -> (
             // Emit completion
             yield AgentAction::ToolComplete {
                 tool_use_id,
-                result: Ok(format!("Streamed {} lines", total_lines)),
+                result: Ok(format!("Streamed {total_lines} lines")),
             };
         })
             as std::pin::Pin<Box<dyn futures::Stream<Item = AgentAction> + Send>>

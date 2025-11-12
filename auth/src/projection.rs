@@ -1,13 +1,13 @@
 //! Event projection for auth read models.
 //!
 //! This module implements projections that build read-optimized views from auth events.
-//! The projections listen to events from the event store and update PostgreSQL tables
+//! The projections listen to events from the event store and update `PostgreSQL` tables
 //! that are optimized for querying.
 //!
 //! # Architecture
 //!
 //! ```text
-//! Event Store (PostgreSQL)        Projections (PostgreSQL)
+//! Event Store (` PostgreSQL`)        Projections (` PostgreSQL`)
 //! ┌─────────────────────┐        ┌──────────────────────┐
 //! │ events table        │        │ users_projection     │
 //! │ - UserRegistered    │───────▶│ - user_id            │
@@ -67,11 +67,12 @@ pub struct AuthProjection {
 #[cfg(feature = "postgres")]
 impl AuthProjection {
     /// Create a new auth projection.
-    pub fn new(pool: PgPool) -> Self {
+    #[must_use] 
+    pub const fn new(pool: PgPool) -> Self {
         Self { pool }
     }
 
-    /// Apply a UserRegistered event.
+    /// Apply a `UserRegistered` event.
     async fn apply_user_registered(&self, event: &AuthEvent) -> Result<()> {
         if let AuthEvent::UserRegistered {
             user_id,
@@ -113,7 +114,7 @@ impl AuthProjection {
         Ok(())
     }
 
-    /// Apply an EmailVerified event.
+    /// Apply an `EmailVerified` event.
     async fn apply_email_verified(&self, event: &AuthEvent) -> Result<()> {
         if let AuthEvent::EmailVerified { user_id, timestamp } = event {
             // ✅ IDEMPOTENCY: Only update if timestamp is newer
@@ -138,7 +139,7 @@ impl AuthProjection {
         Ok(())
     }
 
-    /// Apply a UserUpdated event.
+    /// Apply a `UserUpdated` event.
     async fn apply_user_updated(&self, event: &AuthEvent) -> Result<()> {
         if let AuthEvent::UserUpdated {
             user_id,
@@ -169,7 +170,7 @@ impl AuthProjection {
         Ok(())
     }
 
-    /// Apply a DeviceRegistered event.
+    /// Apply a `DeviceRegistered` event.
     async fn apply_device_registered(&self, event: &AuthEvent) -> Result<()> {
         if let AuthEvent::DeviceRegistered {
             device_id,
@@ -213,7 +214,7 @@ impl AuthProjection {
         Ok(())
     }
 
-    /// Apply a DeviceTrustedByUser event.
+    /// Apply a `DeviceTrustedByUser` event.
     async fn apply_device_trusted(&self, event: &AuthEvent) -> Result<()> {
         if let AuthEvent::DeviceTrustedByUser {
             device_id,
@@ -257,7 +258,7 @@ impl AuthProjection {
         Ok(())
     }
 
-    /// Apply a DeviceAccessed event.
+    /// Apply a `DeviceAccessed` event.
     async fn apply_device_accessed(&self, event: &AuthEvent) -> Result<()> {
         if let AuthEvent::DeviceAccessed {
             device_id,
@@ -318,7 +319,7 @@ impl AuthProjection {
         Ok(())
     }
 
-    /// Apply an OAuthAccountLinked event.
+    /// Apply an `OAuthAccountLinked` event.
     async fn apply_oauth_linked(&self, event: &AuthEvent) -> Result<()> {
         if let AuthEvent::OAuthAccountLinked {
             user_id,
@@ -353,7 +354,8 @@ impl AuthProjection {
         Ok(())
     }
 
-    /// Apply a PasskeyRegistered event.
+    /// Apply a `PasskeyRegistered` event.
+    #[allow(clippy::cast_possible_wrap)] // Safe: WebAuthn counters are small values
     async fn apply_passkey_registered(&self, event: &AuthEvent) -> Result<()> {
         if let AuthEvent::PasskeyRegistered {
             credential_id,
@@ -412,7 +414,8 @@ impl AuthProjection {
         Ok(())
     }
 
-    /// Apply a PasskeyUsed event.
+    /// Apply a `PasskeyUsed` event.
+    #[allow(clippy::cast_possible_wrap)] // Safe: WebAuthn counters are small values
     async fn apply_passkey_used(&self, event: &AuthEvent) -> Result<()> {
         if let AuthEvent::PasskeyUsed {
             credential_id,
@@ -451,7 +454,7 @@ impl AuthProjection {
 impl Projection for AuthProjection {
     type Event = AuthEvent;
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "auth_projection"
     }
 
@@ -520,7 +523,7 @@ impl Projection for AuthProjection {
 /// # Returns
 ///
 /// The calculated trust level (Unknown, Recognized, or Familiar).
-/// Does NOT return Trusted or HighlyTrusted (those are set manually).
+/// Does NOT return Trusted or `HighlyTrusted` (those are set manually).
 fn calculate_progressive_trust(
     login_count: i32,
     first_seen: DateTime<Utc>,

@@ -103,6 +103,7 @@ impl SmtpEmailProvider {
     }
 
     /// Build the "From" header.
+    #[allow(clippy::wrong_self_convention)]
     fn from_header(&self) -> String {
         format!("{} <{}>", self.from_name, self.from_email)
     }

@@ -1,6 +1,6 @@
 //! OAuth2/OIDC authentication handlers.
 //!
-//! Implements OAuth2 authorization code flow with OIDC support.
+//! Implements `OAuth2` authorization code flow with OIDC support.
 
 use crate::{AuthAction, AuthEnvironment, AuthReducer, AuthState};
 use axum::{
@@ -65,7 +65,7 @@ pub struct OAuthCallbackResponse {
 /// # Flow
 ///
 /// 1. Extract provider from path (e.g., "google", "github")
-/// 2. Generate correlation_id
+/// 2. Generate `correlation_id`
 /// 3. Send `InitiateOAuth` action
 /// 4. Wait for `OAuthAuthorizationUrlReady`
 /// 5. Redirect to `OAuth` provider

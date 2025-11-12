@@ -3,9 +3,9 @@
 //! This module provides persistent and ephemeral storage for authentication state:
 //!
 //! - **Session Store** (Redis) - Ephemeral session storage with TTL
-//! - **Device Registry** (PostgreSQL) - Persistent device tracking
+//! - **Device Registry** (` PostgreSQL`) - Persistent device tracking
 //! - **OAuth Token Store** (Redis) - Encrypted OAuth token storage with refresh
-//! - **Challenge Store** (Redis) - WebAuthn challenge storage with atomic consumption
+//! - **Challenge Store** (Redis) - `WebAuthn` challenge storage with atomic consumption
 //! - **Token Store** (Redis) - Magic link token storage with atomic consumption
 
 #[cfg(feature = "postgres")]

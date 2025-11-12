@@ -133,20 +133,20 @@ impl UserRepository for MockUserRepository {
     }
 
     // OAuth links - simplified implementations
-    fn get_oauth_link(
+    async fn get_oauth_link(
         &self,
         _user_id: UserId,
         _provider: OAuthProvider,
-    ) -> impl Future<Output = Result<OAuthLink>> + Send {
-        async move { Err(AuthError::ResourceNotFound) }
+    ) -> Result<OAuthLink> {
+        Err(AuthError::ResourceNotFound)
     }
 
-    fn get_oauth_link_by_provider_id(
+    async fn get_oauth_link_by_provider_id(
         &self,
         _provider: OAuthProvider,
         _provider_user_id: &str,
-    ) -> impl Future<Output = Result<OAuthLink>> + Send {
-        async move { Err(AuthError::ResourceNotFound) }
+    ) -> Result<OAuthLink> {
+        Err(AuthError::ResourceNotFound)
     }
 
     fn upsert_oauth_link(
@@ -157,40 +157,40 @@ impl UserRepository for MockUserRepository {
         async move { Ok(link) }
     }
 
-    fn delete_oauth_link(
+    async fn delete_oauth_link(
         &self,
         _user_id: UserId,
         _provider: OAuthProvider,
-    ) -> impl Future<Output = Result<()>> + Send {
-        async move { Ok(()) }
+    ) -> Result<()> {
+        Ok(())
     }
 
     // Magic link tokens - simplified implementations
-    fn create_magic_link_token(
+    async fn create_magic_link_token(
         &self,
         _token: &MagicLinkToken,
-    ) -> impl Future<Output = Result<()>> + Send {
-        async move { Ok(()) }
+    ) -> Result<()> {
+        Ok(())
     }
 
-    fn get_magic_link_token(
+    async fn get_magic_link_token(
         &self,
         _token_hash: &str,
-    ) -> impl Future<Output = Result<MagicLinkToken>> + Send {
-        async move { Err(AuthError::MagicLinkInvalid) }
+    ) -> Result<MagicLinkToken> {
+        Err(AuthError::MagicLinkInvalid)
     }
 
-    fn mark_magic_link_used(
+    async fn mark_magic_link_used(
         &self,
         _token_hash: &str,
-    ) -> impl Future<Output = Result<()>> + Send {
-        async move { Ok(()) }
+    ) -> Result<()> {
+        Ok(())
     }
 
-    fn delete_expired_magic_links(
+    async fn delete_expired_magic_links(
         &self,
-    ) -> impl Future<Output = Result<usize>> + Send {
-        async move { Ok(0) }
+    ) -> Result<usize> {
+        Ok(0)
     }
 
     // Passkey credentials - simplified implementations
@@ -250,12 +250,12 @@ impl UserRepository for MockUserRepository {
         }
     }
 
-    fn update_passkey_counter(
+    async fn update_passkey_counter(
         &self,
         _credential_id: &str,
         _counter: u32,
-    ) -> impl Future<Output = Result<()>> + Send {
-        async move { Ok(()) }
+    ) -> Result<()> {
+        Ok(())
     }
 
     fn update_passkey_counter_atomic(

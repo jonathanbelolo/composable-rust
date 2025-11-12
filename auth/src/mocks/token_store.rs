@@ -24,12 +24,20 @@ impl MockTokenStore {
     }
 
     /// Get all stored tokens (for testing).
+    ///
+    /// # Panics
+    /// Panics if the mutex is poisoned (test failure scenario).
     #[must_use]
+    #[allow(clippy::unwrap_used)]
     pub fn get_all(&self) -> HashMap<String, TokenData> {
         self.tokens.lock().unwrap().clone()
     }
 
     /// Clear all tokens (for testing).
+    ///
+    /// # Panics
+    /// Panics if the mutex is poisoned (test failure scenario).
+    #[allow(clippy::unwrap_used)]
     pub fn clear(&self) {
         self.tokens.lock().unwrap().clear();
     }
@@ -42,12 +50,14 @@ impl Default for MockTokenStore {
 }
 
 impl TokenStore for MockTokenStore {
+    #[allow(clippy::unwrap_used)] // Test mock: mutex poisoning is a test failure
     async fn store_token(&self, token_id: &str, token_data: TokenData) -> Result<()> {
         let mut tokens = self.tokens.lock().unwrap();
         tokens.insert(token_id.to_string(), token_data);
         Ok(())
     }
 
+    #[allow(clippy::unwrap_used)] // Test mock: mutex poisoning is a test failure
     async fn consume_token(&self, token_id: &str, token: &str) -> Result<Option<TokenData>> {
         let mut tokens = self.tokens.lock().unwrap();
 
@@ -97,12 +107,14 @@ impl TokenStore for MockTokenStore {
         }
     }
 
+    #[allow(clippy::unwrap_used)] // Test mock: mutex poisoning is a test failure
     async fn delete_token(&self, token_id: &str) -> Result<()> {
         let mut tokens = self.tokens.lock().unwrap();
         tokens.remove(token_id);
         Ok(())
     }
 
+    #[allow(clippy::unwrap_used)] // Test mock: mutex poisoning is a test failure
     async fn exists(&self, token_id: &str) -> Result<bool> {
         let tokens = self.tokens.lock().unwrap();
 

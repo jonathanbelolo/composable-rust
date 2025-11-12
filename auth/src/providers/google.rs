@@ -107,7 +107,7 @@ impl GoogleOAuthProvider {
     ///
     /// Default: true
     #[must_use]
-    pub fn with_refresh_token(mut self, request: bool) -> Self {
+    pub const fn with_refresh_token(mut self, request: bool) -> Self {
         self.request_refresh_token = request;
         self
     }
@@ -116,7 +116,7 @@ impl GoogleOAuthProvider {
     ///
     /// Default: false (only show on first auth)
     #[must_use]
-    pub fn with_force_consent(mut self, force: bool) -> Self {
+    pub const fn with_force_consent(mut self, force: bool) -> Self {
         self.force_consent = force;
         self
     }
@@ -125,7 +125,7 @@ impl GoogleOAuthProvider {
     ///
     /// Default: true
     #[must_use]
-    pub fn with_incremental_authorization(mut self, enable: bool) -> Self {
+    pub const fn with_incremental_authorization(mut self, enable: bool) -> Self {
         self.incremental_authorization = enable;
         self
     }
@@ -346,7 +346,7 @@ struct GoogleTokenResponse {
     /// Token expiration in seconds (typically 3600 = 1 hour).
     expires_in: Option<u32>,
 
-    /// Refresh token (only on initial authorization with access_type=offline).
+    /// Refresh token (only on initial authorization with `access_type=offline`).
     refresh_token: Option<String>,
 
     /// Granted scopes (space-delimited string).
@@ -362,9 +362,9 @@ struct GoogleTokenResponse {
     id_token: Option<String>,
 }
 
-/// Google's UserInfo endpoint response format.
+/// Google's `UserInfo` endpoint response format.
 ///
-/// This is the raw response from Google's UserInfo endpoint.
+/// This is the raw response from Google's `UserInfo` endpoint.
 /// We convert it to the standard `OAuthUserInfo` type.
 #[derive(Debug, Deserialize, Serialize)]
 struct GoogleUserInfo {

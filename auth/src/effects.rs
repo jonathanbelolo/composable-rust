@@ -334,7 +334,7 @@ pub enum AuthEffect {
     },
 
     // ═══════════════════════════════════════════════════════════════════════
-    // Database Effects (PostgreSQL)
+    // Database Effects (` PostgreSQL`)
     // ═══════════════════════════════════════════════════════════════════════
     /// Get user from database.
     GetUser {
@@ -542,7 +542,7 @@ pub enum AuthEffect {
         /// Event payload (`JSON`).
         payload: String,
 
-        /// Aggregate ID (`user_id` or `session_id`).
+        /// Aggregate ID (``user_id`` or `session_id`).
         aggregate_id: String,
     },
 

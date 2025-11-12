@@ -3,7 +3,6 @@
 use crate::error::Result;
 use crate::providers::EmailProvider;
 use chrono::{DateTime, Utc};
-use std::future::Future;
 
 /// Mock email provider.
 ///
@@ -25,41 +24,41 @@ impl MockEmailProvider {
 }
 
 impl EmailProvider for MockEmailProvider {
-    fn send_magic_link(
+    async fn send_magic_link(
         &self,
         _to: &str,
         _token: &str,
         _base_url: &str,
         _expires_at: DateTime<Utc>,
-    ) -> impl Future<Output = Result<()>> + Send {
-        async move { Ok(()) }
+    ) -> Result<()> {
+        Ok(())
     }
 
-    fn send_password_reset(
+    async fn send_password_reset(
         &self,
         _to: &str,
         _token: &str,
         _base_url: &str,
         _expires_at: DateTime<Utc>,
-    ) -> impl Future<Output = Result<()>> + Send {
-        async move { Ok(()) }
+    ) -> Result<()> {
+        Ok(())
     }
 
-    fn send_verification_email(
+    async fn send_verification_email(
         &self,
         _to: &str,
         _token: &str,
         _base_url: &str,
-    ) -> impl Future<Output = Result<()>> + Send {
-        async move { Ok(()) }
+    ) -> Result<()> {
+        Ok(())
     }
 
-    fn send_security_alert(
+    async fn send_security_alert(
         &self,
         _to: &str,
         _subject: &str,
         _message: &str,
-    ) -> impl Future<Output = Result<()>> + Send {
-        async move { Ok(()) }
+    ) -> Result<()> {
+        Ok(())
     }
 }

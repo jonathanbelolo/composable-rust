@@ -47,7 +47,7 @@ impl RedisRateLimiter {
     ///
     /// # Arguments
     ///
-    /// * `redis_url` - `Redis` connection URL (e.g., "redis://127.0.0.1:6379")
+    /// * `redis_url` - `Redis` connection URL (e.g., "<redis://127.0.0.1:6379>")
     ///
     /// # Errors
     ///
@@ -70,6 +70,7 @@ impl RedisRateLimiter {
     }
 
     /// Get current timestamp in milliseconds.
+    #[allow(clippy::cast_possible_truncation)] // Safe: timestamps fit in u64 until year 2554
     fn current_timestamp_ms() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -83,10 +84,12 @@ impl RateLimiter for RedisRateLimiter {
         let mut conn = self.conn_manager.clone();
         let rate_key = Self::rate_limit_key(key);
         let now_ms = Self::current_timestamp_ms();
+        #[allow(clippy::cast_possible_truncation)] // Safe: rate limit windows are small durations
         let window_ms = window.as_millis() as u64;
         let window_start = now_ms.saturating_sub(window_ms);
 
         // Remove entries outside the window
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)] // Safe: Redis zrembyscore accepts isize scores
         let _: () = conn
             .zrembyscore(&rate_key, 0, window_start as isize)
             .await
@@ -147,6 +150,7 @@ impl RateLimiter for RedisRateLimiter {
         let mut conn = self.conn_manager.clone();
         let rate_key = Self::rate_limit_key(key);
         let now_ms = Self::current_timestamp_ms();
+        #[allow(clippy::cast_possible_truncation)] // Safe: rate limit windows are small durations
         let window_ms = window.as_millis() as u64;
         let window_start = now_ms.saturating_sub(window_ms);
 
@@ -167,6 +171,7 @@ impl RateLimiter for RedisRateLimiter {
         // Note: .ignore() means "don't return this value", NOT "ignore errors".
         // All operations are still executed and errors still propagate.
 
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)] // Safe: Redis zrembyscore accepts isize scores
         let (count,): (u64,) = redis::pipe()
             .atomic()
             .zrembyscore(&rate_key, 0, window_start as isize)

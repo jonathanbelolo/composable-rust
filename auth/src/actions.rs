@@ -511,9 +511,9 @@ pub enum AuthAction {
     ///
     /// # Security
     ///
-    /// - Only the credential owner can delete it (enforced by DB query with `user_id`)
+    /// - Only the credential owner can delete it (enforced by DB query with ``user_id``)
     /// - Prevents users from deleting other users' credentials
-    /// - Credential ID must belong to the `user_id`
+    /// - Credential ID must belong to the ``user_id``
     ///
     /// # Note
     ///

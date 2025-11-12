@@ -1,4 +1,4 @@
-//! Mock WebAuthn provider for testing.
+//! Mock `WebAuthn` provider for testing.
 
 use crate::error::Result;
 use crate::providers::PasskeyCredential;
@@ -24,49 +24,43 @@ impl MockWebAuthnProvider {
 }
 
 impl WebAuthnProvider for MockWebAuthnProvider {
-    fn generate_registration_challenge(
+    async fn generate_registration_challenge(
         &self,
         _user_id: UserId,
         _username: &str,
         _display_name: &str,
-    ) -> impl Future<Output = Result<WebAuthnChallenge>> + Send {
-        async move {
-            Ok(WebAuthnChallenge {
-                challenge_id: "mock_challenge_id".to_string(),
-                challenge: "mock_challenge_bytes".to_string(),
-                expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
-            })
-        }
+    ) -> Result<WebAuthnChallenge> {
+        Ok(WebAuthnChallenge {
+            challenge_id: "mock_challenge_id".to_string(),
+            challenge: "mock_challenge_bytes".to_string(),
+            expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
+        })
     }
 
-    fn verify_registration(
+    async fn verify_registration(
         &self,
         _challenge_id: &str,
         _attestation_response: &str,
         _expected_origin: &str,
         _expected_rp_id: &str,
-    ) -> impl Future<Output = Result<WebAuthnRegistrationResult>> + Send {
-        async move {
-            Ok(WebAuthnRegistrationResult {
-                credential_id: "mock_credential_id".to_string(),
-                public_key: vec![1, 2, 3, 4],
-                counter: 0,
-            })
-        }
+    ) -> Result<WebAuthnRegistrationResult> {
+        Ok(WebAuthnRegistrationResult {
+            credential_id: "mock_credential_id".to_string(),
+            public_key: vec![1, 2, 3, 4],
+            counter: 0,
+        })
     }
 
-    fn generate_authentication_challenge(
+    async fn generate_authentication_challenge(
         &self,
         _user_id: UserId,
         _credentials: Vec<PasskeyCredential>,
-    ) -> impl Future<Output = Result<WebAuthnChallenge>> + Send {
-        async move {
-            Ok(WebAuthnChallenge {
-                challenge_id: "mock_auth_challenge_id".to_string(),
-                challenge: "mock_auth_challenge_bytes".to_string(),
-                expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
-            })
-        }
+    ) -> Result<WebAuthnChallenge> {
+        Ok(WebAuthnChallenge {
+            challenge_id: "mock_auth_challenge_id".to_string(),
+            challenge: "mock_auth_challenge_bytes".to_string(),
+            expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
+        })
     }
 
     fn verify_authentication(
@@ -89,27 +83,23 @@ impl WebAuthnProvider for MockWebAuthnProvider {
         }
     }
 
-    fn extract_challenge_from_attestation(
+    async fn extract_challenge_from_attestation(
         &self,
         _attestation_response: &str,
-    ) -> impl Future<Output = Result<String>> + Send {
-        async move {
-            // In a real implementation, this would parse the attestation response
-            // and extract the challenge that was embedded by the client.
-            // For testing, we return the mock challenge_id.
-            Ok("mock_challenge_id".to_string())
-        }
+    ) -> Result<String> {
+        // In a real implementation, this would parse the attestation response
+        // and extract the challenge that was embedded by the client.
+        // For testing, we return the mock challenge_id.
+        Ok("mock_challenge_id".to_string())
     }
 
-    fn extract_challenge_from_assertion(
+    async fn extract_challenge_from_assertion(
         &self,
         _assertion_response: &str,
-    ) -> impl Future<Output = Result<String>> + Send {
-        async move {
-            // In a real implementation, this would parse the assertion response
-            // and extract the challenge that was embedded by the client.
-            // For testing, we return the mock auth challenge_id.
-            Ok("mock_auth_challenge_id".to_string())
-        }
+    ) -> Result<String> {
+        // In a real implementation, this would parse the assertion response
+        // and extract the challenge that was embedded by the client.
+        // For testing, we return the mock auth challenge_id.
+        Ok("mock_auth_challenge_id".to_string())
     }
 }

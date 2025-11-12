@@ -1,10 +1,10 @@
-//! WebAuthn challenge storage trait.
+//! `WebAuthn` challenge storage trait.
 //!
-//! Stores WebAuthn challenges securely with expiration and atomic consumption.
+//! Stores ` WebAuthn` challenges securely with expiration and atomic consumption.
 //!
 //! # Security
 //!
-//! WebAuthn challenges must be:
+//! ` WebAuthn` challenges must be:
 //! - **Single-use**: Consumed atomically to prevent replay attacks
 //! - **Ephemeral**: Expire after 5 minutes (configurable)
 //! - **Unique**: Cryptographically random (256 bits minimum)
@@ -13,7 +13,7 @@
 //! # Implementation
 //!
 //! **Production**: Use Redis with atomic operations (GET + DELETE)
-//! **Testing**: Use in-memory HashMap with Mutex
+//! **Testing**: Use in-memory `HashMap` with Mutex
 //!
 //! # Example
 //!
@@ -88,7 +88,7 @@ pub trait ChallengeStore: Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `user_id` - User ID associated with this challenge
+    /// * ``user_id`` - User ID associated with this challenge
     /// * `challenge` - Challenge string (base64url encoded)
     /// * `ttl` - Time-to-live for this challenge
     ///
@@ -114,7 +114,7 @@ pub trait ChallengeStore: Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `user_id` - User ID to verify challenge ownership
+    /// * ``user_id`` - User ID to verify challenge ownership
     /// * `challenge` - Challenge string to consume
     ///
     /// # Returns
@@ -140,7 +140,7 @@ pub trait ChallengeStore: Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `user_id` - User ID
+    /// * ``user_id`` - User ID
     /// * `challenge` - Challenge string to delete
     ///
     /// # Errors

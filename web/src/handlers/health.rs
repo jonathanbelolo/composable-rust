@@ -57,6 +57,7 @@ pub async fn health_check() -> (StatusCode, &'static str) {
 ///   "metadata": null
 /// }
 /// ```
+#[allow(clippy::unused_async)] // Axum handler signature requires async
 pub async fn health_check_with_store<S, A, E, R>(
     State(store): State<Arc<Store<S, A, E, R>>>,
 ) -> (StatusCode, Json<HealthCheck>)

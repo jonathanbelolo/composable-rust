@@ -1,4 +1,4 @@
-//! Mock WebAuthn challenge store for testing.
+//! Mock ` WebAuthn` challenge store for testing.
 
 use crate::error::Result;
 use crate::providers::{ChallengeData, ChallengeStore};
@@ -27,6 +27,7 @@ impl MockChallengeStore {
     }
 
     /// Clean up expired challenges (called internally on access).
+    #[allow(clippy::unwrap_used)] // Test mock: mutex poisoning is a test failure
     fn cleanup_expired(&self) {
         let mut store = self.challenges.lock().unwrap();
         let now = Utc::now();
@@ -41,6 +42,7 @@ impl Default for MockChallengeStore {
 }
 
 impl ChallengeStore for MockChallengeStore {
+    #[allow(clippy::unwrap_used)] // Test mock: mutex poisoning is a test failure
     async fn store_challenge(
         &self,
         user_id: UserId,
@@ -63,6 +65,7 @@ impl ChallengeStore for MockChallengeStore {
         Ok(())
     }
 
+    #[allow(clippy::unwrap_used)] // Test mock: mutex poisoning is a test failure
     async fn consume_challenge(
         &self,
         user_id: UserId,
@@ -88,6 +91,7 @@ impl ChallengeStore for MockChallengeStore {
         }
     }
 
+    #[allow(clippy::unwrap_used)] // Test mock: mutex poisoning is a test failure
     async fn delete_challenge(&self, user_id: UserId, challenge: &str) -> Result<()> {
         let mut store = self.challenges.lock().unwrap();
         let key = (user_id, challenge.to_string());

@@ -85,7 +85,7 @@ pub trait RiskCalculator: Send + Sync {
 
     /// Check if credentials have been leaked.
     ///
-    /// Uses HaveIBeenPwned API or similar.
+    /// Uses `HaveIBeenPwned` API or similar.
     ///
     /// # Returns
     ///

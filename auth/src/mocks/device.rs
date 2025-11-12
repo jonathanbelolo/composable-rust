@@ -71,7 +71,9 @@ impl DeviceRepository for MockDeviceRepository {
             const MAX_LIMIT: i64 = 1000;
             const DEFAULT_LIMIT: i64 = 100;
 
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Safe: clamped to MAX_LIMIT (1000)
             let limit = limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT) as usize;
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Safe: clamped to non-negative values
             let offset = offset.unwrap_or(0).max(0) as usize;
 
             let devices_guard = devices.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;

@@ -1,6 +1,6 @@
-//! OAuth2 reducer.
+//! `OAuth2` reducer.
 //!
-//! This module implements the pure business logic for OAuth2 authentication.
+//! This module implements the pure business logic for `OAuth2` authentication.
 //!
 //! # Flow
 //!
@@ -14,10 +14,10 @@
 //! # Event Sourcing
 //!
 //! The OAuth flow emits these events:
-//! - UserRegistered (if new user)
-//! - OAuthAccountLinked
-//! - DeviceRegistered
-//! - UserLoggedIn (audit trail)
+//! - `UserRegistered` (if new user)
+//! - `OAuthAccountLinked`
+//! - `DeviceRegistered`
+//! - `UserLoggedIn` (audit trail)
 
 use crate::actions::{AuthAction, AuthLevel};
 use crate::config::OAuthConfig;
@@ -56,7 +56,27 @@ where
     config: OAuthConfig,
 
     /// Phantom data to hold type parameters.
+    #[allow(clippy::type_complexity)]
     _phantom: std::marker::PhantomData<(O, E, W, S, T, U, D, R, OT, C, RL)>,
+}
+
+impl<O, E, W, S, T, U, D, R, OT, C, RL> Default for OAuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>
+where
+    O: OAuth2Provider + Clone + 'static,
+    E: EmailProvider + Clone + 'static,
+    W: WebAuthnProvider + Clone + 'static,
+    S: SessionStore + Clone + 'static,
+    T: TokenStore + Clone + 'static,
+    U: UserRepository + Clone + 'static,
+    D: DeviceRepository + Clone + 'static,
+    R: RiskCalculator + Clone + 'static,
+    OT: OAuthTokenStore + Clone + 'static,
+    C: ChallengeStore + Clone + 'static,
+    RL: crate::providers::RateLimiter + Clone + 'static,
+ {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<O, E, W, S, T, U, D, R, OT, C, RL> OAuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>
@@ -76,7 +96,7 @@ where
     /// Create a new `OAuth` reducer with default configuration.
     ///
     /// Default configuration:
-    /// - Base URL: http://localhost:3000
+    /// - Base URL: <http://localhost:3000>
     /// - State `TTL`: 5 minutes
     /// - Session duration: 24 hours
     ///
@@ -108,7 +128,7 @@ where
     ///     OAuthReducer::with_config(config);
     /// ```
     #[must_use]
-    pub fn with_config(config: OAuthConfig) -> Self {
+    pub const fn with_config(config: OAuthConfig) -> Self {
         Self {
             config,
             _phantom: std::marker::PhantomData,
@@ -125,7 +145,7 @@ where
     ///
     /// Use `with_config()` instead for full configuration.
     #[must_use]
-    pub fn with_base_url(base_url: String) -> Self {
+    pub const fn with_base_url(base_url: String) -> Self {
         Self {
             config: OAuthConfig::new(base_url),
             _phantom: std::marker::PhantomData,
@@ -166,6 +186,7 @@ where
     type Action = AuthAction;
     type Environment = AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>;
 
+    #[allow(clippy::too_many_lines)]
     fn reduce(
         &self,
         state: &mut Self::State,
@@ -552,7 +573,7 @@ where
                         auth_level: AuthLevel::Basic,
                         ip_address,
                         user_agent: user_agent_clone.clone(),
-                        risk_score: login_risk_score as f64,
+                        risk_score: f64::from(login_risk_score),
                         timestamp: now,
                     });
 
@@ -701,16 +722,13 @@ where
                     };
 
                     // 2. Verify we have a refresh token
-                    let refresh_token = match tokens.refresh_token {
-                        Some(rt) => rt,
-                        None => {
-                            tracing::warn!(
-                                user_id = %user_id_clone.0,
-                                provider = %provider_clone.as_str(),
-                                "No refresh token available"
-                            );
-                            return None;
-                        }
+                    let Some(refresh_token) = tokens.refresh_token else {
+                        tracing::warn!(
+                            user_id = %user_id_clone.0,
+                            provider = %provider_clone.as_str(),
+                            "No refresh token available"
+                        );
+                        return None;
                     };
 
                     // 3. Call OAuth provider to refresh (external API call in effect)

@@ -56,7 +56,12 @@ impl Default for TodoStore {
 ///   "completed": false
 /// }
 /// ```
+///
+/// # Panics
+///
+/// Panics if the internal lock is poisoned (indicates a panic in another thread)
 #[must_use]
+#[allow(clippy::expect_used)]
 pub fn todo_add_tool(store: TodoStore) -> (Tool, ToolExecutorFn) {
     let tool = Tool {
         name: "todo_add".to_string(),
@@ -138,7 +143,12 @@ pub fn todo_add_tool(store: TodoStore) -> (Tool, ToolExecutorFn) {
 ///   ]
 /// }
 /// ```
+///
+/// # Panics
+///
+/// Panics if the internal lock is poisoned (indicates a panic in another thread)
 #[must_use]
+#[allow(clippy::expect_used)]
 pub fn todo_list_tool(store: TodoStore) -> (Tool, ToolExecutorFn) {
     let tool = Tool {
         name: "todo_list".to_string(),
@@ -187,7 +197,12 @@ pub fn todo_list_tool(store: TodoStore) -> (Tool, ToolExecutorFn) {
 ///   "completed": true
 /// }
 /// ```
+///
+/// # Panics
+///
+/// Panics if the internal lock is poisoned (indicates a panic in another thread)
 #[must_use]
+#[allow(clippy::expect_used)]
 pub fn todo_complete_tool(store: TodoStore) -> (Tool, ToolExecutorFn) {
     let tool = Tool {
         name: "todo_complete".to_string(),
@@ -253,7 +268,12 @@ pub fn todo_complete_tool(store: TodoStore) -> (Tool, ToolExecutorFn) {
 ///   "deleted": true
 /// }
 /// ```
+///
+/// # Panics
+///
+/// Panics if the internal lock is poisoned (indicates a panic in another thread)
 #[must_use]
+#[allow(clippy::expect_used)]
 pub fn todo_delete_tool(store: TodoStore) -> (Tool, ToolExecutorFn) {
     let tool = Tool {
         name: "todo_delete".to_string(),

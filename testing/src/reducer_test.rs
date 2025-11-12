@@ -6,6 +6,12 @@
 
 use composable_rust_core::{effect::Effect, reducer::Reducer};
 
+/// Type alias for state assertion functions
+type StateAssertion<S> = Box<dyn FnOnce(&S)>;
+
+/// Type alias for effect assertion functions
+type EffectAssertion<A> = Box<dyn FnOnce(&[Effect<A>])>;
+
 /// Fluent API for testing reducers with Given-When-Then syntax
 ///
 /// # Example
@@ -33,8 +39,8 @@ where
     environment: Option<E>,
     initial_state: Option<S>,
     action: Option<A>,
-    state_assertions: Vec<Box<dyn FnOnce(&S)>>,
-    effect_assertions: Vec<Box<dyn FnOnce(&[Effect<A>])>>,
+    state_assertions: Vec<StateAssertion<S>>,
+    effect_assertions: Vec<EffectAssertion<A>>,
 }
 
 impl<R, S, A, E> ReducerTest<R, S, A, E>
@@ -179,11 +185,11 @@ pub mod assertions {
         );
     }
 
-    /// Assert that effects contain at least one EventStore effect
+    /// Assert that effects contain at least one `EventStore` effect
     ///
     /// # Panics
     ///
-    /// Panics if no EventStore effect is found.
+    /// Panics if no `EventStore` effect is found.
     #[allow(clippy::panic)] // Test assertion
     pub fn assert_has_event_store_effect<A>(effects: &[Effect<A>]) {
         assert!(
@@ -192,11 +198,11 @@ pub mod assertions {
         );
     }
 
-    /// Assert that effects contain at least one PublishEvent effect
+    /// Assert that effects contain at least one `PublishEvent` effect
     ///
     /// # Panics
     ///
-    /// Panics if no PublishEvent effect is found.
+    /// Panics if no `PublishEvent` effect is found.
     #[allow(clippy::panic)] // Test assertion
     pub fn assert_has_publish_event_effect<A>(effects: &[Effect<A>]) {
         assert!(

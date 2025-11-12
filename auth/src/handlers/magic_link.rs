@@ -74,7 +74,7 @@ pub struct VerifyMagicLinkResponse {
 ///
 /// # Flow
 ///
-/// 1. Extract correlation_id, client_ip, user_agent from request
+/// 1. Extract `correlation_id`, `client_ip`, `user_agent` from request
 /// 2. Build `SendMagicLink` action
 /// 3. Dispatch and wait for `MagicLinkSent` or `MagicLinkFailed`
 /// 4. Return success/error response
@@ -163,7 +163,7 @@ where
 ///
 /// # Flow
 ///
-/// 1. Extract correlation_id, client_ip, user_agent from request
+/// 1. Extract `correlation_id`, `client_ip`, `user_agent` from request
 /// 2. Build `VerifyMagicLink` action
 /// 3. Dispatch and wait for `SessionCreated` or error actions
 /// 4. Return session info or error

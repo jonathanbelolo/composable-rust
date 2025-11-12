@@ -15,7 +15,7 @@ use std::sync::Arc;
 const MAX_TEXT_FILE_SIZE: u64 = 10 * 1024 * 1024;
 
 /// Maximum image size (1MB to prevent token explosion)
-const MAX_IMAGE_SIZE: u64 = 1 * 1024 * 1024;
+const MAX_IMAGE_SIZE: u64 = 1024 * 1024;
 
 /// Base directory for file operations (sandbox)
 ///
@@ -85,7 +85,7 @@ fn detect_file_type(path: &Path) -> FileType {
     match path
         .extension()
         .and_then(|ext| ext.to_str())
-        .map(|s| s.to_lowercase())
+        .map(str::to_lowercase)
         .as_deref()
     {
         Some("pdf") => FileType::Pdf,
@@ -286,7 +286,7 @@ async fn read_image_file(path: &Path) -> ToolResult {
     let mime_type = match path
         .extension()
         .and_then(|ext| ext.to_str())
-        .map(|s| s.to_lowercase())
+        .map(str::to_lowercase)
         .as_deref()
     {
         Some("jpg" | "jpeg") => "image/jpeg",
