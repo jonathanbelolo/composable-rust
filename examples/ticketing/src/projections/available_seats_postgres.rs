@@ -17,6 +17,21 @@ use composable_rust_core::projection::{Projection, ProjectionError, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
 
+/// Availability data for a section.
+#[derive(Debug, Clone)]
+pub struct SectionAvailability {
+    /// Section identifier
+    pub section: String,
+    /// Total capacity
+    pub total_capacity: i32,
+    /// Currently reserved seats (pending payment)
+    pub reserved: i32,
+    /// Sold seats (payment confirmed)
+    pub sold: i32,
+    /// Available seats (total - reserved - sold)
+    pub available: i32,
+}
+
 /// PostgreSQL-backed available seats projection.
 ///
 /// Maintains real-time view of seat availability with proper idempotency
@@ -65,7 +80,7 @@ impl PostgresAvailableSeatsProjection {
         Ok(())
     }
 
-    /// Query seat availability (for handlers).
+    /// Query seat availability for a specific section.
     ///
     /// Returns (total_capacity, reserved, sold, available).
     pub async fn get_availability(
@@ -88,6 +103,33 @@ impl PostgresAvailableSeatsProjection {
         Ok(result.map(|(total, reserved, sold, available)| {
             (total as u32, reserved as u32, sold as u32, available as u32)
         }))
+    }
+
+    /// Query seat availability for all sections of an event.
+    ///
+    /// Returns a vector of section availability data.
+    pub async fn get_all_sections(&self, event_id: &EventId) -> Result<Vec<SectionAvailability>> {
+        let results: Vec<(String, i32, i32, i32, i32)> = sqlx::query_as(
+            "SELECT section, total_capacity, reserved, sold, available
+             FROM available_seats_projection
+             WHERE event_id = $1
+             ORDER BY section"
+        )
+        .bind(event_id.as_uuid())
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| ProjectionError::Storage(format!("Failed to query all sections: {e}")))?;
+
+        Ok(results
+            .into_iter()
+            .map(|(section, total_capacity, reserved, sold, available)| SectionAvailability {
+                section,
+                total_capacity,
+                reserved,
+                sold,
+                available,
+            })
+            .collect())
     }
 
     /// Get total available seats across all sections for an event.

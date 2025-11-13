@@ -2,11 +2,11 @@
 //!
 //! Builds the complete Axum router with all endpoints.
 
-use super::state::AppState;
 use super::health::{health_check, readiness_check};
-use crate::api::events;
+use super::state::AppState;
+use crate::api::{availability, events};
 use axum::{
-    routing::{get, post, put, delete},
+    routing::{delete, get, post, put},
     Router,
 };
 
@@ -35,8 +35,20 @@ pub fn build_router(state: AppState) -> Router {
         .route("/events", get(events::list_events))
         .route("/events/:id", get(events::get_event))
         .route("/events/:id", put(events::update_event))
-        .route("/events/:id", delete(events::delete_event));
-        // TODO: Add availability routes
+        .route("/events/:id", delete(events::delete_event))
+        // Availability queries (CQRS read side)
+        .route(
+            "/events/:id/availability",
+            get(availability::get_event_availability),
+        )
+        .route(
+            "/events/:id/sections/:section/availability",
+            get(availability::get_section_availability),
+        )
+        .route(
+            "/events/:id/total-available",
+            get(availability::get_total_available),
+        );
         // TODO: Add reservation routes
         // TODO: Add payment routes
         // TODO: Add analytics routes
