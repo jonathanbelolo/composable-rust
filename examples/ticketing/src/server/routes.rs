@@ -4,7 +4,7 @@
 
 use super::health::{health_check, readiness_check};
 use super::state::AppState;
-use crate::api::{availability, events};
+use crate::api::{availability, events, reservations};
 use axum::{
     routing::{delete, get, post, put},
     Router,
@@ -48,8 +48,15 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/events/:id/total-available",
             get(availability::get_total_available),
+        )
+        // Reservation management (saga-coordinated)
+        .route("/reservations", post(reservations::create_reservation))
+        .route("/reservations", get(reservations::list_user_reservations))
+        .route("/reservations/:id", get(reservations::get_reservation))
+        .route(
+            "/reservations/:id/cancel",
+            post(reservations::cancel_reservation),
         );
-        // TODO: Add reservation routes
         // TODO: Add payment routes
         // TODO: Add analytics routes
 
