@@ -4,7 +4,7 @@
 
 use super::health::{health_check, readiness_check};
 use super::state::AppState;
-use crate::api::{availability, events, reservations};
+use crate::api::{availability, events, payments, reservations};
 use axum::{
     routing::{delete, get, post, put},
     Router,
@@ -56,8 +56,12 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/reservations/:id/cancel",
             post(reservations::cancel_reservation),
-        );
-        // TODO: Add payment routes
+        )
+        // Payment processing
+        .route("/payments", post(payments::process_payment))
+        .route("/payments", get(payments::list_user_payments))
+        .route("/payments/:id", get(payments::get_payment))
+        .route("/payments/:id/refund", post(payments::refund_payment));
         // TODO: Add analytics routes
 
     Router::new()
