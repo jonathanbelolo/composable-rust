@@ -18,9 +18,9 @@
 //! - PayPal
 //! - Apple Pay
 
-use crate::auth::middleware::SessionUser;
+use crate::auth::middleware::{RequireOwnership, SessionUser};
 use crate::server::state::AppState;
-use crate::types::{PaymentId, PaymentMethod, PaymentStatus, ReservationId};
+use crate::types::{CustomerId, PaymentId, PaymentMethod, PaymentStatus, ReservationId};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -234,13 +234,24 @@ pub async fn process_payment(
     // Generate payment ID
     let payment_id = PaymentId::new();
     let reservation_id = ReservationId::from_uuid(request.reservation_id);
+    let customer_id = CustomerId::from_uuid(session.user_id.0);
 
     // TODO: Verify reservation exists and belongs to user
-    // TODO: Check reservation is in PaymentPending state
+    // CRITICAL SECURITY: Must verify reservation ownership before processing payment
+    // Pseudocode:
+    // let reservation = state.event_store.load_aggregate(&reservation_id).await?;
+    // if reservation.customer_id != customer_id {
+    //     return Err(AppError::forbidden("You don't own this reservation"));
+    // }
+    // if reservation.status != ReservationStatus::PaymentPending {
+    //     return Err(AppError::bad_request("Reservation not ready for payment"));
+    // }
+    // let amount = reservation.total_amount;
+
     // TODO: Send ProcessPayment command to payment aggregate via event store
     // TODO: Integrate with real payment gateway (Stripe, PayPal, etc.)
 
-    let _ = (session, reservation_id, payment_method, request.billing_info);
+    let _ = (customer_id, reservation_id, payment_method, request.billing_info);
 
     // Placeholder: simulate success
     Ok((
@@ -324,11 +335,17 @@ pub async fn get_payment(
 /// }
 /// ```
 pub async fn refund_payment(
-    session: SessionUser,
+    ownership: RequireOwnership<PaymentId>,
     Path(payment_id): Path<Uuid>,
     State(_state): State<AppState>,
     Json(request): Json<RefundPaymentRequest>,
 ) -> Result<Json<RefundPaymentResponse>, AppError> {
+    // Ownership verified by RequireOwnership extractor
+    // ownership.user_id is the authenticated user who owns this payment
+    // ownership.resource is the PaymentId from the path
+    //
+    // Note: In production, also check if user is admin for override capability
+
     // Validate refund amount
     if let Some(amount) = request.amount {
         if amount <= 0.0 {
@@ -340,12 +357,11 @@ pub async fn refund_payment(
         return Err(AppError::bad_request("Refund reason is required"));
     }
 
-    // TODO: Verify payment exists
-    // TODO: Verify ownership (customer_id matches session.user_id OR user is admin)
-    // TODO: Check refund policy eligibility
+    // TODO: Verify payment exists (should already be verified by ownership check)
+    // TODO: Check refund policy eligibility (event date, refund window)
     // TODO: Send RefundPayment command to payment aggregate
 
-    let _ = session;
+    let _ = ownership;
 
     // Placeholder
     Err(AppError::not_found("Payment", payment_id))

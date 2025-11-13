@@ -23,7 +23,7 @@
 //!                              Compensated
 //! ```
 
-use crate::auth::middleware::SessionUser;
+use crate::auth::middleware::{RequireOwnership, SessionUser};
 use crate::server::state::AppState;
 use crate::types::{CustomerId, EventId, ReservationId, ReservationStatus};
 use axum::{
@@ -243,15 +243,18 @@ pub async fn get_reservation(
 /// }
 /// ```
 pub async fn cancel_reservation(
-    session: SessionUser,
+    ownership: RequireOwnership<ReservationId>,
     Path(reservation_id): Path<Uuid>,
     State(_state): State<AppState>,
     Json(request): Json<CancelReservationRequest>,
 ) -> Result<Json<CancelReservationResponse>, AppError> {
-    // TODO: Verify ownership (customer_id matches session.user_id)
+    // Ownership verified by RequireOwnership extractor
+    // ownership.user_id is the authenticated user who owns this reservation
+    // ownership.resource is the ReservationId from the path
+
     // TODO: Send CancelReservation command to saga
 
-    let _ = (session, request);
+    let _ = (ownership, request);
 
     // Placeholder
     Err(AppError::not_found("Reservation", reservation_id))

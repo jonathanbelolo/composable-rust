@@ -284,6 +284,91 @@ pub trait ResourceId: Send + Sync + Clone {
     ) -> impl std::future::Future<Output = Result<(), AppError>> + Send;
 }
 
+// ============================================================================
+// ResourceId Implementations
+// ============================================================================
+
+impl ResourceId for crate::types::ReservationId {
+    fn from_path(path: &str) -> Option<Self> {
+        // Extract UUID from paths like /api/reservations/:id/cancel
+        // Path format: /api/reservations/{uuid}/...
+        let parts: Vec<&str> = path.split('/').collect();
+
+        // Find "reservations" segment, next segment should be UUID
+        for (i, &part) in parts.iter().enumerate() {
+            if part == "reservations" && i + 1 < parts.len() {
+                if let Ok(uuid) = uuid::Uuid::parse_str(parts[i + 1]) {
+                    return Some(crate::types::ReservationId::from_uuid(uuid));
+                }
+            }
+        }
+
+        None
+    }
+
+    async fn verify_ownership(
+        &self,
+        user_id: &UserId,
+        _store: &Arc<TicketingAuthStore>,
+    ) -> Result<(), AppError> {
+        // TODO: Query reservation state from event store or projection
+        // TODO: Verify reservation.customer_id == user_id
+        //
+        // Pseudocode:
+        // let reservation = state.event_store.load_aggregate(self).await?;
+        // if reservation.customer_id != CustomerId(user_id.0) {
+        //     return Err(AppError::forbidden("You don't own this reservation"));
+        // }
+
+        // TEMPORARY: Allow all for development
+        // This will be replaced when we wire up saga state queries
+        let _ = user_id;
+        Ok(())
+    }
+}
+
+impl ResourceId for crate::types::PaymentId {
+    fn from_path(path: &str) -> Option<Self> {
+        // Extract UUID from paths like /api/payments/:id/refund
+        // Path format: /api/payments/{uuid}/...
+        let parts: Vec<&str> = path.split('/').collect();
+
+        // Find "payments" segment, next segment should be UUID
+        for (i, &part) in parts.iter().enumerate() {
+            if part == "payments" && i + 1 < parts.len() {
+                if let Ok(uuid) = uuid::Uuid::parse_str(parts[i + 1]) {
+                    return Some(crate::types::PaymentId::from_uuid(uuid));
+                }
+            }
+        }
+
+        None
+    }
+
+    async fn verify_ownership(
+        &self,
+        user_id: &UserId,
+        _store: &Arc<TicketingAuthStore>,
+    ) -> Result<(), AppError> {
+        // TODO: Query payment state from event store or projection
+        // TODO: Verify payment.customer_id == user_id OR user is admin
+        //
+        // Pseudocode:
+        // let payment = state.event_store.load_aggregate(self).await?;
+        // if payment.customer_id != CustomerId(user_id.0) {
+        //     // Check if user is admin
+        //     if !is_admin(user_id, store).await? {
+        //         return Err(AppError::forbidden("You don't own this payment"));
+        //     }
+        // }
+
+        // TEMPORARY: Allow all for development
+        // This will be replaced when we wire up payment state queries
+        let _ = user_id;
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl<T> FromRequestParts<Arc<TicketingAuthStore>> for RequireOwnership<T>
 where
