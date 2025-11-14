@@ -5,14 +5,19 @@
 use ticketing::{
     auth::setup::build_auth_store,
     config::Config,
-    projections::setup_projection_managers,
+    projections::{
+        setup_projection_managers, CustomerHistoryProjection, Projection,
+        SalesAnalyticsProjection, TicketingEvent,
+    },
     server::{build_router, AppState},
 };
+use composable_rust_core::event_bus::EventBus;
 use composable_rust_postgres::PostgresEventStore;
 use composable_rust_redpanda::RedpandaEventBus;
-use std::sync::Arc;
+use futures::StreamExt;
+use std::sync::{Arc, RwLock};
 use tokio::signal;
-use tracing::info;
+use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -83,12 +88,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
     );
 
+    // Create in-memory analytics projections
+    info!("Initializing in-memory analytics projections...");
+    let sales_analytics_projection = Arc::new(RwLock::new(SalesAnalyticsProjection::new()));
+    let customer_history_projection = Arc::new(RwLock::new(CustomerHistoryProjection::new()));
+
+    // Create security ownership indices
+    info!("Initializing ownership tracking indices...");
+    let reservation_ownership = Arc::new(RwLock::new(std::collections::HashMap::new()));
+    let payment_ownership = Arc::new(RwLock::new(std::collections::HashMap::new()));
+
+    // Subscribe to events for analytics projections and ownership tracking
+    info!("Starting analytics projection event consumers...");
+    spawn_analytics_consumers(
+        event_bus.clone(),
+        sales_analytics_projection.clone(),
+        customer_history_projection.clone(),
+        reservation_ownership.clone(),
+        payment_ownership.clone(),
+        &config.redpanda,
+    );
+
     // Build application state
     let state = AppState::new(
         auth_store,
         event_store,
         event_bus,
         available_seats_projection,
+        sales_analytics_projection,
+        customer_history_projection,
+        reservation_ownership,
+        payment_ownership,
     );
 
     // Build router
@@ -109,6 +139,173 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Server stopped");
     Ok(())
+}
+
+/// Spawn background tasks to consume events and update analytics projections.
+///
+/// Creates two consumer tasks:
+/// 1. Sales analytics consumer (reservations + payments)
+/// 2. Customer history consumer (reservations)
+///
+/// Also updates ownership indices for security filtering:
+/// - `reservation_ownership`: ReservationId → CustomerId
+/// - `payment_ownership`: PaymentId → ReservationId
+fn spawn_analytics_consumers(
+    event_bus: Arc<dyn EventBus>,
+    sales_projection: Arc<RwLock<SalesAnalyticsProjection>>,
+    customer_projection: Arc<RwLock<CustomerHistoryProjection>>,
+    reservation_ownership: Arc<RwLock<std::collections::HashMap<ticketing::types::ReservationId, ticketing::types::CustomerId>>>,
+    payment_ownership: Arc<RwLock<std::collections::HashMap<ticketing::types::PaymentId, ticketing::types::ReservationId>>>,
+    redpanda_config: &ticketing::config::RedpandaConfig,
+) {
+    // Spawn sales analytics consumer (also tracks ownership)
+    let sales_bus = event_bus.clone();
+    let sales_proj = sales_projection.clone();
+    let reservation_ownership_sales = reservation_ownership.clone();
+    let payment_ownership_sales = payment_ownership.clone();
+    let reservation_topic = redpanda_config.reservation_topic.clone();
+    let payment_topic = redpanda_config.payment_topic.clone();
+
+    tokio::spawn(async move {
+        info!("Sales analytics projection consumer started");
+
+        // Subscribe to reservation and payment topics
+        let topics = &[reservation_topic.as_str(), payment_topic.as_str()];
+
+        loop {
+            // Try to subscribe to events
+            match sales_bus.subscribe(topics).await {
+                Ok(mut stream) => {
+                    info!("Sales projection subscribed to event topics");
+
+                    // Process events from stream
+                    while let Some(result) = stream.next().await {
+                        match result {
+                            Ok(serialized_event) => {
+                                // Deserialize event from data field
+                                match bincode::deserialize::<TicketingEvent>(&serialized_event.data) {
+                                    Ok(event) => {
+                                        // Track ownership for security
+                                        use ticketing::aggregates::{PaymentAction, ReservationAction};
+                                        match &event {
+                                            TicketingEvent::Reservation(ReservationAction::ReservationInitiated {
+                                                reservation_id, customer_id, ..
+                                            }) => {
+                                                if let Ok(mut index) = reservation_ownership_sales.write() {
+                                                    index.insert(*reservation_id, *customer_id);
+                                                    info!(reservation_id = %reservation_id.as_uuid(), customer_id = %customer_id.as_uuid(), "Tracked reservation ownership");
+                                                }
+                                            }
+                                            TicketingEvent::Payment(PaymentAction::PaymentProcessed {
+                                                payment_id, reservation_id, ..
+                                            }) => {
+                                                if let Ok(mut index) = payment_ownership_sales.write() {
+                                                    index.insert(*payment_id, *reservation_id);
+                                                    info!(payment_id = %payment_id.as_uuid(), reservation_id = %reservation_id.as_uuid(), "Tracked payment ownership");
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+
+                                        // Update projection
+                                        if let Ok(mut projection) = sales_proj.write() {
+                                            if let Err(e) = projection.handle_event(&event) {
+                                                error!(error = %e, "Failed to handle event in sales projection");
+                                            }
+                                        } else {
+                                            warn!("Failed to acquire write lock on sales projection");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!(error = %e, "Failed to deserialize event");
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!(error = %e, "Error receiving event from stream");
+                            }
+                        }
+                    }
+
+                    // Stream ended, reconnect
+                    warn!("Event stream ended, reconnecting in 5s");
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                }
+                Err(e) => {
+                    error!(error = %e, "Failed to subscribe to event bus, retrying in 5s");
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                }
+            }
+        }
+    });
+
+    // Spawn customer history consumer (also tracks reservation ownership)
+    let customer_bus = event_bus.clone();
+    let customer_proj = customer_projection;
+    let reservation_ownership_customer = reservation_ownership;
+    let customer_topic = redpanda_config.reservation_topic.clone();
+
+    tokio::spawn(async move {
+        info!("Customer history projection consumer started");
+
+        let topics = &[customer_topic.as_str()];
+
+        loop {
+            // Try to subscribe to events
+            match customer_bus.subscribe(topics).await {
+                Ok(mut stream) => {
+                    info!("Customer projection subscribed to reservation topic");
+
+                    // Process events from stream
+                    while let Some(result) = stream.next().await {
+                        match result {
+                            Ok(serialized_event) => {
+                                // Deserialize event from data field
+                                match bincode::deserialize::<TicketingEvent>(&serialized_event.data) {
+                                    Ok(event) => {
+                                        // Track ownership for security (backup tracking)
+                                        use ticketing::aggregates::ReservationAction;
+                                        if let TicketingEvent::Reservation(ReservationAction::ReservationInitiated {
+                                            reservation_id, customer_id, ..
+                                        }) = &event {
+                                            if let Ok(mut index) = reservation_ownership_customer.write() {
+                                                index.insert(*reservation_id, *customer_id);
+                                            }
+                                        }
+
+                                        // Update projection
+                                        if let Ok(mut projection) = customer_proj.write() {
+                                            if let Err(e) = projection.handle_event(&event) {
+                                                error!(error = %e, "Failed to handle event in customer projection");
+                                            }
+                                        } else {
+                                            warn!("Failed to acquire write lock on customer projection");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!(error = %e, "Failed to deserialize event");
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!(error = %e, "Error receiving event from stream");
+                            }
+                        }
+                    }
+
+                    // Stream ended, reconnect
+                    warn!("Event stream ended, reconnecting in 5s");
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                }
+                Err(e) => {
+                    error!(error = %e, "Failed to subscribe to event bus, retrying in 5s");
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                }
+            }
+        }
+    });
+
+    info!("Analytics projection consumers spawned");
 }
 
 /// Graceful shutdown signal handler.

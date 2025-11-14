@@ -145,9 +145,13 @@ pub struct CancelReservationResponse {
 /// ```
 pub async fn create_reservation(
     session: SessionUser,
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(request): Json<CreateReservationRequest>,
 ) -> Result<(StatusCode, Json<CreateReservationResponse>), AppError> {
+    use crate::aggregates::ReservationAction;
+    use crate::projections::TicketingEvent;
+    use composable_rust_core::event::SerializedEvent;
+
     // Validate request
     if request.quantity == 0 {
         return Err(AppError::bad_request("Quantity must be greater than 0"));
@@ -164,9 +168,43 @@ pub async fn create_reservation(
     let event_id = EventId::from_uuid(request.event_id);
     let customer_id = CustomerId::from_uuid(session.user_id.0);
 
-    // TODO: Send InitiateReservation command to reservation saga via event store
-    // For now, just return a placeholder response
-    let _ = (event_id, customer_id, request.section, request.quantity);
+    // Convert specific_seats from Vec<String> to Vec<SeatNumber>
+    // Note: For now, we skip specific seat conversion since SeatNumber is private
+    // In a real system, you'd have a public API for creating SeatNumbers
+    let specific_seats = None; // TODO: Convert request.specific_seats properly
+
+    // Create InitiateReservation command
+    let command = ReservationAction::InitiateReservation {
+        reservation_id,
+        event_id,
+        customer_id,
+        section: request.section.clone(),
+        quantity: request.quantity,
+        specific_seats,
+    };
+
+    // Wrap in TicketingEvent for publishing to EventBus
+    let ticketing_event = TicketingEvent::Reservation(command.clone());
+
+    // Serialize and publish to EventBus (reservation topic)
+    let event_data = bincode::serialize(&ticketing_event)
+        .map_err(|e| AppError::internal(&format!("Failed to serialize event: {e}")))?;
+
+    let metadata = serde_json::json!({
+        "reservation_id": reservation_id.as_uuid(),
+        "customer_id": customer_id.as_uuid(),
+        "event_id": event_id.as_uuid(),
+    });
+
+    let serialized_event = SerializedEvent {
+        event_type: "ReservationAction::InitiateReservation".to_string(),
+        data: event_data,
+        metadata: Some(metadata),
+    };
+
+    // Publish to EventBus
+    state.event_bus.publish("reservation.commands", &serialized_event).await
+        .map_err(|e| AppError::internal(&format!("Failed to publish reservation command: {e}")))?;
 
     // Calculate expiration (5 minutes from now)
     let expires_at = Utc::now() + chrono::Duration::minutes(5);
@@ -245,19 +283,51 @@ pub async fn get_reservation(
 pub async fn cancel_reservation(
     ownership: RequireOwnership<ReservationId>,
     Path(reservation_id): Path<Uuid>,
-    State(_state): State<AppState>,
-    Json(request): Json<CancelReservationRequest>,
+    State(state): State<AppState>,
+    Json(_request): Json<CancelReservationRequest>,
 ) -> Result<Json<CancelReservationResponse>, AppError> {
+    use crate::aggregates::ReservationAction;
+    use crate::projections::TicketingEvent;
+    use composable_rust_core::event::SerializedEvent;
+
     // Ownership verified by RequireOwnership extractor
     // ownership.user_id is the authenticated user who owns this reservation
     // ownership.resource is the ReservationId from the path
+    let _ = ownership;
 
-    // TODO: Send CancelReservation command to saga
+    let reservation_id_typed = ReservationId::from_uuid(reservation_id);
 
-    let _ = (ownership, request);
+    // Create CancelReservation command
+    let command = ReservationAction::CancelReservation {
+        reservation_id: reservation_id_typed,
+    };
 
-    // Placeholder
-    Err(AppError::not_found("Reservation", reservation_id))
+    // Wrap in TicketingEvent for publishing to EventBus
+    let ticketing_event = TicketingEvent::Reservation(command);
+
+    // Serialize and publish to EventBus
+    let event_data = bincode::serialize(&ticketing_event)
+        .map_err(|e| AppError::internal(&format!("Failed to serialize event: {e}")))?;
+
+    let metadata = serde_json::json!({
+        "reservation_id": reservation_id,
+    });
+
+    let serialized_event = SerializedEvent {
+        event_type: "ReservationAction::CancelReservation".to_string(),
+        data: event_data,
+        metadata: Some(metadata),
+    };
+
+    // Publish to EventBus (reservation topic)
+    state.event_bus.publish("reservation.commands", &serialized_event).await
+        .map_err(|e| AppError::internal(&format!("Failed to publish cancel command: {e}")))?;
+
+    Ok(Json(CancelReservationResponse {
+        reservation_id,
+        status: ReservationStatus::Cancelled,
+        message: "Cancellation request submitted. Seats will be released shortly.".to_string(),
+    }))
 }
 
 /// List user's reservations.

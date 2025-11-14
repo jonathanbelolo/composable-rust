@@ -4,7 +4,7 @@
 
 use super::health::{health_check, readiness_check};
 use super::state::AppState;
-use crate::api::{availability, events, payments, reservations};
+use crate::api::{analytics, availability, events, payments, reservations, websocket};
 use axum::{
     routing::{delete, get, post, put},
     Router,
@@ -61,8 +61,34 @@ pub fn build_router(state: AppState) -> Router {
         .route("/payments", post(payments::process_payment))
         .route("/payments", get(payments::list_user_payments))
         .route("/payments/:id", get(payments::get_payment))
-        .route("/payments/:id/refund", post(payments::refund_payment));
-        // TODO: Add analytics routes
+        .route("/payments/:id/refund", post(payments::refund_payment))
+        // Analytics and reporting
+        .route(
+            "/analytics/events/:id/sales",
+            get(analytics::get_event_sales),
+        )
+        .route(
+            "/analytics/events/:id/sections/popular",
+            get(analytics::get_popular_sections),
+        )
+        .route("/analytics/revenue", get(analytics::get_total_revenue))
+        .route(
+            "/analytics/customers/top-spenders",
+            get(analytics::get_top_spenders),
+        )
+        .route(
+            "/analytics/customers/:id/profile",
+            get(analytics::get_customer_profile),
+        )
+        // WebSocket endpoints
+        .route(
+            "/ws/availability/:event_id",
+            get(websocket::availability_updates),
+        )
+        .route(
+            "/ws/notifications",
+            get(websocket::personal_notifications),
+        );
 
     Router::new()
         // Health checks (no authentication)

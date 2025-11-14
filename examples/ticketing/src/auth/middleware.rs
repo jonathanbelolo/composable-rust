@@ -369,6 +369,50 @@ impl ResourceId for crate::types::PaymentId {
     }
 }
 
+impl ResourceId for crate::types::CustomerId {
+    fn from_path(path: &str) -> Option<Self> {
+        // Extract UUID from paths like /api/analytics/customers/:id/profile
+        // Path format: /api/analytics/customers/{uuid}/...
+        let parts: Vec<&str> = path.split('/').collect();
+
+        // Find "customers" segment, next segment should be UUID
+        for (i, &part) in parts.iter().enumerate() {
+            if part == "customers" && i + 1 < parts.len() {
+                if let Ok(uuid) = uuid::Uuid::parse_str(parts[i + 1]) {
+                    return Some(crate::types::CustomerId::from_uuid(uuid));
+                }
+            }
+        }
+
+        None
+    }
+
+    async fn verify_ownership(
+        &self,
+        user_id: &UserId,
+        _store: &Arc<TicketingAuthStore>,
+    ) -> Result<(), AppError> {
+        // Verify that the customer ID in the path matches the authenticated user's ID
+        // This ensures customers can only view their own profile
+        //
+        // TODO: Add admin override check - admins should be able to view any customer profile
+        // Pseudocode:
+        // if !is_admin(user_id, store).await? {
+        //     if self.as_uuid() != &user_id.0 {
+        //         return Err(AppError::forbidden("You can only view your own profile"));
+        //     }
+        // }
+
+        if self.as_uuid() != &user_id.0 {
+            return Err(AppError::forbidden(
+                "You can only view your own profile. Admin override not yet implemented.",
+            ));
+        }
+
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl<T> FromRequestParts<Arc<TicketingAuthStore>> for RequireOwnership<T>
 where
