@@ -63,15 +63,39 @@ use tracing::{debug, error, info, warn};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum WsMessage<A> {
+    /// Subscribe to topics (client → server)
+    Subscribe {
+        /// List of topics to subscribe to
+        topics: Vec<String>,
+    },
+    /// Unsubscribe from topics (client → server)
+    Unsubscribe {
+        /// List of topics to unsubscribe from
+        topics: Vec<String>,
+    },
+    /// Subscription confirmed (server → client)
+    Subscribed {
+        /// Topics now subscribed to
+        topics: Vec<String>,
+    },
+    /// Unsubscription confirmed (server → client)
+    Unsubscribed {
+        /// Topics unsubscribed from
+        topics: Vec<String>,
+    },
     /// Command from client (action to dispatch)
     Command {
         /// The action to dispatch
         action: A,
+        /// Optional topic for the command
+        topic: Option<String>,
     },
     /// Event from server (action broadcast)
     Event {
         /// The broadcasted action
         action: A,
+        /// Topic this event belongs to
+        topic: String,
     },
     /// Error message
     Error {
@@ -147,7 +171,10 @@ where
     let mut send_task = tokio::spawn(async move {
         while let Ok(action) = action_rx.recv().await {
             // Serialize action to JSON
-            let message = match serde_json::to_string(&WsMessage::Event { action }) {
+            let message = match serde_json::to_string(&WsMessage::Event {
+                action,
+                topic: "default".to_string(),
+            }) {
                 Ok(json) => Message::Text(json),
                 Err(e) => {
                     error!(error = %e, "Failed to serialize action");
@@ -172,7 +199,7 @@ where
                 Message::Text(text) => {
                     // Parse command message
                     match serde_json::from_str::<WsMessage<A>>(&text) {
-                        Ok(WsMessage::Command { action }) => {
+                        Ok(WsMessage::Command { action, topic: _ }) => {
                             debug!("Received command from client");
                             // Dispatch action to store
                             if let Err(e) = store.send(action).await {
@@ -244,25 +271,28 @@ mod tests {
         // Test Command serialization
         let cmd = WsMessage::Command {
             action: TestAction::Increment,
+            topic: None,
         };
         let json = serde_json::to_string(&cmd).expect("Serialize");
-        assert_eq!(json, r#"{"type":"command","action":"Increment"}"#);
+        assert_eq!(json, r#"{"type":"command","action":"Increment","topic":null}"#);
 
         // Test Command deserialization
         let parsed: WsMessage<TestAction> = serde_json::from_str(&json).expect("Deserialize");
         assert!(matches!(
             parsed,
             WsMessage::Command {
-                action: TestAction::Increment
+                action: TestAction::Increment,
+                topic: None
             }
         ));
 
         // Test Event serialization
         let event = WsMessage::Event {
             action: TestAction::Decrement,
+            topic: "test_topic".to_string(),
         };
         let json = serde_json::to_string(&event).expect("Serialize");
-        assert_eq!(json, r#"{"type":"event","action":"Decrement"}"#);
+        assert_eq!(json, r#"{"type":"event","action":"Decrement","topic":"test_topic"}"#);
 
         // Test Error serialization
         let error = WsMessage::<TestAction>::Error {
