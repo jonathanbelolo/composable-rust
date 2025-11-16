@@ -1,0 +1,50 @@
+# Override for testing environment
+# Usage: docker compose -f docker-compose.yml -f docker-compose.test.yml up
+
+services:
+  # All infrastructure services are inherited from docker-compose.yml
+  # This file ONLY adds testing-specific configuration
+
+  # Ticketing application service (testing mode)
+  ticketing:
+    build:
+      context: ../..
+      dockerfile: examples/ticketing/Dockerfile
+    container_name: ticketing-app-test
+    environment:
+      # Database connections (use container names for internal networking)
+      DATABASE_URL: postgresql://postgres:postgres@postgres-events:5432/ticketing_events
+      AUTH_DATABASE_URL: postgresql://postgres:postgres@postgres-auth:5432/ticketing_auth
+      PROJECTION_DATABASE_URL: postgresql://postgres:postgres@postgres-projections:5432/ticketing_projections
+
+      # Redis and Redpanda (use container names)
+      REDIS_URL: redis://redis:6379
+      REDPANDA_BROKERS: redpanda:29092
+
+      # Server configuration
+      HOST: 0.0.0.0
+      PORT: 8080
+      RUST_LOG: info,ticketing=debug
+
+      # Auth configuration
+      AUTH_BASE_URL: http://localhost:8080
+      AUTH_JWT_SECRET: dev-secret-key-change-in-production-32bytes-required
+      EMAIL_PROVIDER: console
+
+      # TESTING MODE: Enable test token bypass
+      AUTH_TEST_TOKEN: test-token-12345
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres-events:
+        condition: service_healthy
+      postgres-auth:
+        condition: service_healthy
+      postgres-projections:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    networks:
+      - ticketing

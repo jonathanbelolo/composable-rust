@@ -37,6 +37,7 @@ pub async fn health_check() -> (StatusCode, Json<HealthResponse>) {
 
 /// Readiness check response.
 #[derive(Serialize)]
+#[allow(clippy::struct_excessive_bools)] // Health check response naturally has multiple boolean flags
 pub struct ReadinessResponse {
     /// Overall readiness status
     pub ready: bool,

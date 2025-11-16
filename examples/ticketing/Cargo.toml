@@ -40,6 +40,8 @@ bincode = "1.3"
 proptest = { workspace = true }
 testcontainers = { workspace = true }
 testcontainers-modules = { workspace = true }
+reqwest = { version = "0.12", features = ["json"] }
+tokio-tungstenite = "0.24"
 
 [lints]
 workspace = true

@@ -109,7 +109,7 @@ pub struct TopSpendersQuery {
     pub limit: usize,
 }
 
-fn default_limit() -> usize {
+const fn default_limit() -> usize {
     10
 }
 
@@ -214,6 +214,7 @@ pub struct PurchaseRecord {
 /// # Errors
 ///
 /// Returns `AppError::NotFound` if event has no sales data.
+#[allow(clippy::cast_possible_wrap)] // Money amounts in cents won't exceed i64::MAX in practice
 pub async fn get_event_sales(
     Path(event_id): Path<Uuid>,
     State(state): State<AppState>,
@@ -283,6 +284,7 @@ pub async fn get_event_sales(
 /// # Errors
 ///
 /// Returns `AppError::NotFound` if event has no sales data.
+#[allow(clippy::cast_possible_wrap)] // Money amounts in cents won't exceed i64::MAX in practice
 pub async fn get_popular_sections(
     Path(event_id): Path<Uuid>,
     State(state): State<AppState>,
@@ -365,6 +367,7 @@ pub async fn get_popular_sections(
 ///
 /// Returns `AppError::Unauthorized` if not authenticated.
 /// Returns `AppError::Forbidden` if not admin.
+#[allow(clippy::cast_possible_wrap)] // Money amounts in cents won't exceed i64::MAX in practice
 pub async fn get_total_revenue(
     _admin: RequireAdmin,
     State(state): State<AppState>,
@@ -425,6 +428,7 @@ pub async fn get_total_revenue(
 /// Returns `AppError::Unauthorized` if not authenticated.
 /// Returns `AppError::Forbidden` if not admin.
 /// Returns `AppError::BadRequest` if limit exceeds 100.
+#[allow(clippy::cast_possible_wrap)] // Money amounts in cents won't exceed i64::MAX in practice
 pub async fn get_top_spenders(
     _admin: RequireAdmin,
     Query(params): Query<TopSpendersQuery>,
@@ -504,6 +508,7 @@ pub async fn get_top_spenders(
 /// Returns `AppError::Unauthorized` if not authenticated.
 /// Returns `AppError::Forbidden` if customer ID doesn't match authenticated user.
 /// Returns `AppError::NotFound` if customer has no purchase history.
+#[allow(clippy::cast_possible_wrap)] // Money amounts in cents won't exceed i64::MAX in practice
 pub async fn get_customer_profile(
     ownership: RequireOwnership<CustomerId>,
     Path(customer_id): Path<Uuid>,

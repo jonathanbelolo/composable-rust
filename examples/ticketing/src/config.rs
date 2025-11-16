@@ -131,7 +131,8 @@ impl Config {
     /// # Panics
     ///
     /// Panics if required environment variables are missing or invalid.
-    #[must_use] 
+    #[must_use]
+    #[allow(clippy::too_many_lines)] // Config loading is naturally long but simple
     pub fn from_env() -> Self {
         Self {
             postgres: PostgresConfig {

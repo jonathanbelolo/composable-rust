@@ -33,7 +33,7 @@ use std::sync::{Arc, RwLock};
 ///
 /// - **PostgreSQL-backed**: `available_seats_projection` (persistent, crash-safe)
 /// - **In-memory**: `sales_analytics_projection`, `customer_history_projection`
-///   (fast, but need rebuilding on restart - consumed from EventBus)
+///   (fast, but need rebuilding on restart - consumed from `EventBus`)
 ///
 /// # Security Indices
 ///
@@ -59,10 +59,10 @@ pub struct AppState {
     /// Customer history projection for purchase tracking (in-memory)
     pub customer_history_projection: Arc<RwLock<CustomerHistoryProjection>>,
 
-    /// Ownership index: ReservationId → CustomerId (for WebSocket notification filtering)
+    /// Ownership index: `ReservationId` → `CustomerId` (for WebSocket notification filtering)
     pub reservation_ownership: Arc<RwLock<HashMap<ReservationId, CustomerId>>>,
 
-    /// Ownership index: PaymentId → ReservationId (for WebSocket notification filtering)
+    /// Ownership index: `PaymentId` → `ReservationId` (for WebSocket notification filtering)
     pub payment_ownership: Arc<RwLock<HashMap<PaymentId, ReservationId>>>,
 }
 

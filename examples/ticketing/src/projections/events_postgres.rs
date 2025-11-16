@@ -1,0 +1,165 @@
+//! PostgreSQL-backed events projection using JSONB.
+//!
+//! Stores full `Event` domain objects as JSONB for simplicity.
+//! Much simpler than denormalized schema - just serialize/deserialize.
+
+use crate::aggregates::EventAction;
+use crate::projections::TicketingEvent;
+use crate::types::Event;
+use composable_rust_core::projection::{Projection, ProjectionError};
+use sqlx::PgPool;
+use std::sync::Arc;
+
+/// PostgreSQL-backed events projection.
+///
+/// Stores events as JSONB in the `events_projection` table.
+pub struct PostgresEventsProjection {
+    pool: Arc<PgPool>,
+}
+
+impl PostgresEventsProjection {
+    /// Creates a new `PostgresEventsProjection`.
+    #[must_use]
+    pub fn new(pool: Arc<PgPool>) -> Self {
+        Self { pool }
+    }
+
+    /// Get an event by ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database query fails.
+    pub async fn get(&self, event_id: &uuid::Uuid) -> Result<Option<Event>, sqlx::Error> {
+        let result: Option<(sqlx::types::JsonValue,)> = sqlx::query_as(
+            "SELECT data FROM events_projection WHERE id = $1"
+        )
+        .bind(event_id)
+        .fetch_optional(&*self.pool)
+        .await?;
+
+        match result {
+            Some((json,)) => {
+                let event: Event = serde_json::from_value(json)
+                    .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
+                Ok(Some(event))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// List all events with optional status filter.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database query fails.
+    pub async fn list(
+        &self,
+        status_filter: Option<&str>,
+    ) -> Result<Vec<Event>, sqlx::Error> {
+        let rows: Vec<(sqlx::types::JsonValue,)> = if let Some(status) = status_filter {
+            sqlx::query_as(
+                "SELECT data FROM events_projection
+                 WHERE data->>'status' = $1
+                 ORDER BY created_at DESC"
+            )
+            .bind(status)
+            .fetch_all(&*self.pool)
+            .await?
+        } else {
+            sqlx::query_as(
+                "SELECT data FROM events_projection
+                 ORDER BY created_at DESC"
+            )
+            .fetch_all(&*self.pool)
+            .await?
+        };
+
+        let events: Result<Vec<Event>, serde_json::Error> = rows
+            .into_iter()
+            .map(|(json,)| serde_json::from_value(json))
+            .collect();
+
+        events.map_err(|e| sqlx::Error::Decode(Box::new(e)))
+    }
+}
+
+impl Projection for PostgresEventsProjection {
+    type Event = TicketingEvent;
+
+    fn name(&self) -> &str {
+        "events"
+    }
+
+    async fn apply_event(&self, event: &Self::Event) -> composable_rust_core::projection::Result<()> {
+        if let TicketingEvent::Event(event_action) = event {
+            match event_action {
+                EventAction::EventCreated {
+                    id,
+                    name,
+                    venue,
+                    date,
+                    pricing_tiers,
+                    created_at,
+                } => {
+                    let domain_event = Event::new(
+                        *id,
+                        name.clone(),
+                        venue.clone(),
+                        *date,
+                        pricing_tiers.clone(),
+                        *created_at,
+                    );
+
+                    let json = serde_json::to_value(&domain_event)
+                        .map_err(|e| ProjectionError::Serialization(e.to_string()))?;
+
+                    sqlx::query(
+                        "INSERT INTO events_projection (id, data, created_at, updated_at)
+                         VALUES ($1, $2, $3, $4)
+                         ON CONFLICT (id) DO UPDATE SET
+                            data = EXCLUDED.data,
+                            updated_at = EXCLUDED.updated_at"
+                    )
+                    .bind(id.as_uuid())
+                    .bind(&json)
+                    .bind(created_at)
+                    .bind(chrono::Utc::now())
+                    .execute(&*self.pool)
+                    .await
+                    .map_err(|e| ProjectionError::Storage(e.to_string()))?;
+                }
+                EventAction::EventPublished { event_id, .. }
+                | EventAction::SalesOpened { event_id, .. }
+                | EventAction::SalesClosed { event_id, .. }
+                | EventAction::EventCancelled { event_id, .. } => {
+                    // Update the status field in the JSONB
+                    let new_status = match event_action {
+                        EventAction::EventPublished { .. } => "Published",
+                        EventAction::SalesOpened { .. } => "SalesOpen",
+                        EventAction::SalesClosed { .. } => "SalesClosed",
+                        EventAction::EventCancelled { .. } => "Cancelled",
+                        _ => return Ok(()),
+                    };
+
+                    sqlx::query(
+                        "UPDATE events_projection
+                         SET data = jsonb_set(data, '{status}', $2::jsonb, false),
+                             updated_at = $3
+                         WHERE id = $1"
+                    )
+                    .bind(event_id.as_uuid())
+                    .bind(format!("\"{}\"", new_status))
+                    .bind(chrono::Utc::now())
+                    .execute(&*self.pool)
+                    .await
+                    .map_err(|e| ProjectionError::Storage(e.to_string()))?;
+                }
+                _ => {
+                    // Ignore commands and validation failures
+                }
+            }
+        }
+
+        Ok(())
+    }
+}

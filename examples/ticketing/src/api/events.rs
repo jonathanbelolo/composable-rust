@@ -7,6 +7,8 @@
 //! - PUT /api/events/:id - Update event (requires ownership)
 //! - DELETE /api/events/:id - Delete event (requires ownership)
 
+#![allow(clippy::missing_errors_doc)] // Example code - errors are standard AppError
+
 use crate::auth::middleware::SessionUser;
 use crate::server::state::AppState;
 use crate::types::{EventId, EventStatus};

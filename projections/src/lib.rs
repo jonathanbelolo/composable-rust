@@ -5,7 +5,7 @@
 //! This crate provides concrete implementations of the projection system:
 //! - **`PostgreSQL`**: Persistent projection store with JSONB support
 //! - **Checkpointing**: PostgreSQL-backed checkpoint tracking
-//! - **`ProjectionManager`**: Orchestrates projection updates from events
+//! - **`ProjectionStream`**: Type-agnostic event stream helper for building projections
 //!
 //! # CQRS Separation
 //!
@@ -15,24 +15,44 @@
 //! Event Store DB (Write)     →  Event Bus  →  Projection DB (Read)
 //! ```
 //!
-//! # Example
+//! # Building Projections
+//!
+//! Use `ProjectionStream` for consuming events with checkpoint tracking:
 //!
 //! ```ignore
-//! use composable_rust_projections::postgres::*;
+//! use composable_rust_projections::ProjectionStream;
 //!
-//! // Connect to projection database (separate from event store)
-//! let projection_store = PostgresProjectionStore::new_with_separate_db(
-//!     "postgres://localhost/projections",
-//!     "order_projections".to_string(),
+//! let mut stream = ProjectionStream::new(
+//!     event_bus,
+//!     checkpoint,
+//!     "inventory-events",
+//!     "available-seats-projection",
+//!     "available-seats",
 //! ).await?;
 //!
-//! // Use in projection
-//! projection_store.save("order:123", &order_data).await?;
+//! while let Some(result) = stream.next().await {
+//!     let serialized = result?;
+//!
+//!     // Client knows the concrete type
+//!     let event: InventoryEvent = bincode::deserialize(&serialized.data)?;
+//!
+//!     // Update projection
+//!     projection.handle_event(&event)?;
+//!
+//!     // Commit checkpoint
+//!     stream.commit().await?;
+//! }
 //! ```
 
 pub mod manager;
 pub mod postgres;
+pub mod stream;
 
 // Re-export main types for convenience
+#[deprecated(
+    since = "0.1.0",
+    note = "Use ProjectionStream instead for better type safety with bincode deserialization"
+)]
 pub use manager::ProjectionManager;
 pub use postgres::{PostgresProjectionCheckpoint, PostgresProjectionStore};
+pub use stream::ProjectionStream;

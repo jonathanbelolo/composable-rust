@@ -21,7 +21,7 @@ impl ConsoleEmailProvider {
     /// # Arguments
     /// * `base_url` - Base URL for constructing magic links (e.g., `http://localhost:8080`)
     #[must_use]
-    pub fn new(base_url: String) -> Self {
+    pub const fn new(base_url: String) -> Self {
         Self { base_url }
     }
 }
@@ -34,7 +34,7 @@ impl EmailProvider for ConsoleEmailProvider {
         base_url: &str,
         expires_at: DateTime<Utc>,
     ) -> Result<()> {
-        let magic_link = format!("{}/auth/magic-link/verify?token={}", base_url, token);
+        let magic_link = format!("{base_url}/auth/magic-link/verify?token={token}");
         let expires_in = (expires_at - Utc::now()).num_minutes();
 
         info!(
@@ -65,7 +65,7 @@ impl EmailProvider for ConsoleEmailProvider {
         base_url: &str,
         expires_at: DateTime<Utc>,
     ) -> Result<()> {
-        let reset_link = format!("{}/auth/reset-password?token={}", base_url, token);
+        let reset_link = format!("{base_url}/auth/reset-password?token={token}");
         let expires_in = (expires_at - Utc::now()).num_minutes();
 
         info!(
@@ -95,7 +95,7 @@ impl EmailProvider for ConsoleEmailProvider {
         token: &str,
         base_url: &str,
     ) -> Result<()> {
-        let verification_link = format!("{}/auth/verify-email?token={}", base_url, token);
+        let verification_link = format!("{base_url}/auth/verify-email?token={token}");
 
         info!(
             "\n\n\

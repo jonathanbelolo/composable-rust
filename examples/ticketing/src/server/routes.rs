@@ -14,7 +14,7 @@ use axum::{
 ///
 /// Configures all routes including:
 /// - Health checks
-/// - Authentication endpoints (via framework's auth_router)
+/// - Authentication endpoints (via framework's `auth_router`)
 /// - Event management endpoints
 /// - Reservation endpoints
 /// - Payment endpoints

@@ -7,7 +7,7 @@
 //!
 //! # Reservation Flow
 //!
-//! 1. **Initiate**: POST with event_id, section, quantity
+//! 1. **Initiate**: POST with `event_id`, section, quantity
 //! 2. **Reserve Seats**: Saga coordinates with Inventory aggregate
 //! 3. **Payment Pending**: 5-minute window for payment
 //! 4. **Complete**: Payment succeeds, tickets issued
@@ -22,6 +22,8 @@
 //!                                    ↓
 //!                              Compensated
 //! ```
+
+#![allow(clippy::missing_errors_doc)] // Example code - errors are standard AppError
 
 use crate::auth::middleware::{RequireOwnership, SessionUser};
 use crate::server::state::AppState;
@@ -188,7 +190,7 @@ pub async fn create_reservation(
 
     // Serialize and publish to EventBus (reservation topic)
     let event_data = bincode::serialize(&ticketing_event)
-        .map_err(|e| AppError::internal(&format!("Failed to serialize event: {e}")))?;
+        .map_err(|e| AppError::internal(format!("Failed to serialize event: {e}")))?;
 
     let metadata = serde_json::json!({
         "reservation_id": reservation_id.as_uuid(),
@@ -204,7 +206,7 @@ pub async fn create_reservation(
 
     // Publish to EventBus
     state.event_bus.publish("reservation.commands", &serialized_event).await
-        .map_err(|e| AppError::internal(&format!("Failed to publish reservation command: {e}")))?;
+        .map_err(|e| AppError::internal(format!("Failed to publish reservation command: {e}")))?;
 
     // Calculate expiration (5 minutes from now)
     let expires_at = Utc::now() + chrono::Duration::minutes(5);
@@ -307,7 +309,7 @@ pub async fn cancel_reservation(
 
     // Serialize and publish to EventBus
     let event_data = bincode::serialize(&ticketing_event)
-        .map_err(|e| AppError::internal(&format!("Failed to serialize event: {e}")))?;
+        .map_err(|e| AppError::internal(format!("Failed to serialize event: {e}")))?;
 
     let metadata = serde_json::json!({
         "reservation_id": reservation_id,
@@ -321,7 +323,7 @@ pub async fn cancel_reservation(
 
     // Publish to EventBus (reservation topic)
     state.event_bus.publish("reservation.commands", &serialized_event).await
-        .map_err(|e| AppError::internal(&format!("Failed to publish cancel command: {e}")))?;
+        .map_err(|e| AppError::internal(format!("Failed to publish cancel command: {e}")))?;
 
     Ok(Json(CancelReservationResponse {
         reservation_id,
@@ -383,6 +385,7 @@ pub struct ReservationSummary {
     pub created_at: DateTime<Utc>,
 }
 
+/// List all reservations for the authenticated user.
 pub async fn list_user_reservations(
     session: SessionUser,
     State(_state): State<AppState>,

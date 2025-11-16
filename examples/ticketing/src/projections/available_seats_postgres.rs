@@ -1,11 +1,11 @@
-//! PostgreSQL-backed available seats projection.
+//! `PostgreSQL`-backed available seats projection.
 //!
-//! This projection maintains a denormalized view of seat availability in PostgreSQL,
+//! This projection maintains a denormalized view of seat availability in `PostgreSQL`,
 //! enabling fast queries like "Show me all available VIP seats for Event X".
 //!
 //! # Architecture
 //!
-//! - **Storage**: PostgreSQL with custom queryable tables
+//! - **Storage**: `PostgreSQL` with custom queryable tables
 //! - **Idempotency**: Tracks processed reservations in `processed_reservations` table
 //! - **Checkpointing**: Uses framework's `PostgresProjectionCheckpoint`
 //! - **CQRS**: Separate database from event store
@@ -48,7 +48,7 @@ impl PostgresAvailableSeatsProjection {
     ///
     /// - `pool`: Connection pool for projection database (separate from event store)
     #[must_use]
-    pub fn new(pool: Arc<PgPool>) -> Self {
+    pub const fn new(pool: Arc<PgPool>) -> Self {
         Self { pool }
     }
 
@@ -82,7 +82,11 @@ impl PostgresAvailableSeatsProjection {
 
     /// Query seat availability for a specific section.
     ///
-    /// Returns (total_capacity, reserved, sold, available).
+    /// Returns (`total_capacity`, reserved, sold, available).
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database query fails.
     pub async fn get_availability(
         &self,
         event_id: &EventId,
@@ -108,6 +112,10 @@ impl PostgresAvailableSeatsProjection {
     /// Query seat availability for all sections of an event.
     ///
     /// Returns a vector of section availability data.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database query fails.
     pub async fn get_all_sections(&self, event_id: &EventId) -> Result<Vec<SectionAvailability>> {
         let results: Vec<(String, i32, i32, i32, i32)> = sqlx::query_as(
             "SELECT section, total_capacity, reserved, sold, available
@@ -133,6 +141,10 @@ impl PostgresAvailableSeatsProjection {
     }
 
     /// Get total available seats across all sections for an event.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database query fails.
     pub async fn get_total_available(&self, event_id: &EventId) -> Result<u32> {
         let result: Option<(i64,)> = sqlx::query_as(
             "SELECT COALESCE(SUM(available), 0)
@@ -152,10 +164,11 @@ impl PostgresAvailableSeatsProjection {
 impl Projection for PostgresAvailableSeatsProjection {
     type Event = TicketingEvent;
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "available_seats_projection"
     }
 
+    #[allow(clippy::too_many_lines)] // Event handling is naturally long but simple
     async fn apply_event(&self, event: &Self::Event) -> Result<()> {
         match event {
             // Initialize inventory creates new availability record

@@ -4,6 +4,9 @@
 //! in Axum handlers for protected routes.
 
 #![allow(dead_code)] // Example code
+#![allow(missing_docs)] // Example code
+#![allow(clippy::missing_errors_doc, clippy::unused_async)] // Example code
+#![allow(clippy::double_ended_iterator_last)] // Example code
 
 use crate::auth::middleware::{SessionUser, RequireAdmin, RequireOwnership, ResourceId};
 use crate::auth::setup::TicketingAuthStore;
@@ -103,21 +106,19 @@ impl ResourceId for EventId {
             .map(Self)
     }
 
-    fn verify_ownership(
+    async fn verify_ownership(
         &self,
         user_id: &UserId,
         _store: &Arc<TicketingAuthStore>,
-    ) -> impl std::future::Future<Output = Result<(), AppError>> + Send {
-        async move {
-            // In production, you would:
-            // 1. Query the database to get the event's owner_id
-            // 2. Compare owner_id with user_id
-            // 3. Return Err(AppError::forbidden()) if mismatch
+    ) -> Result<(), AppError> {
+        // In production, you would:
+        // 1. Query the database to get the event's owner_id
+        // 2. Compare owner_id with user_id
+        // 3. Return Err(AppError::forbidden()) if mismatch
 
-            // Placeholder: Allow all for demo
-            let _ = user_id;
-            Ok(())
-        }
+        // Placeholder: Allow all for demo
+        let _ = user_id;
+        Ok(())
     }
 }
 
@@ -137,7 +138,7 @@ pub struct UpdateEventResponse {
 ///
 /// The `RequireOwnership<EventId>` extractor:
 /// 1. Validates session
-/// 2. Extracts event_id from path
+/// 2. Extracts `event_id` from path
 /// 3. Verifies the user owns this event
 /// 4. Returns 403 Forbidden if not owner
 pub async fn update_event(

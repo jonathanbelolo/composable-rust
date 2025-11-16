@@ -64,6 +64,10 @@
 //! - Personal notifications endpoint: Requires valid session token
 //! - Rate limiting: Max 1 connection per user to notifications endpoint
 
+#![allow(clippy::cognitive_complexity, clippy::too_many_lines)] // WebSocket event loops are naturally complex
+#![allow(clippy::cast_sign_loss, clippy::cast_precision_loss)] // Safe casts from projection data
+#![allow(clippy::unnecessary_map_or, clippy::uninlined_format_args)] // Example code
+
 use crate::auth::middleware::SessionUser;
 use crate::server::state::AppState;
 use axum::{

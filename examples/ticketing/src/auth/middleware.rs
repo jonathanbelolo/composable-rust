@@ -105,6 +105,39 @@ impl FromRequestParts<Arc<TicketingAuthStore>> for SessionUser
         // Extract bearer token
         let bearer = BearerToken::from_request_parts(parts, state).await?;
 
+        // Check for test token bypass (only if AUTH_TEST_TOKEN env var is set)
+        if let Ok(test_token) = std::env::var("AUTH_TEST_TOKEN") {
+            if bearer.0 == test_token {
+                // Return a test user session
+                // These UUIDs are hardcoded constants and will never fail to parse
+                const TEST_USER_UUID: uuid::Uuid = uuid::Uuid::from_bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+                const TEST_SESSION_UUID: uuid::Uuid = uuid::Uuid::from_bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+                const TEST_DEVICE_UUID: uuid::Uuid = uuid::Uuid::from_bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]);
+
+                let test_user_id = UserId(TEST_USER_UUID);
+                let test_device_id = composable_rust_auth::state::DeviceId(TEST_DEVICE_UUID);
+                let test_session = Session {
+                    user_id: test_user_id,
+                    session_id: SessionId(TEST_SESSION_UUID),
+                    device_id: test_device_id,
+                    email: "test@example.com".to_string(),
+                    created_at: chrono::Utc::now(),
+                    last_active: chrono::Utc::now(),
+                    expires_at: chrono::Utc::now() + chrono::Duration::days(1),
+                    ip_address: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                    user_agent: "Test Client".to_string(),
+                    oauth_provider: None,
+                    login_risk_score: 0.0,
+                    idle_timeout: chrono::Duration::hours(24),
+                    enable_sliding_refresh: false,
+                };
+                return Ok(Self {
+                    user_id: test_user_id,
+                    session: test_session,
+                });
+            }
+        }
+
         // Parse session ID from token (UUID string)
         let uuid = uuid::Uuid::parse_str(&bearer.0)
             .map_err(|_| AppError::unauthorized("Invalid session token format"))?;
@@ -113,7 +146,7 @@ impl FromRequestParts<Arc<TicketingAuthStore>> for SessionUser
         // Extract client IP and correlation ID using framework extractors
         let client_ip = ClientIp::from_request_parts(parts, state)
             .await
-            .unwrap_or(ClientIp(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1))));
+            .unwrap_or(ClientIp(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)));
 
         let correlation_id = CorrelationId::from_request_parts(parts, state)
             .await

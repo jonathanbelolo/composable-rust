@@ -1,17 +1,17 @@
 //! Authentication setup - builds `AuthEnvironment` and `Store` for the ticketing system.
 //!
 //! This module wires together all 11 provider traits required by the auth framework:
-//! - OAuth2Provider (mock for demo)
-//! - EmailProvider (console output)
-//! - WebAuthnProvider (mock for demo)
-//! - SessionStore (Redis)
-//! - TokenStore (Redis)
-//! - ChallengeStore (Redis)
-//! - OAuthTokenStore (Redis)
-//! - UserRepository (PostgreSQL)
-//! - DeviceRepository (PostgreSQL)
-//! - RateLimiter (Redis)
-//! - RiskCalculator (mock for demo)
+//! - `OAuth2Provider` (mock for demo)
+//! - `EmailProvider` (console output)
+//! - `WebAuthnProvider` (mock for demo)
+//! - `SessionStore` (Redis)
+//! - `TokenStore` (Redis)
+//! - `ChallengeStore` (Redis)
+//! - `OAuthTokenStore` (Redis)
+//! - `UserRepository` (`PostgreSQL`)
+//! - `DeviceRepository` (`PostgreSQL`)
+//! - `RateLimiter` (Redis)
+//! - `RiskCalculator` (mock for demo)
 
 use crate::config::Config;
 use composable_rust_auth::{
@@ -69,7 +69,7 @@ pub type TicketingAuthStore = Store<AuthState, AuthAction, TicketingAuthEnvironm
 ///
 /// # Errors
 ///
-/// Returns error if Redis or PostgreSQL connections fail.
+/// Returns error if Redis or `PostgreSQL` connections fail.
 pub async fn build_auth_environment(
     config: &Config,
     pg_pool: PgPool,
