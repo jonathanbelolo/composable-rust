@@ -10,6 +10,7 @@
 /// ```rust,ignore
 /// use composable_rust_core::append_events;
 ///
+/// // Without metadata
 /// append_events! {
 ///     store: event_store,
 ///     stream: "order-123",
@@ -18,9 +19,43 @@
 ///     on_success: |version| Some(OrderAction::EventsAppended { version }),
 ///     on_error: |error| Some(OrderAction::AppendFailed { error: error.to_string() })
 /// }
+///
+/// // With metadata (for correlation tracking)
+/// append_events! {
+///     store: event_store,
+///     stream: "order-123",
+///     expected_version: Some(Version::new(5)),
+///     events: vec![serialized_event],
+///     metadata: Some(serde_json::json!({"correlation_id": "abc-123"})),
+///     on_success: |version| Some(OrderAction::EventsAppended { version }),
+///     on_error: |error| Some(OrderAction::AppendFailed { error: error.to_string() })
+/// }
 /// ```
 #[macro_export]
 macro_rules! append_events {
+    // With metadata
+    (
+        store: $store:expr,
+        stream: $stream:expr,
+        expected_version: $expected:expr,
+        events: $events:expr,
+        metadata: $metadata:expr,
+        on_success: |$success_param:ident| $success_body:expr,
+        on_error: |$error_param:ident| $error_body:expr
+    ) => {
+        $crate::effect::Effect::EventStore(
+            $crate::effect::EventStoreOperation::AppendEvents {
+                event_store: ::std::sync::Arc::clone(&$store),
+                stream_id: $crate::stream::StreamId::new($stream),
+                expected_version: $expected,
+                events: $events,
+                metadata: $metadata,
+                on_success: ::std::boxed::Box::new(move |$success_param| $success_body),
+                on_error: ::std::boxed::Box::new(move |$error_param| $error_body),
+            }
+        )
+    };
+    // Without metadata (backward compatible)
     (
         store: $store:expr,
         stream: $stream:expr,
@@ -35,6 +70,7 @@ macro_rules! append_events {
                 stream_id: $crate::stream::StreamId::new($stream),
                 expected_version: $expected,
                 events: $events,
+                metadata: None,
                 on_success: ::std::boxed::Box::new(move |$success_param| $success_body),
                 on_error: ::std::boxed::Box::new(move |$error_param| $error_body),
             }

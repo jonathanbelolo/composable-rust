@@ -61,6 +61,7 @@ fn test_saga_happy_path() {
             section: "General".to_string(),
             quantity: 2,
             specific_seats: None,
+            correlation_id: None,
         },
         &env,
     );
@@ -139,6 +140,7 @@ fn test_saga_compensation_on_payment_failure() {
             section: "VIP".to_string(),
             quantity: 2,
             specific_seats: None,
+            correlation_id: None,
         },
         &env,
     );
@@ -211,6 +213,7 @@ fn test_saga_timeout_expiration() {
             section: "General".to_string(),
             quantity: 1,
             specific_seats: None,
+            correlation_id: None,
         },
         &env,
     );
@@ -274,6 +277,7 @@ fn test_saga_timeout_ignored_when_completed() {
             section: "General".to_string(),
             quantity: 2,
             specific_seats: None,
+            correlation_id: None,
         },
         &env,
     );
@@ -350,6 +354,7 @@ fn test_saga_manual_cancellation() {
             section: "General".to_string(),
             quantity: 1,
             specific_seats: None,
+            correlation_id: None,
         },
         &env,
     );

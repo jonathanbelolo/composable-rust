@@ -6,17 +6,17 @@ use ticketing::{
     aggregates::{
         inventory::{InventoryEnvironment, InventoryReducer},
         payment::{PaymentEnvironment, PaymentReducer},
-        reservation::{ReservationEnvironment, ReservationReducer},
     },
     auth::setup::build_auth_store,
     config::Config,
     projections::{
         query_adapters::{PostgresInventoryQuery, PostgresPaymentQuery, PostgresReservationQuery},
-        setup_projection_managers, CustomerHistoryProjection, Projection, PostgresAvailableSeatsProjection,
-        SalesAnalyticsProjection, TicketingEvent,
+        setup_projection_managers, CustomerHistoryProjection, Projection,
+        PostgresAvailableSeatsProjection, ProjectionCompletionTracker, SalesAnalyticsProjection,
+        TicketingEvent,
     },
     server::{build_router, AppState},
-    types::{InventoryState, PaymentState, ReservationState},
+    types::{InventoryState, PaymentState},
 };
 use composable_rust_core::environment::SystemClock;
 use composable_rust_core::event_bus::EventBus;
@@ -72,54 +72,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let clock = Arc::new(SystemClock);
 
     // Create projection queries for aggregates to load state on-demand
+    // These are used by AppState to create fresh stores per request
+    info!("Initializing projection queries for on-demand state loading...");
     let inventory_query = Arc::new(PostgresInventoryQuery::new(Arc::new(PostgresAvailableSeatsProjection::new(Arc::new(event_store.pool().clone())))));
     let payment_query = Arc::new(PostgresPaymentQuery::new());
     let reservation_query = Arc::new(PostgresReservationQuery::new());
+    info!("Projection queries initialized");
 
-    // Inventory Store (child)
-    let inventory_env = InventoryEnvironment::new(
-        clock.clone(),
-        event_store.clone(),
+    // Subscribe child aggregates to event bus topics for saga coordination
+    info!("Setting up event bus subscriptions for aggregate coordination...");
+    spawn_aggregate_consumers(
         event_bus.clone(),
-        StreamId::new("inventory"),
-        inventory_query,
-    );
-    let inventory = Arc::new(Store::new(
-        InventoryState::new(),
-        InventoryReducer::new(),
-        inventory_env,
-    ));
-
-    // Payment Store (child)
-    let payment_env = PaymentEnvironment::new(
-        clock.clone(),
         event_store.clone(),
-        event_bus.clone(),
-        StreamId::new("payment"),
-        payment_query,
-    );
-    let payment = Arc::new(Store::new(
-        PaymentState::new(),
-        PaymentReducer::new(),
-        payment_env,
-    ));
-
-    // Reservation Store (parent / saga coordinator)
-    // Note: Following TCA pattern - ReservationState holds child STATE, not stores
-    let reservation_env = ReservationEnvironment::new(
         clock.clone(),
-        event_store.clone(),
-        event_bus.clone(),
-        StreamId::new("reservation"),
-        reservation_query,
+        Arc::new(PostgresInventoryQuery::new(Arc::new(PostgresAvailableSeatsProjection::new(Arc::new(event_store.pool().clone()))))),
+        Arc::new(PostgresPaymentQuery::new()),
+        &config.redpanda,
     );
-    let reservation_state = ReservationState::new(); // No stores passed!
-    let reservation = Arc::new(Store::new(
-        reservation_state,
-        ReservationReducer::new(),
-        reservation_env,
-    ));
-    info!("Aggregate stores initialized");
+    info!("Aggregate event consumers started");
 
     // Setup PostgreSQL pool for auth
     info!("Connecting to auth database...");
@@ -130,9 +100,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let auth_store = build_auth_store(&config, auth_pg_pool).await?;
     info!("Authentication store initialized");
 
+    // Create projection completion tracker (ONE consumer for entire app)
+    info!("Initializing projection completion tracker...");
+    let projection_completion_tracker = Arc::new(
+        ProjectionCompletionTracker::new(event_bus.clone())
+            .await
+            .map_err(|e| format!("Failed to create projection completion tracker: {e}"))?
+    );
+    info!("Projection completion tracker initialized");
+
     // Setup projections (read side)
     info!("Setting up projection managers...");
-    let projection_managers = setup_projection_managers(&config, event_bus.clone()).await?;
+    let projection_managers = setup_projection_managers(&config, event_bus.clone(), event_bus.clone()).await?;
     info!("Projection managers configured");
 
     // Start projection managers in background
@@ -173,19 +152,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &config.redpanda,
     );
 
-    // Build application state
+    // Build application state with dependencies (stores created per-request)
     let state = AppState::new(
         auth_store,
-        inventory,
-        payment,
-        reservation,
+        clock,
         event_store,
         event_bus,
+        inventory_query,
+        payment_query,
+        reservation_query,
         available_seats_projection,
         sales_analytics_projection,
         customer_history_projection,
         reservation_ownership,
         payment_ownership,
+        projection_completion_tracker,
     );
 
     // Build router
@@ -206,6 +187,181 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Server stopped");
     Ok(())
+}
+
+/// Spawn background tasks to consume events and dispatch to child aggregates.
+///
+/// Creates two consumer tasks:
+/// 1. Inventory consumer (listens to inventory topic)
+/// 2. Payment consumer (listens to payment topic)
+///
+/// These consumers enable saga choreography where the parent `Reservation` aggregate
+/// publishes commands to event bus topics, and child aggregates consume and process them.
+///
+/// # Per-Message Store Pattern
+///
+/// Each message creates a fresh `Store` instance with empty state, processes the action,
+/// and then discards the store. This ensures:
+/// - **Privacy**: No state shared across different users/messages
+/// - **Memory efficiency**: State cleared after each message
+/// - **Event sourcing**: Each store loads only the data it needs from event store
+fn spawn_aggregate_consumers(
+    event_bus: Arc<dyn EventBus>,
+    event_store: Arc<PostgresEventStore>,
+    clock: Arc<SystemClock>,
+    inventory_query: Arc<PostgresInventoryQuery>,
+    payment_query: Arc<PostgresPaymentQuery>,
+    redpanda_config: &ticketing::config::RedpandaConfig,
+) {
+    // Spawn inventory consumer
+    let inventory_bus = event_bus.clone();
+    let inventory_event_store = event_store.clone();
+    let inventory_clock = clock.clone();
+    let inventory_event_bus = event_bus.clone();
+    let inventory_query_clone = inventory_query.clone();
+    let inventory_topic = redpanda_config.inventory_topic.clone();
+
+    tokio::spawn(async move {
+        info!("Inventory aggregate consumer started");
+
+        let topics = &[inventory_topic.as_str()];
+
+        loop {
+            // Try to subscribe to events
+            match inventory_bus.subscribe(topics).await {
+                Ok(mut stream) => {
+                    info!("Inventory aggregate subscribed to event bus");
+
+                    // Process events from stream
+                    while let Some(result) = stream.next().await {
+                        match result {
+                            Ok(serialized_event) => {
+                                // Deserialize event from data field
+                                match bincode::deserialize::<TicketingEvent>(&serialized_event.data) {
+                                    Ok(event) => {
+                                        // Extract inventory action and dispatch to store
+                                        if let TicketingEvent::Inventory(action) = event {
+                                            info!(action = ?action, "Inventory consumer received command");
+
+                                            // Create fresh store per message (per-request pattern)
+                                            let inventory_env = InventoryEnvironment::new(
+                                                inventory_clock.clone(),
+                                                inventory_event_store.clone(),
+                                                inventory_event_bus.clone(),
+                                                StreamId::new("inventory"),
+                                                inventory_query_clone.clone(),
+                                            );
+                                            let inventory_store = Store::new(
+                                                InventoryState::new(),
+                                                InventoryReducer::new(),
+                                                inventory_env,
+                                            );
+
+                                            // Dispatch action to fresh store
+                                            if let Err(e) = inventory_store.send(action).await {
+                                                error!(error = %e, "Failed to dispatch action to inventory store");
+                                            }
+                                            // Store dropped here - memory freed
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!(error = %e, "Failed to deserialize event");
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!(error = %e, "Error receiving event from stream");
+                            }
+                        }
+                    }
+
+                    // Stream ended, reconnect
+                    warn!("Event stream ended, reconnecting in 5s");
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                }
+                Err(e) => {
+                    error!(error = %e, "Failed to subscribe to event bus, retrying in 5s");
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                }
+            }
+        }
+    });
+
+    // Spawn payment consumer
+    let payment_bus = event_bus;
+    let payment_event_store = event_store;
+    let payment_clock = clock;
+    let payment_event_bus = payment_bus.clone();
+    let payment_query_clone = payment_query;
+    let payment_topic = redpanda_config.payment_topic.clone();
+
+    tokio::spawn(async move {
+        info!("Payment aggregate consumer started");
+
+        let topics = &[payment_topic.as_str()];
+
+        loop {
+            // Try to subscribe to events
+            match payment_bus.subscribe(topics).await {
+                Ok(mut stream) => {
+                    info!("Payment aggregate subscribed to event bus");
+
+                    // Process events from stream
+                    while let Some(result) = stream.next().await {
+                        match result {
+                            Ok(serialized_event) => {
+                                // Deserialize event from data field
+                                match bincode::deserialize::<TicketingEvent>(&serialized_event.data) {
+                                    Ok(event) => {
+                                        // Extract payment action and dispatch to store
+                                        if let TicketingEvent::Payment(action) = event {
+                                            info!(action = ?action, "Payment consumer received command");
+
+                                            // Create fresh store per message (per-request pattern)
+                                            let payment_env = PaymentEnvironment::new(
+                                                payment_clock.clone(),
+                                                payment_event_store.clone(),
+                                                payment_event_bus.clone(),
+                                                StreamId::new("payment"),
+                                                payment_query_clone.clone(),
+                                            );
+                                            let payment_store = Store::new(
+                                                PaymentState::new(),
+                                                PaymentReducer::new(),
+                                                payment_env,
+                                            );
+
+                                            // Dispatch action to fresh store
+                                            if let Err(e) = payment_store.send(action).await {
+                                                error!(error = %e, "Failed to dispatch action to payment store");
+                                            }
+                                            // Store dropped here - memory freed
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!(error = %e, "Failed to deserialize event");
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!(error = %e, "Error receiving event from stream");
+                            }
+                        }
+                    }
+
+                    // Stream ended, reconnect
+                    warn!("Event stream ended, reconnecting in 5s");
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                }
+                Err(e) => {
+                    error!(error = %e, "Failed to subscribe to event bus, retrying in 5s");
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                }
+            }
+        }
+    });
+
+    info!("Aggregate event consumers spawned");
 }
 
 /// Spawn background tasks to consume events and update analytics projections.

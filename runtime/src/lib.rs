@@ -1679,6 +1679,182 @@ pub mod store {
             self.send_internal(action, TrackingMode::Direct).await
         }
 
+        /// Send an action with request-scoped metadata (e.g., correlation_id)
+        ///
+        /// This method is identical to [`Self::send`] but accepts additional metadata
+        /// that will be injected into all `AppendEvents` effects produced by the reducer.
+        ///
+        /// # Use Cases
+        ///
+        /// - **Correlation tracking**: Pass correlation_id to link events across aggregates
+        /// - **Causation tracking**: Pass causation_id to track cause-and-effect chains
+        /// - **User context**: Pass user_id to track which user triggered the command
+        ///
+        /// # Arguments
+        ///
+        /// - `action`: The action to process
+        /// - `metadata`: Request-scoped metadata to inject into all events
+        ///
+        /// # Returns
+        ///
+        /// An [`EffectHandle`] that can be used to wait for effect completion
+        ///
+        /// # Errors
+        ///
+        /// Returns [`StoreError::ShutdownInProgress`] if the store is shutting down
+        ///
+        /// # Example
+        ///
+        /// ```ignore
+        /// use uuid::Uuid;
+        ///
+        /// let correlation_id = Uuid::new_v4();
+        /// let metadata = serde_json::json!({
+        ///     "correlation_id": correlation_id.to_string(),
+        ///     "user_id": session.user_id.to_string(),
+        /// });
+        ///
+        /// let handle = store
+        ///     .send_with_metadata(
+        ///         OrderAction::PlaceOrder { customer_id, items },
+        ///         Some(metadata),
+        ///     )
+        ///     .await?;
+        /// ```
+        #[tracing::instrument(skip(self, action, metadata), name = "store_send_with_metadata")]
+        pub async fn send_with_metadata(
+            &self,
+            action: A,
+            metadata: Option<serde_json::Value>,
+        ) -> Result<EffectHandle, StoreError>
+        where
+            R: Clone,
+            E: Clone,
+            A: Clone + Send + 'static,
+        {
+            // Check if store is shutting down
+            if self.shutdown.load(Ordering::Acquire) {
+                tracing::warn!("Rejected action: store is shutting down");
+                metrics::counter!("store.shutdown.rejected_actions").increment(1);
+                return Err(StoreError::ShutdownInProgress);
+            }
+
+            tracing::debug!(?metadata, "Processing action with metadata");
+
+            // Metrics: Increment command counter
+            metrics::counter!("store.commands.total").increment(1);
+
+            // Create tracking for this action
+            let (handle, tracking) = EffectHandle::new::<A>(TrackingMode::Direct);
+
+            let effects = {
+                let mut state = self.state.write().await;
+                tracing::trace!("Acquired write lock on state");
+
+                // Create span for reducer execution
+                let span = tracing::debug_span!("reducer_execution");
+                let _enter = span.enter();
+
+                // Metrics: Time reducer execution
+                let start = std::time::Instant::now();
+                let effects = self.reducer.reduce(&mut *state, action, &self.environment);
+                let duration = start.elapsed();
+                metrics::histogram!("store.reducer.duration_seconds")
+                    .record(duration.as_secs_f64());
+
+                tracing::trace!("Reducer completed, returned {} effects", effects.len());
+
+                // Metrics: Record number of effects produced
+                #[allow(clippy::cast_precision_loss)]
+                metrics::histogram!("store.effects.count").record(effects.len() as f64);
+
+                effects
+            };
+
+            // Post-process effects to inject metadata into AppendEvents
+            let effects_with_metadata = if let Some(meta) = metadata {
+                effects
+                    .into_iter()
+                    .map(|effect| Self::inject_metadata_into_effect(effect, meta.clone()))
+                    .collect()
+            } else {
+                effects
+            };
+
+            // Execute effects with tracking
+            tracing::trace!("Executing {} effects", effects_with_metadata.len());
+            for effect in effects_with_metadata {
+                self.execute_effect_internal(effect, tracking.clone());
+            }
+            tracing::debug!("Action processing completed, returning handle");
+
+            Ok(handle)
+        }
+
+        /// Recursively inject metadata into all AppendEvents effects in an effect tree
+        fn inject_metadata_into_effect(effect: Effect<A>, metadata: serde_json::Value) -> Effect<A>
+        where
+            A: Clone + Send + 'static,
+        {
+            use composable_rust_core::effect::EventStoreOperation;
+
+            match effect {
+                Effect::EventStore(EventStoreOperation::AppendEvents {
+                    event_store,
+                    stream_id,
+                    expected_version,
+                    events,
+                    metadata: existing_metadata,
+                    on_success,
+                    on_error,
+                }) => {
+                    // Merge metadata: request metadata takes precedence
+                    let merged_metadata = if let Some(existing) = existing_metadata {
+                        // Both exist - merge (request metadata overwrites)
+                        if let (Some(existing_obj), Some(request_obj)) =
+                            (existing.as_object(), metadata.as_object())
+                        {
+                            let mut merged = existing_obj.clone();
+                            for (k, v) in request_obj {
+                                merged.insert(k.clone(), v.clone());
+                            }
+                            Some(serde_json::Value::Object(merged))
+                        } else {
+                            Some(metadata)
+                        }
+                    } else {
+                        // Only request metadata exists
+                        Some(metadata)
+                    };
+
+                    Effect::EventStore(EventStoreOperation::AppendEvents {
+                        event_store,
+                        stream_id,
+                        expected_version,
+                        events,
+                        metadata: merged_metadata,
+                        on_success,
+                        on_error,
+                    })
+                }
+                // Recursively process composed effects
+                Effect::Parallel(effects) => Effect::Parallel(
+                    effects
+                        .into_iter()
+                        .map(|e| Self::inject_metadata_into_effect(e, metadata.clone()))
+                        .collect(),
+                ),
+                Effect::Sequential(effects) => Effect::Sequential(
+                    effects
+                        .into_iter()
+                        .map(|e| Self::inject_metadata_into_effect(e, metadata.clone()))
+                        .collect(),
+                ),
+                // Other effect types pass through unchanged
+                other => other,
+            }
+        }
+
         /// Send an action and wait for a matching result action
         ///
         /// This method is designed for request-response patterns (HTTP, RPC).
@@ -2239,6 +2415,7 @@ pub mod store {
                                 stream_id,
                                 expected_version,
                                 events,
+                                metadata,
                                 on_success,
                                 on_error,
                             } => {
@@ -2246,15 +2423,38 @@ pub mod store {
                                     stream_id = %stream_id,
                                     expected_version = ?expected_version,
                                     event_count = events.len(),
+                                    has_metadata = metadata.is_some(),
                                     "Executing append_events"
                                 );
+
+                                // Merge metadata into events if provided
+                                let events_with_metadata = if let Some(ref effect_metadata) = metadata {
+                                    events.into_iter().map(|mut event| {
+                                        // Merge effect metadata into event metadata
+                                        if let Some(event_meta) = event.metadata.as_mut() {
+                                            // Event already has metadata - merge (effect metadata takes precedence)
+                                            if let (Some(event_obj), Some(effect_obj)) =
+                                                (event_meta.as_object_mut(), effect_metadata.as_object()) {
+                                                for (k, v) in effect_obj {
+                                                    event_obj.insert(k.clone(), v.clone());
+                                                }
+                                            }
+                                        } else {
+                                            // Event has no metadata - use effect metadata
+                                            event.metadata = Some(effect_metadata.clone());
+                                        }
+                                        event
+                                    }).collect::<Vec<_>>()
+                                } else {
+                                    events
+                                };
 
                                 // Wrap with retry logic
                                 let stream_id_clone = stream_id.clone();
                                 let result = store.retry_operation("append_events", || {
                                     let event_store_clone = event_store.clone();
                                     let stream_id_clone = stream_id_clone.clone();
-                                    let events_clone = events.clone();
+                                    let events_clone = events_with_metadata.clone();
                                     async move {
                                         event_store_clone
                                             .append_events(stream_id_clone, expected_version, events_clone)
@@ -2876,6 +3076,7 @@ mod tests {
                             stream_id: StreamId::new(&stream_id),
                             expected_version: state.last_version.map(Version::new),
                             events: serialized_events,
+                            metadata: None,
                             on_success: Box::new(|version| {
                                 Some(EventStoreAction::EventsAppended {
                                     version: version.value(),
@@ -3215,6 +3416,7 @@ mod tests {
                             b"data1".to_vec(),
                             None,
                         )],
+                        metadata: None,
                         on_success: Box::new(|_| None), // No feedback action
                         on_error: Box::new(|_| None),
                     }),
@@ -3227,6 +3429,7 @@ mod tests {
                             b"data2".to_vec(),
                             None,
                         )],
+                        metadata: None,
                         on_success: Box::new(|_| None),
                         on_error: Box::new(|_| None),
                     }),

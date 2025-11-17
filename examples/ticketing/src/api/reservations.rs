@@ -168,12 +168,15 @@ pub async fn create_reservation(
     let event_id = EventId::from_uuid(request.event_id);
     let customer_id = CustomerId::from_uuid(session.user_id.0);
 
+    // Generate correlation ID for request tracking
+    let correlation_id = crate::projections::CorrelationId::new();
+
     // Convert specific_seats from Vec<String> to Vec<SeatNumber>
     // Note: For now, we skip specific seat conversion since SeatNumber is private
     // In a real system, you'd have a public API for creating SeatNumbers
     let specific_seats = None; // TODO: Convert request.specific_seats properly
 
-    // Create InitiateReservation command
+    // Create InitiateReservation command (correlation_id injected at Store level)
     let command = ReservationAction::InitiateReservation {
         reservation_id,
         event_id,
@@ -181,14 +184,26 @@ pub async fn create_reservation(
         section: request.section.clone(),
         quantity: request.quantity,
         specific_seats,
+        correlation_id: None, // Will be injected by send_with_metadata
     };
 
-    // Send command to Reservation Store
+    // Prepare metadata with correlation_id for projection tracking
+    let metadata = serde_json::json!({
+        "correlation_id": correlation_id.to_string(),
+    });
+
+    // Create fresh Reservation store for this request (per-request pattern)
+    // The store starts with empty state and loads only what it needs from event store
+    let reservation_store = state.create_reservation_store();
+
+    // Send command with metadata to Reservation Store
     // The Store will:
     // 1. Call the reducer
-    // 2. Execute returned effects (persist, publish, send to child stores)
-    // 3. Handle the saga coordination
-    let _ = state.reservation.send(command).await;
+    // 2. Post-process effects to inject correlation_id metadata
+    // 3. Execute effects (persist with metadata, publish, send to child stores)
+    // 4. Handle the saga coordination
+    let _ = reservation_store.send_with_metadata(command, Some(metadata)).await;
+    // Store dropped here - memory freed
 
     // Calculate expiration (5 minutes from now)
     let expires_at = Utc::now() + chrono::Duration::minutes(5);

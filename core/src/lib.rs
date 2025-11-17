@@ -262,6 +262,12 @@ pub mod effect {
             expected_version: Option<Version>,
             /// Events to append
             events: Vec<SerializedEvent>,
+            /// Optional metadata to merge into each event's metadata field
+            ///
+            /// This is typically used for request-scoped metadata like correlation_id
+            /// that should be propagated through all events in this effect.
+            /// If an event already has metadata, this will be merged in (shallow merge).
+            metadata: Option<serde_json::Value>,
             /// Callback invoked on success with the new version
             on_success: Box<dyn Fn(Version) -> Option<Action> + Send + Sync>,
             /// Callback invoked on error
@@ -566,12 +572,14 @@ pub mod effect {
                         stream_id,
                         expected_version,
                         events,
+                        metadata,
                         ..
                     } => f
                         .debug_struct("Effect::EventStore::AppendEvents")
                         .field("stream_id", stream_id)
                         .field("expected_version", expected_version)
                         .field("event_count", &events.len())
+                        .field("metadata", metadata)
                         .field("event_store", &"<event_store>")
                         .finish(),
                     EventStoreOperation::LoadEvents {
@@ -752,6 +760,7 @@ pub mod effect {
                 stream_id,
                 expected_version,
                 events,
+                metadata,
                 on_success,
                 on_error,
             } => {
@@ -762,6 +771,7 @@ pub mod effect {
                     stream_id,
                     expected_version,
                     events,
+                    metadata,
                     on_success: Box::new(move |version| {
                         on_success(version).map(|a| f_success.clone()(a))
                     }),

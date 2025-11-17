@@ -10,7 +10,7 @@
 //!
 //! This demonstrates the **saga pattern** with time-based workflows and automatic compensation.
 
-use crate::projections::TicketingEvent;
+use crate::projections::{CorrelationId, TicketingEvent};
 use crate::types::{
     CustomerId, EventId, Money, Reservation, ReservationExpiry, ReservationId, ReservationState,
     ReservationStatus, SeatId, SeatNumber, TicketId,
@@ -18,7 +18,8 @@ use crate::types::{
 use chrono::{DateTime, Duration, Utc};
 use composable_rust_core::{
     append_events, delay, effect::Effect, environment::Clock, event_bus::EventBus,
-    event_store::EventStore, publish_event, reducer::Reducer, smallvec, stream::StreamId, SmallVec,
+    event_store::EventStore, publish_event, reducer::Reducer, smallvec, stream::StreamId,
+    SmallVec,
 };
 use composable_rust_macros::Action;
 use serde::{Deserialize, Serialize};
@@ -84,6 +85,9 @@ pub enum ReservationAction {
         quantity: u32,
         /// Optional specific seat numbers
         specific_seats: Option<Vec<SeatNumber>>,
+        /// Optional correlation ID for request tracking
+        #[serde(skip_serializing_if = "Option::is_none")]
+        correlation_id: Option<CorrelationId>,
     },
 
     /// Complete payment for reservation
@@ -282,14 +286,29 @@ impl ReservationReducer {
     }
 
     /// Creates effects for persisting and publishing an event
+    ///
+    /// # Arguments
+    ///
+    /// - `event`: The event to persist and publish
+    /// - `env`: Environment for event store and bus
+    /// - `correlation_id`: Optional correlation ID for request tracking
     fn create_effects(
         event: ReservationAction,
         env: &ReservationEnvironment,
+        correlation_id: Option<CorrelationId>,
     ) -> SmallVec<[Effect<ReservationAction>; 4]> {
         let ticketing_event = TicketingEvent::Reservation(event);
-        let Ok(serialized) = ticketing_event.serialize() else {
+        let Ok(mut serialized) = ticketing_event.serialize() else {
             return SmallVec::new();
         };
+
+        // Add correlation_id to metadata if present
+        if let Some(cid) = correlation_id {
+            let metadata = serialized.metadata.get_or_insert_with(|| serde_json::json!({}));
+            if let Some(obj) = metadata.as_object_mut() {
+                obj.insert("correlation_id".to_string(), serde_json::json!(cid.to_string()));
+            }
+        }
 
         smallvec![
             append_events! {
@@ -487,6 +506,7 @@ impl Reducer for ReservationReducer {
                 section,
                 quantity,
                 specific_seats,
+                correlation_id,
             } => {
                 // Validate
                 if let Err(error) =
@@ -512,8 +532,8 @@ impl Reducer for ReservationReducer {
                 };
                 Self::apply_event(state, &event);
 
-                // Persist and publish our event
-                let mut effects = Self::create_effects(event, env);
+                // Persist and publish our event with correlation_id
+                let mut effects = Self::create_effects(event, env, correlation_id);
 
                 // TCA Pattern: Publish command to event bus for Inventory child aggregate
                 // The Inventory aggregate subscribes to its topic and will process this command
@@ -571,8 +591,8 @@ impl Reducer for ReservationReducer {
                 Self::apply_event(state, &payment_requested);
 
                 // Persist and publish our events
-                let mut effects = Self::create_effects(action, env);
-                effects.extend(Self::create_effects(payment_requested, env));
+                let mut effects = Self::create_effects(action, env, None);
+                effects.extend(Self::create_effects(payment_requested, env, None));
 
                 // TCA Pattern: Publish command to event bus for Payment child aggregate
                 let process_payment = PaymentAction::ProcessPayment {
@@ -631,8 +651,8 @@ impl Reducer for ReservationReducer {
                 Self::apply_event(state, &completion);
 
                 // Persist and publish our events
-                let mut effects = Self::create_effects(action, env);
-                effects.extend(Self::create_effects(completion, env));
+                let mut effects = Self::create_effects(action, env, None);
+                effects.extend(Self::create_effects(completion, env, None));
 
                 // TCA Pattern: Publish confirm command to event bus for Inventory
                 let confirm_seats = InventoryAction::ConfirmReservation {
@@ -672,8 +692,8 @@ impl Reducer for ReservationReducer {
                 Self::apply_event(state, &compensation);
 
                 // Persist and publish our events
-                let mut effects = Self::create_effects(action, env);
-                effects.extend(Self::create_effects(compensation, env));
+                let mut effects = Self::create_effects(action, env, None);
+                effects.extend(Self::create_effects(compensation, env, None));
 
                 // TCA Pattern: Publish release command to event bus (compensation)
                 let release_seats = InventoryAction::ReleaseReservation { reservation_id };
@@ -710,7 +730,7 @@ impl Reducer for ReservationReducer {
                         Self::apply_event(state, &expiration);
 
                         // Persist and publish expiration event
-                        let mut effects = Self::create_effects(expiration, env);
+                        let mut effects = Self::create_effects(expiration, env, None);
 
                         // TCA Pattern: Publish release command to event bus (compensation)
                         let release_seats =
@@ -749,7 +769,7 @@ impl Reducer for ReservationReducer {
                         Self::apply_event(state, &cancellation);
 
                         // Persist and publish cancellation event
-                        let mut effects = Self::create_effects(cancellation, env);
+                        let mut effects = Self::create_effects(cancellation, env, None);
 
                         // TCA Pattern: Publish release command to event bus (compensation)
                         let release_seats =
@@ -871,6 +891,7 @@ mod tests {
                 section: "General".to_string(),
                 quantity: 2,
                 specific_seats: None,
+                correlation_id: None,
             })
             .then_state(move |state| {
                 assert_eq!(state.count(), 1);

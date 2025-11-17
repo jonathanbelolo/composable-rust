@@ -16,12 +16,16 @@
 //! - Error handling (continue on failure, log errors)
 
 use crate::config::Config;
-use crate::projections::{PostgresAvailableSeatsProjection, TicketingEvent};
+use crate::projections::{
+    CorrelationId, PostgresAvailableSeatsProjection, ProjectionCompleted,
+    ProjectionCompletionEvent, ProjectionFailed, TicketingEvent,
+};
+use composable_rust_core::event::SerializedEvent;
 use composable_rust_core::event_bus::EventBus;
+use composable_rust_core::projection::Projection;
 use composable_rust_projections::{
     PostgresProjectionCheckpoint, PostgresProjectionStore, ProjectionStream,
 };
-use composable_rust_core::projection::Projection;
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,12 +38,19 @@ use tokio::sync::watch;
 ///
 /// Returns task handles and shutdown senders for graceful termination.
 ///
+/// # Arguments
+///
+/// - `config`: Application configuration
+/// - `_event_bus`: Domain event bus (currently unused, may be used for direct subscription)
+/// - `completion_bus`: Event bus for publishing projection completion events
+///
 /// # Errors
 ///
 /// Returns error if projection database connection fails.
 pub async fn setup_projection_managers(
     config: &Config,
     _event_bus: Arc<dyn EventBus>,
+    completion_bus: Arc<dyn EventBus>,
 ) -> Result<ProjectionManagers, Box<dyn std::error::Error>> {
     // Connect to projection database (separate from event store)
     let projection_pool = PgPool::connect(&config.projections.url).await?;
@@ -82,6 +93,7 @@ pub async fn setup_projection_managers(
             projection: available_seats_projection,
             stream: available_seats_stream,
             shutdown: shutdown_rx,
+            completion_bus,
         },
         shutdown: shutdown_tx,
     })
@@ -92,6 +104,7 @@ struct AvailableSeatsProjectionRunner {
     projection: PostgresAvailableSeatsProjection,
     stream: ProjectionStream,
     shutdown: watch::Receiver<bool>,
+    completion_bus: Arc<dyn EventBus>,
 }
 
 impl AvailableSeatsProjectionRunner {
@@ -113,6 +126,9 @@ impl AvailableSeatsProjectionRunner {
                 Some(result) = self.stream.next() => {
                     match result {
                         Ok(serialized) => {
+                            // Extract correlation_id from metadata (if present)
+                            let correlation_id = Self::extract_correlation_id(&serialized);
+
                             // Deserialize to concrete type (client knows TicketingEvent!)
                             match bincode::deserialize::<TicketingEvent>(&serialized.data) {
                                 Ok(event) => {
@@ -124,6 +140,18 @@ impl AvailableSeatsProjectionRunner {
                                             event_type = %serialized.event_type,
                                             "Failed to apply event to projection"
                                         );
+
+                                        // Publish ProjectionFailed event
+                                        if let Some(cid) = correlation_id {
+                                            Self::publish_failure(
+                                                &self.completion_bus,
+                                                projection_name,
+                                                &serialized.event_type,
+                                                cid,
+                                                &e.to_string(),
+                                            ).await;
+                                        }
+
                                         // Continue processing (don't crash on single event failure)
                                     } else {
                                         // Commit checkpoint after successful processing
@@ -133,6 +161,16 @@ impl AvailableSeatsProjectionRunner {
                                                 error = ?e,
                                                 "Failed to commit checkpoint"
                                             );
+                                        } else {
+                                            // Publish ProjectionCompleted event
+                                            if let Some(cid) = correlation_id {
+                                                Self::publish_completion(
+                                                    &self.completion_bus,
+                                                    projection_name,
+                                                    &serialized.event_type,
+                                                    cid,
+                                                ).await;
+                                            }
                                         }
                                     }
                                 }
@@ -170,6 +208,109 @@ impl AvailableSeatsProjectionRunner {
         }
 
         tracing::info!(projection = projection_name, "Projection consumer stopped");
+    }
+
+    /// Extract correlation_id from event metadata.
+    ///
+    /// Returns `None` if metadata is missing or doesn't contain correlation_id.
+    fn extract_correlation_id(event: &SerializedEvent) -> Option<CorrelationId> {
+        event.metadata.as_ref().and_then(|metadata| {
+            metadata
+                .get("correlation_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| uuid::Uuid::parse_str(s).ok())
+                .map(CorrelationId::from_uuid)
+        })
+    }
+
+    /// Publish a ProjectionCompleted event to the completion bus.
+    async fn publish_completion(
+        completion_bus: &Arc<dyn EventBus>,
+        projection_name: &str,
+        event_type: &str,
+        correlation_id: CorrelationId,
+    ) {
+        let completion = ProjectionCompleted {
+            correlation_id,
+            projection_name: projection_name.to_string(),
+            event_type: event_type.to_string(),
+        };
+
+        let event = ProjectionCompletionEvent::Completed(completion);
+
+        match bincode::serialize(&event) {
+            Ok(data) => {
+                let serialized = SerializedEvent::new(
+                    "ProjectionCompleted".to_string(),
+                    data,
+                    Some(serde_json::json!({
+                        "correlation_id": correlation_id.to_string(),
+                        "projection_name": projection_name,
+                    })),
+                );
+
+                if let Err(e) = completion_bus.publish("projection.completed", &serialized).await {
+                    tracing::error!(
+                        projection = projection_name,
+                        error = ?e,
+                        "Failed to publish ProjectionCompleted event"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::error!(
+                    projection = projection_name,
+                    error = ?e,
+                    "Failed to serialize ProjectionCompleted event"
+                );
+            }
+        }
+    }
+
+    /// Publish a ProjectionFailed event to the completion bus.
+    async fn publish_failure(
+        completion_bus: &Arc<dyn EventBus>,
+        projection_name: &str,
+        event_type: &str,
+        correlation_id: CorrelationId,
+        error: &str,
+    ) {
+        let failure = ProjectionFailed {
+            correlation_id,
+            projection_name: projection_name.to_string(),
+            event_type: event_type.to_string(),
+            error: error.to_string(),
+        };
+
+        let event = ProjectionCompletionEvent::Failed(failure);
+
+        match bincode::serialize(&event) {
+            Ok(data) => {
+                let serialized = SerializedEvent::new(
+                    "ProjectionFailed".to_string(),
+                    data,
+                    Some(serde_json::json!({
+                        "correlation_id": correlation_id.to_string(),
+                        "projection_name": projection_name,
+                    })),
+                );
+
+                if let Err(e) = completion_bus.publish("projection.completed", &serialized).await {
+                    tracing::error!(
+                        projection = projection_name,
+                        error = ?e,
+                        "Failed to publish ProjectionFailed event"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::error!(
+                    projection = projection_name,
+                    error = ?e,
+                    "Failed to serialize ProjectionFailed event"
+                );
+            }
+        }
     }
 }
 

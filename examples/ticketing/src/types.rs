@@ -1076,24 +1076,16 @@ pub struct ReservationState {
     pub loading_states: HashMap<ReservationId, LoadingState>,
     /// Last validation error
     pub last_error: Option<String>,
-
-    // ===== Child State (TCA Pattern) =====
-    /// Inventory state (child aggregate for seat management)
-    pub inventory_state: InventoryState,
-    /// Payment state (child aggregate for payment processing)
-    pub payment_state: PaymentState,
 }
 
 impl ReservationState {
-    /// Creates a new empty `ReservationState` with child states
+    /// Creates a new empty `ReservationState`
     #[must_use]
     pub fn new() -> Self {
         Self {
             reservations: HashMap::new(),
             loading_states: HashMap::new(),
             last_error: None,
-            inventory_state: InventoryState::new(),
-            payment_state: PaymentState::new(),
         }
     }
 

@@ -71,6 +71,9 @@
 //! - Fixing bugs in projection logic (replay with fix)
 //! - Experimenting with different views (replay into new projection)
 
+// Projection completion tracking
+pub mod completion;
+
 // PostgreSQL-backed projections (framework-compatible)
 pub mod available_seats_postgres;
 pub mod customer_history_postgres;
@@ -87,6 +90,10 @@ pub mod sales_analytics;
 
 pub use available_seats::{AvailableSeatsProjection, SeatAvailability};
 pub use available_seats_postgres::{PostgresAvailableSeatsProjection, SectionAvailability};
+pub use completion::{
+    CorrelationId, ProjectionCompleted, ProjectionCompletionEvent, ProjectionCompletionTracker,
+    ProjectionFailed, ProjectionResult,
+};
 pub use customer_history::{CustomerHistoryProjection, CustomerPurchase};
 pub use customer_history_postgres::PostgresCustomerHistoryProjection;
 pub use events_postgres::PostgresEventsProjection;
