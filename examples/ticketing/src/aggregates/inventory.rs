@@ -6,17 +6,50 @@
 //! **Concurrency Strategy**: Optimistic concurrency control - check available seats including
 //! reserved count to prevent overselling during concurrent reservation attempts.
 
+use crate::projections::TicketingEvent;
 use crate::types::{
     Capacity, CustomerId, EventId, Inventory, InventoryState, ReservationId, SeatAssignment,
     SeatId, SeatNumber, SeatStatus,
 };
 use chrono::{DateTime, Utc};
 use composable_rust_core::{
-    effect::Effect, environment::Clock, reducer::Reducer, SmallVec,
+    append_events, delay, effect::Effect, environment::Clock, event_bus::EventBus,
+    event_store::EventStore, publish_event, reducer::Reducer, smallvec, stream::StreamId, SmallVec,
 };
 use composable_rust_macros::Action;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+
+// ============================================================================
+// Projection Query Trait
+// ============================================================================
+
+/// Trait for querying inventory projection data.
+///
+/// This trait defines the read operations needed by the Inventory aggregate
+/// to load state from the projection when processing commands.
+///
+/// # Pattern: State Loading from Projections
+///
+/// According to the state-loading-patterns spec, aggregates load state on-demand
+/// by querying projections. This trait is injected via the Environment to enable
+/// the reducer to trigger state loading effects.
+///
+/// Note: Returns `BoxFuture` instead of async fn to be dyn-compatible (object-safe).
+pub trait InventoryProjectionQuery: Send + Sync {
+    /// Load inventory data for a specific event and section.
+    ///
+    /// Returns (`total_capacity`, reserved, sold, available) if found.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database query fails.
+    fn load_inventory(
+        &self,
+        event_id: &EventId,
+        section: &str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<(u32, u32, u32, u32)>, String>> + Send + '_>>;
+}
 
 // ============================================================================
 // Actions (Commands + Events)
@@ -166,6 +199,17 @@ pub enum InventoryAction {
         /// Error message
         error: String,
     },
+
+    /// Inventory state loaded from projection
+    #[event]
+    InventoryStateLoaded {
+        /// Event ID
+        event_id: EventId,
+        /// Section
+        section: String,
+        /// Loaded inventory data (total, available, reserved, sold)
+        inventory_data: Option<(u32, u32, u32, u32)>,
+    },
 }
 
 // ============================================================================
@@ -177,13 +221,33 @@ pub enum InventoryAction {
 pub struct InventoryEnvironment {
     /// Clock for timestamps
     pub clock: Arc<dyn Clock>,
+    /// Event store for persistence
+    pub event_store: Arc<dyn EventStore>,
+    /// Event bus for publishing
+    pub event_bus: Arc<dyn EventBus>,
+    /// Stream ID for this aggregate instance
+    pub stream_id: StreamId,
+    /// Projection query for loading state on-demand
+    pub projection: Arc<dyn InventoryProjectionQuery>,
 }
 
 impl InventoryEnvironment {
     /// Creates a new `InventoryEnvironment`
     #[must_use]
-    pub fn new(clock: Arc<dyn Clock>) -> Self {
-        Self { clock }
+    pub fn new(
+        clock: Arc<dyn Clock>,
+        event_store: Arc<dyn EventStore>,
+        event_bus: Arc<dyn EventBus>,
+        stream_id: StreamId,
+        projection: Arc<dyn InventoryProjectionQuery>,
+    ) -> Self {
+        Self {
+            clock,
+            event_store,
+            event_bus,
+            stream_id,
+            projection,
+        }
     }
 }
 
@@ -203,6 +267,39 @@ impl InventoryReducer {
     #[must_use]
     pub const fn new() -> Self {
         Self
+    }
+
+    /// Creates effects for persisting and publishing an event
+    fn create_effects(
+        event: InventoryAction,
+        env: &InventoryEnvironment,
+    ) -> SmallVec<[Effect<InventoryAction>; 4]> {
+        let ticketing_event = TicketingEvent::Inventory(event);
+        let Ok(serialized) = ticketing_event.serialize() else {
+            return SmallVec::new();
+        };
+
+        smallvec![
+            append_events! {
+                store: env.event_store,
+                stream: env.stream_id.as_str(),
+                expected_version: None,
+                events: vec![serialized.clone()],
+                on_success: |_version| None,
+                on_error: |error| Some(InventoryAction::ValidationFailed {
+                    error: error.to_string()
+                })
+            },
+            publish_event! {
+                bus: env.event_bus,
+                topic: "inventory",
+                event: serialized,
+                on_success: || None,
+                on_error: |error| Some(InventoryAction::ValidationFailed {
+                    error: error.to_string()
+                })
+            }
+        ]
     }
 
     /// Validates `InitializeInventory` command
@@ -446,6 +543,28 @@ impl InventoryReducer {
                 state.last_error = Some(error.clone());
             }
 
+            InventoryAction::InventoryStateLoaded {
+                event_id,
+                section,
+                inventory_data,
+            } => {
+                // Mark as loaded
+                state.mark_loaded(*event_id, section.clone());
+
+                // If data was found in projection, reconstruct the inventory
+                if let Some((total, _available, reserved, sold)) = inventory_data {
+                    let inventory = Inventory::new(*event_id, section.clone(), Capacity::new(*total));
+                    let mut inventory = inventory;
+                    // Note: 'available' is derived (total - reserved - sold), not stored
+                    inventory.reserved = *reserved;
+                    inventory.sold = *sold;
+
+                    state.inventories.insert((*event_id, section.clone()), inventory);
+                }
+
+                state.last_error = None;
+            }
+
             // Commands and informational events don't modify state
             InventoryAction::InsufficientInventory { .. }
             | InventoryAction::InitializeInventory { .. }
@@ -511,7 +630,38 @@ impl Reducer for InventoryReducer {
                 };
                 Self::apply_event(state, &event);
 
-                SmallVec::new()
+                // Serialize event
+                let ticketing_event = TicketingEvent::Inventory(event);
+                let serialized = match ticketing_event.serialize() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        Self::apply_event(state, &InventoryAction::ValidationFailed { error: e });
+                        return SmallVec::new();
+                    }
+                };
+
+                // Return effects for persistence and publishing
+                smallvec![
+                    append_events! {
+                        store: env.event_store,
+                        stream: env.stream_id.as_str(),
+                        expected_version: None,
+                        events: vec![serialized.clone()],
+                        on_success: |_version| None,
+                        on_error: |error| Some(InventoryAction::ValidationFailed {
+                            error: error.to_string()
+                        })
+                    },
+                    publish_event! {
+                        bus: env.event_bus,
+                        topic: "inventory",
+                        event: serialized,
+                        on_success: || None,
+                        on_error: |error| Some(InventoryAction::ValidationFailed {
+                            error: error.to_string()
+                        })
+                    }
+                ]
             }
 
             InventoryAction::ReserveSeats {
@@ -522,6 +672,48 @@ impl Reducer for InventoryReducer {
                 specific_seats,
                 expires_at,
             } => {
+                // Check if state has been loaded from projection
+                if !state.is_loaded(&event_id, &section) {
+                    // Mark as loading to prevent duplicate load requests
+                    state.mark_loading(event_id, section.clone());
+
+                    // Create effect to load state from projection
+                    let projection = env.projection.clone();
+                    let event_id_copy = event_id;
+                    let section_copy = section.clone();
+                    let original_command = InventoryAction::ReserveSeats {
+                        reservation_id,
+                        event_id,
+                        section: section.clone(),
+                        quantity,
+                        specific_seats,
+                        expires_at,
+                    };
+
+                    // Use Sequential to: 1) load state, 2) retry original command
+                    return smallvec![Effect::Sequential(vec![
+                        Effect::Future(Box::pin(async move {
+                            // Load inventory data from projection
+                            let inventory_data = projection
+                                .load_inventory(&event_id_copy, &section_copy)
+                                .await
+                                .ok()
+                                .flatten();
+
+                            // Return StateLoaded event
+                            Some(InventoryAction::InventoryStateLoaded {
+                                event_id: event_id_copy,
+                                section: section_copy,
+                                inventory_data,
+                            })
+                        })),
+                        // After state is loaded, retry the original command
+                        Effect::Future(Box::pin(async move {
+                            Some(original_command)
+                        })),
+                    ])];
+                }
+
                 // Validate
                 if let Err(error) =
                     Self::validate_reserve_seats(state, &event_id, &section, quantity)
@@ -560,14 +752,59 @@ impl Reducer for InventoryReducer {
                 let event = InventoryAction::SeatsReserved {
                     reservation_id,
                     event_id,
-                    section,
+                    section: section.clone(),
                     seats,
                     expires_at,
                     reserved_at: env.clock.now(),
                 };
                 Self::apply_event(state, &event);
 
-                SmallVec::new()
+                // Serialize event
+                let ticketing_event = TicketingEvent::Inventory(event);
+                let serialized = match ticketing_event.serialize() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        Self::apply_event(state, &InventoryAction::ValidationFailed { error: e });
+                        return SmallVec::new();
+                    }
+                };
+
+                // Calculate timeout duration
+                let now = env.clock.now();
+                let timeout_duration = if expires_at > now {
+                    let diff = expires_at - now;
+                    #[allow(clippy::cast_sign_loss)]
+                    std::time::Duration::from_secs(diff.num_seconds() as u64)
+                } else {
+                    std::time::Duration::from_secs(0)
+                };
+
+                // Return effects: persist, publish, and schedule expiration
+                smallvec![
+                    append_events! {
+                        store: env.event_store,
+                        stream: env.stream_id.as_str(),
+                        expected_version: None,
+                        events: vec![serialized.clone()],
+                        on_success: |_version| None,
+                        on_error: |error| Some(InventoryAction::ValidationFailed {
+                            error: error.to_string()
+                        })
+                    },
+                    publish_event! {
+                        bus: env.event_bus,
+                        topic: "inventory",
+                        event: serialized,
+                        on_success: || None,
+                        on_error: |error| Some(InventoryAction::ValidationFailed {
+                            error: error.to_string()
+                        })
+                    },
+                    delay! {
+                        duration: timeout_duration,
+                        action: InventoryAction::ExpireReservation { reservation_id }
+                    }
+                ]
             }
 
             InventoryAction::ConfirmReservation {
@@ -609,7 +846,7 @@ impl Reducer for InventoryReducer {
                 };
                 Self::apply_event(state, &event);
 
-                SmallVec::new()
+                Self::create_effects(event, env)
             }
 
             InventoryAction::ReleaseReservation { reservation_id } => {
@@ -637,7 +874,7 @@ impl Reducer for InventoryReducer {
                 };
                 Self::apply_event(state, &event);
 
-                SmallVec::new()
+                Self::create_effects(event, env)
             }
 
             InventoryAction::ExpireReservation { reservation_id } => {
@@ -663,7 +900,7 @@ impl Reducer for InventoryReducer {
                 };
                 Self::apply_event(state, &event);
 
-                SmallVec::new()
+                Self::create_effects(event, env)
             }
 
             // ========== Events (from event store replay) ==========
@@ -680,10 +917,31 @@ impl Reducer for InventoryReducer {
 mod tests {
     use super::*;
     use composable_rust_core::environment::SystemClock;
-    use composable_rust_testing::{assertions, ReducerTest};
+    use composable_rust_testing::{mocks::{InMemoryEventBus, InMemoryEventStore}, ReducerTest};
+
+    // Mock projection query for tests
+    #[derive(Clone)]
+    struct MockInventoryQuery;
+
+    impl InventoryProjectionQuery for MockInventoryQuery {
+        fn load_inventory(
+            &self,
+            _event_id: &EventId,
+            _section: &str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<(u32, u32, u32, u32)>, String>> + Send + '_>> {
+            // Return None for tests - state will be built from events
+            Box::pin(async move { Ok(None) })
+        }
+    }
 
     fn create_test_env() -> InventoryEnvironment {
-        InventoryEnvironment::new(Arc::new(SystemClock))
+        InventoryEnvironment::new(
+            Arc::new(SystemClock),
+            Arc::new(InMemoryEventStore::new()),
+            Arc::new(InMemoryEventBus::new()),
+            StreamId::new("inventory-test"),
+            Arc::new(MockInventoryQuery),
+        )
     }
 
     #[test]
@@ -708,7 +966,10 @@ mod tests {
                 assert_eq!(inventory.sold, 0);
                 assert_eq!(state.count_seats(), 100);
             })
-            .then_effects(assertions::assert_no_effects)
+            .then_effects(|effects| {
+                // Should return 2 effects: AppendEvents + PublishEvent
+                assert_eq!(effects.len(), 2);
+            })
             .run();
     }
 
@@ -734,6 +995,8 @@ mod tests {
                     },
                     &env,
                 );
+                // Mark state as loaded to avoid load-then-process flow
+                state.mark_loaded(event_id, "General".to_string());
                 state
             })
             .when_action(InventoryAction::ReserveSeats {
@@ -750,7 +1013,10 @@ mod tests {
                 assert_eq!(inventory.sold, 0);
                 assert_eq!(inventory.available(), 98);
             })
-            .then_effects(assertions::assert_no_effects)
+            .then_effects(|effects| {
+                // Should return 3 effects: AppendEvents + PublishEvent + Delay (for expiration)
+                assert_eq!(effects.len(), 3);
+            })
             .run();
     }
 
@@ -775,6 +1041,8 @@ mod tests {
                     },
                     &env,
                 );
+                // Mark state as loaded to avoid load-then-process flow
+                state.mark_loaded(event_id, "VIP".to_string());
                 state
             })
             .when_action(InventoryAction::ReserveSeats {
@@ -791,7 +1059,10 @@ mod tests {
                 assert_eq!(inventory.reserved, 0);
                 assert!(state.last_error.is_some());
             })
-            .then_effects(assertions::assert_no_effects)
+            .then_effects(|effects| {
+                // Validation failure - no effects
+                assert_eq!(effects.len(), 0);
+            })
             .run();
     }
 
@@ -819,6 +1090,8 @@ mod tests {
                     },
                     &env,
                 );
+                // Mark state as loaded
+                state.mark_loaded(event_id, "General".to_string());
                 reducer.reduce(
                     &mut state,
                     InventoryAction::ReserveSeats {
@@ -843,7 +1116,10 @@ mod tests {
                 assert_eq!(inventory.sold, 2);
                 assert_eq!(inventory.available(), 98);
             })
-            .then_effects(assertions::assert_no_effects)
+            .then_effects(|effects| {
+                // Should return 2 effects: AppendEvents + PublishEvent
+                assert_eq!(effects.len(), 2);
+            })
             .run();
     }
 
@@ -870,6 +1146,8 @@ mod tests {
                     },
                     &env,
                 );
+                // Mark state as loaded
+                state.mark_loaded(event_id, "General".to_string());
                 reducer.reduce(
                     &mut state,
                     InventoryAction::ReserveSeats {
@@ -891,7 +1169,10 @@ mod tests {
                 assert_eq!(inventory.sold, 0);
                 assert_eq!(inventory.available(), 100);
             })
-            .then_effects(assertions::assert_no_effects)
+            .then_effects(|effects| {
+                // Should return 2 effects: AppendEvents + PublishEvent
+                assert_eq!(effects.len(), 2);
+            })
             .run();
     }
 
@@ -917,6 +1198,9 @@ mod tests {
             },
             &env,
         );
+
+        // Mark state as loaded
+        state.mark_loaded(event_id, "VIP".to_string());
 
         // First reservation gets the seat
         reducer.reduce(

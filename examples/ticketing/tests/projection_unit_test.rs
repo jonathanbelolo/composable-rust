@@ -23,7 +23,7 @@ use composable_rust_core::projection::Projection;
 use sqlx::PgPool;
 use std::sync::Arc;
 use ticketing::{
-    aggregates::{EventAction, InventoryAction, PaymentAction, ReservationAction},
+    aggregates::{EventAction, InventoryAction, ReservationAction},
     projections::{
         PostgresAvailableSeatsProjection, PostgresCustomerHistoryProjection,
         PostgresEventsProjection, PostgresSalesAnalyticsProjection, TicketingEvent,
@@ -408,7 +408,7 @@ async fn test_available_seats_multiple_sections() {
         .unwrap();
 
     // Verify VIP section
-    let (total, reserved, sold, available) = projection
+    let (total, reserved, _sold, available) = projection
         .get_availability(&event_id, "VIP")
         .await
         .unwrap()
@@ -418,7 +418,7 @@ async fn test_available_seats_multiple_sections() {
     assert_eq!(available, 40);
 
     // Verify General section
-    let (total, reserved, sold, available) = projection
+    let (total, reserved, _sold, available) = projection
         .get_availability(&event_id, "General")
         .await
         .unwrap()
@@ -461,7 +461,7 @@ async fn test_available_seats_idempotency() {
     projection.apply_event(&reserve_event).await.unwrap();
 
     // Verify: should still only have 10 reserved (not 20)
-    let (total, reserved, sold, available) = projection
+    let (total, reserved, _sold, available) = projection
         .get_availability(&event_id, "VIP")
         .await
         .unwrap()

@@ -3,17 +3,27 @@
 //! Event-sourced ticketing platform with CQRS, sagas, and real-time updates.
 
 use ticketing::{
+    aggregates::{
+        inventory::{InventoryEnvironment, InventoryReducer},
+        payment::{PaymentEnvironment, PaymentReducer},
+        reservation::{ReservationEnvironment, ReservationReducer},
+    },
     auth::setup::build_auth_store,
     config::Config,
     projections::{
-        setup_projection_managers, CustomerHistoryProjection, Projection,
+        query_adapters::{PostgresInventoryQuery, PostgresPaymentQuery, PostgresReservationQuery},
+        setup_projection_managers, CustomerHistoryProjection, Projection, PostgresAvailableSeatsProjection,
         SalesAnalyticsProjection, TicketingEvent,
     },
     server::{build_router, AppState},
+    types::{InventoryState, PaymentState, ReservationState},
 };
+use composable_rust_core::environment::SystemClock;
 use composable_rust_core::event_bus::EventBus;
+use composable_rust_core::stream::StreamId;
 use composable_rust_postgres::PostgresEventStore;
 use composable_rust_redpanda::RedpandaEventBus;
+use composable_rust_runtime::Store;
 use futures::StreamExt;
 use std::sync::{Arc, RwLock};
 use tokio::signal;
@@ -56,6 +66,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .build()?,
     );
     info!("Event bus connected");
+
+    // Setup aggregate stores (Composable Rust architecture)
+    info!("Initializing aggregate stores...");
+    let clock = Arc::new(SystemClock);
+
+    // Create projection queries for aggregates to load state on-demand
+    let inventory_query = Arc::new(PostgresInventoryQuery::new(Arc::new(PostgresAvailableSeatsProjection::new(Arc::new(event_store.pool().clone())))));
+    let payment_query = Arc::new(PostgresPaymentQuery::new());
+    let reservation_query = Arc::new(PostgresReservationQuery::new());
+
+    // Inventory Store (child)
+    let inventory_env = InventoryEnvironment::new(
+        clock.clone(),
+        event_store.clone(),
+        event_bus.clone(),
+        StreamId::new("inventory"),
+        inventory_query,
+    );
+    let inventory = Arc::new(Store::new(
+        InventoryState::new(),
+        InventoryReducer::new(),
+        inventory_env,
+    ));
+
+    // Payment Store (child)
+    let payment_env = PaymentEnvironment::new(
+        clock.clone(),
+        event_store.clone(),
+        event_bus.clone(),
+        StreamId::new("payment"),
+        payment_query,
+    );
+    let payment = Arc::new(Store::new(
+        PaymentState::new(),
+        PaymentReducer::new(),
+        payment_env,
+    ));
+
+    // Reservation Store (parent / saga coordinator)
+    // Note: Following TCA pattern - ReservationState holds child STATE, not stores
+    let reservation_env = ReservationEnvironment::new(
+        clock.clone(),
+        event_store.clone(),
+        event_bus.clone(),
+        StreamId::new("reservation"),
+        reservation_query,
+    );
+    let reservation_state = ReservationState::new(); // No stores passed!
+    let reservation = Arc::new(Store::new(
+        reservation_state,
+        ReservationReducer::new(),
+        reservation_env,
+    ));
+    info!("Aggregate stores initialized");
 
     // Setup PostgreSQL pool for auth
     info!("Connecting to auth database...");
@@ -112,6 +176,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build application state
     let state = AppState::new(
         auth_store,
+        inventory,
+        payment,
+        reservation,
         event_store,
         event_bus,
         available_seats_projection,

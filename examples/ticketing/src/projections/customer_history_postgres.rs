@@ -1,6 +1,6 @@
-//! PostgreSQL-backed customer history projection for purchase tracking.
+//! `PostgreSQL`-backed customer history projection for purchase tracking.
 //!
-//! This projection maintains each customer's ticket purchase history in PostgreSQL,
+//! This projection maintains each customer's ticket purchase history in `PostgreSQL`,
 //! enabling queries like "Show all tickets purchased by Customer X" or
 //! "Has this customer attended this venue before?"
 //!

@@ -6,13 +6,20 @@
 //! - Projections (for read queries)
 //! - Event bus (for saga coordination)
 
+use crate::aggregates::{
+    inventory::InventoryReducer,
+    payment::PaymentReducer,
+    reservation::ReservationReducer,
+    InventoryAction, PaymentAction, ReservationAction,
+};
 use crate::auth::setup::TicketingAuthStore;
 use crate::projections::{
     CustomerHistoryProjection, PostgresAvailableSeatsProjection, SalesAnalyticsProjection,
 };
-use crate::types::{CustomerId, PaymentId, ReservationId};
+use crate::types::{CustomerId, InventoryState, PaymentId, PaymentState, ReservationId, ReservationState};
 use composable_rust_core::event_bus::EventBus;
 use composable_rust_postgres::PostgresEventStore;
+use composable_rust_runtime::Store;
 use axum::extract::FromRef;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -29,6 +36,12 @@ use std::sync::{Arc, RwLock};
 /// - **Projections**: For querying read models (CQRS)
 /// - **Event Bus**: For publishing cross-aggregate events (sagas)
 ///
+/// # Aggregate Stores
+///
+/// - **Inventory**: Child aggregate managing seat availability
+/// - **Payment**: Child aggregate managing payment processing
+/// - **Reservation**: Parent aggregate (saga coordinator) orchestrating the workflow
+///
 /// # Projections
 ///
 /// - **PostgreSQL-backed**: `available_seats_projection` (persistent, crash-safe)
@@ -44,12 +57,45 @@ pub struct AppState {
     /// Authentication store for session validation and user management
     pub auth_store: Arc<TicketingAuthStore>,
 
+    // ===== Aggregate Stores (Composable Rust runtime) =====
+    /// Inventory store (child aggregate)
+    pub inventory: Arc<
+        Store<
+            InventoryState,
+            InventoryAction,
+            crate::aggregates::inventory::InventoryEnvironment,
+            InventoryReducer,
+        >,
+    >,
+
+    /// Payment store (child aggregate)
+    pub payment: Arc<
+        Store<
+            PaymentState,
+            PaymentAction,
+            crate::aggregates::payment::PaymentEnvironment,
+            PaymentReducer,
+        >,
+    >,
+
+    /// Reservation store (parent / saga coordinator)
+    pub reservation: Arc<
+        Store<
+            ReservationState,
+            ReservationAction,
+            crate::aggregates::reservation::ReservationEnvironment,
+            ReservationReducer,
+        >,
+    >,
+
+    // ===== Infrastructure (kept for projections and legacy support) =====
     /// Event store for event-sourced aggregates (write side)
     pub event_store: Arc<PostgresEventStore>,
 
     /// Event bus for publishing events to sagas and projections
     pub event_bus: Arc<dyn EventBus>,
 
+    // ===== Projections (CQRS read side) =====
     /// Available seats projection for fast seat availability queries (PostgreSQL-backed)
     pub available_seats_projection: Arc<PostgresAvailableSeatsProjection>,
 
@@ -59,6 +105,7 @@ pub struct AppState {
     /// Customer history projection for purchase tracking (in-memory)
     pub customer_history_projection: Arc<RwLock<CustomerHistoryProjection>>,
 
+    // ===== Security Indices =====
     /// Ownership index: `ReservationId` → `CustomerId` (for WebSocket notification filtering)
     pub reservation_ownership: Arc<RwLock<HashMap<ReservationId, CustomerId>>>,
 
@@ -72,6 +119,9 @@ impl AppState {
     /// # Arguments
     ///
     /// - `auth_store`: Authentication store for session management
+    /// - `inventory`: Inventory aggregate store (child)
+    /// - `payment`: Payment aggregate store (child)
+    /// - `reservation`: Reservation aggregate store (parent/saga)
     /// - `event_store`: Event store for event sourcing
     /// - `event_bus`: Event bus for cross-aggregate communication
     /// - `available_seats_projection`: Projection for seat availability queries
@@ -83,6 +133,30 @@ impl AppState {
     #[allow(clippy::too_many_arguments)] // AppState construction requires all dependencies
     pub fn new(
         auth_store: Arc<TicketingAuthStore>,
+        inventory: Arc<
+            Store<
+                InventoryState,
+                InventoryAction,
+                crate::aggregates::inventory::InventoryEnvironment,
+                InventoryReducer,
+            >,
+        >,
+        payment: Arc<
+            Store<
+                PaymentState,
+                PaymentAction,
+                crate::aggregates::payment::PaymentEnvironment,
+                PaymentReducer,
+            >,
+        >,
+        reservation: Arc<
+            Store<
+                ReservationState,
+                ReservationAction,
+                crate::aggregates::reservation::ReservationEnvironment,
+                ReservationReducer,
+            >,
+        >,
         event_store: Arc<PostgresEventStore>,
         event_bus: Arc<dyn EventBus>,
         available_seats_projection: Arc<PostgresAvailableSeatsProjection>,
@@ -93,6 +167,9 @@ impl AppState {
     ) -> Self {
         Self {
             auth_store,
+            inventory,
+            payment,
+            reservation,
             event_store,
             event_bus,
             available_seats_projection,

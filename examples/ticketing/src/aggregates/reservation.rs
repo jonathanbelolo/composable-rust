@@ -10,12 +10,16 @@
 //!
 //! This demonstrates the **saga pattern** with time-based workflows and automatic compensation.
 
+use crate::projections::TicketingEvent;
 use crate::types::{
     CustomerId, EventId, Money, Reservation, ReservationExpiry, ReservationId, ReservationState,
     ReservationStatus, SeatId, SeatNumber, TicketId,
 };
 use chrono::{DateTime, Duration, Utc};
-use composable_rust_core::{effect::Effect, environment::Clock, reducer::Reducer, smallvec, SmallVec};
+use composable_rust_core::{
+    append_events, delay, effect::Effect, environment::Clock, event_bus::EventBus,
+    event_store::EventStore, publish_event, reducer::Reducer, smallvec, stream::StreamId, SmallVec,
+};
 use composable_rust_macros::Action;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -23,6 +27,36 @@ use std::sync::Arc;
 use super::inventory::InventoryAction;
 use super::payment::PaymentAction;
 use crate::types::PaymentId;
+
+// ============================================================================
+// Projection Query Trait
+// ============================================================================
+
+/// Trait for querying reservation projection data.
+///
+/// This trait defines the read operations needed by the Reservation saga
+/// to load state from the projection when processing commands.
+///
+/// # Pattern: State Loading from Projections
+///
+/// According to the state-loading-patterns spec, aggregates load state on-demand
+/// by querying projections. This trait is injected via the Environment to enable
+/// the reducer to trigger state loading effects.
+///
+/// Note: Returns `BoxFuture` instead of async fn to be dyn-compatible (object-safe).
+pub trait ReservationProjectionQuery: Send + Sync {
+    /// Load reservation data for a specific reservation.
+    ///
+    /// Returns reservation details if found.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database query fails.
+    fn load_reservation(
+        &self,
+        reservation_id: &ReservationId,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<Reservation>, String>> + Send + '_>>;
+}
 
 // ============================================================================
 // Actions (Commands + Events)
@@ -192,17 +226,40 @@ pub enum ReservationAction {
 // ============================================================================
 
 /// Environment dependencies for the Reservation saga
+///
+/// Contains ONLY side effect dependencies. Child stores are held in `ReservationState`.
 #[derive(Clone)]
 pub struct ReservationEnvironment {
+    // ===== Side Effect Dependencies ONLY =====
     /// Clock for timestamps and timeout calculation
     pub clock: Arc<dyn Clock>,
+    /// Event store for persistence of reservation events
+    pub event_store: Arc<dyn EventStore>,
+    /// Event bus for publishing reservation events
+    pub event_bus: Arc<dyn EventBus>,
+    /// Stream ID for this aggregate instance
+    pub stream_id: StreamId,
+    /// Projection query for loading state on-demand
+    pub projection: Arc<dyn ReservationProjectionQuery>,
 }
 
 impl ReservationEnvironment {
     /// Creates a new `ReservationEnvironment`
     #[must_use]
-    pub fn new(clock: Arc<dyn Clock>) -> Self {
-        Self { clock }
+    pub fn new(
+        clock: Arc<dyn Clock>,
+        event_store: Arc<dyn EventStore>,
+        event_bus: Arc<dyn EventBus>,
+        stream_id: StreamId,
+        projection: Arc<dyn ReservationProjectionQuery>,
+    ) -> Self {
+        Self {
+            clock,
+            event_store,
+            event_bus,
+            stream_id,
+            projection,
+        }
     }
 }
 
@@ -222,6 +279,39 @@ impl ReservationReducer {
     #[must_use]
     pub const fn new() -> Self {
         Self
+    }
+
+    /// Creates effects for persisting and publishing an event
+    fn create_effects(
+        event: ReservationAction,
+        env: &ReservationEnvironment,
+    ) -> SmallVec<[Effect<ReservationAction>; 4]> {
+        let ticketing_event = TicketingEvent::Reservation(event);
+        let Ok(serialized) = ticketing_event.serialize() else {
+            return SmallVec::new();
+        };
+
+        smallvec![
+            append_events! {
+                store: env.event_store,
+                stream: env.stream_id.as_str(),
+                expected_version: None,
+                events: vec![serialized.clone()],
+                on_success: |_version| None,
+                on_error: |error| Some(ReservationAction::ValidationFailed {
+                    error: error.to_string()
+                })
+            },
+            publish_event! {
+                bus: env.event_bus,
+                topic: "reservation",
+                event: serialized,
+                on_success: || None,
+                on_error: |error| Some(ReservationAction::ValidationFailed {
+                    error: error.to_string()
+                })
+            }
+        ]
     }
 
     /// Validates `InitiateReservation` command
@@ -422,7 +512,11 @@ impl Reducer for ReservationReducer {
                 };
                 Self::apply_event(state, &event);
 
-                // Effect 1: Reserve seats in Inventory aggregate (via event bus)
+                // Persist and publish our event
+                let mut effects = Self::create_effects(event, env);
+
+                // TCA Pattern: Publish command to event bus for Inventory child aggregate
+                // The Inventory aggregate subscribes to its topic and will process this command
                 let reserve_seats_cmd = InventoryAction::ReserveSeats {
                     reservation_id,
                     event_id,
@@ -431,24 +525,26 @@ impl Reducer for ReservationReducer {
                     specific_seats,
                     expires_at,
                 };
+                let ticketing_event = crate::projections::TicketingEvent::Inventory(reserve_seats_cmd);
+                if let Ok(serialized) = ticketing_event.serialize() {
+                    effects.push(publish_event! {
+                        bus: env.event_bus,
+                        topic: "inventory",
+                        event: serialized,
+                        on_success: || None,
+                        on_error: |error| Some(ReservationAction::ValidationFailed {
+                            error: error.to_string()
+                        })
+                    });
+                }
 
-                // Effect 2: Schedule expiration timeout (5 minutes)
-                let expire_cmd = ReservationAction::ExpireReservation { reservation_id };
+                // Schedule expiration timeout (5 minutes)
+                effects.push(delay! {
+                    duration: std::time::Duration::from_secs(5 * 60),
+                    action: ReservationAction::ExpireReservation { reservation_id }
+                });
 
-                smallvec![
-                    // In a real system with event bus, this would be Effect::PublishEvent
-                    // For now, we'll return as a note that cross-aggregate communication
-                    // would happen here
-                    Effect::Future(Box::pin(async move {
-                        // Simulated: would publish to event bus
-                        let _ = reserve_seats_cmd;
-                        None // No immediate feedback
-                    })),
-                    Effect::Delay {
-                        duration: std::time::Duration::from_secs(5 * 60),
-                        action: Box::new(expire_cmd),
-                    }
-                ]
+                effects
             }
 
             // ========== Step 2: Seats Allocated (from Inventory) ==========
@@ -474,7 +570,11 @@ impl Reducer for ReservationReducer {
                 };
                 Self::apply_event(state, &payment_requested);
 
-                // Effect: Request payment from Payment aggregate
+                // Persist and publish our events
+                let mut effects = Self::create_effects(action, env);
+                effects.extend(Self::create_effects(payment_requested, env));
+
+                // TCA Pattern: Publish command to event bus for Payment child aggregate
                 let process_payment = PaymentAction::ProcessPayment {
                     payment_id,
                     reservation_id,
@@ -483,12 +583,20 @@ impl Reducer for ReservationReducer {
                         last_four: "4242".to_string(),
                     },
                 };
+                let ticketing_event = crate::projections::TicketingEvent::Payment(process_payment);
+                if let Ok(serialized) = ticketing_event.serialize() {
+                    effects.push(publish_event! {
+                        bus: env.event_bus,
+                        topic: "payment",
+                        event: serialized,
+                        on_success: || None,
+                        on_error: |error| Some(ReservationAction::ValidationFailed {
+                            error: error.to_string()
+                        })
+                    });
+                }
 
-                smallvec![Effect::Future(Box::pin(async move {
-                    // Simulated: would publish to event bus
-                    let _ = process_payment;
-                    None
-                }))]
+                effects
             }
 
             // ========== Step 3a: Payment Succeeded ==========
@@ -504,12 +612,6 @@ impl Reducer for ReservationReducer {
                     .reservations
                     .get(&reservation_id)
                     .map_or_else(CustomerId::new, |r| r.customer_id);
-
-                // Effect 1: Confirm seats in inventory (mark as sold)
-                let confirm_seats = InventoryAction::ConfirmReservation {
-                    reservation_id,
-                    customer_id,
-                };
 
                 // Generate ticket IDs
                 let ticket_count = state
@@ -528,11 +630,29 @@ impl Reducer for ReservationReducer {
                 };
                 Self::apply_event(state, &completion);
 
-                smallvec![Effect::Future(Box::pin(async move {
-                    // Simulated: would publish to event bus
-                    let _ = confirm_seats;
-                    None
-                }))]
+                // Persist and publish our events
+                let mut effects = Self::create_effects(action, env);
+                effects.extend(Self::create_effects(completion, env));
+
+                // TCA Pattern: Publish confirm command to event bus for Inventory
+                let confirm_seats = InventoryAction::ConfirmReservation {
+                    reservation_id,
+                    customer_id,
+                };
+                let ticketing_event = crate::projections::TicketingEvent::Inventory(confirm_seats);
+                if let Ok(serialized) = ticketing_event.serialize() {
+                    effects.push(publish_event! {
+                        bus: env.event_bus,
+                        topic: "inventory",
+                        event: serialized,
+                        on_success: || None,
+                        on_error: |error| Some(ReservationAction::ValidationFailed {
+                            error: error.to_string()
+                        })
+                    });
+                }
+
+                effects
             }
 
             // ========== Step 3b: Payment Failed (COMPENSATION) ==========
@@ -544,9 +664,6 @@ impl Reducer for ReservationReducer {
                 // Apply event
                 Self::apply_event(state, &action);
 
-                // COMPENSATION: Release seats back to inventory
-                let release_seats = InventoryAction::ReleaseReservation { reservation_id };
-
                 let compensation = ReservationAction::ReservationCompensated {
                     reservation_id,
                     reason: reason.clone(),
@@ -554,11 +671,26 @@ impl Reducer for ReservationReducer {
                 };
                 Self::apply_event(state, &compensation);
 
-                smallvec![Effect::Future(Box::pin(async move {
-                    // Simulated: would publish to event bus
-                    let _ = release_seats;
-                    None
-                }))]
+                // Persist and publish our events
+                let mut effects = Self::create_effects(action, env);
+                effects.extend(Self::create_effects(compensation, env));
+
+                // TCA Pattern: Publish release command to event bus (compensation)
+                let release_seats = InventoryAction::ReleaseReservation { reservation_id };
+                let ticketing_event = crate::projections::TicketingEvent::Inventory(release_seats);
+                if let Ok(serialized) = ticketing_event.serialize() {
+                    effects.push(publish_event! {
+                        bus: env.event_bus,
+                        topic: "inventory",
+                        event: serialized,
+                        on_success: || None,
+                        on_error: |error| Some(ReservationAction::ValidationFailed {
+                            error: error.to_string()
+                        })
+                    });
+                }
+
+                effects
             }
 
             // ========== Step 4: Timeout (COMPENSATION) ==========
@@ -577,15 +709,26 @@ impl Reducer for ReservationReducer {
                         };
                         Self::apply_event(state, &expiration);
 
-                        // COMPENSATION: Release seats
+                        // Persist and publish expiration event
+                        let mut effects = Self::create_effects(expiration, env);
+
+                        // TCA Pattern: Publish release command to event bus (compensation)
                         let release_seats =
                             InventoryAction::ReleaseReservation { reservation_id };
+                        let ticketing_event = crate::projections::TicketingEvent::Inventory(release_seats);
+                        if let Ok(serialized) = ticketing_event.serialize() {
+                            effects.push(publish_event! {
+                                bus: env.event_bus,
+                                topic: "inventory",
+                                event: serialized,
+                                on_success: || None,
+                                on_error: |error| Some(ReservationAction::ValidationFailed {
+                                    error: error.to_string()
+                                })
+                            });
+                        }
 
-                        return smallvec![Effect::Future(Box::pin(async move {
-                            // Simulated: would publish to event bus
-                            let _ = release_seats;
-                            None
-                        }))];
+                        return effects;
                     }
                 }
 
@@ -605,13 +748,26 @@ impl Reducer for ReservationReducer {
                         };
                         Self::apply_event(state, &cancellation);
 
+                        // Persist and publish cancellation event
+                        let mut effects = Self::create_effects(cancellation, env);
+
+                        // TCA Pattern: Publish release command to event bus (compensation)
                         let release_seats =
                             InventoryAction::ReleaseReservation { reservation_id };
+                        let ticketing_event = crate::projections::TicketingEvent::Inventory(release_seats);
+                        if let Ok(serialized) = ticketing_event.serialize() {
+                            effects.push(publish_event! {
+                                bus: env.event_bus,
+                                topic: "inventory",
+                                event: serialized,
+                                on_success: || None,
+                                on_error: |error| Some(ReservationAction::ValidationFailed {
+                                    error: error.to_string()
+                                })
+                            });
+                        }
 
-                        return smallvec![Effect::Future(Box::pin(async move {
-                            let _ = release_seats;
-                            None
-                        }))];
+                        return effects;
                     }
                 }
 
@@ -630,12 +786,67 @@ impl Reducer for ReservationReducer {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::*;
+    use super::*;  // Brings in ReservationEnvironment, ReservationState, etc.
+    use std::sync::Arc;
     use composable_rust_core::environment::SystemClock;
-    use composable_rust_testing::{assertions, ReducerTest};
+    use composable_rust_core::stream::StreamId;
+    use composable_rust_testing::{assertions, mocks::{InMemoryEventBus, InMemoryEventStore}, ReducerTest};
+    use crate::types::{CustomerId, EventId, Money, Reservation, ReservationExpiry, ReservationId};
 
-    fn create_test_env() -> ReservationEnvironment {
-        ReservationEnvironment::new(Arc::new(SystemClock))
+    // Mock projection queries for tests
+    #[derive(Clone)]
+    struct MockInventoryQuery;
+
+    impl crate::aggregates::inventory::InventoryProjectionQuery for MockInventoryQuery {
+        fn load_inventory(
+            &self,
+            _event_id: &EventId,
+            _section: &str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<(u32, u32, u32, u32)>, String>> + Send + '_>> {
+            Box::pin(async move { Ok(None) })
+        }
+    }
+
+    #[derive(Clone)]
+    struct MockPaymentQuery;
+
+    impl crate::aggregates::payment::PaymentProjectionQuery for MockPaymentQuery {
+        fn load_payment(
+            &self,
+            _payment_id: &crate::types::PaymentId,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<crate::types::Payment>, String>> + Send + '_>> {
+            Box::pin(async move { Ok(None) })
+        }
+    }
+
+    #[derive(Clone)]
+    struct MockReservationQuery;
+
+    impl ReservationProjectionQuery for MockReservationQuery {
+        fn load_reservation(
+            &self,
+            _reservation_id: &ReservationId,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<Reservation>, String>> + Send + '_>> {
+            Box::pin(async move { Ok(None) })
+        }
+    }
+
+    fn create_test_env_and_state() -> (
+        ReservationEnvironment,
+        ReservationState,
+    ) {
+        // TCA pattern: Parent state holds child STATE, not child stores
+        let env = ReservationEnvironment::new(
+            Arc::new(SystemClock),
+            Arc::new(InMemoryEventStore::new()),
+            Arc::new(InMemoryEventBus::new()),
+            StreamId::new("reservation-test"),
+            Arc::new(MockReservationQuery),
+        );
+
+        let state = ReservationState::new();
+
+        (env, state)
     }
 
     #[test]
@@ -645,8 +856,14 @@ mod tests {
         let customer_id = CustomerId::new();
 
         ReducerTest::new(ReservationReducer::new())
-            .with_env(create_test_env())
-            .given_state(ReservationState::new())
+            .with_env({
+                let (env, _) = create_test_env_and_state();
+                env
+            })
+            .given_state({
+                let (_, state) = create_test_env_and_state();
+                state
+            })
             .when_action(ReservationAction::InitiateReservation {
                 reservation_id,
                 event_id,
@@ -663,7 +880,11 @@ mod tests {
                 assert_eq!(reservation.seats.len(), 0); // Not yet allocated
             })
             .then_effects(|effects| {
-                assert_eq!(effects.len(), 2); // Reserve seats + timeout
+                // Should return 4 effects:
+                // 2 for ReservationInitiated (AppendEvents + PublishEvent)
+                // 1 for publishing ReserveSeats command to inventory topic
+                // 1 for scheduling expiration timeout (Delay)
+                assert_eq!(effects.len(), 4);
             })
             .run();
     }
@@ -673,9 +894,12 @@ mod tests {
         let reservation_id = ReservationId::new();
 
         ReducerTest::new(ReservationReducer::new())
-            .with_env(create_test_env())
+            .with_env({
+                let (env, _) = create_test_env_and_state();
+                env
+            })
             .given_state({
-                let mut state = ReservationState::new();
+                let (_, mut state) = create_test_env_and_state();
                 let reservation = Reservation::new(
                     reservation_id,
                     EventId::new(),
@@ -711,9 +935,12 @@ mod tests {
         let reservation_id = ReservationId::new();
 
         ReducerTest::new(ReservationReducer::new())
-            .with_env(create_test_env())
+            .with_env({
+                let (env, _) = create_test_env_and_state();
+                env
+            })
             .given_state({
-                let mut state = ReservationState::new();
+                let (_, mut state) = create_test_env_and_state();
                 let mut reservation = Reservation::new(
                     reservation_id,
                     EventId::new(),
@@ -746,9 +973,12 @@ mod tests {
         let reservation_id = ReservationId::new();
 
         ReducerTest::new(ReservationReducer::new())
-            .with_env(create_test_env())
+            .with_env({
+                let (env, _) = create_test_env_and_state();
+                env
+            })
             .given_state({
-                let mut state = ReservationState::new();
+                let (_, mut state) = create_test_env_and_state();
                 let mut reservation = Reservation::new(
                     reservation_id,
                     EventId::new(),
@@ -782,9 +1012,12 @@ mod tests {
         let reservation_id = ReservationId::new();
 
         ReducerTest::new(ReservationReducer::new())
-            .with_env(create_test_env())
+            .with_env({
+                let (env, _) = create_test_env_and_state();
+                env
+            })
             .given_state({
-                let mut state = ReservationState::new();
+                let (_, mut state) = create_test_env_and_state();
                 let mut reservation = Reservation::new(
                     reservation_id,
                     EventId::new(),
@@ -814,9 +1047,12 @@ mod tests {
         let reservation_id = ReservationId::new();
 
         ReducerTest::new(ReservationReducer::new())
-            .with_env(create_test_env())
+            .with_env({
+                let (env, _) = create_test_env_and_state();
+                env
+            })
             .given_state({
-                let mut state = ReservationState::new();
+                let (_, mut state) = create_test_env_and_state();
                 let mut reservation = Reservation::new(
                     reservation_id,
                     EventId::new(),

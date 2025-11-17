@@ -1,19 +1,28 @@
 //! Application coordinator - main application lifecycle manager.
 
-use super::services::{InventoryService, ReservationService, PaymentService};
+use crate::aggregates::{
+    inventory::{InventoryEnvironment, InventoryReducer},
+    payment::{PaymentEnvironment, PaymentReducer},
+    reservation::{ReservationEnvironment, ReservationReducer},
+};
 use crate::config::Config;
 use crate::projections::{
-    AvailableSeatsProjection, CustomerHistoryProjection, SalesAnalyticsProjection,
-    TicketingEvent, Projection,
+    query_adapters::{PostgresInventoryQuery, PostgresPaymentQuery, PostgresReservationQuery},
+    AvailableSeatsProjection, CustomerHistoryProjection, PostgresAvailableSeatsProjection,
+    Projection, SalesAnalyticsProjection, TicketingEvent,
 };
+use crate::types::{InventoryState, PaymentState, ReservationState};
+use composable_rust_core::environment::SystemClock;
 use composable_rust_core::event_bus::EventBus;
+use composable_rust_core::stream::StreamId;
 use composable_rust_postgres::PostgresEventStore;
 use composable_rust_redpanda::RedpandaEventBus;
+use composable_rust_runtime::Store;
 use futures::StreamExt;
 use sqlx::PgPool;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use thiserror::Error;
+use tokio::sync::RwLock;
 
 /// Application errors
 #[derive(Error, Debug)]
@@ -40,7 +49,7 @@ pub enum AppError {
 /// Coordinates all components:
 /// - Event store (`PostgreSQL`)
 /// - Event bus (`RedPanda`)
-/// - Aggregate services
+/// - Aggregate stores (Composable Rust Store runtime)
 /// - Projection managers
 pub struct TicketingApp {
     /// Event store
@@ -48,13 +57,36 @@ pub struct TicketingApp {
     event_store: Arc<PostgresEventStore>,
     /// Event bus
     event_bus: Arc<dyn EventBus>,
-    /// Inventory service
-    pub inventory: Arc<InventoryService>,
-    /// Reservation service
-    pub reservation: Arc<ReservationService>,
-    /// Payment service
-    pub payment: Arc<PaymentService>,
-    /// Available seats projection
+    /// Inventory store (child aggregate)
+    pub inventory: Arc<
+        Store<
+            InventoryState,
+            crate::aggregates::InventoryAction,
+            InventoryEnvironment,
+            InventoryReducer,
+        >,
+    >,
+    /// Payment store (child aggregate)
+    pub payment: Arc<
+        Store<
+            PaymentState,
+            crate::aggregates::PaymentAction,
+            PaymentEnvironment,
+            PaymentReducer,
+        >,
+    >,
+    /// Reservation store (saga coordinator / parent aggregate)
+    pub reservation: Arc<
+        Store<
+            ReservationState,
+            crate::aggregates::ReservationAction,
+            ReservationEnvironment,
+            ReservationReducer,
+        >,
+    >,
+    /// PostgreSQL available seats projection (for state loading)
+    pub postgres_available_seats: Arc<PostgresAvailableSeatsProjection>,
+    /// Available seats projection (in-memory, for compatibility)
     pub available_seats: Arc<RwLock<AvailableSeatsProjection>>,
     /// Sales analytics projection
     pub sales_analytics: Arc<RwLock<SalesAnalyticsProjection>>,
@@ -98,40 +130,81 @@ impl TicketingApp {
         ) as Arc<dyn EventBus>;
         tracing::info!("✓ Event bus connected");
 
-        // 3. Initialize aggregate services
-        let inventory = Arc::new(InventoryService::new(
+        // 3. Initialize PostgreSQL projections for state loading
+        let postgres_pool = event_store.pool().clone();
+        let postgres_available_seats =
+            Arc::new(PostgresAvailableSeatsProjection::new(Arc::new(postgres_pool)));
+        tracing::info!("✓ PostgreSQL projections initialized");
+
+        // 4. Create query adapters
+        let inventory_query = Arc::new(PostgresInventoryQuery::new(postgres_available_seats.clone()));
+        let payment_query = Arc::new(PostgresPaymentQuery::new());
+        let reservation_query = Arc::new(PostgresReservationQuery::new());
+        tracing::info!("✓ Query adapters created");
+
+        // 5. Initialize aggregate stores (Composable Rust architecture)
+        // Create child stores first (Inventory and Payment)
+        let clock = Arc::new(SystemClock);
+
+        // Inventory Store (child)
+        let inventory_env = InventoryEnvironment::new(
+            clock.clone(),
             event_store.clone(),
             event_bus.clone(),
-            config.redpanda.inventory_topic.clone(),
+            StreamId::new("inventory"),
+            inventory_query,
+        );
+        let inventory = Arc::new(Store::new(
+            InventoryState::new(),
+            InventoryReducer::new(),
+            inventory_env,
         ));
 
-        let reservation = Arc::new(ReservationService::new(
+        // Payment Store (child)
+        let payment_env = PaymentEnvironment::new(
+            clock.clone(),
             event_store.clone(),
             event_bus.clone(),
-            config.redpanda.reservation_topic.clone(),
+            StreamId::new("payment"),
+            payment_query,
+        );
+        let payment = Arc::new(Store::new(
+            PaymentState::new(),
+            PaymentReducer::new(),
+            payment_env,
         ));
 
-        let payment = Arc::new(PaymentService::new(
+        // Reservation Store (parent / saga coordinator)
+        // Note: ReservationState holds child STATE, not child stores (TCA pattern)
+        let reservation_env = ReservationEnvironment::new(
+            clock.clone(),
             event_store.clone(),
             event_bus.clone(),
-            config.redpanda.payment_topic.clone(),
+            StreamId::new("reservation"),
+            reservation_query,
+        );
+        let reservation = Arc::new(Store::new(
+            ReservationState::new(),
+            ReservationReducer::new(),
+            reservation_env,
         ));
 
-        tracing::info!("✓ Aggregate services initialized");
+        tracing::info!("✓ Aggregate stores initialized (Composable Rust architecture)");
 
-        // 4. Initialize projections
+        // 6. Initialize in-memory projections (for compatibility)
         let available_seats = Arc::new(RwLock::new(AvailableSeatsProjection::new()));
         let sales_analytics = Arc::new(RwLock::new(SalesAnalyticsProjection::new()));
         let customer_history = Arc::new(RwLock::new(CustomerHistoryProjection::new()));
 
-        tracing::info!("✓ Projections initialized");
+        tracing::info!("✓ In-memory projections initialized");
 
         Ok(Self {
             event_store,
             event_bus,
             inventory,
-            reservation,
             payment,
+            reservation,
+            postgres_available_seats,
             available_seats,
             sales_analytics,
             customer_history,

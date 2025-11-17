@@ -4,9 +4,13 @@
 //! real payment gateways (Stripe, `PayPal`, etc.). For this demo, we simulate success
 //! and provide a command to simulate failures for testing compensation flows.
 
+use crate::projections::TicketingEvent;
 use crate::types::{CustomerId, Money, Payment, PaymentId, PaymentMethod, PaymentState, PaymentStatus, ReservationId};
 use chrono::{DateTime, Utc};
-use composable_rust_core::{effect::Effect, environment::Clock, reducer::Reducer, SmallVec};
+use composable_rust_core::{
+    append_events, effect::Effect, environment::Clock, event_bus::EventBus,
+    event_store::EventStore, publish_event, reducer::Reducer, smallvec, stream::StreamId, SmallVec,
+};
 use composable_rust_macros::Action;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -14,6 +18,36 @@ use uuid::Uuid;
 
 // Note: ReservationAction would be imported in a real system for cross-aggregate events
 // For now, we'll keep it simple and focus on the Payment aggregate itself
+
+// ============================================================================
+// Projection Query Trait
+// ============================================================================
+
+/// Trait for querying payment projection data.
+///
+/// This trait defines the read operations needed by the Payment aggregate
+/// to load state from the projection when processing commands.
+///
+/// # Pattern: State Loading from Projections
+///
+/// According to the state-loading-patterns spec, aggregates load state on-demand
+/// by querying projections. This trait is injected via the Environment to enable
+/// the reducer to trigger state loading effects.
+///
+/// Note: Returns `BoxFuture` instead of async fn to be dyn-compatible (object-safe).
+pub trait PaymentProjectionQuery: Send + Sync {
+    /// Load payment data for a specific payment.
+    ///
+    /// Returns payment details if found.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database query fails.
+    fn load_payment(
+        &self,
+        payment_id: &PaymentId,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<Payment>, String>> + Send + '_>>;
+}
 
 // ============================================================================
 // Actions (Commands + Events)
@@ -124,13 +158,33 @@ pub enum PaymentAction {
 pub struct PaymentEnvironment {
     /// Clock for timestamps
     pub clock: Arc<dyn Clock>,
+    /// Event store for persistence
+    pub event_store: Arc<dyn EventStore>,
+    /// Event bus for publishing
+    pub event_bus: Arc<dyn EventBus>,
+    /// Stream ID for this aggregate instance
+    pub stream_id: StreamId,
+    /// Projection query for loading state on-demand
+    pub projection: Arc<dyn PaymentProjectionQuery>,
 }
 
 impl PaymentEnvironment {
     /// Creates a new `PaymentEnvironment`
     #[must_use]
-    pub fn new(clock: Arc<dyn Clock>) -> Self {
-        Self { clock }
+    pub fn new(
+        clock: Arc<dyn Clock>,
+        event_store: Arc<dyn EventStore>,
+        event_bus: Arc<dyn EventBus>,
+        stream_id: StreamId,
+        projection: Arc<dyn PaymentProjectionQuery>,
+    ) -> Self {
+        Self {
+            clock,
+            event_store,
+            event_bus,
+            stream_id,
+            projection,
+        }
     }
 }
 
@@ -149,6 +203,39 @@ impl PaymentReducer {
     #[must_use]
     pub const fn new() -> Self {
         Self
+    }
+
+    /// Creates effects for persisting and publishing an event
+    fn create_effects(
+        event: PaymentAction,
+        env: &PaymentEnvironment,
+    ) -> SmallVec<[Effect<PaymentAction>; 4]> {
+        let ticketing_event = TicketingEvent::Payment(event);
+        let Ok(serialized) = ticketing_event.serialize() else {
+            return SmallVec::new();
+        };
+
+        smallvec![
+            append_events! {
+                store: env.event_store,
+                stream: env.stream_id.as_str(),
+                expected_version: None,
+                events: vec![serialized.clone()],
+                on_success: |_version| None,
+                on_error: |error| Some(PaymentAction::ValidationFailed {
+                    error: error.to_string()
+                })
+            },
+            publish_event! {
+                bus: env.event_bus,
+                topic: "payment",
+                event: serialized,
+                on_success: || None,
+                on_error: |error| Some(PaymentAction::ValidationFailed {
+                    error: error.to_string()
+                })
+            }
+        ]
     }
 
     /// Applies an event to state
@@ -250,7 +337,7 @@ impl Reducer for PaymentReducer {
                     payment_id,
                     reservation_id,
                     amount,
-                    payment_method,
+                    payment_method: payment_method.clone(),
                     processed_at: env.clock.now(),
                 };
                 Self::apply_event(state, &processed);
@@ -265,10 +352,10 @@ impl Reducer for PaymentReducer {
                 };
                 Self::apply_event(state, &success);
 
-                // In a real system with event bus, would publish ReservationAction::PaymentSucceeded
-                // For now, we return no effects (the saga would be notified via event bus)
-
-                SmallVec::new()
+                // Persist and publish both events
+                let mut effects = Self::create_effects(processed, env);
+                effects.extend(Self::create_effects(success, env));
+                effects
             }
 
             // ========== Simulate Failure (For Testing) ==========
@@ -285,8 +372,7 @@ impl Reducer for PaymentReducer {
                 };
                 Self::apply_event(state, &failure);
 
-                // In a real system, would publish ReservationAction::PaymentFailed
-                SmallVec::new()
+                Self::create_effects(failure, env)
             }
 
             // ========== Refund Payment ==========
@@ -325,7 +411,7 @@ impl Reducer for PaymentReducer {
                 };
                 Self::apply_event(state, &refund);
 
-                SmallVec::new()
+                Self::create_effects(refund, env)
             }
 
             // ========== Events (from event store) ==========
@@ -342,10 +428,30 @@ impl Reducer for PaymentReducer {
 mod tests {
     use super::*;
     use composable_rust_core::environment::SystemClock;
-    use composable_rust_testing::{assertions, ReducerTest};
+    use composable_rust_testing::{assertions, mocks::{InMemoryEventBus, InMemoryEventStore}, ReducerTest};
+
+    // Mock projection query for tests
+    #[derive(Clone)]
+    struct MockPaymentQuery;
+
+    impl PaymentProjectionQuery for MockPaymentQuery {
+        fn load_payment(
+            &self,
+            _payment_id: &PaymentId,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<Payment>, String>> + Send + '_>> {
+            // Return None for tests - state will be built from events
+            Box::pin(async move { Ok(None) })
+        }
+    }
 
     fn create_test_env() -> PaymentEnvironment {
-        PaymentEnvironment::new(Arc::new(SystemClock))
+        PaymentEnvironment::new(
+            Arc::new(SystemClock),
+            Arc::new(InMemoryEventStore::new()),
+            Arc::new(InMemoryEventBus::new()),
+            StreamId::new("payment-test"),
+            Arc::new(MockPaymentQuery),
+        )
     }
 
     #[test]
@@ -370,7 +476,12 @@ mod tests {
                 assert_eq!(payment.status, PaymentStatus::Captured);
                 assert_eq!(payment.amount, Money::from_dollars(100));
             })
-            .then_effects(assertions::assert_no_effects)
+            .then_effects(|effects| {
+                // Should return 4 effects:
+                // 2 for PaymentProcessed (AppendEvents + PublishEvent)
+                // 2 for PaymentSucceeded (AppendEvents + PublishEvent)
+                assert_eq!(effects.len(), 4);
+            })
             .run();
     }
 
@@ -391,7 +502,10 @@ mod tests {
                 assert!(state.last_error.is_some());
                 assert!(state.last_error.as_ref().unwrap().contains("declined"));
             })
-            .then_effects(assertions::assert_no_effects)
+            .then_effects(|effects| {
+                // Should return 2 effects: AppendEvents + PublishEvent
+                assert_eq!(effects.len(), 2);
+            })
             .run();
     }
 
@@ -428,7 +542,10 @@ mod tests {
                     PaymentStatus::Refunded { .. }
                 ));
             })
-            .then_effects(assertions::assert_no_effects)
+            .then_effects(|effects| {
+                // Should return 2 effects: AppendEvents + PublishEvent
+                assert_eq!(effects.len(), 2);
+            })
             .run();
     }
 

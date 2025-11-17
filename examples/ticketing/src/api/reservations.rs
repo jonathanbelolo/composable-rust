@@ -151,8 +151,6 @@ pub async fn create_reservation(
     Json(request): Json<CreateReservationRequest>,
 ) -> Result<(StatusCode, Json<CreateReservationResponse>), AppError> {
     use crate::aggregates::ReservationAction;
-    use crate::projections::TicketingEvent;
-    use composable_rust_core::event::SerializedEvent;
 
     // Validate request
     if request.quantity == 0 {
@@ -185,28 +183,12 @@ pub async fn create_reservation(
         specific_seats,
     };
 
-    // Wrap in TicketingEvent for publishing to EventBus
-    let ticketing_event = TicketingEvent::Reservation(command.clone());
-
-    // Serialize and publish to EventBus (reservation topic)
-    let event_data = bincode::serialize(&ticketing_event)
-        .map_err(|e| AppError::internal(format!("Failed to serialize event: {e}")))?;
-
-    let metadata = serde_json::json!({
-        "reservation_id": reservation_id.as_uuid(),
-        "customer_id": customer_id.as_uuid(),
-        "event_id": event_id.as_uuid(),
-    });
-
-    let serialized_event = SerializedEvent {
-        event_type: "ReservationAction::InitiateReservation".to_string(),
-        data: event_data,
-        metadata: Some(metadata),
-    };
-
-    // Publish to EventBus
-    state.event_bus.publish("reservation.commands", &serialized_event).await
-        .map_err(|e| AppError::internal(format!("Failed to publish reservation command: {e}")))?;
+    // Send command to Reservation Store
+    // The Store will:
+    // 1. Call the reducer
+    // 2. Execute returned effects (persist, publish, send to child stores)
+    // 3. Handle the saga coordination
+    let _ = state.reservation.send(command).await;
 
     // Calculate expiration (5 minutes from now)
     let expires_at = Utc::now() + chrono::Duration::minutes(5);

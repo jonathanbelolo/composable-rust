@@ -10,6 +10,8 @@ use std::collections::HashMap;
 use std::fmt;
 use uuid::Uuid;
 
+// Import Store and aggregate types for parent-child pattern
+
 // ============================================================================
 // Identifiers
 // ============================================================================
@@ -191,6 +193,18 @@ impl TicketId {
     #[must_use]
     pub fn new() -> Self {
         Self(Uuid::new_v4())
+    }
+
+    /// Create a `TicketId` from a `Uuid`
+    #[must_use]
+    pub const fn from_uuid(uuid: Uuid) -> Self {
+        Self(uuid)
+    }
+
+    /// Get the inner UUID
+    #[must_use]
+    pub const fn as_uuid(&self) -> &Uuid {
+        &self.0
     }
 }
 
@@ -965,6 +979,17 @@ impl Default for EventState {
     }
 }
 
+/// Loading state for on-demand state loading from projections
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum LoadingState {
+    /// Data has not been loaded yet
+    NotLoaded,
+    /// Data is currently being loaded from projection
+    Loading,
+    /// Data has been loaded
+    Loaded,
+}
+
 /// State for the Inventory aggregate
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InventoryState {
@@ -972,6 +997,8 @@ pub struct InventoryState {
     pub inventories: HashMap<(EventId, String), Inventory>,
     /// All seat assignments indexed by `seat_id`
     pub seat_assignments: HashMap<SeatId, SeatAssignment>,
+    /// Loading state for each inventory key
+    pub loading_states: HashMap<(EventId, String), LoadingState>,
     /// Last validation error
     pub last_error: Option<String>,
 }
@@ -983,8 +1010,27 @@ impl InventoryState {
         Self {
             inventories: HashMap::new(),
             seat_assignments: HashMap::new(),
+            loading_states: HashMap::new(),
             last_error: None,
         }
+    }
+
+    /// Checks if inventory data for a specific event/section has been loaded
+    #[must_use]
+    pub fn is_loaded(&self, event_id: &EventId, section: &str) -> bool {
+        self.loading_states
+            .get(&(*event_id, section.to_string()))
+            .map_or(false, |state| *state == LoadingState::Loaded)
+    }
+
+    /// Marks inventory as loading
+    pub fn mark_loading(&mut self, event_id: EventId, section: String) {
+        self.loading_states.insert((event_id, section), LoadingState::Loading);
+    }
+
+    /// Marks inventory as loaded
+    pub fn mark_loaded(&mut self, event_id: EventId, section: String) {
+        self.loading_states.insert((event_id, section), LoadingState::Loaded);
     }
 
     /// Gets inventory for an event and section
@@ -1019,21 +1065,35 @@ impl Default for InventoryState {
 }
 
 /// State for the Reservation saga
+///
+/// Following TCA pattern: Parent state holds child STATE, not child stores.
+/// Child reducers are composed via event bus communication, not direct store references.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReservationState {
     /// All reservations indexed by ID
     pub reservations: HashMap<ReservationId, Reservation>,
+    /// Loading state for each reservation
+    pub loading_states: HashMap<ReservationId, LoadingState>,
     /// Last validation error
     pub last_error: Option<String>,
+
+    // ===== Child State (TCA Pattern) =====
+    /// Inventory state (child aggregate for seat management)
+    pub inventory_state: InventoryState,
+    /// Payment state (child aggregate for payment processing)
+    pub payment_state: PaymentState,
 }
 
 impl ReservationState {
-    /// Creates a new empty `ReservationState`
+    /// Creates a new empty `ReservationState` with child states
     #[must_use]
     pub fn new() -> Self {
         Self {
             reservations: HashMap::new(),
+            loading_states: HashMap::new(),
             last_error: None,
+            inventory_state: InventoryState::new(),
+            payment_state: PaymentState::new(),
         }
     }
 
@@ -1054,6 +1114,24 @@ impl ReservationState {
     pub fn count(&self) -> usize {
         self.reservations.len()
     }
+
+    /// Checks if reservation data has been loaded
+    #[must_use]
+    pub fn is_loaded(&self, reservation_id: &ReservationId) -> bool {
+        self.loading_states
+            .get(reservation_id)
+            .map_or(false, |state| *state == LoadingState::Loaded)
+    }
+
+    /// Marks reservation as loading
+    pub fn mark_loading(&mut self, reservation_id: ReservationId) {
+        self.loading_states.insert(reservation_id, LoadingState::Loading);
+    }
+
+    /// Marks reservation as loaded
+    pub fn mark_loaded(&mut self, reservation_id: ReservationId) {
+        self.loading_states.insert(reservation_id, LoadingState::Loaded);
+    }
 }
 
 impl Default for ReservationState {
@@ -1067,6 +1145,8 @@ impl Default for ReservationState {
 pub struct PaymentState {
     /// All payments indexed by ID
     pub payments: HashMap<PaymentId, Payment>,
+    /// Loading state for each payment
+    pub loading_states: HashMap<PaymentId, LoadingState>,
     /// Last validation error
     pub last_error: Option<String>,
 }
@@ -1077,8 +1157,27 @@ impl PaymentState {
     pub fn new() -> Self {
         Self {
             payments: HashMap::new(),
+            loading_states: HashMap::new(),
             last_error: None,
         }
+    }
+
+    /// Checks if payment data has been loaded
+    #[must_use]
+    pub fn is_loaded(&self, payment_id: &PaymentId) -> bool {
+        self.loading_states
+            .get(payment_id)
+            .map_or(false, |state| *state == LoadingState::Loaded)
+    }
+
+    /// Marks payment as loading
+    pub fn mark_loading(&mut self, payment_id: PaymentId) {
+        self.loading_states.insert(payment_id, LoadingState::Loading);
+    }
+
+    /// Marks payment as loaded
+    pub fn mark_loaded(&mut self, payment_id: PaymentId) {
+        self.loading_states.insert(payment_id, LoadingState::Loaded);
     }
 
     /// Gets a payment by ID

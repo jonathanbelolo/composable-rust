@@ -73,20 +73,29 @@
 
 // PostgreSQL-backed projections (framework-compatible)
 pub mod available_seats_postgres;
+pub mod customer_history_postgres;
+pub mod events_postgres;
 pub mod manager;
+pub mod query_adapters;
+pub mod sales_analytics_postgres;
 
 // In-memory projections (for testing and legacy compatibility)
 pub mod available_seats;
 pub mod customer_history;
+pub mod event_projection;
 pub mod sales_analytics;
 
 pub use available_seats::{AvailableSeatsProjection, SeatAvailability};
 pub use available_seats_postgres::{PostgresAvailableSeatsProjection, SectionAvailability};
 pub use customer_history::{CustomerHistoryProjection, CustomerPurchase};
+pub use customer_history_postgres::PostgresCustomerHistoryProjection;
+pub use events_postgres::PostgresEventsProjection;
 pub use manager::{setup_projection_managers, ProjectionManagers};
 pub use sales_analytics::{SalesAnalyticsProjection, SalesMetrics};
+pub use sales_analytics_postgres::PostgresSalesAnalyticsProjection;
 
 use crate::aggregates::{EventAction, InventoryAction, PaymentAction, ReservationAction};
+use composable_rust_core::event::SerializedEvent;
 use serde::{Deserialize, Serialize};
 
 /// Unified event type for all ticketing aggregates.
@@ -102,6 +111,41 @@ pub enum TicketingEvent {
     Reservation(ReservationAction),
     /// Event from the Payment aggregate
     Payment(PaymentAction),
+}
+
+impl TicketingEvent {
+    /// Serialize an action into a `SerializedEvent` for event store persistence
+    ///
+    /// # Errors
+    ///
+    /// Returns error if serialization fails
+    pub fn serialize(self) -> Result<SerializedEvent, String> {
+        let event_type = match &self {
+            Self::Event(action) => format!("Event{action:?}"),
+            Self::Inventory(action) => format!("Inventory{action:?}"),
+            Self::Reservation(action) => format!("Reservation{action:?}"),
+            Self::Payment(action) => format!("Payment{action:?}"),
+        }
+        .split('(')
+        .next()
+        .unwrap_or("Unknown")
+        .to_string();
+
+        let data = serde_json::to_vec(&self)
+            .map_err(|e| format!("Serialization error: {e}"))?;
+
+        Ok(SerializedEvent::new(event_type, data, None))
+    }
+
+    /// Deserialize a `SerializedEvent` back into a `TicketingEvent`
+    ///
+    /// # Errors
+    ///
+    /// Returns error if deserialization fails
+    pub fn deserialize(event: &SerializedEvent) -> Result<Self, String> {
+        serde_json::from_slice(&event.data)
+            .map_err(|e| format!("Deserialization error: {e}"))
+    }
 }
 
 /// Trait for projections that consume events to build read models.
