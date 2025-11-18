@@ -3,10 +3,12 @@
 //! Manages event lifecycle: creation, publishing, sales management, and cancellation.
 //! Demonstrates validation, state transitions, and business rules enforcement.
 
+use crate::projections::TicketingEvent;
 use crate::types::{Event, EventDate, EventId, EventState, EventStatus, PricingTier, Venue};
 use chrono::{DateTime, Duration, Utc};
 use composable_rust_core::{
-    effect::Effect, environment::Clock, reducer::Reducer, SmallVec,
+    append_events, effect::Effect, environment::Clock, event_bus::EventBus,
+    event_store::EventStore, publish_event, reducer::Reducer, smallvec, stream::StreamId, SmallVec,
 };
 use composable_rust_macros::Action;
 use serde::{Deserialize, Serialize};
@@ -141,13 +143,29 @@ pub enum EventAction {
 pub struct EventEnvironment {
     /// Clock for timestamps
     pub clock: Arc<dyn Clock>,
+    /// Event store for persistence
+    pub event_store: Arc<dyn EventStore>,
+    /// Event bus for publishing
+    pub event_bus: Arc<dyn EventBus>,
+    /// Stream ID for this aggregate instance
+    pub stream_id: StreamId,
 }
 
 impl EventEnvironment {
     /// Creates a new `EventEnvironment`
     #[must_use]
-    pub fn new(clock: Arc<dyn Clock>) -> Self {
-        Self { clock }
+    pub fn new(
+        clock: Arc<dyn Clock>,
+        event_store: Arc<dyn EventStore>,
+        event_bus: Arc<dyn EventBus>,
+        stream_id: StreamId,
+    ) -> Self {
+        Self {
+            clock,
+            event_store,
+            event_bus,
+            stream_id,
+        }
     }
 }
 
@@ -169,6 +187,39 @@ impl EventReducer {
     #[must_use]
     pub const fn new() -> Self {
         Self
+    }
+
+    /// Creates effects for persisting and publishing an event
+    fn create_effects(
+        event: EventAction,
+        env: &EventEnvironment,
+    ) -> SmallVec<[Effect<EventAction>; 4]> {
+        let ticketing_event = TicketingEvent::Event(event);
+        let Ok(serialized) = ticketing_event.serialize() else {
+            return SmallVec::new();
+        };
+
+        smallvec![
+            append_events! {
+                store: env.event_store,
+                stream: env.stream_id.as_str(),
+                expected_version: None,
+                events: vec![serialized.clone()],
+                on_success: |_version| None,
+                on_error: |error| Some(EventAction::ValidationFailed {
+                    error: error.to_string()
+                })
+            },
+            publish_event! {
+                bus: env.event_bus,
+                topic: "events",
+                event: serialized,
+                on_success: || None,
+                on_error: |error| Some(EventAction::ValidationFailed {
+                    error: error.to_string()
+                })
+            }
+        ]
     }
 
     /// Validates `CreateEvent` command
@@ -400,7 +451,7 @@ impl Reducer for EventReducer {
                 };
                 Self::apply_event(state, &event);
 
-                SmallVec::new()
+                Self::create_effects(event, env)
             }
 
             EventAction::PublishEvent { event_id } => {
@@ -417,7 +468,7 @@ impl Reducer for EventReducer {
                 };
                 Self::apply_event(state, &event);
 
-                SmallVec::new()
+                Self::create_effects(event, env)
             }
 
             EventAction::OpenSales { event_id } => {
@@ -434,7 +485,7 @@ impl Reducer for EventReducer {
                 };
                 Self::apply_event(state, &event);
 
-                SmallVec::new()
+                Self::create_effects(event, env)
             }
 
             EventAction::CloseSales { event_id } => {
@@ -451,7 +502,7 @@ impl Reducer for EventReducer {
                 };
                 Self::apply_event(state, &event);
 
-                SmallVec::new()
+                Self::create_effects(event, env)
             }
 
             EventAction::CancelEvent { event_id, reason } => {
@@ -470,7 +521,7 @@ impl Reducer for EventReducer {
                 };
                 Self::apply_event(state, &event);
 
-                SmallVec::new()
+                Self::create_effects(event, env)
             }
 
             // ========== Events (from event store replay) ==========
@@ -488,10 +539,19 @@ mod tests {
     use super::*;
     use crate::types::{Capacity, Money, SeatType, VenueSection};
     use composable_rust_core::environment::SystemClock;
-    use composable_rust_testing::{assertions, ReducerTest};
+    use composable_rust_testing::{
+        assertions,
+        mocks::{InMemoryEventBus, InMemoryEventStore},
+        ReducerTest,
+    };
 
     fn create_test_env() -> EventEnvironment {
-        EventEnvironment::new(Arc::new(SystemClock))
+        EventEnvironment::new(
+            Arc::new(SystemClock),
+            Arc::new(InMemoryEventStore::new()),
+            Arc::new(InMemoryEventBus::new()),
+            StreamId::new("test-stream"),
+        )
     }
 
     fn create_test_venue() -> Venue {
@@ -538,7 +598,10 @@ mod tests {
                 assert_eq!(event.name, "Taylor Swift Concert");
                 assert_eq!(event.status, EventStatus::Draft);
             })
-            .then_effects(assertions::assert_no_effects)
+            .then_effects(|effects| {
+                // Should return 2 effects: AppendEvents + PublishEvent
+                assert_eq!(effects.len(), 2);
+            })
             .run();
     }
 
@@ -621,7 +684,10 @@ mod tests {
                 let event = state.get(&id).unwrap();
                 assert_eq!(event.status, EventStatus::Published);
             })
-            .then_effects(assertions::assert_no_effects)
+            .then_effects(|effects| {
+                // Should return 2 effects: AppendEvents + PublishEvent
+                assert_eq!(effects.len(), 2);
+            })
             .run();
     }
 
