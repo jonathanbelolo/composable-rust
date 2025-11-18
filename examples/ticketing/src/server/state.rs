@@ -257,6 +257,38 @@ impl AppState {
 
         Store::new(ReservationState::new(), ReservationReducer::new(), env)
     }
+
+    /// Create a fresh Event store for this request.
+    ///
+    /// Each call creates a new Store with empty state. The store will load
+    /// only the data it needs from the event store when processing actions.
+    ///
+    /// # Returns
+    ///
+    /// A new Event store instance for this request.
+    #[must_use]
+    pub fn create_event_store(
+        &self,
+    ) -> composable_rust_runtime::Store<
+        crate::types::EventState,
+        crate::aggregates::event::EventAction,
+        crate::aggregates::event::EventEnvironment,
+        crate::aggregates::event::EventReducer,
+    > {
+        use crate::aggregates::event::{EventEnvironment, EventReducer};
+        use crate::types::EventState;
+        use composable_rust_core::stream::StreamId;
+        use composable_rust_runtime::Store;
+
+        let env = EventEnvironment::new(
+            self.clock.clone(),
+            self.event_store.clone(),
+            self.event_bus.clone(),
+            StreamId::new("event"),
+        );
+
+        Store::new(EventState::new(), EventReducer::new(), env)
+    }
 }
 
 // Implement FromRef to allow extractors to get auth_store from AppState

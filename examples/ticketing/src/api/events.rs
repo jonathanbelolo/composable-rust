@@ -9,17 +9,21 @@
 
 #![allow(clippy::missing_errors_doc)] // Example code - errors are standard AppError
 
+use crate::aggregates::event::{EventAction, EventEnvironment, EventReducer};
 use crate::auth::middleware::SessionUser;
+use crate::projections::TicketingEvent;
 use crate::server::state::AppState;
-use crate::types::{EventId, EventStatus};
+use crate::types::{Capacity, EventDate, EventId, EventStatus, Money, PricingTier, SeatType, TierType, Venue, VenueSection};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
 use chrono::{DateTime, Utc};
+use composable_rust_core::{reducer::Reducer, stream::StreamId};
 use composable_rust_web::error::AppError;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use uuid::Uuid;
 
 // ============================================================================
@@ -41,6 +45,44 @@ pub struct CreateEventRequest {
     pub venue_name: String,
     /// Venue address
     pub venue_address: String,
+    /// Total venue capacity
+    pub capacity: u32,
+    /// Ticket price in dollars
+    pub price: f64,
+}
+
+impl CreateEventRequest {
+    /// Maps API request to domain types with sensible defaults
+    ///
+    /// Creates a single "General Admission" section for the venue and a single "Regular" pricing tier.
+    /// For production, this should be extended to support multiple sections and pricing tiers.
+    fn to_domain_types(&self) -> (Venue, EventDate, Vec<PricingTier>) {
+        // Create a single venue section with all capacity
+        let section = VenueSection::new(
+            "General Admission".to_string(),
+            Capacity::new(self.capacity),
+            SeatType::GeneralAdmission,
+        );
+
+        let venue = Venue::new(
+            self.venue_name.clone(),
+            Capacity::new(self.capacity),
+            vec![section],
+        );
+
+        let event_date = EventDate::new(self.start_time);
+
+        // Create a single "Regular" pricing tier
+        let pricing_tier = PricingTier::new(
+            TierType::Regular,
+            "General Admission".to_string(),
+            Money::from_dollars(self.price as u64),
+            Utc::now(),
+            None, // No expiration
+        );
+
+        (venue, event_date, vec![pricing_tier])
+    }
 }
 
 /// Response after creating an event.
@@ -147,15 +189,34 @@ pub struct UpdateEventRequest {
 /// ```
 pub async fn create_event(
     session: SessionUser,
-    State(_state): State<AppState>,
-    Json(_request): Json<CreateEventRequest>,
+    State(state): State<AppState>,
+    Json(request): Json<CreateEventRequest>,
 ) -> Result<(StatusCode, Json<CreateEventResponse>), AppError> {
     // Generate new event ID
     let event_id = EventId::new();
 
-    // TODO: Send CreateEvent action to event aggregate via event store
-    // For now, just return success
-    let _ = session; // Use session.user_id as organizer_id
+    // Map API request to domain types
+    let (venue, date, pricing_tiers) = request.to_domain_types();
+
+    // Create Event store for this request
+    let store = state.create_event_store();
+
+    // Build CreateEvent action
+    let action = EventAction::CreateEvent {
+        id: event_id,
+        name: request.title,
+        venue,
+        date,
+        pricing_tiers,
+    };
+
+    // Send action to store (Store executes effects automatically)
+    store
+        .send(action)
+        .await
+        .map_err(|e| AppError::internal(format!("Failed to create event: {e}")))?;
+
+    let _ = session; // TODO: Use session.user_id as organizer_id in future
 
     Ok((
         StatusCode::CREATED,
