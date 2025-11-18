@@ -315,6 +315,28 @@ pub trait ResourceId: Send + Sync + Clone {
         user_id: &UserId,
         store: &Arc<TicketingAuthStore>,
     ) -> impl std::future::Future<Output = Result<(), AppError>> + Send;
+
+    /// Verify ownership of this resource with access to full AppState.
+    ///
+    /// This method has access to ownership indices and projections.
+    /// Override this for resource types that need AppState.
+    ///
+    /// # Arguments
+    ///
+    /// * `user_id` - The user ID to check ownership for
+    /// * `state` - The full application state
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the user owns the resource, `Err(AppError)` otherwise.
+    fn verify_ownership_with_state(
+        &self,
+        user_id: &UserId,
+        state: &crate::server::state::AppState,
+    ) -> impl std::future::Future<Output = Result<(), AppError>> + Send {
+        // Default: delegate to verify_ownership (backward compatibility)
+        self.verify_ownership(user_id, &state.auth_store)
+    }
 }
 
 // ============================================================================
@@ -344,18 +366,33 @@ impl ResourceId for crate::types::ReservationId {
         user_id: &UserId,
         _store: &Arc<TicketingAuthStore>,
     ) -> Result<(), AppError> {
-        // TODO: Query reservation state from event store or projection
-        // TODO: Verify reservation.customer_id == user_id
-        //
-        // Pseudocode:
-        // let reservation = state.event_store.load_aggregate(self).await?;
-        // if reservation.customer_id != CustomerId(user_id.0) {
-        //     return Err(AppError::forbidden("You don't own this reservation"));
-        // }
-
-        // TEMPORARY: Allow all for development
-        // This will be replaced when we wire up saga state queries
+        // Legacy method - ownership verification now requires AppState
+        // This method is only called when using Arc<TicketingAuthStore> state
+        // For AppState, verify_ownership_with_state is called instead
         let _ = user_id;
+        Ok(())
+    }
+
+    async fn verify_ownership_with_state(
+        &self,
+        user_id: &UserId,
+        state: &crate::server::state::AppState,
+    ) -> Result<(), AppError> {
+        // Query reservation ownership from in-memory index
+        let reservation_ownership = state.reservation_ownership.read()
+            .map_err(|e| AppError::internal(format!("Failed to read reservation ownership index: {e}")))?;
+
+        // Check if reservation exists in ownership index
+        let customer_id = reservation_ownership
+            .get(self)
+            .ok_or_else(|| AppError::not_found("Reservation", self.as_uuid()))?;
+
+        // Verify ownership
+        let expected_customer_id = crate::types::CustomerId::from_uuid(user_id.0);
+        if *customer_id != expected_customer_id {
+            return Err(AppError::forbidden("You do not own this reservation"));
+        }
+
         Ok(())
     }
 }
@@ -383,21 +420,42 @@ impl ResourceId for crate::types::PaymentId {
         user_id: &UserId,
         _store: &Arc<TicketingAuthStore>,
     ) -> Result<(), AppError> {
-        // TODO: Query payment state from event store or projection
-        // TODO: Verify payment.customer_id == user_id OR user is admin
-        //
-        // Pseudocode:
-        // let payment = state.event_store.load_aggregate(self).await?;
-        // if payment.customer_id != CustomerId(user_id.0) {
-        //     // Check if user is admin
-        //     if !is_admin(user_id, store).await? {
-        //         return Err(AppError::forbidden("You don't own this payment"));
-        //     }
-        // }
-
-        // TEMPORARY: Allow all for development
-        // This will be replaced when we wire up payment state queries
+        // Legacy method - ownership verification now requires AppState
+        // This method is only called when using Arc<TicketingAuthStore> state
+        // For AppState, verify_ownership_with_state is called instead
         let _ = user_id;
+        Ok(())
+    }
+
+    async fn verify_ownership_with_state(
+        &self,
+        user_id: &UserId,
+        state: &crate::server::state::AppState,
+    ) -> Result<(), AppError> {
+        // Query payment ownership from in-memory indices
+        // payment_ownership maps PaymentId → ReservationId
+        let payment_ownership = state.payment_ownership.read()
+            .map_err(|e| AppError::internal(format!("Failed to read payment ownership index: {e}")))?;
+
+        // Get reservation ID for this payment
+        let reservation_id = payment_ownership
+            .get(self)
+            .ok_or_else(|| AppError::not_found("Payment", self.as_uuid()))?;
+
+        // Now look up the customer who owns this reservation
+        let reservation_ownership = state.reservation_ownership.read()
+            .map_err(|e| AppError::internal(format!("Failed to read reservation ownership index: {e}")))?;
+
+        let customer_id = reservation_ownership
+            .get(reservation_id)
+            .ok_or_else(|| AppError::internal("Payment exists but reservation not found in ownership index"))?;
+
+        // Verify ownership
+        let expected_customer_id = crate::types::CustomerId::from_uuid(user_id.0);
+        if *customer_id != expected_customer_id {
+            return Err(AppError::forbidden("You do not own this payment"));
+        }
+
         Ok(())
     }
 }
@@ -490,8 +548,20 @@ where
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        // Delegate to the Arc<TicketingAuthStore> implementation
-        Self::from_request_parts(parts, &state.auth_store).await
+        // First validate session
+        let session_user = SessionUser::from_request_parts(parts, &state.auth_store).await?;
+
+        // Extract resource ID from path
+        let resource = T::from_path(parts.uri.path())
+            .ok_or_else(|| AppError::bad_request("Invalid resource ID in path"))?;
+
+        // Verify ownership using AppState (has access to ownership indices)
+        resource.verify_ownership_with_state(&session_user.user_id, state).await?;
+
+        Ok(Self {
+            user_id: session_user.user_id,
+            resource,
+        })
     }
 }
 
