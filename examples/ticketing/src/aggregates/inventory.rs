@@ -39,7 +39,8 @@ use std::sync::Arc;
 pub trait InventoryProjectionQuery: Send + Sync {
     /// Load inventory data for a specific event and section.
     ///
-    /// Returns (`total_capacity`, reserved, sold, available) if found.
+    /// Returns (counts, seat_assignments) where counts is (`total_capacity`, reserved, sold, available).
+    /// The seat assignments provide the complete denormalized snapshot of individual seats.
     ///
     /// # Errors
     ///
@@ -48,7 +49,7 @@ pub trait InventoryProjectionQuery: Send + Sync {
         &self,
         event_id: &EventId,
         section: &str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<(u32, u32, u32, u32)>, String>> + Send + '_>>;
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<((u32, u32, u32, u32), Vec<SeatAssignment>)>, String>> + Send + '_>>;
 }
 
 // ============================================================================
@@ -209,6 +210,8 @@ pub enum InventoryAction {
         section: String,
         /// Loaded inventory data (total, available, reserved, sold)
         inventory_data: Option<(u32, u32, u32, u32)>,
+        /// Loaded seat assignments from projection (complete snapshot)
+        seat_assignments: Vec<SeatAssignment>,
     },
 }
 
@@ -547,12 +550,30 @@ impl InventoryReducer {
                 event_id,
                 section,
                 inventory_data,
+                seat_assignments,
             } => {
+                tracing::debug!(
+                    "InventoryStateLoaded: event_id={}, section={}, data={:?}, seats={}",
+                    event_id,
+                    section,
+                    inventory_data,
+                    seat_assignments.len()
+                );
+
                 // Mark as loaded
                 state.mark_loaded(*event_id, section.clone());
 
                 // If data was found in projection, reconstruct the inventory
-                if let Some((total, _available, reserved, sold)) = inventory_data {
+                // Note: projection returns (total_capacity, reserved, sold, available) + seat assignments
+                if let Some((total, reserved, sold, _available)) = inventory_data {
+                    tracing::debug!(
+                        "Reconstructing inventory from projection snapshot: total={}, reserved={}, sold={}, seats={}",
+                        total,
+                        reserved,
+                        sold,
+                        seat_assignments.len()
+                    );
+
                     let inventory = Inventory::new(*event_id, section.clone(), Capacity::new(*total));
                     let mut inventory = inventory;
                     // Note: 'available' is derived (total - reserved - sold), not stored
@@ -560,6 +581,23 @@ impl InventoryReducer {
                     inventory.sold = *sold;
 
                     state.inventories.insert((*event_id, section.clone()), inventory);
+
+                    // Load seat assignments from projection snapshot (no more placeholder generation!)
+                    for assignment in seat_assignments {
+                        state.seat_assignments.insert(assignment.seat_id, assignment.clone());
+                    }
+
+                    tracing::debug!(
+                        "Inventory loaded from projection snapshot. State now has {} inventories and {} seat assignments",
+                        state.inventories.len(),
+                        state.seat_assignments.len()
+                    );
+                } else {
+                    tracing::warn!(
+                        "No inventory data found in projection for event_id={}, section={}",
+                        event_id,
+                        section
+                    );
                 }
 
                 state.last_error = None;
@@ -672,8 +710,23 @@ impl Reducer for InventoryReducer {
                 specific_seats,
                 expires_at,
             } => {
+                tracing::debug!(
+                    "ReserveSeats: reservation_id={}, event_id={}, section={}, quantity={}, state.inventories.len()={}",
+                    reservation_id,
+                    event_id,
+                    section,
+                    quantity,
+                    state.inventories.len()
+                );
+
                 // Check if state has been loaded from projection
                 if !state.is_loaded(&event_id, &section) {
+                    tracing::debug!(
+                        "State not loaded for event_id={}, section={}. Triggering load from projection.",
+                        event_id,
+                        section
+                    );
+
                     // Mark as loading to prevent duplicate load requests
                     state.mark_loading(event_id, section.clone());
 
@@ -694,17 +747,24 @@ impl Reducer for InventoryReducer {
                     return smallvec![Effect::Sequential(vec![
                         Effect::Future(Box::pin(async move {
                             // Load inventory data from projection
-                            let inventory_data = projection
+                            let result = projection
                                 .load_inventory(&event_id_copy, &section_copy)
                                 .await
                                 .ok()
                                 .flatten();
 
-                            // Return StateLoaded event
+                            // Destructure into counts and seat assignments
+                            let (inventory_data, seat_assignments) = match result {
+                                Some((counts, seats)) => (Some(counts), seats),
+                                None => (None, Vec::new()),
+                            };
+
+                            // Return StateLoaded event with complete snapshot
                             Some(InventoryAction::InventoryStateLoaded {
                                 event_id: event_id_copy,
                                 section: section_copy,
                                 inventory_data,
+                                seat_assignments,
                             })
                         })),
                         // After state is loaded, retry the original command
@@ -714,10 +774,20 @@ impl Reducer for InventoryReducer {
                     ])];
                 }
 
+                tracing::debug!(
+                    "State already loaded. Proceeding with validation. Has inventory: {}",
+                    state.get_inventory(&event_id, &section).is_some()
+                );
+
                 // Validate
                 if let Err(error) =
                     Self::validate_reserve_seats(state, &event_id, &section, quantity)
                 {
+                    tracing::warn!(
+                        "Validation failed for ReserveSeats: {}",
+                        error
+                    );
+
                     // Emit ValidationFailed event
                     Self::apply_event(state, &InventoryAction::ValidationFailed {
                         error: error.clone(),
@@ -738,6 +808,10 @@ impl Reducer for InventoryReducer {
 
                     return SmallVec::new();
                 }
+
+                tracing::debug!(
+                    "Validation passed. Creating SeatsReserved event."
+                );
 
                 // Select seats
                 let seats = if let Some(_specific) = specific_seats {
@@ -928,7 +1002,7 @@ mod tests {
             &self,
             _event_id: &EventId,
             _section: &str,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<(u32, u32, u32, u32)>, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<((u32, u32, u32, u32), Vec<SeatAssignment>)>, String>> + Send + '_>> {
             // Return None for tests - state will be built from events
             Box::pin(async move { Ok(None) })
         }

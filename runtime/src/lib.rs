@@ -1194,6 +1194,28 @@ impl EffectHandle {
             .await
             .map_err(|_| ())
     }
+
+    /// Wait until the pending effect count drops to or below the specified threshold
+    ///
+    /// This is useful when you want to wait for some effects to complete but not all.
+    /// For example, if a reducer returns 4 effects but one is a long-running delay,
+    /// you can wait for the first 3 to complete and let the delay run in the background.
+    ///
+    /// # Arguments
+    ///
+    /// - `remaining`: Number of effects that can still be pending when this returns
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Wait for first 3 effects to complete (1 can still be pending)
+    /// handle.wait_until_n_remain(1).await;
+    /// ```
+    pub async fn wait_until_n_remain(&mut self, remaining: usize) {
+        while self.effects.load(Ordering::SeqCst) > remaining {
+            let _ = self.completion.changed().await;
+        }
+    }
 }
 
 impl std::fmt::Debug for EffectHandle {
@@ -1224,10 +1246,9 @@ impl<A> EffectTracking<A> {
 
     /// Decrement the effect counter (effect completed)
     fn decrement(&self) {
-        if self.counter.fetch_sub(1, Ordering::SeqCst) == 1 {
-            // Counter reached zero, notify waiters
-            let _ = self.notifier.send(());
-        }
+        self.counter.fetch_sub(1, Ordering::SeqCst);
+        // Notify waiters on every completion (supports wait_until_n_complete)
+        let _ = self.notifier.send(());
     }
 }
 
@@ -1676,19 +1697,19 @@ pub mod store {
             E: Clone,
             A: Clone,
         {
-            self.send_internal(action, TrackingMode::Direct).await
+            self.send_with_metadata(action, None).await
         }
 
-        /// Send an action with request-scoped metadata (e.g., correlation_id)
+        /// Send an action with request-scoped metadata (e.g., `correlation_id`)
         ///
         /// This method is identical to [`Self::send`] but accepts additional metadata
         /// that will be injected into all `AppendEvents` effects produced by the reducer.
         ///
         /// # Use Cases
         ///
-        /// - **Correlation tracking**: Pass correlation_id to link events across aggregates
-        /// - **Causation tracking**: Pass causation_id to track cause-and-effect chains
-        /// - **User context**: Pass user_id to track which user triggered the command
+        /// - **Correlation tracking**: Pass `correlation_id` to link events across aggregates
+        /// - **Causation tracking**: Pass `causation_id` to track cause-and-effect chains
+        /// - **User context**: Pass `user_id` to track which user triggered the command
         ///
         /// # Arguments
         ///
@@ -1725,7 +1746,7 @@ pub mod store {
         pub async fn send_with_metadata(
             &self,
             action: A,
-            metadata: Option<serde_json::Value>,
+            metadata: Option<composable_rust_core::event::EventMetadata>,
         ) -> Result<EffectHandle, StoreError>
         where
             R: Clone,
@@ -1772,7 +1793,7 @@ pub mod store {
             };
 
             // Post-process effects to inject metadata into AppendEvents
-            let effects_with_metadata = if let Some(meta) = metadata {
+            let effects_with_metadata = if let Some(ref meta) = metadata {
                 effects
                     .into_iter()
                     .map(|effect| Self::inject_metadata_into_effect(effect, meta.clone()))
@@ -1784,19 +1805,19 @@ pub mod store {
             // Execute effects with tracking
             tracing::trace!("Executing {} effects", effects_with_metadata.len());
             for effect in effects_with_metadata {
-                self.execute_effect_internal(effect, tracking.clone());
+                self.execute_effect_internal(effect, tracking.clone(), metadata.clone());
             }
             tracing::debug!("Action processing completed, returning handle");
 
             Ok(handle)
         }
 
-        /// Recursively inject metadata into all AppendEvents effects in an effect tree
-        fn inject_metadata_into_effect(effect: Effect<A>, metadata: serde_json::Value) -> Effect<A>
+        /// Recursively inject metadata into all `AppendEvents` and `PublishEvent` effects in an effect tree
+        fn inject_metadata_into_effect(effect: Effect<A>, metadata: composable_rust_core::event::EventMetadata) -> Effect<A>
         where
             A: Clone + Send + 'static,
         {
-            use composable_rust_core::effect::EventStoreOperation;
+            use composable_rust_core::effect::{EventStoreOperation, EventBusOperation};
 
             match effect {
                 Effect::EventStore(EventStoreOperation::AppendEvents {
@@ -1808,31 +1829,131 @@ pub mod store {
                     on_success,
                     on_error,
                 }) => {
+                    tracing::debug!(
+                        "inject_metadata_into_effect: AppendEvents stream_id={} event_count={} has_existing_metadata={} request_correlation_id={:?}",
+                        stream_id,
+                        events.len(),
+                        existing_metadata.is_some(),
+                        metadata.correlation_id
+                    );
+
                     // Merge metadata: request metadata takes precedence
-                    let merged_metadata = if let Some(existing) = existing_metadata {
-                        // Both exist - merge (request metadata overwrites)
-                        if let (Some(existing_obj), Some(request_obj)) =
-                            (existing.as_object(), metadata.as_object())
-                        {
-                            let mut merged = existing_obj.clone();
-                            for (k, v) in request_obj {
-                                merged.insert(k.clone(), v.clone());
-                            }
-                            Some(serde_json::Value::Object(merged))
-                        } else {
-                            Some(metadata)
+                    let merged_metadata = if let Some(mut existing) = existing_metadata {
+                        // Both exist - merge field by field (request metadata overwrites)
+                        if metadata.correlation_id.is_some() {
+                            existing.correlation_id.clone_from(&metadata.correlation_id);
                         }
+                        if metadata.causation_id.is_some() {
+                            existing.causation_id.clone_from(&metadata.causation_id);
+                        }
+                        if metadata.user_id.is_some() {
+                            existing.user_id.clone_from(&metadata.user_id);
+                        }
+                        if metadata.timestamp.is_some() {
+                            existing.timestamp.clone_from(&metadata.timestamp);
+                        }
+                        Some(existing)
                     } else {
                         // Only request metadata exists
-                        Some(metadata)
+                        Some(metadata.clone())
                     };
+
+                    // Also inject metadata into each SerializedEvent in the events vector
+                    let updated_events = events
+                        .into_iter()
+                        .enumerate()
+                        .map(|(idx, mut event)| {
+                            let event_had_metadata = event.metadata.is_some();
+                            // Merge metadata into each event (using function parameter 'metadata')
+                            let event_metadata = if let Some(mut existing) = event.metadata {
+                                if metadata.correlation_id.is_some() {
+                                    existing.correlation_id.clone_from(&metadata.correlation_id);
+                                }
+                                if metadata.causation_id.is_some() {
+                                    existing.causation_id.clone_from(&metadata.causation_id);
+                                }
+                                if metadata.user_id.is_some() {
+                                    existing.user_id.clone_from(&metadata.user_id);
+                                }
+                                if metadata.timestamp.is_some() {
+                                    existing.timestamp.clone_from(&metadata.timestamp);
+                                }
+                                Some(existing)
+                            } else {
+                                Some(metadata.clone())
+                            };
+                            event.metadata = event_metadata;
+                            tracing::debug!(
+                                "inject_metadata_into_effect: Event {} had_metadata={} after_metadata={} correlation_id={:?}",
+                                idx,
+                                event_had_metadata,
+                                event.metadata.is_some(),
+                                event.metadata.as_ref().and_then(|m| m.correlation_id.as_ref())
+                            );
+                            event
+                        })
+                        .collect();
 
                     Effect::EventStore(EventStoreOperation::AppendEvents {
                         event_store,
                         stream_id,
                         expected_version,
-                        events,
+                        events: updated_events,
                         metadata: merged_metadata,
+                        on_success,
+                        on_error,
+                    })
+                }
+                Effect::PublishEvent(EventBusOperation::Publish {
+                    event_bus,
+                    topic,
+                    event,
+                    on_success,
+                    on_error,
+                }) => {
+                    tracing::debug!(
+                        "inject_metadata_into_effect: PublishEvent topic={} had_metadata={} request_correlation_id={:?}",
+                        topic,
+                        event.metadata.is_some(),
+                        metadata.correlation_id
+                    );
+
+                    // Inject metadata into the SerializedEvent
+                    let mut updated_event = event;
+
+                    // Merge metadata: request metadata takes precedence
+                    let merged_metadata = if let Some(mut existing) = updated_event.metadata {
+                        // Both exist - merge field by field (request metadata overwrites)
+                        if metadata.correlation_id.is_some() {
+                            existing.correlation_id.clone_from(&metadata.correlation_id);
+                        }
+                        if metadata.causation_id.is_some() {
+                            existing.causation_id.clone_from(&metadata.causation_id);
+                        }
+                        if metadata.user_id.is_some() {
+                            existing.user_id.clone_from(&metadata.user_id);
+                        }
+                        if metadata.timestamp.is_some() {
+                            existing.timestamp.clone_from(&metadata.timestamp);
+                        }
+                        Some(existing)
+                    } else {
+                        // Only request metadata exists
+                        Some(metadata.clone())
+                    };
+
+                    updated_event.metadata = merged_metadata;
+
+                    tracing::debug!(
+                        "inject_metadata_into_effect: PublishEvent after_metadata={} correlation_id={:?}",
+                        updated_event.metadata.is_some(),
+                        updated_event.metadata.as_ref().and_then(|m| m.correlation_id.as_ref())
+                    );
+
+                    Effect::PublishEvent(EventBusOperation::Publish {
+                        event_bus,
+                        topic,
+                        event: updated_event,
                         on_success,
                         on_error,
                     })
@@ -2075,7 +2196,7 @@ pub mod store {
             // Execute effects with tracking
             tracing::trace!("Executing {} effects", effects.len());
             for effect in effects {
-                self.execute_effect_internal(effect, tracking.clone());
+                self.execute_effect_internal(effect, tracking.clone(), None);
             }
             tracing::debug!("Action processing completed, returning handle");
 
@@ -2226,7 +2347,12 @@ pub mod store {
         #[allow(clippy::cognitive_complexity)] // TODO: Refactor in Phase 4
         #[allow(clippy::too_many_lines)] // TODO: Refactor in Phase 4
         #[tracing::instrument(skip(self, effect, tracking), name = "execute_effect")]
-        fn execute_effect_internal(&self, effect: Effect<A>, tracking: EffectTracking<A>)
+        fn execute_effect_internal(
+            &self,
+            effect: Effect<A>,
+            tracking: EffectTracking<A>,
+            metadata: Option<composable_rust_core::event::EventMetadata>,
+        )
         where
             R: Clone,
             E: Clone,
@@ -2248,19 +2374,20 @@ pub mod store {
 
                     let tracking_clone = tracking.clone();
                     let store = self.clone();
+                    let metadata_clone = metadata.clone();
 
                     tokio::spawn(async move {
                         let _guard = DecrementGuard(tracking_clone.clone());
                         let _pending_guard = pending_guard; // Decrement on drop
 
                         if let Some(action) = fut.await {
-                            tracing::trace!("Effect::Future produced an action, sending to store");
+                            tracing::trace!("Effect::Future produced an action, sending to store with metadata");
 
                             // Broadcast to observers (HTTP handlers, WebSockets, metrics)
                             let _ = store.action_broadcast.send(action.clone());
 
-                            // Send action back to store (auto-feedback)
-                            let _ = store.send(action).await;
+                            // Send action back to store with metadata (preserves correlation context)
+                            let _ = store.send_with_metadata(action, metadata_clone).await;
                         } else {
                             tracing::trace!("Effect::Future completed with no action");
                         }
@@ -2277,6 +2404,7 @@ pub mod store {
 
                     let tracking_clone = tracking.clone();
                     let store = self.clone();
+                    let metadata_clone = metadata.clone();
 
                     tokio::spawn(async move {
                         use futures::StreamExt;
@@ -2297,8 +2425,8 @@ pub mod store {
                             // Broadcast to observers (HTTP handlers, WebSockets, metrics)
                             let _ = store.action_broadcast.send(action.clone());
 
-                            // Send action back to store (auto-feedback)
-                            let _ = store.send(action).await;
+                            // Send action back to store with metadata (preserves correlation context)
+                            let _ = store.send_with_metadata(action, metadata_clone.clone()).await;
                         }
 
                         tracing::trace!(
@@ -2339,10 +2467,10 @@ pub mod store {
                     tracing::trace!("Executing Effect::Parallel with {} effects", effect_count);
                     metrics::counter!("store.effects.executed", "type" => "parallel").increment(1);
 
-                    // Execute all effects concurrently, each with the same tracking
+                    // Execute all effects concurrently, each with the same tracking and metadata
                     let store = self.clone();
                     for effect in effects {
-                        store.execute_effect_internal(effect, tracking.clone());
+                        store.execute_effect_internal(effect, tracking.clone(), metadata.clone());
                     }
                 },
                 Effect::Sequential(effects) => {
@@ -2358,6 +2486,7 @@ pub mod store {
 
                     let tracking_clone = tracking.clone();
                     let store = self.clone();
+                    let metadata_clone = metadata.clone();
 
                     tokio::spawn(async move {
                         let _guard = DecrementGuard(tracking_clone.clone());
@@ -2380,8 +2509,8 @@ pub mod store {
                                 feedback_dest: tracking_clone.feedback_dest.clone(),
                             };
 
-                            // Execute the effect
-                            store.execute_effect_internal(effect, sub_tracking.clone());
+                            // Execute the effect with metadata
+                            store.execute_effect_internal(effect, sub_tracking.clone(), metadata_clone.clone());
 
                             // Wait for this effect to complete before continuing
                             if sub_tracking.counter.load(Ordering::SeqCst) > 0 {
@@ -2404,6 +2533,7 @@ pub mod store {
 
                     let tracking_clone = tracking.clone();
                     let store = self.clone();
+                    let metadata_clone = metadata.clone();
 
                     tokio::spawn(async move {
                         let _guard = DecrementGuard(tracking_clone.clone());
@@ -2433,11 +2563,17 @@ pub mod store {
                                         // Merge effect metadata into event metadata
                                         if let Some(event_meta) = event.metadata.as_mut() {
                                             // Event already has metadata - merge (effect metadata takes precedence)
-                                            if let (Some(event_obj), Some(effect_obj)) =
-                                                (event_meta.as_object_mut(), effect_metadata.as_object()) {
-                                                for (k, v) in effect_obj {
-                                                    event_obj.insert(k.clone(), v.clone());
-                                                }
+                                            if effect_metadata.correlation_id.is_some() {
+                                                event_meta.correlation_id.clone_from(&effect_metadata.correlation_id);
+                                            }
+                                            if effect_metadata.causation_id.is_some() {
+                                                event_meta.causation_id.clone_from(&effect_metadata.causation_id);
+                                            }
+                                            if effect_metadata.user_id.is_some() {
+                                                event_meta.user_id.clone_from(&effect_metadata.user_id);
+                                            }
+                                            if effect_metadata.timestamp.is_some() {
+                                                event_meta.timestamp.clone_from(&effect_metadata.timestamp);
                                             }
                                         } else {
                                             // Event has no metadata - use effect metadata
@@ -2587,9 +2723,9 @@ pub mod store {
                         // Send action back to store if callback produced one
                         if let Some(action) = action {
                             tracing::trace!(
-                                "EventStore operation produced an action, sending to store"
+                                "EventStore operation produced an action, sending to store with metadata"
                             );
-                            let _ = store.send(action).await;
+                            let _ = store.send_with_metadata(action, metadata_clone).await;
                         } else {
                             tracing::trace!("EventStore operation completed with no action");
                         }
@@ -2603,6 +2739,7 @@ pub mod store {
                     tracking.increment();
                     let tracking_clone = tracking.clone();
                     let store = self.clone();
+                    let metadata_clone = metadata.clone();
 
                     tokio::spawn(async move {
                         let _guard = DecrementGuard(tracking_clone.clone());
@@ -2653,9 +2790,9 @@ pub mod store {
                         // Send action back to store if callback produced one
                         if let Some(action) = action {
                             tracing::trace!(
-                                "PublishEvent operation produced an action, sending to store"
+                                "PublishEvent operation produced an action, sending to store with metadata"
                             );
-                            let _ = store.send(action).await;
+                            let _ = store.send_with_metadata(action, metadata_clone).await;
                         } else {
                             tracing::trace!("PublishEvent operation completed with no action");
                         }

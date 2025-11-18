@@ -9,7 +9,7 @@
 
 #![allow(clippy::expect_used)] // Test code uses expect for clear failure messages
 
-use composable_rust_core::event::SerializedEvent;
+use composable_rust_core::event::{EventMetadata, SerializedEvent};
 use composable_rust_core::event_store::{EventStore, EventStoreError};
 use composable_rust_core::stream::{StreamId, Version};
 use composable_rust_postgres::PostgresEventStore;
@@ -79,7 +79,7 @@ fn create_test_event(event_type: &str, data: Vec<u8>) -> SerializedEvent {
     SerializedEvent::new(
         event_type.to_string(),
         data,
-        Some(serde_json::json!({"test": true})),
+        Some(EventMetadata::new()),
     )
 }
 

@@ -159,6 +159,65 @@ impl PostgresAvailableSeatsProjection {
         #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
         Ok(result.map_or(0, |(total,)| total as u32))
     }
+
+    /// Load seat assignments for a specific event and section.
+    ///
+    /// Returns complete denormalized snapshot of individual seat states.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database query fails.
+    pub async fn load_seat_assignments(
+        &self,
+        event_id: &EventId,
+        section: &str,
+    ) -> Result<Vec<crate::types::SeatAssignment>> {
+        use crate::types::{SeatAssignment, SeatId, SeatNumber, SeatStatus, ReservationId};
+        use chrono::{DateTime, Utc};
+
+        let rows: Vec<(sqlx::types::Uuid, String, Option<String>, sqlx::types::Uuid, Option<sqlx::types::Uuid>, Option<DateTime<Utc>>)> = sqlx::query_as(
+            "SELECT seat_id, status, seat_number, event_id, reserved_by, expires_at
+             FROM seat_assignments
+             WHERE event_id = $1 AND section = $2
+             ORDER BY seat_number NULLS FIRST, seat_id"
+        )
+        .bind(event_id.as_uuid())
+        .bind(section)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| ProjectionError::Storage(format!("Failed to load seat assignments: {e}")))?;
+
+        let mut assignments = Vec::new();
+        for (seat_id, status_str, seat_number, event_id_db, reserved_by, expires_at) in rows {
+            let seat_id = SeatId::from_uuid(seat_id);
+            let event_id = crate::types::EventId::from_uuid(event_id_db);
+            let seat_number = seat_number.map(SeatNumber::new);
+
+            let status = match status_str.as_str() {
+                "available" => SeatStatus::Available,
+                "reserved" => {
+                    if let Some(expires) = expires_at {
+                        SeatStatus::Reserved { expires_at: expires }
+                    } else {
+                        SeatStatus::Available // Fallback if data is inconsistent
+                    }
+                }
+                "sold" => SeatStatus::Sold,
+                "held" => SeatStatus::Held,
+                _ => SeatStatus::Available, // Fallback for unknown statuses
+            };
+
+            let reserved_by = reserved_by.map(ReservationId::from_uuid);
+
+            let mut assignment = SeatAssignment::new(seat_id, event_id, section.to_string(), seat_number);
+            assignment.status = status;
+            assignment.reserved_by = reserved_by;
+
+            assignments.push(assignment);
+        }
+
+        Ok(assignments)
+    }
 }
 
 impl Projection for PostgresAvailableSeatsProjection {
@@ -176,6 +235,7 @@ impl Projection for PostgresAvailableSeatsProjection {
                 event_id,
                 section,
                 capacity,
+                seats,
                 ..
             }) => {
                 let total = capacity.0;
@@ -193,6 +253,22 @@ impl Projection for PostgresAvailableSeatsProjection {
                 .await
                 .map_err(|e| ProjectionError::Storage(format!("Failed to initialize inventory: {e}")))?;
 
+                // Also insert seat assignment records for each seat (all available initially)
+                for seat_id in seats {
+                    sqlx::query(
+                        "INSERT INTO seat_assignments
+                         (seat_id, event_id, section, status, seat_number, reserved_by, expires_at, updated_at)
+                         VALUES ($1, $2, $3, 'available', NULL, NULL, NULL, NOW())
+                         ON CONFLICT (seat_id) DO NOTHING"
+                    )
+                    .bind(seat_id.as_uuid())
+                    .bind(event_id.as_uuid())
+                    .bind(section)
+                    .execute(self.pool.as_ref())
+                    .await
+                    .map_err(|e| ProjectionError::Storage(format!("Failed to insert seat assignment: {e}")))?;
+                }
+
                 Ok(())
             }
 
@@ -202,6 +278,7 @@ impl Projection for PostgresAvailableSeatsProjection {
                 event_id,
                 section,
                 seats,
+                expires_at,
                 ..
             }) => {
                 // Idempotency check
@@ -226,6 +303,24 @@ impl Projection for PostgresAvailableSeatsProjection {
                 .execute(self.pool.as_ref())
                 .await
                 .map_err(|e| ProjectionError::Storage(format!("Failed to reserve seats: {e}")))?;
+
+                // Update seat assignments to reserved status
+                for seat_id in seats {
+                    sqlx::query(
+                        "UPDATE seat_assignments
+                         SET status = 'reserved',
+                             reserved_by = $2,
+                             expires_at = $3,
+                             updated_at = NOW()
+                         WHERE seat_id = $1"
+                    )
+                    .bind(seat_id.as_uuid())
+                    .bind(reservation_id.as_uuid())
+                    .bind(expires_at)
+                    .execute(self.pool.as_ref())
+                    .await
+                    .map_err(|e| ProjectionError::Storage(format!("Failed to update seat assignment: {e}")))?;
+                }
 
                 // Mark as processed
                 self.mark_processed(reservation_id).await?;
@@ -258,6 +353,22 @@ impl Projection for PostgresAvailableSeatsProjection {
                 .await
                 .map_err(|e| ProjectionError::Storage(format!("Failed to confirm seats: {e}")))?;
 
+                // Update seat assignments to sold status
+                for seat_id in seats {
+                    sqlx::query(
+                        "UPDATE seat_assignments
+                         SET status = 'sold',
+                             reserved_by = NULL,
+                             expires_at = NULL,
+                             updated_at = NOW()
+                         WHERE seat_id = $1"
+                    )
+                    .bind(seat_id.as_uuid())
+                    .execute(self.pool.as_ref())
+                    .await
+                    .map_err(|e| ProjectionError::Storage(format!("Failed to update seat assignment: {e}")))?;
+                }
+
                 Ok(())
             }
 
@@ -285,6 +396,22 @@ impl Projection for PostgresAvailableSeatsProjection {
                 .await
                 .map_err(|e| ProjectionError::Storage(format!("Failed to release seats: {e}")))?;
 
+                // Update seat assignments back to available status
+                for seat_id in seats {
+                    sqlx::query(
+                        "UPDATE seat_assignments
+                         SET status = 'available',
+                             reserved_by = NULL,
+                             expires_at = NULL,
+                             updated_at = NOW()
+                         WHERE seat_id = $1"
+                    )
+                    .bind(seat_id.as_uuid())
+                    .execute(self.pool.as_ref())
+                    .await
+                    .map_err(|e| ProjectionError::Storage(format!("Failed to update seat assignment: {e}")))?;
+                }
+
                 Ok(())
             }
 
@@ -294,8 +421,8 @@ impl Projection for PostgresAvailableSeatsProjection {
     }
 
     async fn rebuild(&self) -> Result<()> {
-        // Truncate both tables to start fresh
-        sqlx::query("TRUNCATE available_seats_projection, processed_reservations")
+        // Truncate all tables to start fresh
+        sqlx::query("TRUNCATE available_seats_projection, seat_assignments, processed_reservations")
             .execute(self.pool.as_ref())
             .await
             .map_err(|e| ProjectionError::Storage(format!("Failed to rebuild: {e}")))?;

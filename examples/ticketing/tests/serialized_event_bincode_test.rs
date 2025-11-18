@@ -1,6 +1,6 @@
 //! Test bincode serialization of SerializedEvent with metadata
 
-use composable_rust_core::event::SerializedEvent;
+use composable_rust_core::event::{EventMetadata, SerializedEvent};
 use ticketing::aggregates::InventoryAction;
 use ticketing::projections::TicketingEvent;
 use ticketing::types::{Capacity, EventId, SeatId};
@@ -24,9 +24,12 @@ fn test_serialized_event_with_metadata_bincode() {
 
     // Create SerializedEvent with metadata (like services.rs does)
     let correlation_id = uuid::Uuid::new_v4();
-    let metadata = Some(serde_json::json!({
-        "correlation_id": correlation_id.to_string()
-    }));
+    let metadata = Some(EventMetadata {
+        correlation_id: Some(correlation_id.to_string()),
+        causation_id: None,
+        user_id: None,
+        timestamp: None,
+    });
 
     let serialized_event = SerializedEvent::new(
         "InventoryInitialized".to_string(),

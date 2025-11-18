@@ -44,15 +44,30 @@ impl InventoryProjectionQuery for PostgresInventoryQuery {
         &self,
         event_id: &EventId,
         section: &str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<(u32, u32, u32, u32)>, String>> + Send + '_>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<((u32, u32, u32, u32), Vec<crate::types::SeatAssignment>)>, String>> + Send + '_>> {
         let available_seats = self.available_seats.clone();
         let event_id = *event_id;
         let section = section.to_string();
         Box::pin(async move {
-            available_seats
+            // Load aggregate counts
+            let counts = available_seats
                 .get_availability(&event_id, &section)
                 .await
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())?;
+
+            // If no counts found, return None (no data in projection)
+            let Some(counts) = counts else {
+                return Ok(None);
+            };
+
+            // Load individual seat assignments (complete snapshot)
+            let seat_assignments = available_seats
+                .load_seat_assignments(&event_id, &section)
+                .await
+                .map_err(|e| e.to_string())?;
+
+            // Return complete snapshot: counts + seat assignments
+            Ok(Some((counts, seat_assignments)))
         })
     }
 }

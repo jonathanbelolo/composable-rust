@@ -304,10 +304,8 @@ impl ReservationReducer {
 
         // Add correlation_id to metadata if present
         if let Some(cid) = correlation_id {
-            let metadata = serialized.metadata.get_or_insert_with(|| serde_json::json!({}));
-            if let Some(obj) = metadata.as_object_mut() {
-                obj.insert("correlation_id".to_string(), serde_json::json!(cid.to_string()));
-            }
+            let metadata = serialized.metadata.get_or_insert_with(composable_rust_core::event::EventMetadata::new);
+            metadata.correlation_id = Some(cid.to_string());
         }
 
         smallvec![
@@ -508,6 +506,11 @@ impl Reducer for ReservationReducer {
                 specific_seats,
                 correlation_id,
             } => {
+                tracing::info!(
+                    reservation_id = %reservation_id.as_uuid(),
+                    event_id = %event_id.as_uuid(),
+                    "Processing InitiateReservation command"
+                );
                 // Validate
                 if let Err(error) =
                     Self::validate_initiate_reservation(state, &reservation_id, quantity)
@@ -546,16 +549,33 @@ impl Reducer for ReservationReducer {
                     expires_at,
                 };
                 let ticketing_event = crate::projections::TicketingEvent::Inventory(reserve_seats_cmd);
-                if let Ok(serialized) = ticketing_event.serialize() {
-                    effects.push(publish_event! {
-                        bus: env.event_bus,
-                        topic: "inventory",
-                        event: serialized,
-                        on_success: || None,
-                        on_error: |error| Some(ReservationAction::ValidationFailed {
-                            error: error.to_string()
-                        })
-                    });
+                match ticketing_event.serialize() {
+                    Ok(mut serialized) => {
+                        // Propagate correlation_id to cross-aggregate event for projection tracking
+                        if let Some(cid) = correlation_id {
+                            let metadata = serialized.metadata.get_or_insert_with(composable_rust_core::event::EventMetadata::new);
+                            metadata.correlation_id = Some(cid.to_string());
+                        }
+
+                        effects.push(publish_event! {
+                            bus: env.event_bus,
+                            topic: "inventory",
+                            event: serialized,
+                            on_success: || None,
+                            on_error: |error| Some(ReservationAction::ValidationFailed {
+                                error: error.to_string()
+                            })
+                        });
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "Failed to serialize ReserveSeats command");
+                        // Emit ValidationFailed event to indicate serialization failure
+                        let failed_event = ReservationAction::ValidationFailed {
+                            error: format!("Failed to serialize ReserveSeats command: {e}")
+                        };
+                        Self::apply_event(state, &failed_event);
+                        return Self::create_effects(failed_event, env, correlation_id);
+                    }
                 }
 
                 // Schedule expiration timeout (5 minutes)
@@ -564,6 +584,11 @@ impl Reducer for ReservationReducer {
                     action: ReservationAction::ExpireReservation { reservation_id }
                 });
 
+                tracing::info!(
+                    reservation_id = %reservation_id.as_uuid(),
+                    effects_count = effects.len(),
+                    "Returning effects from InitiateReservation"
+                );
                 effects
             }
 
@@ -822,7 +847,7 @@ mod tests {
             &self,
             _event_id: &EventId,
             _section: &str,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<(u32, u32, u32, u32)>, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<((u32, u32, u32, u32), Vec<crate::types::SeatAssignment>)>, String>> + Send + '_>> {
             Box::pin(async move { Ok(None) })
         }
     }

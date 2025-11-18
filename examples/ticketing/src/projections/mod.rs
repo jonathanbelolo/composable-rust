@@ -138,7 +138,7 @@ impl TicketingEvent {
         .unwrap_or("Unknown")
         .to_string();
 
-        let data = serde_json::to_vec(&self)
+        let data = bincode::serialize(&self)
             .map_err(|e| format!("Serialization error: {e}"))?;
 
         Ok(SerializedEvent::new(event_type, data, None))
@@ -150,7 +150,7 @@ impl TicketingEvent {
     ///
     /// Returns error if deserialization fails
     pub fn deserialize(event: &SerializedEvent) -> Result<Self, String> {
-        serde_json::from_slice(&event.data)
+        bincode::deserialize(&event.data)
             .map_err(|e| format!("Deserialization error: {e}"))
     }
 }

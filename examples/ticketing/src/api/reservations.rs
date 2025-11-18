@@ -34,6 +34,7 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, Utc};
+use composable_rust_core::event::EventMetadata;
 use composable_rust_web::error::AppError;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -188,9 +189,7 @@ pub async fn create_reservation(
     };
 
     // Prepare metadata with correlation_id for projection tracking
-    let metadata = serde_json::json!({
-        "correlation_id": correlation_id.to_string(),
-    });
+    let metadata = EventMetadata::with_correlation_id(correlation_id.to_string());
 
     // Create fresh Reservation store for this request (per-request pattern)
     // The store starts with empty state and loads only what it needs from event store
@@ -308,14 +307,13 @@ pub async fn cancel_reservation(
     let event_data = bincode::serialize(&ticketing_event)
         .map_err(|e| AppError::internal(format!("Failed to serialize event: {e}")))?;
 
-    let metadata = serde_json::json!({
-        "reservation_id": reservation_id,
-    });
-
+    // Note: reservation_id doesn't map to standard EventMetadata fields
+    // (correlation_id, causation_id, user_id, timestamp)
+    // For now, we omit metadata since there's no clear mapping
     let serialized_event = SerializedEvent {
         event_type: "ReservationAction::CancelReservation".to_string(),
         data: event_data,
-        metadata: Some(metadata),
+        metadata: None,
     };
 
     // Publish to EventBus (reservation topic)

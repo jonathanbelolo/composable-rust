@@ -264,10 +264,10 @@ pub mod effect {
             events: Vec<SerializedEvent>,
             /// Optional metadata to merge into each event's metadata field
             ///
-            /// This is typically used for request-scoped metadata like correlation_id
+            /// This is typically used for request-scoped metadata like `correlation_id`
             /// that should be propagated through all events in this effect.
-            /// If an event already has metadata, this will be merged in (shallow merge).
-            metadata: Option<serde_json::Value>,
+            /// If an event already has metadata, this will be merged in (field-by-field).
+            metadata: Option<crate::event::EventMetadata>,
             /// Callback invoked on success with the new version
             on_success: Box<dyn Fn(Version) -> Option<Action> + Send + Sync>,
             /// Callback invoked on error

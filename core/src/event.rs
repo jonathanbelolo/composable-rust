@@ -189,6 +189,75 @@ pub trait Event: Send + Sync + 'static {
     }
 }
 
+/// Event metadata with strongly-typed fields.
+///
+/// This struct provides type-safe metadata for events, replacing the previous
+/// stringly-typed `serde_json::Value` approach.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct EventMetadata {
+    /// Links related events across aggregates (saga coordination).
+    pub correlation_id: Option<String>,
+
+    /// Links cause-and-effect events within a workflow.
+    pub causation_id: Option<String>,
+
+    /// The user who triggered this event.
+    pub user_id: Option<String>,
+
+    /// When the event was created (ISO 8601 timestamp).
+    pub timestamp: Option<String>,
+}
+
+impl EventMetadata {
+    /// Create empty metadata.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            correlation_id: None,
+            causation_id: None,
+            user_id: None,
+            timestamp: None,
+        }
+    }
+
+    /// Create metadata with just a correlation ID.
+    #[must_use]
+    pub fn with_correlation_id(correlation_id: impl Into<String>) -> Self {
+        Self {
+            correlation_id: Some(correlation_id.into()),
+            causation_id: None,
+            user_id: None,
+            timestamp: None,
+        }
+    }
+
+    /// Convert to JSON value for database storage.
+    #[must_use]
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "correlation_id": self.correlation_id,
+            "causation_id": self.causation_id,
+            "user_id": self.user_id,
+            "timestamp": self.timestamp,
+        })
+    }
+
+    /// Create from JSON value from database.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if JSON deserialization fails.
+    pub fn from_json(value: &serde_json::Value) -> Result<Self, String> {
+        serde_json::from_value(value.clone()).map_err(|e| format!("Failed to deserialize metadata: {e}"))
+    }
+}
+
+impl Default for EventMetadata {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// A serialized event ready for storage.
 ///
 /// This struct contains the event type name and the serialized bytes,
@@ -202,14 +271,8 @@ pub struct SerializedEvent {
     /// The bincode-serialized event data.
     pub data: Vec<u8>,
 
-    /// Optional metadata in JSONB format.
-    ///
-    /// Common metadata fields:
-    /// - `correlation_id`: Links related events across aggregates
-    /// - `causation_id`: Links cause-and-effect events
-    /// - `user_id`: The user who triggered this event
-    /// - `timestamp`: When the event was created (ISO 8601)
-    pub metadata: Option<serde_json::Value>,
+    /// Optional strongly-typed metadata.
+    pub metadata: Option<EventMetadata>,
 }
 
 impl SerializedEvent {
@@ -218,17 +281,24 @@ impl SerializedEvent {
     /// # Examples
     ///
     /// ```
-    /// use composable_rust_core::event::SerializedEvent;
+    /// use composable_rust_core::event::{SerializedEvent, EventMetadata};
     ///
     /// let event = SerializedEvent::new(
     ///     "OrderPlaced.v1".to_string(),
     ///     vec![1, 2, 3, 4],
     ///     None,
     /// );
+    ///
+    /// // With metadata
+    /// let event_with_metadata = SerializedEvent::new(
+    ///     "OrderPlaced.v1".to_string(),
+    ///     vec![1, 2, 3, 4],
+    ///     Some(EventMetadata::with_correlation_id("abc-123")),
+    /// );
     /// ```
     #[must_use]
     #[allow(clippy::missing_const_for_fn)] // Parameters cannot be const-constructed
-    pub fn new(event_type: String, data: Vec<u8>, metadata: Option<serde_json::Value>) -> Self {
+    pub fn new(event_type: String, data: Vec<u8>, metadata: Option<EventMetadata>) -> Self {
         Self {
             event_type,
             data,
@@ -264,7 +334,7 @@ impl SerializedEvent {
     /// ```
     pub fn from_event<E: Event + Serialize>(
         event: &E,
-        metadata: Option<serde_json::Value>,
+        metadata: Option<EventMetadata>,
     ) -> Result<Self, EventError> {
         Ok(Self {
             event_type: event.event_type().to_string(),
@@ -336,10 +406,12 @@ mod tests {
             new_value: 100,
         };
 
-        let metadata = serde_json::json!({
-            "user_id": "user-123",
-            "correlation_id": "corr-456"
-        });
+        let metadata = EventMetadata {
+            user_id: Some("user-123".to_string()),
+            correlation_id: Some("corr-456".to_string()),
+            causation_id: None,
+            timestamp: None,
+        };
 
         let serialized = SerializedEvent::from_event(&event, Some(metadata.clone()))
             .expect("serialization should succeed");

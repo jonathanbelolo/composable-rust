@@ -54,7 +54,7 @@ impl InventoryProjectionQuery for MockInventoryQuery {
         &self,
         _event_id: &EventId,
         _section: &str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<(u32, u32, u32, u32)>, String>> + Send + '_>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<((u32, u32, u32, u32), Vec<ticketing::SeatAssignment>)>, String>> + Send + '_>> {
         Box::pin(async move { Ok(None) }) // No cached state, use event sourcing
     }
 }

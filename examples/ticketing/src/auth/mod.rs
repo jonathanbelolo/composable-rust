@@ -5,6 +5,7 @@
 //! - Re-exports of framework components
 //! - Custom email provider (console output for demo)
 //! - Environment setup helpers
+//! - Custom auth handlers with testing support
 
 // Custom email provider for ticketing
 pub mod email;
@@ -14,6 +15,8 @@ pub mod setup;
 pub mod middleware;
 // Examples of using authentication middleware
 pub mod examples;
+// Custom authentication handlers (with testing support)
+pub mod handlers;
 
 // Re-export framework components
 pub use composable_rust_auth::{

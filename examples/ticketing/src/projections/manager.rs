@@ -20,7 +20,7 @@ use crate::projections::{
     CorrelationId, PostgresAvailableSeatsProjection, ProjectionCompleted,
     ProjectionCompletionEvent, ProjectionFailed, TicketingEvent,
 };
-use composable_rust_core::event::SerializedEvent;
+use composable_rust_core::event::{EventMetadata, SerializedEvent};
 use composable_rust_core::event_bus::EventBus;
 use composable_rust_core::projection::Projection;
 use composable_rust_projections::{
@@ -216,8 +216,8 @@ impl AvailableSeatsProjectionRunner {
     fn extract_correlation_id(event: &SerializedEvent) -> Option<CorrelationId> {
         event.metadata.as_ref().and_then(|metadata| {
             metadata
-                .get("correlation_id")
-                .and_then(|v| v.as_str())
+                .correlation_id
+                .as_ref()
                 .and_then(|s| uuid::Uuid::parse_str(s).ok())
                 .map(CorrelationId::from_uuid)
         })
@@ -240,13 +240,13 @@ impl AvailableSeatsProjectionRunner {
 
         match bincode::serialize(&event) {
             Ok(data) => {
+                let mut metadata = EventMetadata::new();
+                metadata.correlation_id = Some(correlation_id.to_string());
+
                 let serialized = SerializedEvent::new(
                     "ProjectionCompleted".to_string(),
                     data,
-                    Some(serde_json::json!({
-                        "correlation_id": correlation_id.to_string(),
-                        "projection_name": projection_name,
-                    })),
+                    Some(metadata),
                 );
 
                 if let Err(e) = completion_bus.publish("projection.completed", &serialized).await {
@@ -286,13 +286,13 @@ impl AvailableSeatsProjectionRunner {
 
         match bincode::serialize(&event) {
             Ok(data) => {
+                let mut metadata = EventMetadata::new();
+                metadata.correlation_id = Some(correlation_id.to_string());
+
                 let serialized = SerializedEvent::new(
                     "ProjectionFailed".to_string(),
                     data,
-                    Some(serde_json::json!({
-                        "correlation_id": correlation_id.to_string(),
-                        "projection_name": projection_name,
-                    })),
+                    Some(metadata),
                 );
 
                 if let Err(e) = completion_bus.publish("projection.completed", &serialized).await {

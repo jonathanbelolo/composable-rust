@@ -59,6 +59,32 @@ CREATE TABLE IF NOT EXISTS processed_reservations (
 CREATE INDEX IF NOT EXISTS idx_processed_reservations_processed_at
     ON processed_reservations(processed_at);
 
+-- Individual seat assignments for inventory snapshot projection
+-- Provides complete denormalized view of individual seat states
+CREATE TABLE IF NOT EXISTS seat_assignments (
+    seat_id UUID PRIMARY KEY,
+    event_id UUID NOT NULL,
+    section TEXT NOT NULL,
+    status TEXT NOT NULL,  -- 'available', 'reserved', 'sold'
+    seat_number TEXT,  -- NULL for general admission
+    reserved_by UUID,  -- Reservation ID (NULL if not reserved)
+    expires_at TIMESTAMPTZ,  -- Reservation expiration (NULL if not reserved)
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Index for loading all seats for an event/section
+CREATE INDEX IF NOT EXISTS idx_seat_assignments_event_section
+    ON seat_assignments(event_id, section);
+
+-- Index for filtering by status (e.g., "find available seats")
+CREATE INDEX IF NOT EXISTS idx_seat_assignments_status
+    ON seat_assignments(event_id, section, status);
+
+-- Index for reservation expiration cleanup queries
+CREATE INDEX IF NOT EXISTS idx_seat_assignments_expires
+    ON seat_assignments(expires_at)
+    WHERE expires_at IS NOT NULL;
+
 -- =============================================================================
 -- Events Projection (JSONB-based)
 -- =============================================================================

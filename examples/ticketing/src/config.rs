@@ -123,6 +123,19 @@ pub struct AuthConfig {
     pub rate_limit_requests: u32,
     /// Rate limit: window duration in seconds
     pub rate_limit_window: u64,
+    /// **TESTING ONLY**: Expose magic links in API responses for automated testing.
+    ///
+    /// # Security Warning
+    ///
+    /// This MUST be `false` in production! Setting this to `true` defeats the security
+    /// purpose of magic links (email ownership verification) by exposing the link to
+    /// any API caller. Only enable this in testing/development environments.
+    ///
+    /// When `true`, the `/auth/magic-link/request` endpoint will include the magic link
+    /// in the response body, allowing automated tests to complete the auth flow.
+    ///
+    /// Default: `false`
+    pub expose_magic_links_for_testing: bool,
 }
 
 impl Config {
@@ -284,6 +297,10 @@ impl Config {
                     .ok()
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(60), // 1 minute
+                expose_magic_links_for_testing: env::var("AUTH_EXPOSE_MAGIC_LINKS_FOR_TESTING")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(false), // CRITICAL: Default to false (secure by default)
             },
         }
     }

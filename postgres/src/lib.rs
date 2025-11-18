@@ -23,7 +23,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-use composable_rust_core::event::SerializedEvent;
+use composable_rust_core::event::{EventMetadata, SerializedEvent};
 use composable_rust_core::event_store::{BatchAppend, EventStore, EventStoreError};
 use composable_rust_core::stream::{StreamId, Version};
 use sqlx::Row;
@@ -454,7 +454,7 @@ impl EventStore for PostgresEventStore {
             .bind(version_i64)
             .bind(&event.event_type)
             .bind(&event.data)
-            .bind(&event.metadata)
+            .bind(event.metadata.as_ref().map(|m| m.to_json()))
             .execute(&mut *tx)
             .await;
 
@@ -575,10 +575,14 @@ impl EventStore for PostgresEventStore {
             let event_vec: Vec<SerializedEvent> = events
                 .into_iter()
                 .map(|row| {
+                    let metadata_json: Option<sqlx::types::JsonValue> = row.get("metadata");
+                    let metadata = metadata_json.and_then(|json| {
+                        EventMetadata::from_json(&json).ok()
+                    });
                     SerializedEvent::new(
                         row.get("event_type"),
                         row.get("event_data"),
-                        row.get("metadata"),
+                        metadata,
                     )
                 })
                 .collect();
@@ -804,7 +808,7 @@ impl EventStore for PostgresEventStore {
                         .push_bind(validated_event.version)
                         .push_bind(validated_event.event.event_type)
                         .push_bind(validated_event.event.data)
-                        .push_bind(validated_event.event.metadata)
+                        .push_bind(validated_event.event.metadata.as_ref().map(|m| m.to_json()))
                         .push("now()");
                 });
 
