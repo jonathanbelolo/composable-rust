@@ -9,9 +9,8 @@
 
 #![allow(clippy::missing_errors_doc)] // Example code - errors are standard AppError
 
-use crate::aggregates::event::{EventAction, EventEnvironment, EventReducer};
+use crate::aggregates::event::EventAction;
 use crate::auth::middleware::SessionUser;
-use crate::projections::TicketingEvent;
 use crate::server::state::AppState;
 use crate::types::{Capacity, EventDate, EventId, EventStatus, Money, PricingTier, SeatType, TierType, Venue, VenueSection};
 use axum::{
@@ -20,10 +19,8 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, Utc};
-use composable_rust_core::{reducer::Reducer, stream::StreamId};
 use composable_rust_web::error::AppError;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use uuid::Uuid;
 
 // ============================================================================

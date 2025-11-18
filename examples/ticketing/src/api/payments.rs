@@ -20,9 +20,10 @@
 
 #![allow(clippy::missing_errors_doc)] // Example code - errors are standard AppError
 
+use crate::aggregates::PaymentAction;
 use crate::auth::middleware::{RequireOwnership, SessionUser};
 use crate::server::state::AppState;
-use crate::types::{CustomerId, PaymentId, PaymentMethod, PaymentStatus, ReservationId};
+use crate::types::{CustomerId, Money, PaymentId, PaymentMethod, PaymentStatus, ReservationId};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -205,7 +206,7 @@ pub struct RefundPaymentResponse {
 /// ```
 pub async fn process_payment(
     session: SessionUser,
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(request): Json<ProcessPaymentRequest>,
 ) -> Result<(StatusCode, Json<ProcessPaymentResponse>), AppError> {
     // Validate payment method
@@ -238,32 +239,49 @@ pub async fn process_payment(
     let reservation_id = ReservationId::from_uuid(request.reservation_id);
     let customer_id = CustomerId::from_uuid(session.user_id.0);
 
-    // TODO: Verify reservation exists and belongs to user
+    // TODO (Phase 12.4): Verify reservation ownership via query layer
     // CRITICAL SECURITY: Must verify reservation ownership before processing payment
-    // Pseudocode:
-    // let reservation = state.event_store.load_aggregate(&reservation_id).await?;
-    // if reservation.customer_id != customer_id {
-    //     return Err(AppError::forbidden("You don't own this reservation"));
-    // }
-    // if reservation.status != ReservationStatus::PaymentPending {
-    //     return Err(AppError::bad_request("Reservation not ready for payment"));
-    // }
-    // let amount = reservation.total_amount;
+    // This requires query infrastructure from Phase 12.4:
+    // - Query reservation from projection
+    // - Verify customer_id matches session.user_id
+    // - Verify status is PaymentPending
+    // - Get actual amount from reservation
+    let _ = customer_id; // Will be used for ownership check in Phase 12.4
 
-    // TODO: Send ProcessPayment command to payment aggregate via event store
-    // TODO: Integrate with real payment gateway (Stripe, PayPal, etc.)
+    // TODO (Phase 12.5): Replace placeholder amount with actual amount from reservation
+    // For now, using hardcoded amount since query layer not yet implemented
+    let amount = Money::from_dollars(200); // Placeholder
 
-    let _ = (customer_id, reservation_id, payment_method, request.billing_info);
+    // TODO (Phase 12.5): Payment gateway integration (Stripe, PayPal, etc.)
+    // For now, the reducer simulates payment processing
+    let _ = request.billing_info; // Will be used for gateway integration in Phase 12.5
 
-    // Placeholder: simulate success
+    // Create Payment store for this request
+    let store = state.create_payment_store();
+
+    // Build ProcessPayment action
+    let action = PaymentAction::ProcessPayment {
+        payment_id,
+        reservation_id,
+        amount,
+        payment_method,
+    };
+
+    // Send action to store (Store executes effects automatically)
+    store
+        .send(action)
+        .await
+        .map_err(|e| AppError::internal(format!("Failed to process payment: {e}")))?;
+
+    // Return success response
     Ok((
         StatusCode::CREATED,
         Json(ProcessPaymentResponse {
             payment_id: *payment_id.as_uuid(),
             reservation_id: request.reservation_id,
             status: PaymentStatus::Captured,
-            amount: 200.0, // TODO: Get from reservation
-            transaction_id: Some("txn_1234567890".to_string()),
+            amount: 200.0, // TODO: Get from reservation in Phase 12.4
+            transaction_id: Some("simulated_txn".to_string()),
             message: "Payment successful! Your tickets will be issued shortly.".to_string(),
         }),
     ))
