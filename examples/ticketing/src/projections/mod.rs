@@ -81,6 +81,7 @@ pub mod events_postgres;
 pub mod manager;
 pub mod payments_postgres;
 pub mod query_adapters;
+pub mod reservations_postgres;
 pub mod sales_analytics_postgres;
 
 // In-memory projections (for testing and legacy compatibility)
@@ -100,6 +101,7 @@ pub use customer_history_postgres::PostgresCustomerHistoryProjection;
 pub use events_postgres::PostgresEventsProjection;
 pub use manager::{setup_projection_managers, ProjectionManagers};
 pub use payments_postgres::PostgresPaymentsProjection;
+pub use reservations_postgres::PostgresReservationsProjection;
 pub use sales_analytics::{SalesAnalyticsProjection, SalesMetrics};
 pub use sales_analytics_postgres::PostgresSalesAnalyticsProjection;
 

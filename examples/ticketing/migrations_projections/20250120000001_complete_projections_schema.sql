@@ -221,3 +221,32 @@ CREATE TABLE IF NOT EXISTS customer_pending_reservations (
 
 CREATE INDEX IF NOT EXISTS idx_customer_pending_customer
     ON customer_pending_reservations(customer_id);
+
+-- =============================================================================
+-- Reservations Projection (JSONB-based)
+-- =============================================================================
+
+-- Full reservation details with Reservation domain object stored as JSONB
+-- Provides fast queries by reservation_id and customer_id for:
+-- - GET /api/reservations/:id (individual lookup)
+-- - GET /api/reservations (list user's reservations)
+CREATE TABLE IF NOT EXISTS reservations_projection (
+    id UUID PRIMARY KEY,
+    customer_id UUID NOT NULL,         -- For fast customer queries
+    data JSONB NOT NULL,               -- Full Reservation domain object
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Index for querying reservations by customer (for listing user's reservations)
+CREATE INDEX IF NOT EXISTS idx_reservations_customer
+    ON reservations_projection(customer_id, created_at DESC);
+
+-- JSONB field indexes for common query patterns
+CREATE INDEX IF NOT EXISTS idx_reservations_status
+    ON reservations_projection((data->>'status'));
+CREATE INDEX IF NOT EXISTS idx_reservations_event
+    ON reservations_projection((data->'event_id'));
+
+-- GIN index for full-text search and containment queries
+CREATE INDEX IF NOT EXISTS idx_reservations_data_gin
+    ON reservations_projection USING GIN(data);

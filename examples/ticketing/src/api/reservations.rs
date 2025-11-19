@@ -246,29 +246,34 @@ pub async fn create_reservation(
 /// ```
 pub async fn get_reservation(
     Path(reservation_id): Path<Uuid>,
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
 ) -> Result<Json<ReservationResponse>, AppError> {
-    // TODO: Implement reservation projection for querying individual reservations
-    //
-    // Current limitation: No dedicated PostgresReservationProjection exists yet.
-    // The PostgresReservationQuery adapter is a stub that returns None.
-    //
-    // To implement this endpoint fully:
-    // 1. Create PostgresReservationProjection similar to PostgresEventsProjection
-    // 2. Schema: Store reservation state in JSONB column or denormalized table
-    // 3. Index by reservation_id for fast lookups
-    // 4. Update on: ReservationInitiated, SeatsReserved, PaymentCompleted, etc.
-    // 5. Wire into AppState and use here for queries
-    //
-    // Alternative: Load from event store by replaying reservation events,
-    // but this requires a query command in ReservationAction enum.
-    let _ = reservation_id;
+    use crate::types::ReservationId;
 
-    Err(AppError::internal(
-        "Individual reservation queries not yet implemented. \
-         Requires PostgresReservationProjection. \
-         See src/api/reservations.rs:get_reservation() for details.",
-    ))
+    // Query reservation from PostgresReservationsProjection
+    let reservation_id_typed = ReservationId::from_uuid(reservation_id);
+    let reservation = state
+        .reservations_projection
+        .get(&reservation_id_typed)
+        .await
+        .map_err(|e| AppError::internal(format!("Failed to query reservation: {e}")))?
+        .ok_or_else(|| AppError::not_found("Reservation", reservation_id))?;
+
+    // Convert domain Reservation to API ReservationResponse
+    let response = ReservationResponse {
+        id: reservation_id,
+        event_id: *reservation.event_id.as_uuid(),
+        customer_id: *reservation.customer_id.as_uuid(),
+        section: String::from("General Admission"), // TODO: Extract from domain model when available
+        quantity: reservation.seats.len() as u32,
+        status: reservation.status.clone(),
+        total_amount: Some(reservation.total_amount.dollars() as f64),
+        expires_at: Some(reservation.expires_at.inner()),
+        created_at: reservation.created_at,
+        completed_at: None, // TODO: Extract from JSONB if needed
+    };
+
+    Ok(Json(response))
 }
 
 /// Cancel a reservation.
@@ -399,49 +404,41 @@ pub struct ReservationSummary {
 
 /// List all reservations for the authenticated user.
 ///
-/// NOTE: Currently returns only **completed** reservations (purchases) from the
-/// `CustomerHistoryProjection`. Pending and cancelled reservations are not included.
+/// Returns ALL reservations (pending, completed, cancelled, expired) from the
+/// `PostgresReservationsProjection`. This provides complete visibility into
+/// the user's reservation history across all states.
 ///
-/// # Future Enhancement
+/// # Features
 ///
-/// A dedicated `ReservationProjection` with customer index would enable:
-/// - Listing ALL reservations (pending, completed, cancelled, expired)
-/// - Filtering by status (e.g., show only pending reservations)
-/// - Pagination for users with many reservations
+/// - Lists ALL reservation states (not just completed)
+/// - Ordered by creation time (most recent first)
+/// - Includes full reservation details (status, amounts, timestamps)
 pub async fn list_user_reservations(
     session: SessionUser,
     State(state): State<AppState>,
 ) -> Result<Json<ListReservationsResponse>, AppError> {
     let customer_id = CustomerId::from_uuid(session.user_id.0);
 
-    // Query completed purchases from CustomerHistoryProjection
-    // This is an in-memory projection, so we need to acquire a read lock
-    let customer_history = state
-        .customer_history_projection
-        .read()
-        .map_err(|e| AppError::internal(format!("Failed to acquire read lock: {e}")))?;
+    // Query ALL reservations for this customer from PostgresReservationsProjection
+    let reservations_list = state
+        .reservations_projection
+        .list_by_customer(&customer_id)
+        .await
+        .map_err(|e| AppError::internal(format!("Failed to query reservations: {e}")))?;
 
-    // Get customer profile with purchase history
-    let profile = customer_history.get_customer_profile(&customer_id);
-
-    // Convert completed purchases to reservation summaries
-    let reservations = if let Some(profile) = profile {
-        profile
-            .purchases
-            .iter()
-            .map(|purchase| ReservationSummary {
-                id: *purchase.reservation_id.as_uuid(),
-                event_id: *purchase.event_id.as_uuid(),
-                section: purchase.section.clone(),
-                quantity: purchase.ticket_count,
-                status: ReservationStatus::Completed, // All purchases are completed
-                total_amount: Some(purchase.amount_paid.dollars() as f64),
-                created_at: purchase.completed_at, // Using completed_at as proxy for created_at
-            })
-            .collect()
-    } else {
-        vec![] // No profile = no purchases
-    };
+    // Convert domain Reservations to API reservation summaries
+    let reservations: Vec<ReservationSummary> = reservations_list
+        .iter()
+        .map(|reservation| ReservationSummary {
+            id: *reservation.id.as_uuid(),
+            event_id: *reservation.event_id.as_uuid(),
+            section: String::from("General Admission"), // TODO: Extract from domain model when available
+            quantity: reservation.seats.len() as u32,
+            status: reservation.status.clone(),
+            total_amount: Some(reservation.total_amount.dollars() as f64),
+            created_at: reservation.created_at,
+        })
+        .collect();
 
     let total = reservations.len();
 
