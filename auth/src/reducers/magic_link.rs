@@ -577,6 +577,57 @@ where
             }
 
             // ═══════════════════════════════════════════════════════════════
+            // ValidateSession: Check if session exists and is still valid
+            // ═══════════════════════════════════════════════════════════════
+            AuthAction::ValidateSession {
+                correlation_id,
+                session_id,
+                ip_address: _, // TODO: Use for anomaly detection in future
+            } => {
+                // Validate session by looking it up in Redis
+                let sessions = env.sessions.clone();
+                let session_id_clone = session_id;
+
+                smallvec![async_effect! {
+                    // Look up session in Redis
+                    match sessions.get_session(session_id_clone).await {
+                        Ok(session) => {
+                            // Session exists and is valid
+                            tracing::debug!("Session validated for user {}", session.user_id.0);
+                            Some(AuthAction::SessionValidated {
+                                correlation_id,
+                                session,
+                            })
+                        }
+                        Err(e) => {
+                            // Session not found, expired, or Redis error - treat as expired
+                            tracing::debug!("Session lookup failed: {}", e);
+                            Some(AuthAction::SessionExpired {
+                                correlation_id,
+                                session_id: session_id_clone,
+                            })
+                        }
+                    }
+                }]
+            }
+
+            // ═══════════════════════════════════════════════════════════════
+            // SessionValidated: No-op (response action)
+            // ═══════════════════════════════════════════════════════════════
+            AuthAction::SessionValidated { .. } => {
+                // This is a response action, no further effects needed
+                smallvec![Effect::None]
+            }
+
+            // ═══════════════════════════════════════════════════════════════
+            // SessionExpired: No-op (response action)
+            // ═══════════════════════════════════════════════════════════════
+            AuthAction::SessionExpired { .. } => {
+                // This is a response action, no further effects needed
+                smallvec![Effect::None]
+            }
+
+            // ═══════════════════════════════════════════════════════════════
             // EventPersisted: Apply event to state
             // ═══════════════════════════════════════════════════════════════
             AuthAction::EventPersisted { event, version: _ } => {

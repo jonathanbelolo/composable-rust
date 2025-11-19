@@ -24,19 +24,69 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 /// Base URL for the ticketing API
 const API_BASE: &str = "http://localhost:8080";
 
-/// Test authentication token (matches AUTH_TEST_TOKEN in .env)
-/// Only valid when AUTH_TEST_TOKEN environment variable is set in the server
-const TEST_AUTH_TOKEN: &str = "test-token-12345";
+/// Helper function to authenticate via magic link and return session token.
+///
+/// This uses the real authentication flow:
+/// 1. Request magic link for test email
+/// 2. Extract magic link token from response (only works when AUTH_EXPOSE_MAGIC_LINKS_FOR_TESTING=true)
+/// 3. Verify the token to get a session token
+/// 4. Return the session token for use as Bearer token
+///
+/// # Panics
+///
+/// Panics if authentication fails or magic link token is not exposed
+async fn authenticate_with_magic_link() -> String {
+    let client = reqwest::Client::new();
+
+    // Step 1: Request magic link
+    let response = client
+        .post(format!("{API_BASE}/auth/magic-link/request"))
+        .json(&json!({
+            "email": "test@example.com"
+        }))
+        .send()
+        .await
+        .expect("Failed to request magic link");
+
+    assert_eq!(response.status(), 200, "Magic link request should succeed");
+
+    let body: serde_json::Value = response.json().await.expect("Failed to parse response");
+
+    let magic_link_token = body["magic_link_token"]
+        .as_str()
+        .expect("magic_link_token should be present when AUTH_EXPOSE_MAGIC_LINKS_FOR_TESTING=true");
+
+    // Step 2: Verify magic link token
+    let response = client
+        .post(format!("{API_BASE}/auth/magic-link/verify"))
+        .json(&json!({
+            "token": magic_link_token
+        }))
+        .send()
+        .await
+        .expect("Failed to verify magic link");
+
+    assert_eq!(response.status(), 200, "Magic link verification should succeed");
+
+    let body: serde_json::Value = response.json().await.expect("Failed to parse response");
+
+    body["session_token"]
+        .as_str()
+        .expect("session_token should be present")
+        .to_string()
+}
 
 /// Helper function to create a valid event payload with proper schema
-fn create_event_payload(name: &str, _vip_capacity: u32, _general_capacity: u32) -> serde_json::Value {
+fn create_event_payload(name: &str, _vip_capacity: u32, general_capacity: u32) -> serde_json::Value {
     json!({
         "title": name,
         "description": format!("{} - An exciting test event", name),
         "start_time": "2025-12-31T20:00:00Z",
         "end_time": "2025-12-31T23:00:00Z",
         "venue_name": "Test Arena",
-        "venue_address": "123 Test Street, Test City, TS 12345"
+        "venue_address": "123 Test Street, Test City, TS 12345",
+        "capacity": general_capacity,
+        "price": 50.0
     })
 }
 
@@ -153,6 +203,7 @@ async fn test_health_check() {
 async fn test_event_crud_operations() {
     println!("🧪 Test 2: Event CRUD Operations (Event Store Persistence)");
 
+    let auth_token = authenticate_with_magic_link().await;
     let client = reqwest::Client::new();
 
     // Create an event with the correct schema
@@ -160,7 +211,7 @@ async fn test_event_crud_operations() {
 
     let create_response = client
         .post(format!("{API_BASE}/api/events"))
-        .header("Authorization", format!("Bearer {TEST_AUTH_TOKEN}"))
+        .header("Authorization", format!("Bearer {auth_token}"))
         .json(&create_payload)
         .send()
         .await
@@ -205,6 +256,8 @@ async fn test_event_crud_operations() {
 async fn test_availability_queries() {
     println!("🧪 Test 3: Availability Queries (Projection Persistence)");
 
+    let auth_token = authenticate_with_magic_link().await;
+
     let client = reqwest::Client::new();
 
     // Create an event with correct schema
@@ -212,7 +265,7 @@ async fn test_availability_queries() {
 
     let create_response = client
         .post(format!("{API_BASE}/api/events"))
-        .header("Authorization", format!("Bearer {TEST_AUTH_TOKEN}"))
+        .header("Authorization", format!("Bearer {auth_token}"))
         .json(&create_payload)
         .send()
         .await
@@ -295,7 +348,7 @@ async fn test_availability_queries() {
     // Clean up
     client
         .delete(format!("{API_BASE}/api/events/{event_id}"))
-        .header("Authorization", format!("Bearer {TEST_AUTH_TOKEN}"))
+        .header("Authorization", format!("Bearer {auth_token}"))
         .send()
         .await
         .expect("Failed to delete event");
@@ -312,6 +365,7 @@ async fn test_availability_queries() {
 async fn test_reservation_flow() {
     println!("🧪 Test 4: Reservation Flow (Saga + Event Bus Coordination)");
 
+    let auth_token = authenticate_with_magic_link().await;
     let client = reqwest::Client::new();
 
     // Create an event
@@ -319,7 +373,7 @@ async fn test_reservation_flow() {
 
     let create_response = client
         .post(format!("{API_BASE}/api/events"))
-        .header("Authorization", format!("Bearer {TEST_AUTH_TOKEN}"))
+        .header("Authorization", format!("Bearer {auth_token}"))
         .json(&create_payload)
         .send()
         .await
@@ -350,7 +404,7 @@ async fn test_reservation_flow() {
 
     let reservation_response = client
         .post(format!("{API_BASE}/api/reservations"))
-        .header("Authorization", format!("Bearer {TEST_AUTH_TOKEN}"))
+        .header("Authorization", format!("Bearer {auth_token}"))
         .json(&reservation_payload)
         .send()
         .await
@@ -402,7 +456,7 @@ async fn test_reservation_flow() {
     // List user reservations
     let list_reservations = client
         .get(format!("{API_BASE}/api/reservations"))
-        .header("Authorization", format!("Bearer {TEST_AUTH_TOKEN}"))
+        .header("Authorization", format!("Bearer {auth_token}"))
         .send()
         .await
         .expect("Failed to list reservations");
@@ -439,7 +493,7 @@ async fn test_reservation_flow() {
     // Clean up
     client
         .delete(format!("{API_BASE}/api/events/{event_id}"))
-        .header("Authorization", format!("Bearer {TEST_AUTH_TOKEN}"))
+        .header("Authorization", format!("Bearer {auth_token}"))
         .send()
         .await
         .expect("Failed to delete event");
@@ -455,6 +509,7 @@ async fn test_reservation_flow() {
 async fn test_payment_processing() {
     println!("🧪 Test 5: Payment Processing (Payment Gateway)");
 
+    let auth_token = authenticate_with_magic_link().await;
     let client = reqwest::Client::new();
 
     // Create event and reservation first (setup)
@@ -462,7 +517,7 @@ async fn test_payment_processing() {
 
     let create_response = client
         .post(format!("{API_BASE}/api/events"))
-        .header("Authorization", format!("Bearer {TEST_AUTH_TOKEN}"))
+        .header("Authorization", format!("Bearer {auth_token}"))
         .json(&create_payload)
         .send()
         .await
@@ -492,7 +547,7 @@ async fn test_payment_processing() {
 
     let reservation_response = client
         .post(format!("{API_BASE}/api/reservations"))
-        .header("Authorization", format!("Bearer {TEST_AUTH_TOKEN}"))
+        .header("Authorization", format!("Bearer {auth_token}"))
         .json(&reservation_payload)
         .send()
         .await
@@ -521,7 +576,7 @@ async fn test_payment_processing() {
 
     let payment_response = client
         .post(format!("{API_BASE}/api/payments"))
-        .header("Authorization", format!("Bearer {TEST_AUTH_TOKEN}"))
+        .header("Authorization", format!("Bearer {auth_token}"))
         .json(&payment_payload)
         .send()
         .await
@@ -547,7 +602,7 @@ async fn test_payment_processing() {
     // Get payment status (should be immediately consistent from event store)
     let get_payment = client
         .get(format!("{API_BASE}/api/payments/{payment_id}"))
-        .header("Authorization", format!("Bearer {TEST_AUTH_TOKEN}"))
+        .header("Authorization", format!("Bearer {auth_token}"))
         .send()
         .await
         .expect("Failed to get payment");
@@ -568,7 +623,7 @@ async fn test_payment_processing() {
     // List user payments
     let list_payments = client
         .get(format!("{API_BASE}/api/payments"))
-        .header("Authorization", format!("Bearer {TEST_AUTH_TOKEN}"))
+        .header("Authorization", format!("Bearer {auth_token}"))
         .send()
         .await
         .expect("Failed to list payments");
@@ -605,7 +660,7 @@ async fn test_payment_processing() {
     // Clean up
     client
         .delete(format!("{API_BASE}/api/events/{event_id}"))
-        .header("Authorization", format!("Bearer {TEST_AUTH_TOKEN}"))
+        .header("Authorization", format!("Bearer {auth_token}"))
         .send()
         .await
         .expect("Failed to delete event");
@@ -621,6 +676,7 @@ async fn test_payment_processing() {
 async fn test_analytics_queries() {
     println!("🧪 Test 6: Analytics Queries (Analytics Projections)");
 
+    let auth_token = authenticate_with_magic_link().await;
     let client = reqwest::Client::new();
 
     // Create test event
@@ -628,7 +684,7 @@ async fn test_analytics_queries() {
 
     let create_response = client
         .post(format!("{API_BASE}/api/events"))
-        .header("Authorization", format!("Bearer {TEST_AUTH_TOKEN}"))
+        .header("Authorization", format!("Bearer {auth_token}"))
         .json(&create_payload)
         .send()
         .await
@@ -651,7 +707,7 @@ async fn test_analytics_queries() {
     // Query event sales
     let sales_response = client
         .get(format!("{API_BASE}/api/analytics/events/{event_id}/sales"))
-        .header("Authorization", format!("Bearer {TEST_AUTH_TOKEN}"))
+        .header("Authorization", format!("Bearer {auth_token}"))
         .send()
         .await
         .expect("Failed to query event sales");
@@ -670,7 +726,7 @@ async fn test_analytics_queries() {
     // Query total revenue
     let revenue_response = client
         .get(format!("{API_BASE}/api/analytics/revenue"))
-        .header("Authorization", format!("Bearer {TEST_AUTH_TOKEN}"))
+        .header("Authorization", format!("Bearer {auth_token}"))
         .send()
         .await
         .expect("Failed to query revenue");
@@ -689,7 +745,7 @@ async fn test_analytics_queries() {
     // Clean up
     client
         .delete(format!("{API_BASE}/api/events/{event_id}"))
-        .header("Authorization", format!("Bearer {TEST_AUTH_TOKEN}"))
+        .header("Authorization", format!("Bearer {auth_token}"))
         .send()
         .await
         .expect("Failed to delete event");
