@@ -399,7 +399,7 @@ pub async fn delete_event(
     use crate::aggregates::event::EventAction;
     use crate::types::EventId;
 
-    let mut event_store = state.create_event_store();
+    let event_store = state.create_event_store();
     let action = EventAction::CancelEvent {
         event_id: EventId::from_uuid(event_id),
         reason: format!("Cancelled by user {}", session.user_id.0),

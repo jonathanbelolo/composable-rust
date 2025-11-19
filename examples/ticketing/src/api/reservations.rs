@@ -248,10 +248,27 @@ pub async fn get_reservation(
     Path(reservation_id): Path<Uuid>,
     State(_state): State<AppState>,
 ) -> Result<Json<ReservationResponse>, AppError> {
-    // TODO: Query reservation state from event store or projection
+    // TODO: Implement reservation projection for querying individual reservations
+    //
+    // Current limitation: No dedicated PostgresReservationProjection exists yet.
+    // The PostgresReservationQuery adapter is a stub that returns None.
+    //
+    // To implement this endpoint fully:
+    // 1. Create PostgresReservationProjection similar to PostgresEventsProjection
+    // 2. Schema: Store reservation state in JSONB column or denormalized table
+    // 3. Index by reservation_id for fast lookups
+    // 4. Update on: ReservationInitiated, SeatsReserved, PaymentCompleted, etc.
+    // 5. Wire into AppState and use here for queries
+    //
+    // Alternative: Load from event store by replaying reservation events,
+    // but this requires a query command in ReservationAction enum.
+    let _ = reservation_id;
 
-    // Placeholder: return not found
-    Err(AppError::not_found("Reservation", reservation_id))
+    Err(AppError::internal(
+        "Individual reservation queries not yet implemented. \
+         Requires PostgresReservationProjection. \
+         See src/api/reservations.rs:get_reservation() for details.",
+    ))
 }
 
 /// Cancel a reservation.
@@ -381,16 +398,55 @@ pub struct ReservationSummary {
 }
 
 /// List all reservations for the authenticated user.
+///
+/// NOTE: Currently returns only **completed** reservations (purchases) from the
+/// `CustomerHistoryProjection`. Pending and cancelled reservations are not included.
+///
+/// # Future Enhancement
+///
+/// A dedicated `ReservationProjection` with customer index would enable:
+/// - Listing ALL reservations (pending, completed, cancelled, expired)
+/// - Filtering by status (e.g., show only pending reservations)
+/// - Pagination for users with many reservations
 pub async fn list_user_reservations(
     session: SessionUser,
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
 ) -> Result<Json<ListReservationsResponse>, AppError> {
-    // TODO: Query reservations for session.user_id from projection
-    let _ = session;
+    let customer_id = CustomerId::from_uuid(session.user_id.0);
 
-    // Placeholder
+    // Query completed purchases from CustomerHistoryProjection
+    // This is an in-memory projection, so we need to acquire a read lock
+    let customer_history = state
+        .customer_history_projection
+        .read()
+        .map_err(|e| AppError::internal(format!("Failed to acquire read lock: {e}")))?;
+
+    // Get customer profile with purchase history
+    let profile = customer_history.get_customer_profile(&customer_id);
+
+    // Convert completed purchases to reservation summaries
+    let reservations = if let Some(profile) = profile {
+        profile
+            .purchases
+            .iter()
+            .map(|purchase| ReservationSummary {
+                id: *purchase.reservation_id.as_uuid(),
+                event_id: *purchase.event_id.as_uuid(),
+                section: purchase.section.clone(),
+                quantity: purchase.ticket_count,
+                status: ReservationStatus::Completed, // All purchases are completed
+                total_amount: Some(purchase.amount_paid.dollars() as f64),
+                created_at: purchase.completed_at, // Using completed_at as proxy for created_at
+            })
+            .collect()
+    } else {
+        vec![] // No profile = no purchases
+    };
+
+    let total = reservations.len();
+
     Ok(Json(ListReservationsResponse {
-        reservations: vec![],
-        total: 0,
+        reservations,
+        total,
     }))
 }
