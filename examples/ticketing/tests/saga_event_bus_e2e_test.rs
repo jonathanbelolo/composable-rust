@@ -83,6 +83,13 @@ impl ReservationProjectionQuery for MockReservationQuery {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<Reservation>, String>> + Send + '_>> {
         Box::pin(async move { Ok(None) }) // No cached state, use event sourcing
     }
+
+    fn list_by_customer(
+        &self,
+        _customer_id: &CustomerId,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Reservation>, String>> + Send + '_>> {
+        Box::pin(async move { Ok(Vec::new()) }) // No cached state, use event sourcing
+    }
 }
 
 // ============================================================================

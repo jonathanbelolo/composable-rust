@@ -17,10 +17,29 @@ use composable_rust_testing::{
 };
 use std::sync::Arc;
 use ticketing::{
-    aggregates::reservation::{ReservationAction, ReservationEnvironment, ReservationReducer},
-    projections::query_adapters::PostgresReservationQuery,
-    types::{CustomerId, EventId, Money, PaymentId, ReservationId, ReservationState, ReservationStatus, SeatId},
+    aggregates::reservation::{ReservationAction, ReservationEnvironment, ReservationReducer, ReservationProjectionQuery},
+    types::{CustomerId, EventId, Money, PaymentId, Reservation, ReservationId, ReservationState, ReservationStatus, SeatId},
 };
+
+/// Mock reservation query for tests
+#[derive(Clone)]
+struct MockReservationQuery;
+
+impl ReservationProjectionQuery for MockReservationQuery {
+    fn load_reservation(
+        &self,
+        _reservation_id: &ReservationId,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<Reservation>, String>> + Send + '_>> {
+        Box::pin(async move { Ok(None) })
+    }
+
+    fn list_by_customer(
+        &self,
+        _customer_id: &CustomerId,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Reservation>, String>> + Send + '_>> {
+        Box::pin(async move { Ok(Vec::new()) })
+    }
+}
 
 /// Helper to create test environment for reservation saga
 fn create_test_env() -> ReservationEnvironment {
@@ -29,7 +48,7 @@ fn create_test_env() -> ReservationEnvironment {
         Arc::new(InMemoryEventStore::new()) as Arc<dyn EventStore>,
         Arc::new(InMemoryEventBus::new()) as Arc<dyn EventBus>,
         StreamId::new("reservation-test"),
-        Arc::new(PostgresReservationQuery::new()),
+        Arc::new(MockReservationQuery),
     )
 }
 

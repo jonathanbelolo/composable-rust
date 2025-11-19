@@ -9,7 +9,8 @@ use crate::config::Config;
 use crate::projections::{
     query_adapters::{PostgresInventoryQuery, PostgresPaymentQuery, PostgresReservationQuery},
     AvailableSeatsProjection, CustomerHistoryProjection, PostgresAvailableSeatsProjection,
-    PostgresPaymentsProjection, Projection, SalesAnalyticsProjection, TicketingEvent,
+    PostgresPaymentsProjection, PostgresReservationsProjection, Projection,
+    SalesAnalyticsProjection, TicketingEvent,
 };
 use crate::types::{InventoryState, PaymentState, ReservationState};
 use composable_rust_core::environment::SystemClock;
@@ -147,13 +148,15 @@ impl TicketingApp {
         let postgres_available_seats =
             Arc::new(PostgresAvailableSeatsProjection::new(Arc::new(projections_pool.clone())));
         let postgres_payments =
-            Arc::new(PostgresPaymentsProjection::new(Arc::new(projections_pool)));
+            Arc::new(PostgresPaymentsProjection::new(Arc::new(projections_pool.clone())));
+        let postgres_reservations =
+            Arc::new(PostgresReservationsProjection::new(Arc::new(projections_pool)));
         tracing::info!("✓ PostgreSQL projections initialized");
 
         // 5. Create query adapters
         let inventory_query = Arc::new(PostgresInventoryQuery::new(postgres_available_seats.clone()));
         let payment_query = Arc::new(PostgresPaymentQuery::new());
-        let reservation_query = Arc::new(PostgresReservationQuery::new());
+        let reservation_query = Arc::new(PostgresReservationQuery::new(postgres_reservations));
         tracing::info!("✓ Query adapters created");
 
         // 5. Initialize aggregate stores (Composable Rust architecture)

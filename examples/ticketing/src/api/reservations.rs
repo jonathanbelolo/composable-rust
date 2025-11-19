@@ -249,15 +249,50 @@ pub async fn get_reservation(
     State(state): State<AppState>,
 ) -> Result<Json<ReservationResponse>, AppError> {
     use crate::types::ReservationId;
+    use crate::aggregates::ReservationAction;
 
-    // Query reservation from PostgresReservationsProjection
+    // ✅ CORRECT: Query goes through Store/Reducer for testability
     let reservation_id_typed = ReservationId::from_uuid(reservation_id);
-    let reservation = state
-        .reservations_projection
-        .get(&reservation_id_typed)
+
+    // Create fresh Reservation store for this request (per-request pattern)
+    let reservation_store = state.create_reservation_store();
+
+    // Send GetReservation query action to Store
+    let action = ReservationAction::GetReservation {
+        reservation_id: reservation_id_typed,
+    };
+
+    // Store executes reducer, which returns Effect::Future that queries projection
+    // The Effect completes and produces ReservationQueried event with the result
+    // Wait for the response event with a timeout
+    let result_action = reservation_store
+        .send_and_wait_for(
+            action,
+            |a| {
+                matches!(
+                    a,
+                    ReservationAction::ReservationQueried { .. }
+                        | ReservationAction::ValidationFailed { .. }
+                )
+            },
+            std::time::Duration::from_secs(5),
+        )
         .await
-        .map_err(|e| AppError::internal(format!("Failed to query reservation: {e}")))?
-        .ok_or_else(|| AppError::not_found("Reservation", reservation_id))?;
+        .map_err(|_| AppError::timeout("Reservation query timed out"))?;
+
+    // Extract reservation from ReservationQueried event
+    let reservation = match result_action {
+        ReservationAction::ReservationQueried { reservation: Some(r), .. } => r,
+        ReservationAction::ReservationQueried { reservation: None, .. } => {
+            return Err(AppError::not_found("Reservation", reservation_id));
+        }
+        ReservationAction::ValidationFailed { error } => {
+            return Err(AppError::internal(format!("Query failed: {error}")));
+        }
+        _ => {
+            return Err(AppError::internal("Unexpected response from query"));
+        }
+    };
 
     // Convert domain Reservation to API ReservationResponse
     let response = ReservationResponse {
@@ -307,9 +342,8 @@ pub async fn cancel_reservation(
     Json(_request): Json<CancelReservationRequest>,
 ) -> Result<Json<CancelReservationResponse>, AppError> {
     use crate::aggregates::ReservationAction;
-    use crate::projections::TicketingEvent;
-    use composable_rust_core::event::SerializedEvent;
 
+    // ✅ CORRECT: Command goes through Store/Reducer for testability
     // Ownership verified by RequireOwnership extractor
     // ownership.user_id is the authenticated user who owns this reservation
     // ownership.resource is the ReservationId from the path
@@ -317,30 +351,19 @@ pub async fn cancel_reservation(
 
     let reservation_id_typed = ReservationId::from_uuid(reservation_id);
 
-    // Create CancelReservation command
-    let command = ReservationAction::CancelReservation {
+    // Create fresh Reservation store for this request (per-request pattern)
+    let reservation_store = state.create_reservation_store();
+
+    // Send CancelReservation command to Store
+    let action = ReservationAction::CancelReservation {
         reservation_id: reservation_id_typed,
     };
 
-    // Wrap in TicketingEvent for publishing to EventBus
-    let ticketing_event = TicketingEvent::Reservation(command);
-
-    // Serialize and publish to EventBus
-    let event_data = bincode::serialize(&ticketing_event)
-        .map_err(|e| AppError::internal(format!("Failed to serialize event: {e}")))?;
-
-    // Note: reservation_id doesn't map to standard EventMetadata fields
-    // (correlation_id, causation_id, user_id, timestamp)
-    // For now, we omit metadata since there's no clear mapping
-    let serialized_event = SerializedEvent {
-        event_type: "ReservationAction::CancelReservation".to_string(),
-        data: event_data,
-        metadata: None,
-    };
-
-    // Publish to EventBus (reservation topic)
-    state.event_bus.publish("reservation.commands", &serialized_event).await
-        .map_err(|e| AppError::internal(format!("Failed to publish cancel command: {e}")))?;
+    // Store executes reducer, which:
+    // 1. Updates state (marks as Cancelled)
+    // 2. Returns effects (persist event, publish to EventBus, release seats)
+    let _ = reservation_store.send(action).await;
+    // Store dropped here - memory freed
 
     Ok(Json(CancelReservationResponse {
         reservation_id,
@@ -417,14 +440,45 @@ pub async fn list_user_reservations(
     session: SessionUser,
     State(state): State<AppState>,
 ) -> Result<Json<ListReservationsResponse>, AppError> {
+    use crate::aggregates::ReservationAction;
+
+    // ✅ CORRECT: Query goes through Store/Reducer for testability
     let customer_id = CustomerId::from_uuid(session.user_id.0);
 
-    // Query ALL reservations for this customer from PostgresReservationsProjection
-    let reservations_list = state
-        .reservations_projection
-        .list_by_customer(&customer_id)
+    // Create fresh Reservation store for this request (per-request pattern)
+    let reservation_store = state.create_reservation_store();
+
+    // Send ListReservations query action to Store
+    let action = ReservationAction::ListReservations { customer_id };
+
+    // Store executes reducer, which returns Effect::Future that queries projection
+    // The Effect completes and produces ReservationsListed event with the result
+    // Wait for the response event with a timeout
+    let result_action = reservation_store
+        .send_and_wait_for(
+            action,
+            |a| {
+                matches!(
+                    a,
+                    ReservationAction::ReservationsListed { .. }
+                        | ReservationAction::ValidationFailed { .. }
+                )
+            },
+            std::time::Duration::from_secs(5),
+        )
         .await
-        .map_err(|e| AppError::internal(format!("Failed to query reservations: {e}")))?;
+        .map_err(|_| AppError::timeout("Reservation list query timed out"))?;
+
+    // Extract reservations from ReservationsListed event
+    let reservations_list = match result_action {
+        ReservationAction::ReservationsListed { reservations, .. } => reservations,
+        ReservationAction::ValidationFailed { error } => {
+            return Err(AppError::internal(format!("Query failed: {error}")));
+        }
+        _ => {
+            return Err(AppError::internal("Unexpected response from query"));
+        }
+    };
 
     // Convert domain Reservations to API reservation summaries
     let reservations: Vec<ReservationSummary> = reservations_list

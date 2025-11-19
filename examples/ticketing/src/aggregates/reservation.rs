@@ -57,6 +57,18 @@ pub trait ReservationProjectionQuery: Send + Sync {
         &self,
         reservation_id: &ReservationId,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<Reservation>, String>> + Send + '_>>;
+
+    /// List all reservations for a specific customer.
+    ///
+    /// Returns all reservations (across all states) for the given customer.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database query fails.
+    fn list_by_customer(
+        &self,
+        customer_id: &CustomerId,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Reservation>, String>> + Send + '_>>;
 }
 
 // ============================================================================
@@ -111,6 +123,20 @@ pub enum ReservationAction {
     ExpireReservation {
         /// Reservation ID
         reservation_id: ReservationId,
+    },
+
+    /// Query a single reservation by ID
+    #[command]
+    GetReservation {
+        /// Reservation ID to query
+        reservation_id: ReservationId,
+    },
+
+    /// List all reservations for a customer
+    #[command]
+    ListReservations {
+        /// Customer ID to query reservations for
+        customer_id: CustomerId,
     },
 
     // Events
@@ -215,6 +241,24 @@ pub enum ReservationAction {
         reason: String,
         /// When compensated
         compensated_at: DateTime<Utc>,
+    },
+
+    /// Reservation was queried (query result)
+    #[event]
+    ReservationQueried {
+        /// Reservation ID that was queried
+        reservation_id: ReservationId,
+        /// Reservation data (None if not found)
+        reservation: Option<Reservation>,
+    },
+
+    /// Reservations were listed (query result)
+    #[event]
+    ReservationsListed {
+        /// Customer ID that was queried
+        customer_id: CustomerId,
+        /// List of reservations for this customer
+        reservations: Vec<Reservation>,
     },
 
     /// Validation failed
@@ -468,11 +512,16 @@ impl ReservationReducer {
                 state.last_error = Some(error.clone());
             }
 
-            // Commands don't modify state
+            // Commands and queries don't modify state
+            // Response events also don't modify state (they're for API handlers)
             ReservationAction::InitiateReservation { .. }
             | ReservationAction::CompletePayment { .. }
             | ReservationAction::CancelReservation { .. }
-            | ReservationAction::ExpireReservation { .. } => {}
+            | ReservationAction::ExpireReservation { .. }
+            | ReservationAction::GetReservation { .. }
+            | ReservationAction::ListReservations { .. }
+            | ReservationAction::ReservationQueried { .. }
+            | ReservationAction::ReservationsListed { .. } => {}
         }
     }
 }
@@ -819,6 +868,36 @@ impl Reducer for ReservationReducer {
                 SmallVec::new()
             }
 
+            // ========== Query: Get Reservation ==========
+            ReservationAction::GetReservation { reservation_id } => {
+                // Use projection to load reservation data
+                let projection = env.projection.clone();
+                smallvec![Effect::Future(Box::pin(async move {
+                    match projection.load_reservation(&reservation_id).await {
+                        Ok(reservation) => Some(ReservationAction::ReservationQueried {
+                            reservation_id,
+                            reservation,
+                        }),
+                        Err(error) => Some(ReservationAction::ValidationFailed { error }),
+                    }
+                }))]
+            }
+
+            // ========== Query: List Reservations ==========
+            ReservationAction::ListReservations { customer_id } => {
+                // Use projection to load all reservations for customer
+                let projection = env.projection.clone();
+                smallvec![Effect::Future(Box::pin(async move {
+                    match projection.list_by_customer(&customer_id).await {
+                        Ok(reservations) => Some(ReservationAction::ReservationsListed {
+                            customer_id,
+                            reservations,
+                        }),
+                        Err(error) => Some(ReservationAction::ValidationFailed { error }),
+                    }
+                }))]
+            }
+
             // ========== Events (from event store or other aggregates) ==========
             event => {
                 Self::apply_event(state, &event);
@@ -873,6 +952,13 @@ mod tests {
             _reservation_id: &ReservationId,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<Reservation>, String>> + Send + '_>> {
             Box::pin(async move { Ok(None) })
+        }
+
+        fn list_by_customer(
+            &self,
+            _customer_id: &CustomerId,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Reservation>, String>> + Send + '_>> {
+            Box::pin(async move { Ok(Vec::new()) })
         }
     }
 

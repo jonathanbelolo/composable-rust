@@ -17,8 +17,8 @@ use crate::aggregates::{
     inventory::InventoryProjectionQuery, payment::PaymentProjectionQuery,
     reservation::ReservationProjectionQuery,
 };
-use crate::projections::PostgresAvailableSeatsProjection;
-use crate::types::{EventId, Payment, PaymentId, Reservation, ReservationId};
+use crate::projections::{PostgresAvailableSeatsProjection, PostgresReservationsProjection};
+use crate::types::{CustomerId, EventId, Payment, PaymentId, Reservation, ReservationId};
 use std::sync::Arc;
 
 // ============================================================================
@@ -118,38 +118,45 @@ impl PaymentProjectionQuery for PostgresPaymentQuery {
 // ============================================================================
 
 /// Adapter for querying reservation data from PostgreSQL projections.
-///
-/// NOTE: Currently we don't have a dedicated reservation projection with
-/// reservation history. This would typically query from a `PostgresReservationProjection`
-/// that tracks reservation states, expiration times, etc.
-///
-/// For now, this is a stub that returns None (reservation not found).
 #[derive(Clone)]
 pub struct PostgresReservationQuery {
-    // Future: Add Arc<PostgresReservationProjection> when implemented
+    reservations: Arc<PostgresReservationsProjection>,
 }
 
 impl PostgresReservationQuery {
     /// Creates a new `PostgresReservationQuery`.
     #[must_use]
-    pub const fn new() -> Self {
-        Self {}
-    }
-}
-
-impl Default for PostgresReservationQuery {
-    fn default() -> Self {
-        Self::new()
+    pub const fn new(reservations: Arc<PostgresReservationsProjection>) -> Self {
+        Self { reservations }
     }
 }
 
 impl ReservationProjectionQuery for PostgresReservationQuery {
     fn load_reservation(
         &self,
-        _reservation_id: &ReservationId,
+        reservation_id: &ReservationId,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<Reservation>, String>> + Send + '_>> {
-        // TODO: Implement when we have a reservation projection
-        // For now, return None (reservation state will be reconstructed from events)
-        Box::pin(async move { Ok(None) })
+        let reservations = self.reservations.clone();
+        let reservation_id = *reservation_id;
+        Box::pin(async move {
+            reservations
+                .get(&reservation_id)
+                .await
+                .map_err(|e| e.to_string())
+        })
+    }
+
+    fn list_by_customer(
+        &self,
+        customer_id: &CustomerId,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Reservation>, String>> + Send + '_>> {
+        let reservations = self.reservations.clone();
+        let customer_id = *customer_id;
+        Box::pin(async move {
+            reservations
+                .list_by_customer(&customer_id)
+                .await
+                .map_err(|e| e.to_string())
+        })
     }
 }

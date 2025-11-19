@@ -416,7 +416,7 @@ impl ApplicationBuilder {
         ));
         let inventory_query = Arc::new(PostgresInventoryQuery::new(available_seats_projection.clone()));
         let payment_query = Arc::new(PostgresPaymentQuery::new());
-        let reservation_query = Arc::new(PostgresReservationQuery::new());
+        let reservation_query = Arc::new(PostgresReservationQuery::new(reservations_projection.clone()));
 
         // Create projection completion tracker
         let projection_completion_tracker = Arc::new(
