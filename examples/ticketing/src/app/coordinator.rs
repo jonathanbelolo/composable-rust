@@ -155,7 +155,7 @@ impl TicketingApp {
 
         // 5. Create query adapters
         let inventory_query = Arc::new(PostgresInventoryQuery::new(postgres_available_seats.clone()));
-        let payment_query = Arc::new(PostgresPaymentQuery::new());
+        let payment_query = Arc::new(PostgresPaymentQuery::new(postgres_payments.clone()));
         let reservation_query = Arc::new(PostgresReservationQuery::new(postgres_reservations));
         tracing::info!("✓ Query adapters created");
 

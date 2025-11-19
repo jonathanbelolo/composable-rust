@@ -329,6 +329,19 @@ impl Projection for PostgresPaymentsProjection {
                 payment_method,
                 processed_at,
             }) => {
+                // Query customer_id from reservations projection
+                let customer_id: sqlx::types::Uuid = sqlx::query_scalar(
+                    "SELECT customer_id FROM reservations_projection WHERE id = $1"
+                )
+                .bind(reservation_id.as_uuid())
+                .fetch_one(self.pool.as_ref())
+                .await
+                .map_err(|e| {
+                    ProjectionError::Storage(format!(
+                        "Failed to query customer_id for reservation {reservation_id}: {e}"
+                    ))
+                })?;
+
                 let (method_type, method_details) =
                     Self::serialize_payment_method(payment_method);
 
@@ -343,9 +356,7 @@ impl Projection for PostgresPaymentsProjection {
                 )
                 .bind(payment_id.as_uuid())
                 .bind(reservation_id.as_uuid())
-                // TODO: Extract customer_id from reservation (requires query)
-                // For now, using a placeholder. Will be fixed in Phase 12.4 Task 4.3
-                .bind(sqlx::types::Uuid::nil())
+                .bind(customer_id)
                 .bind(amount.cents() as i64)
                 .bind("USD")
                 .bind("Pending")

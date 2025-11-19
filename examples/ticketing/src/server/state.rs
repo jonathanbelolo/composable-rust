@@ -68,6 +68,9 @@ pub struct AppState {
     /// Authentication store for session validation and user management
     pub auth_store: Arc<TicketingAuthStore>,
 
+    /// Authentication database pool for querying user roles and auth data
+    pub auth_pool: Arc<sqlx::PgPool>,
+
     // ===== Store Dependencies (shared across requests) =====
     /// Clock for timestamps
     pub clock: Arc<dyn Clock>,
@@ -124,6 +127,7 @@ impl AppState {
     ///
     /// - `config`: Application configuration
     /// - `auth_store`: Authentication store for session management
+    /// - `auth_pool`: Authentication database pool for role queries
     /// - `clock`: Clock for timestamps
     /// - `event_store`: Event store for event sourcing
     /// - `event_bus`: Event bus for cross-aggregate communication
@@ -143,6 +147,7 @@ impl AppState {
     pub fn new(
         config: Arc<Config>,
         auth_store: Arc<TicketingAuthStore>,
+        auth_pool: Arc<sqlx::PgPool>,
         clock: Arc<dyn Clock>,
         event_store: Arc<PostgresEventStore>,
         event_bus: Arc<dyn EventBus>,
@@ -161,6 +166,7 @@ impl AppState {
         Self {
             config,
             auth_store,
+            auth_pool,
             clock,
             event_store,
             event_bus,

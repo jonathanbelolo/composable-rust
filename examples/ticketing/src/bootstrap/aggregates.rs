@@ -26,7 +26,7 @@
 
 use crate::bootstrap::ResourceManager;
 use crate::projections::query_adapters::{PostgresInventoryQuery, PostgresPaymentQuery};
-use crate::projections::PostgresAvailableSeatsProjection;
+use crate::projections::{PostgresAvailableSeatsProjection, PostgresPaymentsProjection};
 use crate::runtime::consumer::EventConsumer;
 use crate::runtime::handlers::{InventoryHandler, PaymentHandler};
 use std::sync::Arc;
@@ -106,8 +106,11 @@ fn create_payment_consumer(
     resources: &ResourceManager,
     shutdown: broadcast::Receiver<()>,
 ) -> EventConsumer {
-    // Create payment query (currently empty, future: load payment state)
-    let payment_query = Arc::new(PostgresPaymentQuery::new());
+    // Create projection query for on-demand state loading
+    let payments_projection = Arc::new(PostgresPaymentsProjection::new(
+        resources.projections_pool.clone(),
+    ));
+    let payment_query = Arc::new(PostgresPaymentQuery::new(payments_projection));
 
     // Create handler
     let handler = Arc::new(PaymentHandler {

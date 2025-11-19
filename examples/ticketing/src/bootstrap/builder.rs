@@ -47,8 +47,8 @@ use crate::bootstrap::{register_aggregate_consumers, register_projections, Proje
 use crate::config::Config;
 use crate::projections::query_adapters::{PostgresInventoryQuery, PostgresPaymentQuery, PostgresReservationQuery};
 use crate::projections::{
-    PostgresAvailableSeatsProjection, PostgresEventsProjection, PostgresReservationsProjection,
-    ProjectionCompletionTracker,
+    PostgresAvailableSeatsProjection, PostgresEventsProjection, PostgresPaymentsProjection,
+    PostgresReservationsProjection, ProjectionCompletionTracker,
 };
 use crate::runtime::{Application, EventConsumer};
 use crate::server::{build_router, AppState};
@@ -414,8 +414,11 @@ impl ApplicationBuilder {
         let available_seats_projection = Arc::new(PostgresAvailableSeatsProjection::new(
             resources.projections_pool.clone(),
         ));
+        let payments_projection = Arc::new(PostgresPaymentsProjection::new(
+            resources.projections_pool.clone(),
+        ));
         let inventory_query = Arc::new(PostgresInventoryQuery::new(available_seats_projection.clone()));
-        let payment_query = Arc::new(PostgresPaymentQuery::new());
+        let payment_query = Arc::new(PostgresPaymentQuery::new(payments_projection.clone()));
         let reservation_query = Arc::new(PostgresReservationQuery::new(reservations_projection.clone()));
 
         // Create projection completion tracker
@@ -429,6 +432,7 @@ impl ApplicationBuilder {
         let app_state = AppState::new(
             config.clone(),
             auth_store,
+            resources.auth_pool.clone(),
             Arc::new(SystemClock),
             resources.event_store.clone(),
             resources.event_bus.clone(),

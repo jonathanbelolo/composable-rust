@@ -17,7 +17,7 @@ use crate::aggregates::{
     inventory::InventoryProjectionQuery, payment::PaymentProjectionQuery,
     reservation::ReservationProjectionQuery,
 };
-use crate::projections::{PostgresAvailableSeatsProjection, PostgresReservationsProjection};
+use crate::projections::{PostgresAvailableSeatsProjection, PostgresPaymentsProjection, PostgresReservationsProjection};
 use crate::types::{CustomerId, EventId, Payment, PaymentId, Reservation, ReservationId};
 use std::sync::Arc;
 
@@ -77,39 +77,32 @@ impl InventoryProjectionQuery for PostgresInventoryQuery {
 // ============================================================================
 
 /// Adapter for querying payment data from PostgreSQL projections.
-///
-/// NOTE: Currently we don't have a dedicated payment projection with
-/// payment history. This would typically query from a `PostgresPaymentProjection`
-/// that tracks payment states, transaction history, etc.
-///
-/// For now, this is a stub that returns None (payment not found).
 #[derive(Clone)]
 pub struct PostgresPaymentQuery {
-    // Future: Add Arc<PostgresPaymentProjection> when implemented
+    payments: Arc<PostgresPaymentsProjection>,
 }
 
 impl PostgresPaymentQuery {
     /// Creates a new `PostgresPaymentQuery`.
     #[must_use]
-    pub const fn new() -> Self {
-        Self {}
-    }
-}
-
-impl Default for PostgresPaymentQuery {
-    fn default() -> Self {
-        Self::new()
+    pub const fn new(payments: Arc<PostgresPaymentsProjection>) -> Self {
+        Self { payments }
     }
 }
 
 impl PaymentProjectionQuery for PostgresPaymentQuery {
     fn load_payment(
         &self,
-        _payment_id: &PaymentId,
+        payment_id: &PaymentId,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<Payment>, String>> + Send + '_>> {
-        // TODO: Implement when we have a payment projection
-        // For now, return None (payment state will be reconstructed from events)
-        Box::pin(async move { Ok(None) })
+        let payments = self.payments.clone();
+        let payment_id = *payment_id;
+        Box::pin(async move {
+            payments
+                .get_payment(&payment_id)
+                .await
+                .map_err(|e| e.to_string())
+        })
     }
 }
 

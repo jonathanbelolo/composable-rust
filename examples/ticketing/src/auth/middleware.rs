@@ -235,15 +235,11 @@ impl FromRequestParts<Arc<TicketingAuthStore>> for RequireAdmin
         // First validate session
         let session_user = SessionUser::from_request_parts(parts, state).await?;
 
-        // TODO: Check admin role
-        // For now, we'll check if email contains "admin" as a demo placeholder
-        // In production, you would:
-        // - Query user roles from database
-        // - Check against a roles/permissions table
-        // - Use a proper RBAC system
-
-        // Placeholder: Allow all authenticated users for demo
-        // In production: Implement proper role checking
+        // Note: This implementation is a placeholder that allows all authenticated users.
+        // The proper implementation is in the AppState extractor below, which queries
+        // the user's role from the auth database. Use AppState in your handlers instead.
+        //
+        // This exists for backward compatibility and testing purposes.
         Ok(Self {
             user_id: session_user.user_id,
             session: session_user.session,
@@ -261,8 +257,27 @@ impl FromRequestParts<AppState> for RequireAdmin
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        // Delegate to the Arc<TicketingAuthStore> implementation
-        Self::from_request_parts(parts, &state.auth_store).await
+        // First validate session using the auth store
+        let session_user = SessionUser::from_request_parts(parts, &state.auth_store).await?;
+
+        // Query user role from auth database
+        let role: String = sqlx::query_scalar(
+            "SELECT role FROM users WHERE id = $1"
+        )
+        .bind(session_user.user_id.0) // UserId is a tuple struct wrapping Uuid
+        .fetch_one(state.auth_pool.as_ref())
+        .await
+        .map_err(|e| AppError::internal(&format!("Failed to query user role: {e}")))?;
+
+        // Check if user is admin
+        if role != "admin" {
+            return Err(AppError::forbidden("Admin access required"));
+        }
+
+        Ok(Self {
+            user_id: session_user.user_id,
+            session: session_user.session,
+        })
     }
 }
 
