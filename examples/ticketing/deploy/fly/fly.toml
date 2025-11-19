@@ -1,0 +1,161 @@
+# Fly.io configuration for Ticketing Application
+#
+# This configuration deploys a production-ready event-sourced ticketing system with:
+# - Composable Rust event sourcing framework
+# - PostgreSQL for event store + projections
+# - Redpanda (Kafka-compatible) for event bus
+# - Multi-region deployment ready
+#
+# Deployment: flyctl deploy from workspace root
+# Docs: https://fly.io/docs/
+
+app = "composable-ticketing"
+primary_region = "sjc"  # San Jose, California
+
+[build]
+  # Build from workspace root (not examples/ticketing/)
+  dockerfile = "examples/ticketing/Dockerfile"
+
+[env]
+  # Server configuration
+  SERVER_HOST = "0.0.0.0"
+  SERVER_PORT = "8080"
+
+  # CORS configuration (update with your domains)
+  CORS_ALLOWED_ORIGINS = "http://localhost:3000,https://ticketing.fly.dev"
+
+  # Logging
+  RUST_LOG = "info,ticketing=debug"
+
+  # Auth configuration
+  AUTH_SESSION_TTL_HOURS = "24"
+  AUTH_MAGIC_LINK_TTL_MINUTES = "15"
+
+  # Email provider (options: console, smtp)
+  EMAIL_PROVIDER = "console"
+  EMAIL_FROM = "noreply@ticketing.fly.dev"
+
+  # Redpanda configuration
+  REDPANDA_BROKERS = "localhost:9092"
+  REDPANDA_CONSUMER_GROUP = "ticketing"
+  REDPANDA_INVENTORY_TOPIC = "inventory-events"
+  REDPANDA_RESERVATION_TOPIC = "reservation-events"
+  REDPANDA_PAYMENT_TOPIC = "payment-events"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 250
+    soft_limit = 200
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 8080
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+
+    [services.ports.http_options]
+      response.headers.server = "composable-rust"
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
+  [[services.http_checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"
+    protocol = "http"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 512
+
+# ==============================================================================
+# PostgreSQL Configuration (Event Store + Projections)
+# ==============================================================================
+#
+# This app requires THREE PostgreSQL databases:
+# 1. Event Store (event-sourced aggregates, write side)
+# 2. Projections (CQRS read models, read side)
+# 3. Auth (user authentication and sessions)
+#
+# Setup:
+#   flyctl postgres create --name ticketing-events --region sjc --initial-cluster-size 1
+#   flyctl postgres create --name ticketing-projections --region sjc --initial-cluster-size 1
+#   flyctl postgres create --name ticketing-auth --region sjc --initial-cluster-size 1
+#
+#   flyctl postgres attach --app composable-ticketing ticketing-events --database-name events --variable-name DATABASE_URL
+#   flyctl postgres attach --app composable-ticketing ticketing-projections --database-name projections --variable-name PROJECTION_DATABASE_URL
+#   flyctl postgres attach --app composable-ticketing ticketing-auth --database-name auth --variable-name AUTH_DATABASE_URL
+
+# ==============================================================================
+# Redpanda Configuration (Event Bus)
+# ==============================================================================
+#
+# Fly.io doesn't have managed Redpanda. Options:
+#
+# Option 1: Deploy Redpanda as a separate Fly.io app
+#   - Create fly-redpanda.toml configuration
+#   - Deploy: flyctl deploy -c deploy/fly/fly-redpanda.toml
+#   - Connect via internal DNS: redpanda.internal:9092
+#
+# Option 2: Use Upstash Kafka (managed Kafka-compatible)
+#   - Sign up: https://upstash.com
+#   - Set REDPANDA_BROKERS to Upstash endpoint
+#   - Add REDPANDA_SASL_* secrets for authentication
+#
+# Option 3: Use Confluent Cloud (production-grade Kafka)
+#   - Sign up: https://confluent.cloud
+#   - Set REDPANDA_BROKERS to Confluent endpoint
+#
+# For MVP/demo: Use console mode (events logged to stdout)
+#   EMAIL_PROVIDER=console
+
+# ==============================================================================
+# Secrets Configuration
+# ==============================================================================
+#
+# Set secrets via flyctl:
+#   flyctl secrets set AUTH_JWT_SECRET=$(openssl rand -hex 32)
+#   flyctl secrets set AUTH_SIGNING_KEY=$(openssl rand -hex 32)
+#
+# For SMTP email (production):
+#   flyctl secrets set EMAIL_PROVIDER=smtp
+#   flyctl secrets set SMTP_HOST=smtp.sendgrid.net
+#   flyctl secrets set SMTP_PORT=587
+#   flyctl secrets set SMTP_USERNAME=apikey
+#   flyctl secrets set SMTP_PASSWORD=your-sendgrid-api-key
+#
+# For Upstash Kafka:
+#   flyctl secrets set REDPANDA_BROKERS=your-cluster.upstash.io:9092
+#   flyctl secrets set REDPANDA_SASL_USERNAME=your-username
+#   flyctl secrets set REDPANDA_SASL_PASSWORD=your-password
+#   flyctl secrets set REDPANDA_SASL_MECHANISM=SCRAM-SHA-256
+
+# ==============================================================================
+# Multi-Region Deployment (Optional)
+# ==============================================================================
+#
+# For global low-latency:
+# 1. Scale to multiple regions:
+#    flyctl regions add lhr syd
+#
+# 2. Use Fly Postgres replicas for read scaling:
+#    flyctl postgres create --name ticketing-projections-read --region lhr --initial-cluster-size 1
+#
+# 3. Configure read replicas:
+#    flyctl postgres attach --app composable-ticketing ticketing-projections-read --database-name projections --variable-name PROJECTION_DATABASE_READ_URL
+#
+# 4. Update application to use read replicas for queries

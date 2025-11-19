@@ -1,10 +1,47 @@
 # Production Deployment Guide
 
-This guide covers deploying the Ticketing application to production using managed PostgreSQL and RedPanda/Kafka services.
+This guide covers deploying the Ticketing application to production.
+
+## Choose Your Deployment Platform
+
+### Simple Managed Platforms (Recommended for Most Users)
+
+**Best for**: Indie developers, startups, rapid prototyping, MVP deployments
+
+- **Fly.io** - Global CDN, managed PostgreSQL, $5-10/month MVP ([Full Guide](deploy/fly/README.md))
+- **Railway.app** - Instant PostgreSQL, simple pricing, $5/month ([Full Guide](deploy/railway/README.md))
+- **Render.com** - Free tier available, infrastructure-as-code ([Full Guide](deploy/render/README.md))
+- **Local Docker** - Development and testing ([Quick Start](#local-docker))
+
+**Quick Start**:
+```bash
+# Deploy to Fly.io (recommended)
+./scripts/deploy.sh fly
+
+# Deploy to Railway
+./scripts/deploy.sh railway
+
+# Deploy locally with Docker
+./scripts/deploy.sh docker
+```
+
+See the **[`deploy/`](deploy/)** directory for platform-specific configuration files and detailed guides.
+
+### Enterprise Cloud Platforms (Advanced Users)
+
+**Best for**: Large organizations, complex infrastructure requirements, enterprise compliance
+
+- **AWS** - ECS/EKS with RDS and MSK ([See below](#aws-deployment))
+- **GCP** - Cloud Run/GKE with Cloud SQL ([See below](#gcp-deployment))
+- **Azure** - ACI/AKS with Azure Database and Event Hubs ([See below](#azure-deployment))
+
+These deployments require more setup but provide enterprise-grade features like multi-region replication, advanced monitoring, and compliance certifications.
+
+---
 
 ## Table of Contents
 
-1. [Quick Start](#quick-start)
+1. [Local Docker Deployment](#local-docker-deployment)
 2. [AWS Deployment](#aws-deployment)
 3. [GCP Deployment](#gcp-deployment)
 4. [Azure Deployment](#azure-deployment)
@@ -13,52 +50,39 @@ This guide covers deploying the Ticketing application to production using manage
 7. [Security Best Practices](#security-best-practices)
 8. [Troubleshooting](#troubleshooting)
 
-## Quick Start
+---
 
-### Prerequisites
+## Local Docker Deployment
 
-- Managed PostgreSQL database (RDS, Cloud SQL, Azure Database, etc.)
-- Kafka-compatible event streaming service (MSK, Confluent Cloud, RedPanda, etc.)
-- Container runtime (Docker, Kubernetes, etc.)
-- Valid SSL certificates for production
+**Best for**: Development, testing, local demos
 
-### Deployment Steps
+### Quick Start
 
-1. **Copy the production environment template:**
-   ```bash
-   cp .env.production.example .env.production
-   ```
+```bash
+# Start all services (app + databases + Redpanda)
+./scripts/deploy.sh docker
 
-2. **Fill in your actual configuration values** in `.env.production`:
-   - PostgreSQL connection details
-   - RedPanda/Kafka broker addresses
-   - Security credentials
-   - SSL certificate paths
+# Or use docker-compose directly
+docker-compose up -d
 
-3. **Build the application:**
-   ```bash
-   cargo build --release
-   ```
+# Verify deployment
+curl http://localhost:8080/health
 
-4. **Run database migrations** (if any):
-   ```bash
-   # Your migration command here
-   ```
+# View logs
+docker-compose logs -f
 
-5. **Start the application:**
-   ```bash
-   source .env.production
-   ./target/release/ticketing
-   ```
+# Stop services
+docker-compose down
+```
 
-6. **Verify the deployment:**
-   ```bash
-   # Check health endpoint
-   curl http://localhost:8080/health
+### What Gets Deployed
 
-   # Check metrics endpoint
-   curl http://localhost:9090/metrics
-   ```
+- **Application**: Ticketing service on port 8080
+- **PostgreSQL** (×3): Event store, projections, auth databases
+- **Redpanda**: Event bus for saga coordination
+- **Volumes**: Persistent data storage for databases
+
+See [`docker-compose.yml`](docker-compose.yml) for full configuration.
 
 ---
 
