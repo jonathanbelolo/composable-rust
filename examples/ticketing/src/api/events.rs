@@ -235,12 +235,34 @@ pub async fn create_event(
 /// ```
 pub async fn get_event(
     Path(event_id): Path<Uuid>,
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
 ) -> Result<Json<EventResponse>, AppError> {
-    // TODO: Query event from projection or event store
+    // Query event from projection
+    let event = state
+        .events_projection
+        .get(&event_id)
+        .await
+        .map_err(|e| AppError::internal(format!("Failed to query event: {e}")))?
+        .ok_or_else(|| AppError::not_found("Event", event_id))?;
 
-    // Placeholder response
-    Err(AppError::not_found("Event", event_id))
+    // Convert domain Event to API EventResponse
+    // Note: Current domain model has limited fields. Using available data:
+    // - name -> title
+    // - date -> both start_time and end_time (TODO: extend domain model)
+    // - venue.name -> venue_name
+    // - description is not in domain model yet (TODO: add to Event type)
+    let response = EventResponse {
+        id: *event.id.as_uuid(),
+        title: event.name,
+        description: String::from("Event description not yet available"), // TODO: Add description field to Event domain model
+        start_time: event.date.inner(),
+        end_time: event.date.inner(), // TODO: Add separate end_time to Event domain model
+        venue_name: event.venue.name,
+        status: event.status,
+        created_at: event.created_at,
+    };
+
+    Ok(Json(response))
 }
 
 /// List events with pagination.
@@ -258,18 +280,42 @@ pub async fn get_event(
 /// ```
 pub async fn list_events(
     Query(query): Query<ListEventsQuery>,
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
 ) -> Result<Json<ListEventsResponse>, AppError> {
     // Validate page size
     let page_size = query.page_size.min(100);
 
-    // TODO: Query events from projection
-    let _ = query.status;
+    // Query events from projection with optional status filter
+    let status_str = query.status.as_ref().map(|s| format!("{s:?}"));
+    let all_events = state
+        .events_projection
+        .list(status_str.as_deref())
+        .await
+        .map_err(|e| AppError::internal(format!("Failed to query events: {e}")))?;
 
-    // Placeholder response
+    // Calculate pagination
+    let total = all_events.len();
+    let start = query.page * page_size;
+    let end = start.saturating_add(page_size).min(total);
+
+    // Paginate results
+    let paginated_events: Vec<EventResponse> = all_events[start..end]
+        .iter()
+        .map(|event| EventResponse {
+            id: *event.id.as_uuid(),
+            title: event.name.clone(),
+            description: String::from("Event description not yet available"), // TODO: Add description field to Event domain model
+            start_time: event.date.inner(),
+            end_time: event.date.inner(), // TODO: Add separate end_time to Event domain model
+            venue_name: event.venue.name.clone(),
+            status: event.status,
+            created_at: event.created_at,
+        })
+        .collect();
+
     Ok(Json(ListEventsResponse {
-        events: vec![],
-        total: 0,
+        events: paginated_events,
+        total,
         page: query.page,
         page_size,
     }))
@@ -293,14 +339,36 @@ pub async fn list_events(
 pub async fn update_event(
     session: SessionUser,
     Path(event_id): Path<Uuid>,
-    State(_state): State<AppState>,
-    Json(_request): Json<UpdateEventRequest>,
+    State(state): State<AppState>,
+    Json(request): Json<UpdateEventRequest>,
 ) -> Result<Json<EventResponse>, AppError> {
-    // TODO: Verify ownership via RequireOwnership extractor
-    // TODO: Send UpdateEvent action to event aggregate
-    let _ = session;
+    // TODO: Implement RequireOwnership extractor to verify ownership automatically
+    // Check if event exists
+    let _event = state
+        .events_projection
+        .get(&event_id)
+        .await
+        .map_err(|e| AppError::internal(format!("Failed to query event: {e}")))?
+        .ok_or_else(|| AppError::not_found("Event", event_id))?;
 
-    Err(AppError::not_found("Event", event_id))
+    // TODO: Implement UpdateEvent action in Event aggregate
+    // Current domain model limitations:
+    // - Event doesn't have `description` field (only `name`)
+    // - Event doesn't have separate `start_time`/`end_time` (only single `date`)
+    // - No UpdateEvent command exists in EventAction enum
+    //
+    // To fully implement this endpoint:
+    // 1. Add `description`, `start_time`, `end_time` fields to Event domain model
+    // 2. Add UpdateEvent command and EventUpdated event to EventAction
+    // 3. Implement reducer logic in EventReducer
+    // 4. Update EventCreated event to include new fields
+    // 5. Update projection to handle EventUpdated
+    let _ = (session, request);
+
+    Err(AppError::internal(
+        "Event updates not yet supported - domain model needs enhancement. \
+         See src/api/events.rs:update_event() for TODO details.",
+    ))
 }
 
 /// Delete an event.
@@ -316,11 +384,31 @@ pub async fn update_event(
 pub async fn delete_event(
     session: SessionUser,
     Path(event_id): Path<Uuid>,
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
 ) -> Result<StatusCode, AppError> {
-    // TODO: Verify ownership via RequireOwnership extractor
-    // TODO: Send CancelEvent action to event aggregate
-    let _ = session;
+    // TODO: Implement RequireOwnership extractor to verify ownership automatically
+    // For now, just check if event exists (ownership check is deferred)
+    let _event = state
+        .events_projection
+        .get(&event_id)
+        .await
+        .map_err(|e| AppError::internal(format!("Failed to query event: {e}")))?
+        .ok_or_else(|| AppError::not_found("Event", event_id))?;
 
-    Err(AppError::not_found("Event", event_id))
+    // Send CancelEvent action to event aggregate
+    use crate::aggregates::event::EventAction;
+    use crate::types::EventId;
+
+    let mut event_store = state.create_event_store();
+    let action = EventAction::CancelEvent {
+        event_id: EventId::from_uuid(event_id),
+        reason: format!("Cancelled by user {}", session.user_id.0),
+    };
+
+    event_store
+        .send(action)
+        .await
+        .map_err(|e| AppError::internal(format!("Failed to cancel event: {e}")))?;
+
+    Ok(StatusCode::NO_CONTENT)
 }

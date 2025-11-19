@@ -46,7 +46,9 @@ use crate::auth::setup::{build_auth_store, TicketingAuthStore};
 use crate::bootstrap::{register_aggregate_consumers, register_projections, ProjectionSystem, ResourceManager};
 use crate::config::Config;
 use crate::projections::query_adapters::{PostgresInventoryQuery, PostgresPaymentQuery, PostgresReservationQuery};
-use crate::projections::{PostgresAvailableSeatsProjection, ProjectionCompletionTracker};
+use crate::projections::{
+    PostgresAvailableSeatsProjection, PostgresEventsProjection, ProjectionCompletionTracker,
+};
 use crate::runtime::{Application, EventConsumer};
 use crate::server::{build_router, AppState};
 use composable_rust_core::environment::SystemClock;
@@ -402,6 +404,9 @@ impl ApplicationBuilder {
         let auth_store = self.auth_store.ok_or("Auth must be initialized")?;
 
         // Create projection query adapters
+        let events_projection = Arc::new(PostgresEventsProjection::new(
+            resources.projections_pool.clone(),
+        ));
         let available_seats_projection = Arc::new(PostgresAvailableSeatsProjection::new(
             resources.projections_pool.clone(),
         ));
@@ -426,6 +431,7 @@ impl ApplicationBuilder {
             inventory_query,
             payment_query,
             reservation_query,
+            events_projection,
             available_seats_projection,
             projection_system.sales_analytics,
             projection_system.customer_history,

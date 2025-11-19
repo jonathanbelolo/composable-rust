@@ -28,8 +28,8 @@ use crate::auth::setup::TicketingAuthStore;
 use crate::config::Config;
 use crate::projections::{
     query_adapters::{PostgresInventoryQuery, PostgresPaymentQuery, PostgresReservationQuery},
-    CustomerHistoryProjection, PostgresAvailableSeatsProjection, ProjectionCompletionTracker,
-    SalesAnalyticsProjection,
+    CustomerHistoryProjection, PostgresAvailableSeatsProjection, PostgresEventsProjection,
+    ProjectionCompletionTracker, SalesAnalyticsProjection,
 };
 use crate::types::{CustomerId, PaymentId, ReservationId};
 use composable_rust_core::{environment::Clock, event_bus::EventBus};
@@ -89,6 +89,9 @@ pub struct AppState {
     pub reservation_query: Arc<PostgresReservationQuery>,
 
     // ===== Projections (CQRS read side) =====
+    /// Events projection for querying event data (PostgreSQL-backed)
+    pub events_projection: Arc<PostgresEventsProjection>,
+
     /// Available seats projection for fast seat availability queries (PostgreSQL-backed)
     pub available_seats_projection: Arc<PostgresAvailableSeatsProjection>,
 
@@ -124,6 +127,7 @@ impl AppState {
     /// - `inventory_query`: Projection query for inventory state loading
     /// - `payment_query`: Projection query for payment state loading
     /// - `reservation_query`: Projection query for reservation state loading
+    /// - `events_projection`: Projection for event data queries
     /// - `available_seats_projection`: Projection for seat availability queries
     /// - `sales_analytics_projection`: Projection for sales and revenue analytics
     /// - `customer_history_projection`: Projection for customer purchase history
@@ -141,6 +145,7 @@ impl AppState {
         inventory_query: Arc<PostgresInventoryQuery>,
         payment_query: Arc<PostgresPaymentQuery>,
         reservation_query: Arc<PostgresReservationQuery>,
+        events_projection: Arc<PostgresEventsProjection>,
         available_seats_projection: Arc<PostgresAvailableSeatsProjection>,
         sales_analytics_projection: Arc<RwLock<SalesAnalyticsProjection>>,
         customer_history_projection: Arc<RwLock<CustomerHistoryProjection>>,
@@ -157,6 +162,7 @@ impl AppState {
             inventory_query,
             payment_query,
             reservation_query,
+            events_projection,
             available_seats_projection,
             sales_analytics_projection,
             customer_history_projection,
