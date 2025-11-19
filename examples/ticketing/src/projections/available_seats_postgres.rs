@@ -52,6 +52,14 @@ impl PostgresAvailableSeatsProjection {
         Self { pool }
     }
 
+    /// Access the underlying connection pool.
+    ///
+    /// Useful for health checks or manual queries.
+    #[must_use]
+    pub fn pool(&self) -> &PgPool {
+        self.pool.as_ref()
+    }
+
     /// Check if a reservation has already been processed (idempotency).
     async fn is_processed(&self, reservation_id: &ReservationId) -> Result<bool> {
         let result: (bool,) = sqlx::query_as(
