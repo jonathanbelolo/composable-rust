@@ -6,7 +6,7 @@
 //! # Architecture
 //!
 //! Tokens are stored in Redis with:
-//! - **Primary key**: `auth:token:{token_id}` → bincode-serialized `TokenData`
+//! - **Primary key**: `auth:token:{token_id}` → JSON-serialized `TokenData`
 //! - **TTL**: Configurable based on token type (5-15 minutes typical)
 //! - **Atomic consumption**: Uses GETDEL command for single-use guarantee
 //!
@@ -157,8 +157,8 @@ impl TokenStore for RedisTokenStore {
         let mut conn = self.conn_manager.clone();
         let token_key = Self::token_key(token_id);
 
-        // Serialize token data
-        let token_bytes = bincode::serialize(&token_data)
+        // Serialize token data (using JSON instead of bincode because TokenData contains serde_json::Value)
+        let token_bytes = serde_json::to_vec(&token_data)
             .map_err(|e| AuthError::SerializationError(e.to_string()))?;
 
         // Calculate TTL in seconds
@@ -201,8 +201,8 @@ impl TokenStore for RedisTokenStore {
             .map_err(|e| AuthError::InternalError(format!("Failed to consume token: {e}")))?;
 
         if let Some(bytes) = token_bytes {
-            // Deserialize
-            let token_data: TokenData = bincode::deserialize(&bytes)
+            // Deserialize (using JSON instead of bincode because TokenData contains serde_json::Value)
+            let token_data: TokenData = serde_json::from_slice(&bytes)
                 .map_err(|e| AuthError::SerializationError(e.to_string()))?;
 
             // ✅ SECURITY: Constant-time token comparison to prevent timing attacks

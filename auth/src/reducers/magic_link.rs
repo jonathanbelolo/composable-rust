@@ -360,7 +360,11 @@ where
 
                             if email.is_empty() {
                                 tracing::error!("Magic link token missing email data");
-                                return None;
+                                return Some(AuthAction::MagicLinkFailed {
+                                    correlation_id,
+                                    email: String::new(),
+                                    error: "Invalid token data".to_string(),
+                                });
                             }
 
                             tracing::info!("Magic link verified for {}", email);
@@ -378,11 +382,19 @@ where
                             // Token not found, already used, or expired
                             // Don't leak which one (information disclosure prevention)
                             tracing::warn!("Magic link verification failed");
-                            None
+                            Some(AuthAction::MagicLinkFailed {
+                                correlation_id,
+                                email: String::new(), // Don't leak email
+                                error: "Invalid or expired magic link".to_string(),
+                            })
                         }
                         Err(e) => {
                             tracing::error!("Magic link token consumption failed: {}", e);
-                            None
+                            Some(AuthAction::MagicLinkFailed {
+                                correlation_id,
+                                email: String::new(), // Don't leak email
+                                error: "Token validation error".to_string(),
+                            })
                         }
                     }
                 }]
