@@ -84,6 +84,7 @@ pub mod aggregates;
 pub mod app;
 pub mod auth;
 pub mod config;
+pub mod payment_gateway;
 pub mod projections;
 pub mod types;
 pub mod server;

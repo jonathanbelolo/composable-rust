@@ -11,9 +11,9 @@ use ticketing::{
     config::Config,
     projections::{
         query_adapters::{PostgresInventoryQuery, PostgresPaymentQuery, PostgresReservationQuery},
-        setup_projection_managers, CustomerHistoryProjection, Projection,
-        PostgresAvailableSeatsProjection, ProjectionCompletionTracker, SalesAnalyticsProjection,
-        TicketingEvent,
+        setup_projection_managers, CustomerHistoryProjection, PostgresAvailableSeatsProjection,
+        PostgresPaymentsProjection, Projection, ProjectionCompletionTracker,
+        SalesAnalyticsProjection, TicketingEvent,
     },
     server::{build_router, AppState},
     types::{InventoryState, PaymentState},
@@ -23,15 +23,21 @@ use composable_rust_core::event_bus::EventBus;
 use composable_rust_core::stream::StreamId;
 use composable_rust_postgres::PostgresEventStore;
 use composable_rust_redpanda::RedpandaEventBus;
+use composable_rust_runtime::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 use composable_rust_runtime::Store;
 use futures::StreamExt;
+use std::env;
 use std::sync::{Arc, RwLock};
 use tokio::signal;
+use tokio::sync::broadcast;
 use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Load .env file (ignore errors if it doesn't exist - prod uses real env vars)
+    let _ = dotenvy::dotenv();
+
     // Initialize tracing
     tracing_subscriber::registry()
         .with(
@@ -43,6 +49,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Starting Ticketing System HTTP Server");
 
+    // Create shutdown coordinator
+    let (shutdown_tx, _shutdown_rx) = broadcast::channel::<()>(1);
+    info!("Shutdown coordinator initialized");
+
     // Load configuration
     let config = Config::from_env();
     info!(
@@ -52,10 +62,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Configuration loaded"
     );
 
-    // Setup event store (write side)
+    // Setup event store (write side) WITH MIGRATIONS
     info!("Connecting to event store database...");
-    let event_store = Arc::new(PostgresEventStore::new(&config.postgres.url).await?);
+    let pool = sqlx::PgPool::connect(&config.postgres.url).await?;
+
+    // Run event store migrations
+    info!("Running event store migrations...");
+    sqlx::migrate!("../../migrations")
+        .run(&pool)
+        .await?;
+    info!("Event store migrations complete");
+
+    let event_store = Arc::new(PostgresEventStore::from_pool(pool));
     info!("Event store connected");
+
+    // Setup projections database WITH MIGRATIONS
+    info!("Connecting to projections database...");
+    let projections_pool = sqlx::PgPool::connect(&config.projections.url).await?;
+
+    // Run projection migrations
+    info!("Running projection migrations...");
+    sqlx::migrate!("./migrations_projections")
+        .run(&projections_pool)
+        .await?;
+    info!("Projection migrations complete");
 
     // Setup event bus
     info!("Connecting to Redpanda event bus...");
@@ -74,30 +104,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create projection queries for aggregates to load state on-demand
     // These are used by AppState to create fresh stores per request
     info!("Initializing projection queries for on-demand state loading...");
-    let inventory_query = Arc::new(PostgresInventoryQuery::new(Arc::new(PostgresAvailableSeatsProjection::new(Arc::new(event_store.pool().clone())))));
+    let inventory_query = Arc::new(PostgresInventoryQuery::new(Arc::new(PostgresAvailableSeatsProjection::new(Arc::new(projections_pool.clone())))));
     let payment_query = Arc::new(PostgresPaymentQuery::new());
     let reservation_query = Arc::new(PostgresReservationQuery::new());
     info!("Projection queries initialized");
 
+    // Initialize payment gateway and circuit breaker (needed by both HTTP server and event consumers)
+    info!("Initializing payment gateway...");
+    let payment_gateway = ticketing::payment_gateway::MockPaymentGateway::shared();
+    let payment_gateway_breaker = Arc::new(
+        CircuitBreaker::new(
+            CircuitBreakerConfig::builder()
+                .failure_threshold(5) // Open after 5 failures (stricter than event bus)
+                .timeout(std::time::Duration::from_secs(30)) // Try again after 30s
+                .success_threshold(2) // Close after 2 successes in half-open
+                .build(),
+        )
+    );
+    info!("Payment gateway initialized (using mock)");
+
     // Subscribe child aggregates to event bus topics for saga coordination
     info!("Setting up event bus subscriptions for aggregate coordination...");
-    spawn_aggregate_consumers(
+    let aggregate_handles = spawn_aggregate_consumers(
         event_bus.clone(),
         event_store.clone(),
         clock.clone(),
-        Arc::new(PostgresInventoryQuery::new(Arc::new(PostgresAvailableSeatsProjection::new(Arc::new(event_store.pool().clone()))))),
+        Arc::new(PostgresInventoryQuery::new(Arc::new(PostgresAvailableSeatsProjection::new(Arc::new(projections_pool.clone()))))),
         Arc::new(PostgresPaymentQuery::new()),
+        payment_gateway.clone(),
+        payment_gateway_breaker.clone(),
         &config.redpanda,
+        shutdown_tx.subscribe(),
     );
     info!("Aggregate event consumers started");
 
     // Setup PostgreSQL pool for auth
     info!("Connecting to auth database...");
-    let auth_pg_pool = sqlx::PgPool::connect(&config.postgres.url).await?;
+    let auth_database_url = env::var("AUTH_DATABASE_URL")
+        .unwrap_or_else(|_| "postgresql://postgres:postgres@localhost:5435/ticketing_auth".to_string());
+    let auth_pg_pool = sqlx::PgPool::connect(&auth_database_url).await?;
 
     // Setup authentication store
     info!("Initializing authentication store...");
-    let auth_store = build_auth_store(&config, auth_pg_pool).await?;
+    let auth_store = build_auth_store(&config, auth_pg_pool.clone()).await?;
     info!("Authentication store initialized");
 
     // Create projection completion tracker (ONE consumer for entire app)
@@ -125,9 +174,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get available seats projection for queries
     let available_seats_projection = Arc::new(
         ticketing::projections::PostgresAvailableSeatsProjection::new(
-            Arc::new(
-                sqlx::PgPool::connect(&config.projections.url).await?
-            )
+            Arc::new(projections_pool)
         )
     );
 
@@ -143,17 +190,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Subscribe to events for analytics projections and ownership tracking
     info!("Starting analytics projection event consumers...");
-    spawn_analytics_consumers(
+    let analytics_handles = spawn_analytics_consumers(
         event_bus.clone(),
         sales_analytics_projection.clone(),
         customer_history_projection.clone(),
         reservation_ownership.clone(),
         payment_ownership.clone(),
         &config.redpanda,
+        shutdown_tx.subscribe(),
     );
+
+    // Create circuit breakers for resilience
+    info!("Initializing circuit breakers...");
+
+    // Event bus circuit breaker (more tolerant, handles event publishing failures)
+    let event_bus_breaker = Arc::new(
+        CircuitBreaker::new(
+            CircuitBreakerConfig::builder()
+                .failure_threshold(10) // Open after 10 failures (more tolerant)
+                .timeout(std::time::Duration::from_secs(60)) // Try again after 60s
+                .success_threshold(3) // Close after 3 successes in half-open
+                .build(),
+        )
+    );
+
+    // Payment gateway circuit breaker (stricter, protects critical payment flows)
+    let payment_gateway_breaker = Arc::new(
+        CircuitBreaker::new(
+            CircuitBreakerConfig::builder()
+                .failure_threshold(5) // Open after 5 failures (stricter than event bus)
+                .timeout(std::time::Duration::from_secs(30)) // Try again after 30s
+                .success_threshold(2) // Close after 2 successes in half-open
+                .build(),
+        )
+    );
+
+    info!("Circuit breakers initialized");
 
     // Build application state with dependencies (stores created per-request)
     let state = AppState::new(
+        Arc::new(config.clone()),
         auth_store,
         clock,
         event_store,
@@ -185,7 +261,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
 
-    info!("Server stopped");
+    info!("HTTP server stopped, initiating graceful shutdown...");
+
+    // Send shutdown signal to all background tasks
+    info!("Notifying background tasks to shutdown...");
+    let _ = shutdown_tx.send(()); // Ignore error if no receivers
+
+    // Wait for background tasks to complete with timeout
+    info!("Waiting for aggregate consumers to complete...");
+    let shutdown_timeout = tokio::time::Duration::from_secs(10);
+
+    for (idx, handle) in aggregate_handles.into_iter().enumerate() {
+        match tokio::time::timeout(shutdown_timeout, handle).await {
+            Ok(Ok(())) => info!(consumer = idx, "Aggregate consumer stopped gracefully"),
+            Ok(Err(e)) => warn!(consumer = idx, error = %e, "Aggregate consumer task failed"),
+            Err(_) => warn!(consumer = idx, "Aggregate consumer shutdown timed out"),
+        }
+    }
+
+    info!("Waiting for analytics consumers to complete...");
+    for (idx, handle) in analytics_handles.into_iter().enumerate() {
+        match tokio::time::timeout(shutdown_timeout, handle).await {
+            Ok(Ok(())) => info!(consumer = idx, "Analytics consumer stopped gracefully"),
+            Ok(Err(e)) => warn!(consumer = idx, error = %e, "Analytics consumer task failed"),
+            Err(_) => warn!(consumer = idx, "Analytics consumer shutdown timed out"),
+        }
+    }
+
+    info!("Waiting for projection managers to complete...");
+    for (idx, handle) in projection_handles.into_iter().enumerate() {
+        match tokio::time::timeout(shutdown_timeout, handle).await {
+            Ok(Ok(())) => info!(projection = idx, "Projection manager stopped gracefully"),
+            Ok(Err(e)) => warn!(projection = idx, error = %e, "Projection manager task failed"),
+            Err(_) => warn!(projection = idx, "Projection manager shutdown timed out"),
+        }
+    }
+
+    // Close database connections
+    info!("Closing database connections...");
+    auth_pg_pool.close().await;
+    info!("Auth database pool closed");
+
+    info!("Graceful shutdown complete");
     Ok(())
 }
 
@@ -205,14 +322,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// - **Privacy**: No state shared across different users/messages
 /// - **Memory efficiency**: State cleared after each message
 /// - **Event sourcing**: Each store loads only the data it needs from event store
+///
+/// # Graceful Shutdown
+///
+/// Consumers listen for shutdown signal and exit gracefully when received.
 fn spawn_aggregate_consumers(
     event_bus: Arc<dyn EventBus>,
     event_store: Arc<PostgresEventStore>,
     clock: Arc<SystemClock>,
     inventory_query: Arc<PostgresInventoryQuery>,
     payment_query: Arc<PostgresPaymentQuery>,
+    payment_gateway: Arc<dyn ticketing::payment_gateway::PaymentGateway>,
+    payment_gateway_breaker: Arc<CircuitBreaker>,
     redpanda_config: &ticketing::config::RedpandaConfig,
-) {
+    shutdown: broadcast::Receiver<()>,
+) -> Vec<tokio::task::JoinHandle<()>> {
+    let mut handles = Vec::new();
+
     // Spawn inventory consumer
     let inventory_bus = event_bus.clone();
     let inventory_event_store = event_store.clone();
@@ -220,72 +346,103 @@ fn spawn_aggregate_consumers(
     let inventory_event_bus = event_bus.clone();
     let inventory_query_clone = inventory_query.clone();
     let inventory_topic = redpanda_config.inventory_topic.clone();
+    let mut inventory_shutdown = shutdown.resubscribe();
 
-    tokio::spawn(async move {
+    let inventory_handle = tokio::spawn(async move {
         info!("Inventory aggregate consumer started");
 
         let topics = &[inventory_topic.as_str()];
 
         loop {
-            // Try to subscribe to events
-            match inventory_bus.subscribe(topics).await {
-                Ok(mut stream) => {
-                    info!("Inventory aggregate subscribed to event bus");
+            // Check for shutdown signal
+            tokio::select! {
+                _ = inventory_shutdown.recv() => {
+                    info!("Inventory consumer received shutdown signal, exiting...");
+                    break;
+                }
+                subscribe_result = inventory_bus.subscribe(topics) => {
+                    // Try to subscribe to events
+                    match subscribe_result {
+                        Ok(mut stream) => {
+                            info!("Inventory aggregate subscribed to event bus");
 
-                    // Process events from stream
-                    while let Some(result) = stream.next().await {
-                        match result {
-                            Ok(serialized_event) => {
-                                // Deserialize event from data field
-                                match bincode::deserialize::<TicketingEvent>(&serialized_event.data) {
-                                    Ok(event) => {
-                                        // Extract inventory action and dispatch to store
-                                        if let TicketingEvent::Inventory(action) = event {
-                                            info!(action = ?action, "Inventory consumer received command");
-
-                                            // Create fresh store per message (per-request pattern)
-                                            let inventory_env = InventoryEnvironment::new(
-                                                inventory_clock.clone(),
-                                                inventory_event_store.clone(),
-                                                inventory_event_bus.clone(),
-                                                StreamId::new("inventory"),
-                                                inventory_query_clone.clone(),
-                                            );
-                                            let inventory_store = Store::new(
-                                                InventoryState::new(),
-                                                InventoryReducer::new(),
-                                                inventory_env,
-                                            );
-
-                                            // Dispatch action to fresh store
-                                            if let Err(e) = inventory_store.send(action).await {
-                                                error!(error = %e, "Failed to dispatch action to inventory store");
-                                            }
-                                            // Store dropped here - memory freed
-                                        }
+                            // Process events from stream
+                            loop {
+                                tokio::select! {
+                                    _ = inventory_shutdown.recv() => {
+                                        info!("Inventory consumer received shutdown signal during processing, exiting...");
+                                        return;
                                     }
-                                    Err(e) => {
-                                        warn!(error = %e, "Failed to deserialize event");
+                                    event_result = stream.next() => {
+                                        match event_result {
+                                            Some(result) => {
+                                        match result {
+                                            Ok(serialized_event) => {
+                                                // Deserialize event from data field
+                                                match bincode::deserialize::<TicketingEvent>(&serialized_event.data) {
+                                                    Ok(event) => {
+                                                        // Extract inventory action and dispatch to store
+                                                        if let TicketingEvent::Inventory(action) = event {
+                                                            info!(action = ?action, "Inventory consumer received command");
+
+                                                            // Create fresh store per message (per-request pattern)
+                                                            let inventory_env = InventoryEnvironment::new(
+                                                                inventory_clock.clone(),
+                                                                inventory_event_store.clone(),
+                                                                inventory_event_bus.clone(),
+                                                                StreamId::new("inventory"),
+                                                                inventory_query_clone.clone(),
+                                                            );
+                                                            let inventory_store = Store::new(
+                                                                InventoryState::new(),
+                                                                InventoryReducer::new(),
+                                                                inventory_env,
+                                                            );
+
+                                                            // Dispatch action to fresh store
+                                                            if let Err(e) = inventory_store.send(action).await {
+                                                                error!(error = %e, "Failed to dispatch action to inventory store");
+                                                            }
+                                                            // Store dropped here - memory freed
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        warn!(error = %e, "Failed to deserialize event");
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                error!(error = %e, "Error receiving event from stream");
+                                            }
+                                        }
+                                            }
+                                            None => {
+                                                // Stream ended, break to reconnect
+                                                warn!("Event stream ended");
+                                                break;
+                                            }
+                                        }
                                     }
                                 }
                             }
-                            Err(e) => {
-                                error!(error = %e, "Error receiving event from stream");
-                            }
+
+                            // Stream ended, reconnect
+                            warn!("Reconnecting in 5s");
+                            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                        }
+                        Err(e) => {
+                            error!(error = %e, "Failed to subscribe to event bus, retrying in 5s");
+                            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                         }
                     }
-
-                    // Stream ended, reconnect
-                    warn!("Event stream ended, reconnecting in 5s");
-                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                }
-                Err(e) => {
-                    error!(error = %e, "Failed to subscribe to event bus, retrying in 5s");
-                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 }
             }
         }
+
+        info!("Inventory consumer stopped");
     });
+
+    handles.push(inventory_handle);
 
     // Spawn payment consumer
     let payment_bus = event_bus;
@@ -294,20 +451,38 @@ fn spawn_aggregate_consumers(
     let payment_event_bus = payment_bus.clone();
     let payment_query_clone = payment_query;
     let payment_topic = redpanda_config.payment_topic.clone();
+    let payment_gateway_clone = payment_gateway.clone();
+    let payment_gateway_breaker_clone = payment_gateway_breaker.clone();
+    let mut payment_shutdown = shutdown.resubscribe();
 
-    tokio::spawn(async move {
+    let payment_handle = tokio::spawn(async move {
         info!("Payment aggregate consumer started");
 
         let topics = &[payment_topic.as_str()];
 
         loop {
-            // Try to subscribe to events
-            match payment_bus.subscribe(topics).await {
+            // Check for shutdown signal
+            tokio::select! {
+                _ = payment_shutdown.recv() => {
+                    info!("Payment consumer received shutdown signal, exiting...");
+                    break;
+                }
+                subscribe_result = payment_bus.subscribe(topics) => {
+                    // Try to subscribe to events
+                    match subscribe_result {
                 Ok(mut stream) => {
                     info!("Payment aggregate subscribed to event bus");
 
                     // Process events from stream
-                    while let Some(result) = stream.next().await {
+                    loop {
+                        tokio::select! {
+                            _ = payment_shutdown.recv() => {
+                                info!("Payment consumer received shutdown signal during processing, exiting...");
+                                return;
+                            }
+                            event_result = stream.next() => {
+                                match event_result {
+                                    Some(result) => {
                         match result {
                             Ok(serialized_event) => {
                                 // Deserialize event from data field
@@ -347,21 +522,37 @@ fn spawn_aggregate_consumers(
                                 error!(error = %e, "Error receiving event from stream");
                             }
                         }
+                                    }
+                                    None => {
+                                        // Stream ended, break to reconnect
+                                        warn!("Event stream ended");
+                                        break;
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     // Stream ended, reconnect
-                    warn!("Event stream ended, reconnecting in 5s");
+                    warn!("Reconnecting in 5s");
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 }
                 Err(e) => {
                     error!(error = %e, "Failed to subscribe to event bus, retrying in 5s");
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 }
+                    }
+                }
             }
         }
+
+        info!("Payment consumer stopped");
     });
 
+    handles.push(payment_handle);
+
     info!("Aggregate event consumers spawned");
+    handles
 }
 
 /// Spawn background tasks to consume events and update analytics projections.
@@ -373,6 +564,10 @@ fn spawn_aggregate_consumers(
 /// Also updates ownership indices for security filtering:
 /// - `reservation_ownership`: ReservationId → CustomerId
 /// - `payment_ownership`: PaymentId → ReservationId
+///
+/// # Graceful Shutdown
+///
+/// Consumers listen for shutdown signal and exit gracefully when received.
 fn spawn_analytics_consumers(
     event_bus: Arc<dyn EventBus>,
     sales_projection: Arc<RwLock<SalesAnalyticsProjection>>,
@@ -380,7 +575,9 @@ fn spawn_analytics_consumers(
     reservation_ownership: Arc<RwLock<std::collections::HashMap<ticketing::types::ReservationId, ticketing::types::CustomerId>>>,
     payment_ownership: Arc<RwLock<std::collections::HashMap<ticketing::types::PaymentId, ticketing::types::ReservationId>>>,
     redpanda_config: &ticketing::config::RedpandaConfig,
-) {
+    shutdown: broadcast::Receiver<()>,
+) -> Vec<tokio::task::JoinHandle<()>> {
+    let mut handles = Vec::new();
     // Spawn sales analytics consumer (also tracks ownership)
     let sales_bus = event_bus.clone();
     let sales_proj = sales_projection.clone();
@@ -388,8 +585,9 @@ fn spawn_analytics_consumers(
     let payment_ownership_sales = payment_ownership.clone();
     let reservation_topic = redpanda_config.reservation_topic.clone();
     let payment_topic = redpanda_config.payment_topic.clone();
+    let mut sales_shutdown = shutdown.resubscribe();
 
-    tokio::spawn(async move {
+    let sales_handle = tokio::spawn(async move {
         info!("Sales analytics projection consumer started");
 
         // Subscribe to reservation and payment topics
@@ -397,12 +595,24 @@ fn spawn_analytics_consumers(
 
         loop {
             // Try to subscribe to events
-            match sales_bus.subscribe(topics).await {
+            tokio::select! {
+                _ = sales_shutdown.recv() => {
+                    info!("Sales analytics consumer received shutdown signal");
+                    break;
+                }
+                result = sales_bus.subscribe(topics) => match result {
                 Ok(mut stream) => {
                     info!("Sales projection subscribed to event topics");
 
                     // Process events from stream
-                    while let Some(result) = stream.next().await {
+                    loop {
+                        tokio::select! {
+                            _ = sales_shutdown.recv() => {
+                                info!("Sales analytics consumer received shutdown signal during processing");
+                                break;
+                            }
+                            event_result = stream.next() => match event_result {
+                                Some(result) => {
                         match result {
                             Ok(serialized_event) => {
                                 // Deserialize event from data field
@@ -448,6 +658,13 @@ fn spawn_analytics_consumers(
                                 error!(error = %e, "Error receiving event from stream");
                             }
                         }
+                                }
+                                None => {
+                                    warn!("Event stream ended");
+                                    break;
+                                }
+                            }
+                        }
                     }
 
                     // Stream ended, reconnect
@@ -458,29 +675,47 @@ fn spawn_analytics_consumers(
                     error!(error = %e, "Failed to subscribe to event bus, retrying in 5s");
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 }
+                }
             }
         }
+
+        info!("Sales analytics consumer stopped");
     });
+
+    handles.push(sales_handle);
 
     // Spawn customer history consumer (also tracks reservation ownership)
     let customer_bus = event_bus.clone();
     let customer_proj = customer_projection;
     let reservation_ownership_customer = reservation_ownership;
     let customer_topic = redpanda_config.reservation_topic.clone();
+    let mut customer_shutdown = shutdown.resubscribe();
 
-    tokio::spawn(async move {
+    let customer_handle = tokio::spawn(async move {
         info!("Customer history projection consumer started");
 
         let topics = &[customer_topic.as_str()];
 
         loop {
             // Try to subscribe to events
-            match customer_bus.subscribe(topics).await {
+            tokio::select! {
+                _ = customer_shutdown.recv() => {
+                    info!("Customer history consumer received shutdown signal");
+                    break;
+                }
+                result = customer_bus.subscribe(topics) => match result {
                 Ok(mut stream) => {
                     info!("Customer projection subscribed to reservation topic");
 
                     // Process events from stream
-                    while let Some(result) = stream.next().await {
+                    loop {
+                        tokio::select! {
+                            _ = customer_shutdown.recv() => {
+                                info!("Customer history consumer received shutdown signal during processing");
+                                break;
+                            }
+                            event_result = stream.next() => match event_result {
+                                Some(result) => {
                         match result {
                             Ok(serialized_event) => {
                                 // Deserialize event from data field
@@ -514,6 +749,13 @@ fn spawn_analytics_consumers(
                                 error!(error = %e, "Error receiving event from stream");
                             }
                         }
+                                }
+                                None => {
+                                    warn!("Event stream ended");
+                                    break;
+                                }
+                            }
+                        }
                     }
 
                     // Stream ended, reconnect
@@ -524,11 +766,17 @@ fn spawn_analytics_consumers(
                     error!(error = %e, "Failed to subscribe to event bus, retrying in 5s");
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 }
+                }
             }
         }
+
+        info!("Customer history consumer stopped");
     });
 
+    handles.push(customer_handle);
+
     info!("Analytics projection consumers spawned");
+    handles
 }
 
 /// Graceful shutdown signal handler.

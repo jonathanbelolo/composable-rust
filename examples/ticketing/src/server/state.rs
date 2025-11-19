@@ -25,6 +25,7 @@ use crate::aggregates::{
     reservation::ReservationReducer,
 };
 use crate::auth::setup::TicketingAuthStore;
+use crate::config::Config;
 use crate::projections::{
     query_adapters::{PostgresInventoryQuery, PostgresPaymentQuery, PostgresReservationQuery},
     CustomerHistoryProjection, PostgresAvailableSeatsProjection, ProjectionCompletionTracker,
@@ -61,6 +62,9 @@ use std::sync::{Arc, RwLock};
 ///   (in-memory indices for fast authorization checks in WebSocket notifications)
 #[derive(Clone)]
 pub struct AppState {
+    /// Configuration (for accessing settings in handlers)
+    pub config: Arc<Config>,
+
     /// Authentication store for session validation and user management
     pub auth_store: Arc<TicketingAuthStore>,
 
@@ -112,6 +116,7 @@ impl AppState {
     ///
     /// # Arguments
     ///
+    /// - `config`: Application configuration
     /// - `auth_store`: Authentication store for session management
     /// - `clock`: Clock for timestamps
     /// - `event_store`: Event store for event sourcing
@@ -128,6 +133,7 @@ impl AppState {
     #[must_use]
     #[allow(clippy::too_many_arguments)] // AppState construction requires all dependencies
     pub fn new(
+        config: Arc<Config>,
         auth_store: Arc<TicketingAuthStore>,
         clock: Arc<dyn Clock>,
         event_store: Arc<PostgresEventStore>,
@@ -143,6 +149,7 @@ impl AppState {
         projection_completion_tracker: Arc<ProjectionCompletionTracker>,
     ) -> Self {
         Self {
+            config,
             auth_store,
             clock,
             event_store,
@@ -295,5 +302,12 @@ impl AppState {
 impl FromRef<AppState> for Arc<TicketingAuthStore> {
     fn from_ref(app_state: &AppState) -> Self {
         app_state.auth_store.clone()
+    }
+}
+
+// Implement FromRef to allow extractors to get config from AppState
+impl FromRef<AppState> for Arc<Config> {
+    fn from_ref(app_state: &AppState) -> Self {
+        app_state.config.clone()
     }
 }

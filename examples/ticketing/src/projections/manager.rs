@@ -55,10 +55,7 @@ pub async fn setup_projection_managers(
     // Connect to projection database (separate from event store)
     let projection_pool = PgPool::connect(&config.projections.url).await?;
 
-    // Run migrations to create projection tables
-    let projection_store =
-        PostgresProjectionStore::new(projection_pool.clone(), "projection_data".to_string());
-    projection_store.migrate().await?;
+    // Note: Projection migrations are handled by main.rs before this is called
 
     // Create checkpoint tracker
     let checkpoint = Arc::new(PostgresProjectionCheckpoint::new(projection_pool.clone()));

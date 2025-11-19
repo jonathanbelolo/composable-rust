@@ -9,7 +9,7 @@ use crate::config::Config;
 use crate::projections::{
     query_adapters::{PostgresInventoryQuery, PostgresPaymentQuery, PostgresReservationQuery},
     AvailableSeatsProjection, CustomerHistoryProjection, PostgresAvailableSeatsProjection,
-    Projection, SalesAnalyticsProjection, TicketingEvent,
+    PostgresPaymentsProjection, Projection, SalesAnalyticsProjection, TicketingEvent,
 };
 use crate::types::{InventoryState, PaymentState, ReservationState};
 use composable_rust_core::environment::SystemClock;
@@ -86,6 +86,8 @@ pub struct TicketingApp {
     >,
     /// PostgreSQL available seats projection (for state loading)
     pub postgres_available_seats: Arc<PostgresAvailableSeatsProjection>,
+    /// PostgreSQL payments projection (for state loading)
+    pub postgres_payments: Arc<PostgresPaymentsProjection>,
     /// Available seats projection (in-memory, for compatibility)
     pub available_seats: Arc<RwLock<AvailableSeatsProjection>>,
     /// Sales analytics projection
@@ -119,7 +121,18 @@ impl TicketingApp {
         let event_store = Arc::new(PostgresEventStore::from_pool(pool));
         tracing::info!("✓ Event store initialized");
 
-        // 2. Initialize RedPanda event bus
+        // 2. Initialize PostgreSQL projections database (read side - CQRS separation)
+        tracing::info!("Connecting to projections database: {}", config.projections.url);
+        let projections_pool = PgPool::connect(&config.projections.url).await?;
+
+        // Run projection migrations (using consolidated migrations)
+        tracing::info!("Running projection migrations...");
+        sqlx::migrate!("./migrations_projections")
+            .run(&projections_pool)
+            .await?;
+        tracing::info!("✓ Projection database initialized");
+
+        // 3. Initialize RedPanda event bus
         tracing::info!("Connecting to RedPanda: {}", config.redpanda.brokers);
         let event_bus = Arc::new(
             RedpandaEventBus::builder()
@@ -130,13 +143,14 @@ impl TicketingApp {
         ) as Arc<dyn EventBus>;
         tracing::info!("✓ Event bus connected");
 
-        // 3. Initialize PostgreSQL projections for state loading
-        let postgres_pool = event_store.pool().clone();
+        // 4. Initialize PostgreSQL projections for state loading (using separate read DB)
         let postgres_available_seats =
-            Arc::new(PostgresAvailableSeatsProjection::new(Arc::new(postgres_pool)));
+            Arc::new(PostgresAvailableSeatsProjection::new(Arc::new(projections_pool.clone())));
+        let postgres_payments =
+            Arc::new(PostgresPaymentsProjection::new(Arc::new(projections_pool)));
         tracing::info!("✓ PostgreSQL projections initialized");
 
-        // 4. Create query adapters
+        // 5. Create query adapters
         let inventory_query = Arc::new(PostgresInventoryQuery::new(postgres_available_seats.clone()));
         let payment_query = Arc::new(PostgresPaymentQuery::new());
         let reservation_query = Arc::new(PostgresReservationQuery::new());
@@ -205,6 +219,7 @@ impl TicketingApp {
             payment,
             reservation,
             postgres_available_seats,
+            postgres_payments,
             available_seats,
             sales_analytics,
             customer_history,

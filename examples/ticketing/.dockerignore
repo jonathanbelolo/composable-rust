@@ -1,0 +1,46 @@
+# Build artifacts
+target/
+**/*.rs.bk
+*.pdb
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Git
+.git/
+.gitignore
+
+# Documentation (not needed in image)
+*.md
+docs/
+plans/
+
+# Test files
+tests/
+scripts/load_test.js
+
+# Backups
+backups/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Docker files (don't include docker-compose in image)
+docker-compose*.yml
+Dockerfile*
+.dockerignore
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/

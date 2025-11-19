@@ -79,6 +79,7 @@ pub mod available_seats_postgres;
 pub mod customer_history_postgres;
 pub mod events_postgres;
 pub mod manager;
+pub mod payments_postgres;
 pub mod query_adapters;
 pub mod sales_analytics_postgres;
 
@@ -98,6 +99,7 @@ pub use customer_history::{CustomerHistoryProjection, CustomerPurchase};
 pub use customer_history_postgres::PostgresCustomerHistoryProjection;
 pub use events_postgres::PostgresEventsProjection;
 pub use manager::{setup_projection_managers, ProjectionManagers};
+pub use payments_postgres::PostgresPaymentsProjection;
 pub use sales_analytics::{SalesAnalyticsProjection, SalesMetrics};
 pub use sales_analytics_postgres::PostgresSalesAnalyticsProjection;
 

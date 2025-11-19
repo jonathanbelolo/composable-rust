@@ -5,6 +5,7 @@
 use super::health::{health_check, readiness_check};
 use super::state::AppState;
 use crate::api::{analytics, availability, events, payments, reservations, websocket};
+use crate::auth::handlers;
 use axum::{
     routing::{delete, get, post, put},
     Router,
@@ -90,11 +91,17 @@ pub fn build_router(state: AppState) -> Router {
             get(websocket::personal_notifications),
         );
 
+    // Auth routes (custom handlers with testing support)
+    let auth_routes = Router::new()
+        .route("/magic-link/request", post(handlers::send_magic_link))
+        .route("/magic-link/verify", post(handlers::verify_magic_link));
+
     Router::new()
         // Health checks (no authentication)
         .route("/health", get(health_check))
         .route("/ready", get(readiness_check))
-        // TODO: Add authentication routes (framework's auth_router)
+        // Authentication routes under /auth prefix
+        .nest("/auth", auth_routes)
         // API routes under /api prefix
         .nest("/api", api_routes)
         .with_state(state)
