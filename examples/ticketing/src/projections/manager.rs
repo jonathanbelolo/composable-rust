@@ -23,9 +23,7 @@ use crate::projections::{
 use composable_rust_core::event::{EventMetadata, SerializedEvent};
 use composable_rust_core::event_bus::EventBus;
 use composable_rust_core::projection::Projection;
-use composable_rust_projections::{
-    PostgresProjectionCheckpoint, PostgresProjectionStore, ProjectionStream,
-};
+use composable_rust_projections::{PostgresProjectionCheckpoint, ProjectionStream};
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
