@@ -459,3 +459,29 @@ impl Projection for PostgresPaymentsProjection {
         }
     }
 }
+
+// ============================================================================
+// PaymentProjectionQuery Implementation
+// ============================================================================
+
+#[async_trait::async_trait]
+impl crate::aggregates::payment::PaymentProjectionQuery for PostgresPaymentsProjection {
+    async fn load_payment(&self, payment_id: &PaymentId) -> std::result::Result<Option<Payment>, String> {
+        self.get_payment(payment_id)
+            .await
+            .map_err(|e| format!("Failed to load payment: {e}"))
+    }
+
+    async fn load_customer_payments(&self, customer_id: &CustomerId, limit: usize, offset: usize) -> std::result::Result<Vec<Payment>, String> {
+        // Convert usize to i64 for SQL query
+        #[allow(clippy::cast_possible_wrap)]
+        let limit_i64 = limit as i64;
+        #[allow(clippy::cast_possible_wrap)]
+        let offset_i64 = offset as i64;
+
+        // Call the existing list_customer_payments method
+        self.list_customer_payments(customer_id, limit_i64, offset_i64)
+            .await
+            .map_err(|e| format!("Failed to load customer payments: {e}"))
+    }
+}

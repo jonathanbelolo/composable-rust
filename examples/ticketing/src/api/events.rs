@@ -236,13 +236,34 @@ pub async fn get_event(
     Path(event_id): Path<Uuid>,
     State(state): State<AppState>,
 ) -> Result<Json<EventResponse>, AppError> {
-    // Query event from projection
-    let event = state
-        .events_projection
-        .get(&event_id)
+    // Query event from projection via store query action
+    let store = state.create_event_store();
+    let event_id_typed = crate::types::EventId::from_uuid(event_id);
+
+    let event = match store
+        .send_and_wait_for(
+            EventAction::GetEvent {
+                event_id: event_id_typed,
+            },
+            |action| {
+                matches!(
+                    action,
+                    EventAction::EventQueried { .. } | EventAction::ValidationFailed { .. }
+                )
+            },
+            std::time::Duration::from_secs(5),
+        )
         .await
-        .map_err(|e| AppError::internal(format!("Failed to query event: {e}")))?
-        .ok_or_else(|| AppError::not_found("Event", event_id))?;
+    {
+        Ok(EventAction::EventQueried { event, .. }) => {
+            event.ok_or_else(|| AppError::not_found("Event", event_id))?
+        }
+        Ok(EventAction::ValidationFailed { error }) => {
+            return Err(AppError::internal(format!("Query failed: {error}")))
+        }
+        Ok(_) => return Err(AppError::internal("Unexpected action received")),
+        Err(e) => return Err(AppError::internal(format!("Failed to query event: {e}"))),
+    };
 
     // Convert domain Event to API EventResponse
     // Note: Current domain model has limited fields. Using available data:
@@ -284,13 +305,30 @@ pub async fn list_events(
     // Validate page size
     let page_size = query.page_size.min(100);
 
-    // Query events from projection with optional status filter
-    let status_str = query.status.as_ref().map(|s| format!("{s:?}"));
-    let all_events = state
-        .events_projection
-        .list(status_str.as_deref())
+    // Query events from projection via store query action
+    let store = state.create_event_store();
+    let all_events = match store
+        .send_and_wait_for(
+            EventAction::ListEvents {
+                status_filter: query.status,
+            },
+            |action| {
+                matches!(
+                    action,
+                    EventAction::EventsListed { .. } | EventAction::ValidationFailed { .. }
+                )
+            },
+            std::time::Duration::from_secs(5),
+        )
         .await
-        .map_err(|e| AppError::internal(format!("Failed to query events: {e}")))?;
+    {
+        Ok(EventAction::EventsListed { events, .. }) => events,
+        Ok(EventAction::ValidationFailed { error }) => {
+            return Err(AppError::internal(format!("Query failed: {error}")))
+        }
+        Ok(_) => return Err(AppError::internal("Unexpected action received")),
+        Err(e) => return Err(AppError::internal(format!("Failed to query events: {e}"))),
+    };
 
     // Calculate pagination
     let total = all_events.len();
@@ -341,13 +379,37 @@ pub async fn update_event(
     State(state): State<AppState>,
     Json(request): Json<UpdateEventRequest>,
 ) -> Result<Json<EventResponse>, AppError> {
-    // Check if event exists and get it
-    let event = state
-        .events_projection
-        .get(&event_id)
+    use crate::types::EventId;
+
+    // Create event store once for all operations
+    let store = state.create_event_store();
+    let event_id_typed = EventId::from_uuid(event_id);
+
+    // Check if event exists and get it via query action
+    let event = match store
+        .send_and_wait_for(
+            EventAction::GetEvent {
+                event_id: event_id_typed,
+            },
+            |action| {
+                matches!(
+                    action,
+                    EventAction::EventQueried { .. } | EventAction::ValidationFailed { .. }
+                )
+            },
+            std::time::Duration::from_secs(5),
+        )
         .await
-        .map_err(|e| AppError::internal(format!("Failed to query event: {e}")))?
-        .ok_or_else(|| AppError::not_found("Event", event_id))?;
+    {
+        Ok(EventAction::EventQueried { event, .. }) => {
+            event.ok_or_else(|| AppError::not_found("Event", event_id))?
+        }
+        Ok(EventAction::ValidationFailed { error }) => {
+            return Err(AppError::internal(format!("Query failed: {error}")))
+        }
+        Ok(_) => return Err(AppError::internal("Unexpected action received")),
+        Err(e) => return Err(AppError::internal(format!("Failed to query event: {e}"))),
+    };
 
     // Verify ownership: only the event owner can update it
     if event.owner_id != session.user_id {
@@ -368,28 +430,46 @@ pub async fn update_event(
         ));
     }
 
-    // Create event store and send UpdateEvent action
-    use crate::aggregates::event::EventAction;
-    use crate::types::EventId;
-
-    let event_store = state.create_event_store();
+    // Send UpdateEvent action
     let action = EventAction::UpdateEvent {
-        event_id: EventId::from_uuid(event_id),
+        event_id: event_id_typed,
         name,
     };
 
-    event_store
+    store
         .send(action)
         .await
         .map_err(|e| AppError::internal(format!("Failed to update event: {e}")))?;
 
-    // Query the updated event from projection
-    let updated_event = state
-        .events_projection
-        .get(&event_id)
+    // Query the updated event from projection via query action
+    let updated_event = match store
+        .send_and_wait_for(
+            EventAction::GetEvent {
+                event_id: event_id_typed,
+            },
+            |action| {
+                matches!(
+                    action,
+                    EventAction::EventQueried { .. } | EventAction::ValidationFailed { .. }
+                )
+            },
+            std::time::Duration::from_secs(5),
+        )
         .await
-        .map_err(|e| AppError::internal(format!("Failed to query updated event: {e}")))?
-        .ok_or_else(|| AppError::not_found("Event", event_id))?;
+    {
+        Ok(EventAction::EventQueried { event, .. }) => {
+            event.ok_or_else(|| AppError::not_found("Event", event_id))?
+        }
+        Ok(EventAction::ValidationFailed { error }) => {
+            return Err(AppError::internal(format!("Query failed: {error}")))
+        }
+        Ok(_) => return Err(AppError::internal("Unexpected action received")),
+        Err(e) => {
+            return Err(AppError::internal(format!(
+                "Failed to query updated event: {e}"
+            )))
+        }
+    };
 
     // Convert to EventResponse
     let response = EventResponse {
@@ -421,13 +501,37 @@ pub async fn delete_event(
     Path(event_id): Path<Uuid>,
     State(state): State<AppState>,
 ) -> Result<StatusCode, AppError> {
-    // Check if event exists and get it
-    let event = state
-        .events_projection
-        .get(&event_id)
+    use crate::types::EventId;
+
+    // Create event store once for all operations
+    let store = state.create_event_store();
+    let event_id_typed = EventId::from_uuid(event_id);
+
+    // Check if event exists and get it via query action
+    let event = match store
+        .send_and_wait_for(
+            EventAction::GetEvent {
+                event_id: event_id_typed,
+            },
+            |action| {
+                matches!(
+                    action,
+                    EventAction::EventQueried { .. } | EventAction::ValidationFailed { .. }
+                )
+            },
+            std::time::Duration::from_secs(5),
+        )
         .await
-        .map_err(|e| AppError::internal(format!("Failed to query event: {e}")))?
-        .ok_or_else(|| AppError::not_found("Event", event_id))?;
+    {
+        Ok(EventAction::EventQueried { event, .. }) => {
+            event.ok_or_else(|| AppError::not_found("Event", event_id))?
+        }
+        Ok(EventAction::ValidationFailed { error }) => {
+            return Err(AppError::internal(format!("Query failed: {error}")))
+        }
+        Ok(_) => return Err(AppError::internal("Unexpected action received")),
+        Err(e) => return Err(AppError::internal(format!("Failed to query event: {e}"))),
+    };
 
     // Verify ownership: only the event owner can delete it
     if event.owner_id != session.user_id {
@@ -437,16 +541,12 @@ pub async fn delete_event(
     }
 
     // Send CancelEvent action to event aggregate
-    use crate::aggregates::event::EventAction;
-    use crate::types::EventId;
-
-    let event_store = state.create_event_store();
     let action = EventAction::CancelEvent {
-        event_id: EventId::from_uuid(event_id),
+        event_id: event_id_typed,
         reason: format!("Cancelled by user {}", session.user_id.0),
     };
 
-    event_store
+    store
         .send(action)
         .await
         .map_err(|e| AppError::internal(format!("Failed to cancel event: {e}")))?;

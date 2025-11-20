@@ -33,8 +33,7 @@ use uuid::Uuid;
 /// According to the state-loading-patterns spec, aggregates load state on-demand
 /// by querying projections. This trait is injected via the Environment to enable
 /// the reducer to trigger state loading effects.
-///
-/// Note: Returns `BoxFuture` instead of async fn to be dyn-compatible (object-safe).
+#[async_trait::async_trait]
 pub trait PaymentProjectionQuery: Send + Sync {
     /// Load payment data for a specific payment.
     ///
@@ -43,10 +42,16 @@ pub trait PaymentProjectionQuery: Send + Sync {
     /// # Errors
     ///
     /// Returns error if database query fails.
-    fn load_payment(
-        &self,
-        payment_id: &PaymentId,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<Payment>, String>> + Send + '_>>;
+    async fn load_payment(&self, payment_id: &PaymentId) -> Result<Option<Payment>, String>;
+
+    /// Load payments for a specific customer.
+    ///
+    /// Returns list of payments for the customer, with pagination support.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database query fails.
+    async fn load_customer_payments(&self, customer_id: &CustomerId, limit: usize, offset: usize) -> Result<Vec<Payment>, String>;
 }
 
 // ============================================================================
@@ -90,6 +95,24 @@ pub enum PaymentAction {
         reservation_id: ReservationId,
         /// Failure reason
         reason: String,
+    },
+
+    /// Query a single payment by ID
+    #[command]
+    GetPayment {
+        /// Payment ID to query
+        payment_id: PaymentId,
+    },
+
+    /// Query payments for a customer
+    #[command]
+    ListCustomerPayments {
+        /// Customer ID to query payments for
+        customer_id: CustomerId,
+        /// Maximum number of results
+        limit: usize,
+        /// Offset for pagination
+        offset: usize,
     },
 
     // Events
@@ -146,6 +169,24 @@ pub enum PaymentAction {
     ValidationFailed {
         /// Error message
         error: String,
+    },
+
+    /// Payment was queried (query result)
+    #[event]
+    PaymentQueried {
+        /// Payment ID that was queried
+        payment_id: PaymentId,
+        /// Payment data (None if not found)
+        payment: Option<Payment>,
+    },
+
+    /// Customer payments were listed (query result)
+    #[event]
+    CustomerPaymentsListed {
+        /// Customer ID that was queried
+        customer_id: CustomerId,
+        /// List of payments for the customer
+        payments: Vec<Payment>,
     },
 }
 
@@ -299,10 +340,14 @@ impl PaymentReducer {
                 state.last_error = Some(error.clone());
             }
 
-            // Commands don't modify state
+            // Commands and query results don't modify state
             PaymentAction::ProcessPayment { .. }
             | PaymentAction::RefundPayment { .. }
-            | PaymentAction::SimulatePaymentFailure { .. } => {}
+            | PaymentAction::SimulatePaymentFailure { .. }
+            | PaymentAction::GetPayment { .. }
+            | PaymentAction::ListCustomerPayments { .. }
+            | PaymentAction::PaymentQueried { .. }
+            | PaymentAction::CustomerPaymentsListed { .. } => {}
         }
     }
 }
@@ -414,6 +459,39 @@ impl Reducer for PaymentReducer {
                 Self::create_effects(refund, env)
             }
 
+            // ========== Query: Get Payment ==========
+            PaymentAction::GetPayment { payment_id } => {
+                let projection = env.projection.clone();
+                smallvec![Effect::Future(Box::pin(async move {
+                    match projection.load_payment(&payment_id).await {
+                        Ok(payment) => Some(PaymentAction::PaymentQueried {
+                            payment_id,
+                            payment,
+                        }),
+                        Err(e) => Some(PaymentAction::ValidationFailed {
+                            error: format!("Failed to load payment: {e}"),
+                        }),
+                    }
+                }))]
+            }
+
+            // ========== Query: List Customer Payments ==========
+            PaymentAction::ListCustomerPayments { customer_id, limit, offset } => {
+                let projection = env.projection.clone();
+                let customer_id_clone = customer_id;
+                smallvec![Effect::Future(Box::pin(async move {
+                    match projection.load_customer_payments(&customer_id_clone, limit, offset).await {
+                        Ok(payments) => Some(PaymentAction::CustomerPaymentsListed {
+                            customer_id: customer_id_clone,
+                            payments,
+                        }),
+                        Err(e) => Some(PaymentAction::ValidationFailed {
+                            error: format!("Failed to load customer payments: {e}"),
+                        }),
+                    }
+                }))]
+            }
+
             // ========== Events (from event store) ==========
             event => {
                 Self::apply_event(state, &event);
@@ -434,13 +512,16 @@ mod tests {
     #[derive(Clone)]
     struct MockPaymentQuery;
 
+    #[async_trait::async_trait]
     impl PaymentProjectionQuery for MockPaymentQuery {
-        fn load_payment(
-            &self,
-            _payment_id: &PaymentId,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<Payment>, String>> + Send + '_>> {
+        async fn load_payment(&self, _payment_id: &PaymentId) -> Result<Option<Payment>, String> {
             // Return None for tests - state will be built from events
-            Box::pin(async move { Ok(None) })
+            Ok(None)
+        }
+
+        async fn load_customer_payments(&self, _customer_id: &CustomerId, _limit: usize, _offset: usize) -> Result<Vec<Payment>, String> {
+            // Return empty for tests - state will be built from events
+            Ok(Vec::new())
         }
     }
 

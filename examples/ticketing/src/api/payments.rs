@@ -32,6 +32,7 @@ use axum::{
 use chrono::{DateTime, Utc};
 use composable_rust_web::error::AppError;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use uuid::Uuid;
 
 // ============================================================================
@@ -316,13 +317,38 @@ pub async fn get_payment(
     Path(payment_id): Path<Uuid>,
     State(state): State<AppState>,
 ) -> Result<Json<PaymentResponse>, AppError> {
-    // Query payment from projection
-    let payment = state
-        .payments_projection
-        .get_payment(&PaymentId::from_uuid(payment_id))
+    // Query payment through store/reducer pattern
+    let payment_id_typed = PaymentId::from_uuid(payment_id);
+    let store = state.create_payment_store();
+
+    // Send GetPayment query action and wait for PaymentQueried result
+    let result = store
+        .send_and_wait_for(
+            PaymentAction::GetPayment {
+                payment_id: payment_id_typed,
+            },
+            |action| matches!(action, PaymentAction::PaymentQueried { .. }),
+            Duration::from_secs(5),
+        )
         .await
-        .map_err(|e| AppError::internal(format!("Failed to query payment: {e}")))?
-        .ok_or_else(|| AppError::not_found("Payment", payment_id))?;
+        .map_err(|e| AppError::internal(format!("Failed to query payment: {e}")))?;
+
+    // Extract payment from result action
+    let payment = match result {
+        PaymentAction::PaymentQueried {
+            payment_id: _,
+            payment: Some(payment),
+        } => payment,
+        PaymentAction::PaymentQueried {
+            payment_id: _,
+            payment: None,
+        } => {
+            return Err(AppError::not_found("Payment", payment_id));
+        }
+        _ => {
+            return Err(AppError::internal("Unexpected response from payment query"));
+        }
+    };
 
     // Convert payment method to display string
     let payment_method_display = match &payment.payment_method {
@@ -402,13 +428,36 @@ pub async fn refund_payment(
 
     let payment_id_typed = PaymentId::from_uuid(payment_id);
 
-    // Query payment from projection to get current amount and status
-    let payment = state
-        .payments_projection
-        .get_payment(&payment_id_typed)
+    // Query payment through store/reducer pattern to get current amount and status
+    let store = state.create_payment_store();
+
+    let result = store
+        .send_and_wait_for(
+            PaymentAction::GetPayment {
+                payment_id: payment_id_typed,
+            },
+            |action| matches!(action, PaymentAction::PaymentQueried { .. }),
+            Duration::from_secs(5),
+        )
         .await
-        .map_err(|e| AppError::internal(format!("Failed to query payment: {e}")))?
-        .ok_or_else(|| AppError::not_found("Payment", payment_id))?;
+        .map_err(|e| AppError::internal(format!("Failed to query payment: {e}")))?;
+
+    // Extract payment from result action
+    let payment = match result {
+        PaymentAction::PaymentQueried {
+            payment_id: _,
+            payment: Some(payment),
+        } => payment,
+        PaymentAction::PaymentQueried {
+            payment_id: _,
+            payment: None,
+        } => {
+            return Err(AppError::not_found("Payment", payment_id));
+        }
+        _ => {
+            return Err(AppError::internal("Unexpected response from payment query"));
+        }
+    };
 
     // Verify payment is captured (can be refunded)
     if !matches!(payment.status, PaymentStatus::Captured) {
@@ -521,15 +570,36 @@ pub async fn list_user_payments(
     session: SessionUser,
     State(state): State<AppState>,
 ) -> Result<Json<ListPaymentsResponse>, AppError> {
-    // Query payments for the authenticated user from projection
+    // Query payments through store/reducer pattern
     let customer_id = CustomerId::from_uuid(session.user_id.0);
+    let store = state.create_payment_store();
 
     // Get all payments (limit 100 for now, TODO: add pagination query params)
-    let payments = state
-        .payments_projection
-        .list_customer_payments(&customer_id, 100, 0)
+    let result = store
+        .send_and_wait_for(
+            PaymentAction::ListCustomerPayments {
+                customer_id,
+                limit: 100,
+                offset: 0,
+            },
+            |action| matches!(action, PaymentAction::CustomerPaymentsListed { .. }),
+            Duration::from_secs(5),
+        )
         .await
         .map_err(|e| AppError::internal(format!("Failed to query payments: {e}")))?;
+
+    // Extract payments from result action
+    let payments = match result {
+        PaymentAction::CustomerPaymentsListed {
+            customer_id: _,
+            payments,
+        } => payments,
+        _ => {
+            return Err(AppError::internal(
+                "Unexpected response from payments query",
+            ));
+        }
+    };
 
     let total = payments.len();
 

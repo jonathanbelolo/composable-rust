@@ -203,11 +203,15 @@ impl EventProjection {
                 }
             }
 
-            // Commands don't modify projection state
-            EventAction::UpdateEvent { .. } => {}
+            // Commands and query actions don't modify projection state
+            EventAction::UpdateEvent { .. }
+            | EventAction::GetEvent { .. }
+            | EventAction::ListEvents { .. } => {}
 
-            // Validation failures don't affect projection
-            EventAction::ValidationFailed { .. } => {}
+            // Query results and validation failures don't affect projection
+            EventAction::EventQueried { .. }
+            | EventAction::EventsListed { .. }
+            | EventAction::ValidationFailed { .. } => {}
         }
     }
 

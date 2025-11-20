@@ -90,19 +90,19 @@ impl PostgresPaymentQuery {
     }
 }
 
+#[async_trait::async_trait]
 impl PaymentProjectionQuery for PostgresPaymentQuery {
-    fn load_payment(
-        &self,
-        payment_id: &PaymentId,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<Payment>, String>> + Send + '_>> {
-        let payments = self.payments.clone();
-        let payment_id = *payment_id;
-        Box::pin(async move {
-            payments
-                .get_payment(&payment_id)
-                .await
-                .map_err(|e| e.to_string())
-        })
+    async fn load_payment(&self, payment_id: &PaymentId) -> Result<Option<Payment>, String> {
+        self.payments
+            .get_payment(payment_id)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    async fn load_customer_payments(&self, customer_id: &CustomerId, limit: usize, offset: usize) -> Result<Vec<Payment>, String> {
+        self.payments
+            .load_customer_payments(customer_id, limit, offset)
+            .await
     }
 }
 

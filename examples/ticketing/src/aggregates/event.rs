@@ -82,6 +82,20 @@ pub enum EventAction {
         name: Option<String>,
     },
 
+    /// Query a single event by ID
+    #[command]
+    GetEvent {
+        /// Event ID to query
+        event_id: EventId,
+    },
+
+    /// Query events with optional status filter
+    #[command]
+    ListEvents {
+        /// Optional status filter
+        status_filter: Option<EventStatus>,
+    },
+
     // Events
     /// Event was created
     #[event]
@@ -157,6 +171,51 @@ pub enum EventAction {
         /// Error message
         error: String,
     },
+
+    /// Event was queried (query result)
+    #[event]
+    EventQueried {
+        /// Event ID that was queried
+        event_id: EventId,
+        /// Event data (None if not found)
+        event: Option<Event>,
+    },
+
+    /// Events were listed (query result)
+    #[event]
+    EventsListed {
+        /// List of events
+        events: Vec<Event>,
+        /// Status filter that was applied
+        status_filter: Option<EventStatus>,
+    },
+}
+
+// ============================================================================
+// Projection Query Trait
+// ============================================================================
+
+/// Event projection query trait for loading event state.
+///
+/// This trait abstracts projection queries to enable:
+/// - Dependency injection (pass mocks in tests)
+/// - Query actions flowing through reducer
+/// - Business logic on read operations
+#[async_trait::async_trait]
+pub trait EventProjectionQuery: Send + Sync {
+    /// Load a single event by ID
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database query fails
+    async fn load_event(&self, event_id: &EventId) -> Result<Option<Event>, String>;
+
+    /// Load events with optional status filter
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database query fails
+    async fn load_events(&self, status_filter: Option<EventStatus>) -> Result<Vec<Event>, String>;
 }
 
 // ============================================================================
@@ -174,6 +233,8 @@ pub struct EventEnvironment {
     pub event_bus: Arc<dyn EventBus>,
     /// Stream ID for this aggregate instance
     pub stream_id: StreamId,
+    /// Projection for querying event state
+    pub projection: Arc<dyn EventProjectionQuery>,
 }
 
 impl EventEnvironment {
@@ -184,12 +245,14 @@ impl EventEnvironment {
         event_store: Arc<dyn EventStore>,
         event_bus: Arc<dyn EventBus>,
         stream_id: StreamId,
+        projection: Arc<dyn EventProjectionQuery>,
     ) -> Self {
         Self {
             clock,
             event_store,
             event_bus,
             stream_id,
+            projection,
         }
     }
 }
@@ -445,13 +508,17 @@ impl EventReducer {
             EventAction::ValidationFailed { error } => {
                 state.last_error = Some(error.clone());
             }
-            // Commands don't modify state
+            // Commands and query results don't modify state
             EventAction::CreateEvent { .. }
             | EventAction::PublishEvent { .. }
             | EventAction::OpenSales { .. }
             | EventAction::CloseSales { .. }
             | EventAction::CancelEvent { .. }
-            | EventAction::UpdateEvent { .. } => {}
+            | EventAction::UpdateEvent { .. }
+            | EventAction::GetEvent { .. }
+            | EventAction::ListEvents { .. }
+            | EventAction::EventQueried { .. }
+            | EventAction::EventsListed { .. } => {}
         }
     }
 }
@@ -602,6 +669,34 @@ impl Reducer for EventReducer {
                 Self::create_effects(event, env)
             }
 
+            // ========== Query Commands ==========
+            EventAction::GetEvent { event_id } => {
+                let projection = env.projection.clone();
+                smallvec![Effect::Future(Box::pin(async move {
+                    match projection.load_event(&event_id).await {
+                        Ok(event) => Some(EventAction::EventQueried { event_id, event }),
+                        Err(e) => Some(EventAction::ValidationFailed {
+                            error: format!("Failed to load event: {e}"),
+                        }),
+                    }
+                }))]
+            }
+
+            EventAction::ListEvents { status_filter } => {
+                let projection = env.projection.clone();
+                smallvec![Effect::Future(Box::pin(async move {
+                    match projection.load_events(status_filter).await {
+                        Ok(events) => Some(EventAction::EventsListed {
+                            events,
+                            status_filter,
+                        }),
+                        Err(e) => Some(EventAction::ValidationFailed {
+                            error: format!("Failed to load events: {e}"),
+                        }),
+                    }
+                }))]
+            }
+
             // ========== Events (from event store replay) ==========
             event => {
                 Self::apply_event(state, &event);
@@ -623,12 +718,27 @@ mod tests {
         ReducerTest,
     };
 
+    /// Mock projection for testing
+    struct MockEventProjection;
+
+    #[async_trait::async_trait]
+    impl EventProjectionQuery for MockEventProjection {
+        async fn load_event(&self, _event_id: &EventId) -> Result<Option<Event>, String> {
+            Ok(None) // Tests don't need actual projection data
+        }
+
+        async fn load_events(&self, _status_filter: Option<EventStatus>) -> Result<Vec<Event>, String> {
+            Ok(Vec::new()) // Tests don't need actual projection data
+        }
+    }
+
     fn create_test_env() -> EventEnvironment {
         EventEnvironment::new(
             Arc::new(SystemClock),
             Arc::new(InMemoryEventStore::new()),
             Arc::new(InMemoryEventBus::new()),
             StreamId::new("test-stream"),
+            Arc::new(MockEventProjection),
         )
     }
 

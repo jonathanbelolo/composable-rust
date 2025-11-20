@@ -317,6 +317,7 @@ impl AppState {
             self.event_store.clone(),
             self.event_bus.clone(),
             StreamId::new("event"),
+            self.events_projection.clone(),
         );
 
         Store::new(EventState::new(), EventReducer::new(), env)

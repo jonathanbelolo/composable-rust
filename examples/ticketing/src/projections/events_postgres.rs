@@ -3,9 +3,10 @@
 //! Stores full `Event` domain objects as JSONB for simplicity.
 //! Much simpler than denormalized schema - just serialize/deserialize.
 
+use crate::aggregates::event::EventProjectionQuery;
 use crate::aggregates::EventAction;
 use crate::projections::TicketingEvent;
-use crate::types::Event;
+use crate::types::{Event, EventId, EventStatus};
 use composable_rust_core::projection::{Projection, ProjectionError};
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -183,5 +184,22 @@ impl Projection for PostgresEventsProjection {
         }
 
         Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl EventProjectionQuery for PostgresEventsProjection {
+    async fn load_event(&self, event_id: &EventId) -> Result<Option<Event>, String> {
+        self.get(event_id.as_uuid())
+            .await
+            .map_err(|e| format!("Failed to load event: {e}"))
+    }
+
+    async fn load_events(&self, status_filter: Option<EventStatus>) -> Result<Vec<Event>, String> {
+        // Convert EventStatus to string representation (e.g., "Draft", "Published")
+        let status_str = status_filter.as_ref().map(|s| format!("{s:?}"));
+        self.list(status_str.as_deref())
+            .await
+            .map_err(|e| format!("Failed to load events: {e}"))
     }
 }
