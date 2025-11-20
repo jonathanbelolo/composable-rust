@@ -441,6 +441,7 @@ impl ApplicationBuilder {
             reservation_query,
             events_projection,
             reservations_projection,
+            payments_projection,
             available_seats_projection,
             projection_system.sales_analytics,
             projection_system.customer_history,

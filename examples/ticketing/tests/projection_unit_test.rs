@@ -19,6 +19,7 @@
 //! cargo test --test projection_unit_test
 //! ```
 
+use composable_rust_auth::state::UserId;
 use composable_rust_core::projection::Projection;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -714,6 +715,7 @@ async fn test_events_projection_event_created() {
     let event = TicketingEvent::Event(EventAction::EventCreated {
         id: event_id,
         name: "Test Concert".to_string(),
+        owner_id: UserId::new(),
         venue: venue.clone(),
         date: EventDate::new(chrono::Utc::now() + chrono::Duration::days(30)),
         pricing_tiers: pricing_tiers.clone(),
@@ -757,6 +759,7 @@ async fn test_events_projection_event_published() {
     let create_event = TicketingEvent::Event(EventAction::EventCreated {
         id: event_id,
         name: "Test Concert".to_string(),
+        owner_id: UserId::new(),
         venue: create_test_venue(50, 200),
         date: EventDate::new(chrono::Utc::now() + chrono::Duration::days(30)),
         pricing_tiers: create_test_pricing_tiers(),
@@ -791,6 +794,7 @@ async fn test_events_projection_sales_opened() {
         .apply_event(&TicketingEvent::Event(EventAction::EventCreated {
             id: event_id,
             name: "Test Concert".to_string(),
+            owner_id: UserId::new(),
             venue: create_test_venue(50, 200),
             date: EventDate::new(chrono::Utc::now() + chrono::Duration::days(30)),
             pricing_tiers: create_test_pricing_tiers(),
@@ -828,6 +832,7 @@ async fn test_events_projection_sales_closed() {
         .apply_event(&TicketingEvent::Event(EventAction::EventCreated {
             id: event_id,
             name: "Test Concert".to_string(),
+            owner_id: UserId::new(),
             venue: create_test_venue(50, 200),
             date: EventDate::new(chrono::Utc::now() + chrono::Duration::days(30)),
             pricing_tiers: create_test_pricing_tiers(),
@@ -865,6 +870,7 @@ async fn test_events_projection_event_cancelled() {
         .apply_event(&TicketingEvent::Event(EventAction::EventCreated {
             id: event_id,
             name: "Test Concert".to_string(),
+            owner_id: UserId::new(),
             venue: create_test_venue(50, 200),
             date: EventDate::new(chrono::Utc::now() + chrono::Duration::days(30)),
             pricing_tiers: create_test_pricing_tiers(),
@@ -913,6 +919,7 @@ async fn test_events_projection_list_with_filter() {
         .apply_event(&TicketingEvent::Event(EventAction::EventCreated {
             id: event1,
             name: "Filter Test 1".to_string(),
+            owner_id: UserId::new(),
             venue: create_test_venue(50, 200),
             date: EventDate::new(chrono::Utc::now() + chrono::Duration::days(30)),
             pricing_tiers: create_test_pricing_tiers(),
@@ -926,6 +933,7 @@ async fn test_events_projection_list_with_filter() {
         .apply_event(&TicketingEvent::Event(EventAction::EventCreated {
             id: event2,
             name: "Filter Test 2".to_string(),
+            owner_id: UserId::new(),
             venue: create_test_venue(50, 200),
             date: EventDate::new(chrono::Utc::now() + chrono::Duration::days(30)),
             pricing_tiers: create_test_pricing_tiers(),
@@ -946,6 +954,7 @@ async fn test_events_projection_list_with_filter() {
         .apply_event(&TicketingEvent::Event(EventAction::EventCreated {
             id: event3,
             name: "Filter Test 3".to_string(),
+            owner_id: UserId::new(),
             venue: create_test_venue(50, 200),
             date: EventDate::new(chrono::Utc::now() + chrono::Duration::days(30)),
             pricing_tiers: create_test_pricing_tiers(),

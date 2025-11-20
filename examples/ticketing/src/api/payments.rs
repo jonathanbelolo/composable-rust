@@ -314,21 +314,34 @@ pub async fn process_payment(
 /// ```
 pub async fn get_payment(
     Path(payment_id): Path<Uuid>,
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
 ) -> Result<Json<PaymentResponse>, AppError> {
-    // TODO: Query payment state from event store or projection
+    // Query payment from projection
+    let payment = state
+        .payments_projection
+        .get_payment(&PaymentId::from_uuid(payment_id))
+        .await
+        .map_err(|e| AppError::internal(format!("Failed to query payment: {e}")))?
+        .ok_or_else(|| AppError::not_found("Payment", payment_id))?;
 
-    // Placeholder: return stub data for testing
+    // Convert payment method to display string
+    let payment_method_display = match &payment.payment_method {
+        PaymentMethod::CreditCard { last_four } => format!("Credit Card (****{last_four})"),
+        PaymentMethod::PayPal { email } => format!("PayPal ({email})"),
+        PaymentMethod::ApplePay => "Apple Pay".to_string(),
+    };
+
+    // Convert domain Payment to API PaymentResponse
     Ok(Json(PaymentResponse {
-        id: payment_id,
-        reservation_id: Uuid::new_v4(), // TODO: Get from actual payment record
-        customer_id: Uuid::new_v4(),    // TODO: Get from actual payment record
-        amount: 200.0,
-        payment_method: "Credit Card (****4242)".to_string(),
-        status: PaymentStatus::Captured,
-        transaction_id: Some("txn_1234567890".to_string()),
-        created_at: Utc::now(),
-        processed_at: Some(Utc::now()),
+        id: *payment.id.as_uuid(),
+        reservation_id: *payment.reservation_id.as_uuid(),
+        customer_id: *payment.customer_id.as_uuid(),
+        amount: payment.amount.dollars() as f64,
+        payment_method: payment_method_display,
+        status: payment.status,
+        transaction_id: None, // TODO: Add transaction_id to Payment domain model
+        created_at: payment.processed_at.unwrap_or_else(Utc::now),
+        processed_at: payment.processed_at,
     }))
 }
 
@@ -367,7 +380,7 @@ pub async fn get_payment(
 pub async fn refund_payment(
     ownership: RequireOwnership<PaymentId>,
     Path(payment_id): Path<Uuid>,
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(request): Json<RefundPaymentRequest>,
 ) -> Result<Json<RefundPaymentResponse>, AppError> {
     // Ownership verified by RequireOwnership extractor
@@ -387,14 +400,69 @@ pub async fn refund_payment(
         return Err(AppError::bad_request("Refund reason is required"));
     }
 
-    // TODO: Verify payment exists (should already be verified by ownership check)
-    // TODO: Check refund policy eligibility (event date, refund window)
-    // TODO: Send RefundPayment command to payment aggregate
+    let payment_id_typed = PaymentId::from_uuid(payment_id);
 
-    let _ = ownership;
+    // Query payment from projection to get current amount and status
+    let payment = state
+        .payments_projection
+        .get_payment(&payment_id_typed)
+        .await
+        .map_err(|e| AppError::internal(format!("Failed to query payment: {e}")))?
+        .ok_or_else(|| AppError::not_found("Payment", payment_id))?;
 
-    // Placeholder
-    Err(AppError::not_found("Payment", payment_id))
+    // Verify payment is captured (can be refunded)
+    if !matches!(payment.status, PaymentStatus::Captured) {
+        return Err(AppError::bad_request(
+            "Payment cannot be refunded. Only captured payments can be refunded.",
+        ));
+    }
+
+    // Determine refund amount (full or partial)
+    let refund_amount = match request.amount {
+        Some(amount) => {
+            let requested = Money::from_dollars(amount as u64);
+            if requested > payment.amount {
+                return Err(AppError::bad_request(
+                    "Refund amount cannot exceed payment amount",
+                ));
+            }
+            requested
+        }
+        None => payment.amount, // Full refund
+    };
+
+    // TODO (Phase 12.5): Check refund policy eligibility
+    // - Event date must be at least 7 days away for customer refunds
+    // - Admins can override refund policy
+    // This requires querying the reservation and event from projections
+
+    // Create Payment store for this request
+    let store = state.create_payment_store();
+
+    // Build RefundPayment action
+    let action = PaymentAction::RefundPayment {
+        payment_id: payment_id_typed,
+        amount: refund_amount,
+        reason: request.reason.clone(),
+    };
+
+    // Send action to store (Store executes effects automatically)
+    store
+        .send(action)
+        .await
+        .map_err(|e| AppError::internal(format!("Failed to process refund: {e}")))?;
+
+    let _ = ownership; // Ownership was used by extractor
+
+    // Return success response
+    Ok(Json(RefundPaymentResponse {
+        payment_id,
+        refund_amount: refund_amount.dollars() as f64,
+        status: PaymentStatus::Refunded {
+            amount: refund_amount,
+        },
+        message: "Refund processed successfully".to_string(),
+    }))
 }
 
 /// List user's payments.
@@ -451,14 +519,43 @@ pub struct PaymentSummary {
 /// List all payments for the authenticated user.
 pub async fn list_user_payments(
     session: SessionUser,
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
 ) -> Result<Json<ListPaymentsResponse>, AppError> {
-    // TODO: Query payments for session.user_id from projection
-    let _ = session;
+    // Query payments for the authenticated user from projection
+    let customer_id = CustomerId::from_uuid(session.user_id.0);
 
-    // Placeholder
+    // Get all payments (limit 100 for now, TODO: add pagination query params)
+    let payments = state
+        .payments_projection
+        .list_customer_payments(&customer_id, 100, 0)
+        .await
+        .map_err(|e| AppError::internal(format!("Failed to query payments: {e}")))?;
+
+    let total = payments.len();
+
+    // Convert domain Payments to API PaymentSummary
+    let payment_summaries: Vec<PaymentSummary> = payments
+        .into_iter()
+        .map(|payment| {
+            let payment_method_display = match &payment.payment_method {
+                PaymentMethod::CreditCard { last_four } => format!("Credit Card (****{last_four})"),
+                PaymentMethod::PayPal { email } => format!("PayPal ({email})"),
+                PaymentMethod::ApplePay => "Apple Pay".to_string(),
+            };
+
+            PaymentSummary {
+                id: *payment.id.as_uuid(),
+                reservation_id: *payment.reservation_id.as_uuid(),
+                amount: payment.amount.dollars() as f64,
+                payment_method: payment_method_display,
+                status: payment.status,
+                created_at: payment.processed_at.unwrap_or_else(Utc::now),
+            }
+        })
+        .collect();
+
     Ok(Json(ListPaymentsResponse {
-        payments: vec![],
-        total: 0,
+        payments: payment_summaries,
+        total,
     }))
 }
