@@ -115,6 +115,7 @@ impl EventProjection {
             EventAction::CreateEvent {
                 id,
                 name,
+                owner_id,
                 venue,
                 date,
                 pricing_tiers,
@@ -124,6 +125,7 @@ impl EventProjection {
                 let event = Event::new(
                     *id,
                     name.clone(),
+                    *owner_id,
                     venue.clone(),
                     *date,
                     pricing_tiers.clone(),
@@ -156,6 +158,7 @@ impl EventProjection {
             EventAction::EventCreated {
                 id,
                 name,
+                owner_id,
                 venue,
                 date,
                 pricing_tiers,
@@ -164,6 +167,7 @@ impl EventProjection {
                 let event = Event::new(
                     *id,
                     name.clone(),
+                    *owner_id,
                     venue.clone(),
                     *date,
                     pricing_tiers.clone(),
@@ -191,6 +195,16 @@ impl EventProjection {
                     event.status = EventStatus::Cancelled;
                 }
             }
+            EventAction::EventUpdated { event_id, name, .. } => {
+                if let Some(event) = self.events.get_mut(event_id) {
+                    if let Some(new_name) = name {
+                        event.name = new_name.clone();
+                    }
+                }
+            }
+
+            // Commands don't modify projection state
+            EventAction::UpdateEvent { .. } => {}
 
             // Validation failures don't affect projection
             EventAction::ValidationFailed { .. } => {}
@@ -209,6 +223,7 @@ mod tests {
     use super::*;
     use crate::types::{Capacity, EventDate, Money, PricingTier, TierType, Venue, VenueSection, SeatType};
     use chrono::Utc;
+    use composable_rust_auth::state::UserId;
 
     fn create_test_venue() -> Venue {
         Venue::new(
@@ -240,6 +255,7 @@ mod tests {
         let action = EventAction::EventCreated {
             id: event_id,
             name: "Test Concert".to_string(),
+            owner_id: UserId::new(),
             venue: create_test_venue(),
             date: EventDate::new(Utc::now()),
             pricing_tiers: create_test_pricing(),
@@ -263,6 +279,7 @@ mod tests {
         projection.apply_event_action(&EventAction::EventCreated {
             id: event_id,
             name: "Concert".to_string(),
+            owner_id: UserId::new(),
             venue: create_test_venue(),
             date: EventDate::new(Utc::now()),
             pricing_tiers: create_test_pricing(),
@@ -302,6 +319,7 @@ mod tests {
         projection.apply_event_action(&EventAction::EventCreated {
             id: draft_id,
             name: "Draft Event".to_string(),
+            owner_id: UserId::new(),
             venue: create_test_venue(),
             date: EventDate::new(Utc::now()),
             pricing_tiers: create_test_pricing(),
@@ -313,6 +331,7 @@ mod tests {
         projection.apply_event_action(&EventAction::EventCreated {
             id: published_id,
             name: "Published Event".to_string(),
+            owner_id: UserId::new(),
             venue: create_test_venue(),
             date: EventDate::new(Utc::now()),
             pricing_tiers: create_test_pricing(),
@@ -348,6 +367,7 @@ mod tests {
             projection.apply_event_action(&EventAction::EventCreated {
                 id: event_id,
                 name: format!("Event {i}"),
+                owner_id: UserId::new(),
                 venue: create_test_venue(),
                 date: EventDate::new(Utc::now()),
                 pricing_tiers: create_test_pricing(),

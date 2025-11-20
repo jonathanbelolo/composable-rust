@@ -202,6 +202,7 @@ pub async fn create_event(
     let action = EventAction::CreateEvent {
         id: event_id,
         name: request.title,
+        owner_id: session.user_id,
         venue,
         date,
         pricing_tiers,
@@ -212,8 +213,6 @@ pub async fn create_event(
         .send(action)
         .await
         .map_err(|e| AppError::internal(format!("Failed to create event: {e}")))?;
-
-    let _ = session; // TODO: Use session.user_id as organizer_id in future
 
     Ok((
         StatusCode::CREATED,
@@ -342,33 +341,69 @@ pub async fn update_event(
     State(state): State<AppState>,
     Json(request): Json<UpdateEventRequest>,
 ) -> Result<Json<EventResponse>, AppError> {
-    // TODO: Implement RequireOwnership extractor to verify ownership automatically
-    // Check if event exists
-    let _event = state
+    // Check if event exists and get it
+    let event = state
         .events_projection
         .get(&event_id)
         .await
         .map_err(|e| AppError::internal(format!("Failed to query event: {e}")))?
         .ok_or_else(|| AppError::not_found("Event", event_id))?;
 
-    // TODO: Implement UpdateEvent action in Event aggregate
-    // Current domain model limitations:
-    // - Event doesn't have `description` field (only `name`)
-    // - Event doesn't have separate `start_time`/`end_time` (only single `date`)
-    // - No UpdateEvent command exists in EventAction enum
-    //
-    // To fully implement this endpoint:
-    // 1. Add `description`, `start_time`, `end_time` fields to Event domain model
-    // 2. Add UpdateEvent command and EventUpdated event to EventAction
-    // 3. Implement reducer logic in EventReducer
-    // 4. Update EventCreated event to include new fields
-    // 5. Update projection to handle EventUpdated
-    let _ = (session, request);
+    // Verify ownership: only the event owner can update it
+    if event.owner_id != session.user_id {
+        return Err(AppError::forbidden(
+            "You do not have permission to update this event. Only the event owner can update it.",
+        ));
+    }
 
-    Err(AppError::internal(
-        "Event updates not yet supported - domain model needs enhancement. \
-         See src/api/events.rs:update_event() for TODO details.",
-    ))
+    // Map API request fields to domain UpdateEvent command
+    // Note: Currently only `title` -> `name` is supported in the domain model
+    // TODO: Add support for description, start_time, end_time to Event domain model
+    let name = request.title;
+
+    // Validate that at least one field is being updated
+    if name.is_none() {
+        return Err(AppError::bad_request(
+            "At least one field must be provided to update the event",
+        ));
+    }
+
+    // Create event store and send UpdateEvent action
+    use crate::aggregates::event::EventAction;
+    use crate::types::EventId;
+
+    let event_store = state.create_event_store();
+    let action = EventAction::UpdateEvent {
+        event_id: EventId::from_uuid(event_id),
+        name,
+    };
+
+    event_store
+        .send(action)
+        .await
+        .map_err(|e| AppError::internal(format!("Failed to update event: {e}")))?;
+
+    // Query the updated event from projection
+    let updated_event = state
+        .events_projection
+        .get(&event_id)
+        .await
+        .map_err(|e| AppError::internal(format!("Failed to query updated event: {e}")))?
+        .ok_or_else(|| AppError::not_found("Event", event_id))?;
+
+    // Convert to EventResponse
+    let response = EventResponse {
+        id: *updated_event.id.as_uuid(),
+        title: updated_event.name,
+        description: String::from("Event description not yet available"), // TODO: Add description field to Event domain model
+        start_time: updated_event.date.inner(),
+        end_time: updated_event.date.inner(), // TODO: Add separate end_time to Event domain model
+        venue_name: updated_event.venue.name,
+        status: updated_event.status,
+        created_at: updated_event.created_at,
+    };
+
+    Ok(Json(response))
 }
 
 /// Delete an event.
@@ -386,14 +421,20 @@ pub async fn delete_event(
     Path(event_id): Path<Uuid>,
     State(state): State<AppState>,
 ) -> Result<StatusCode, AppError> {
-    // TODO: Implement RequireOwnership extractor to verify ownership automatically
-    // For now, just check if event exists (ownership check is deferred)
-    let _event = state
+    // Check if event exists and get it
+    let event = state
         .events_projection
         .get(&event_id)
         .await
         .map_err(|e| AppError::internal(format!("Failed to query event: {e}")))?
         .ok_or_else(|| AppError::not_found("Event", event_id))?;
+
+    // Verify ownership: only the event owner can delete it
+    if event.owner_id != session.user_id {
+        return Err(AppError::forbidden(
+            "You do not have permission to delete this event. Only the event owner can delete it.",
+        ));
+    }
 
     // Send CancelEvent action to event aggregate
     use crate::aggregates::event::EventAction;

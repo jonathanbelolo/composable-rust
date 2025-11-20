@@ -96,6 +96,7 @@ impl Projection for PostgresEventsProjection {
                 EventAction::EventCreated {
                     id,
                     name,
+                    owner_id,
                     venue,
                     date,
                     pricing_tiers,
@@ -104,6 +105,7 @@ impl Projection for PostgresEventsProjection {
                     let domain_event = Event::new(
                         *id,
                         name.clone(),
+                        *owner_id,
                         venue.clone(),
                         *date,
                         pricing_tiers.clone(),
@@ -114,13 +116,15 @@ impl Projection for PostgresEventsProjection {
                         .map_err(|e| ProjectionError::Serialization(e.to_string()))?;
 
                     sqlx::query(
-                        "INSERT INTO events_projection (id, data, created_at, updated_at)
-                         VALUES ($1, $2, $3, $4)
+                        "INSERT INTO events_projection (id, owner_id, data, created_at, updated_at)
+                         VALUES ($1, $2, $3, $4, $5)
                          ON CONFLICT (id) DO UPDATE SET
+                            owner_id = EXCLUDED.owner_id,
                             data = EXCLUDED.data,
                             updated_at = EXCLUDED.updated_at"
                     )
                     .bind(id.as_uuid())
+                    .bind(&owner_id.0)
                     .bind(&json)
                     .bind(created_at)
                     .bind(chrono::Utc::now())
@@ -153,6 +157,24 @@ impl Projection for PostgresEventsProjection {
                     .execute(&*self.pool)
                     .await
                     .map_err(|e| ProjectionError::Storage(e.to_string()))?;
+                }
+                EventAction::EventUpdated { event_id, name, .. } => {
+                    // Update the name field in the JSONB if provided
+                    if let Some(new_name) = name {
+                        sqlx::query(
+                            "UPDATE events_projection
+                             SET data = jsonb_set(data, '{name}', $2::jsonb, false),
+                                 updated_at = $3
+                             WHERE id = $1"
+                        )
+                        .bind(event_id.as_uuid())
+                        .bind(serde_json::to_string(new_name)
+                            .map_err(|e| ProjectionError::Serialization(e.to_string()))?)
+                        .bind(chrono::Utc::now())
+                        .execute(&*self.pool)
+                        .await
+                        .map_err(|e| ProjectionError::Storage(e.to_string()))?;
+                    }
                 }
                 _ => {
                     // Ignore commands and validation failures

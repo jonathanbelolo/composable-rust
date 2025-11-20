@@ -6,6 +6,7 @@
 use crate::projections::TicketingEvent;
 use crate::types::{Event, EventDate, EventId, EventState, EventStatus, PricingTier, Venue};
 use chrono::{DateTime, Duration, Utc};
+use composable_rust_auth::state::UserId;
 use composable_rust_core::{
     append_events, effect::Effect, environment::Clock, event_bus::EventBus,
     event_store::EventStore, publish_event, reducer::Reducer, smallvec, stream::StreamId, SmallVec,
@@ -32,6 +33,8 @@ pub enum EventAction {
         id: EventId,
         /// Event name
         name: String,
+        /// Event owner (user creating the event)
+        owner_id: UserId,
         /// Venue information
         venue: Venue,
         /// Event date
@@ -70,6 +73,15 @@ pub enum EventAction {
         reason: String,
     },
 
+    /// Update an event's details
+    #[command]
+    UpdateEvent {
+        /// Event to update
+        event_id: EventId,
+        /// New name (if provided)
+        name: Option<String>,
+    },
+
     // Events
     /// Event was created
     #[event]
@@ -78,6 +90,8 @@ pub enum EventAction {
         id: EventId,
         /// Event name
         name: String,
+        /// Event owner (user who created the event)
+        owner_id: UserId,
         /// Venue information
         venue: Venue,
         /// Event date
@@ -124,6 +138,17 @@ pub enum EventAction {
         reason: String,
         /// When cancelled
         cancelled_at: DateTime<Utc>,
+    },
+
+    /// Event details were updated
+    #[event]
+    EventUpdated {
+        /// Event ID
+        event_id: EventId,
+        /// New name (if changed)
+        name: Option<String>,
+        /// When updated
+        updated_at: DateTime<Utc>,
     },
 
     /// Command validation failed
@@ -347,12 +372,27 @@ impl EventReducer {
         Ok(())
     }
 
+    /// Validates that an event can be updated
+    fn validate_update_event(state: &EventState, event_id: &EventId) -> Result<(), String> {
+        let Some(event) = state.get(event_id) else {
+            return Err(format!("Event {event_id} not found"));
+        };
+
+        // Cannot update cancelled events
+        if event.status == EventStatus::Cancelled {
+            return Err("Cannot update cancelled event".to_string());
+        }
+
+        Ok(())
+    }
+
     /// Applies an event to state
     fn apply_event(state: &mut EventState, action: &EventAction) {
         match action {
             EventAction::EventCreated {
                 id,
                 name,
+                owner_id,
                 venue,
                 date,
                 pricing_tiers,
@@ -361,6 +401,7 @@ impl EventReducer {
                 let event = Event::new(
                     *id,
                     name.clone(),
+                    *owner_id,
                     venue.clone(),
                     *date,
                     pricing_tiers.clone(),
@@ -393,6 +434,14 @@ impl EventReducer {
                 }
                 state.last_error = None;
             }
+            EventAction::EventUpdated { event_id, name, .. } => {
+                if let Some(event) = state.events.get_mut(event_id) {
+                    if let Some(new_name) = name {
+                        event.name = new_name.clone();
+                    }
+                }
+                state.last_error = None;
+            }
             EventAction::ValidationFailed { error } => {
                 state.last_error = Some(error.clone());
             }
@@ -401,7 +450,8 @@ impl EventReducer {
             | EventAction::PublishEvent { .. }
             | EventAction::OpenSales { .. }
             | EventAction::CloseSales { .. }
-            | EventAction::CancelEvent { .. } => {}
+            | EventAction::CancelEvent { .. }
+            | EventAction::UpdateEvent { .. } => {}
         }
     }
 }
@@ -428,6 +478,7 @@ impl Reducer for EventReducer {
             EventAction::CreateEvent {
                 id,
                 name,
+                owner_id,
                 venue,
                 date,
                 pricing_tiers,
@@ -444,6 +495,7 @@ impl Reducer for EventReducer {
                 let event = EventAction::EventCreated {
                     id,
                     name,
+                    owner_id,
                     venue,
                     date,
                     pricing_tiers,
@@ -524,6 +576,32 @@ impl Reducer for EventReducer {
                 Self::create_effects(event, env)
             }
 
+            EventAction::UpdateEvent { event_id, name } => {
+                // Validate: event must exist and not be cancelled
+                if let Err(error) = Self::validate_update_event(state, &event_id) {
+                    Self::apply_event(state, &EventAction::ValidationFailed { error });
+                    return SmallVec::new();
+                }
+
+                // Check if there's actually anything to update
+                if name.is_none() {
+                    Self::apply_event(state, &EventAction::ValidationFailed {
+                        error: "No fields to update".to_string(),
+                    });
+                    return SmallVec::new();
+                }
+
+                // Create and apply event
+                let event = EventAction::EventUpdated {
+                    event_id,
+                    name,
+                    updated_at: env.clock.now(),
+                };
+                Self::apply_event(state, &event);
+
+                Self::create_effects(event, env)
+            }
+
             // ========== Events (from event store replay) ==========
             event => {
                 Self::apply_event(state, &event);
@@ -587,6 +665,7 @@ mod tests {
             .when_action(EventAction::CreateEvent {
                 id,
                 name: "Taylor Swift Concert".to_string(),
+                owner_id: UserId::new(),
                 venue: create_test_venue(),
                 date: event_date,
                 pricing_tiers: create_test_pricing_tiers(),
@@ -615,6 +694,7 @@ mod tests {
             .when_action(EventAction::CreateEvent {
                 id,
                 name: String::new(),
+                owner_id: UserId::new(),
                 venue: create_test_venue(),
                 date: EventDate::new(Utc::now() + Duration::days(30)),
                 pricing_tiers: create_test_pricing_tiers(),
@@ -644,6 +724,7 @@ mod tests {
             .when_action(EventAction::CreateEvent {
                 id,
                 name: "Test Event".to_string(),
+                owner_id: UserId::new(),
                 venue,
                 date: EventDate::new(Utc::now() + Duration::days(30)),
                 pricing_tiers: create_test_pricing_tiers(),
@@ -671,6 +752,7 @@ mod tests {
                 let event = Event::new(
                     id,
                     "Test Event".to_string(),
+                    UserId::new(),
                     create_test_venue(),
                     EventDate::new(Utc::now() + Duration::days(30)),
                     create_test_pricing_tiers(),
@@ -706,6 +788,7 @@ mod tests {
             EventAction::CreateEvent {
                 id,
                 name: "Concert".to_string(),
+                owner_id: UserId::new(),
                 venue: create_test_venue(),
                 date: EventDate::new(Utc::now() + Duration::days(30)),
                 pricing_tiers: create_test_pricing_tiers(),
@@ -725,5 +808,137 @@ mod tests {
         // 4. Close sales
         reducer.reduce(&mut state, EventAction::CloseSales { event_id: id }, &env);
         assert_eq!(state.get(&id).unwrap().status, EventStatus::SalesClosed);
+    }
+
+    #[test]
+    fn test_update_event_success() {
+        let id = EventId::new();
+        let owner_id = UserId::new();
+
+        ReducerTest::new(EventReducer::new())
+            .with_env(create_test_env())
+            .given_state({
+                let mut state = EventState::new();
+                let event = Event::new(
+                    id,
+                    "Original Name".to_string(),
+                    owner_id,
+                    create_test_venue(),
+                    EventDate::new(Utc::now() + Duration::days(30)),
+                    create_test_pricing_tiers(),
+                    Utc::now(),
+                );
+                state.events.insert(id, event);
+                state
+            })
+            .when_action(EventAction::UpdateEvent {
+                event_id: id,
+                name: Some("Updated Name".to_string()),
+            })
+            .then_state(move |state| {
+                let event = state.get(&id).unwrap();
+                assert_eq!(event.name, "Updated Name");
+                assert!(state.last_error.is_none());
+            })
+            .then_effects(|effects| assertions::assert_effects_count(effects, 2))
+            .run();
+    }
+
+    #[test]
+    fn test_update_event_not_found() {
+        let non_existent_id = EventId::new();
+
+        ReducerTest::new(EventReducer::new())
+            .with_env(create_test_env())
+            .given_state(EventState::new())
+            .when_action(EventAction::UpdateEvent {
+                event_id: non_existent_id,
+                name: Some("New Name".to_string()),
+            })
+            .then_state(|state| {
+                assert_eq!(state.count(), 0);
+                assert!(state
+                    .last_error
+                    .as_ref()
+                    .unwrap()
+                    .contains("not found"));
+            })
+            .then_effects(assertions::assert_no_effects)
+            .run();
+    }
+
+    #[test]
+    fn test_update_cancelled_event_fails() {
+        let id = EventId::new();
+        let owner_id = UserId::new();
+
+        ReducerTest::new(EventReducer::new())
+            .with_env(create_test_env())
+            .given_state({
+                let mut state = EventState::new();
+                let mut event = Event::new(
+                    id,
+                    "Cancelled Event".to_string(),
+                    owner_id,
+                    create_test_venue(),
+                    EventDate::new(Utc::now() + Duration::days(30)),
+                    create_test_pricing_tiers(),
+                    Utc::now(),
+                );
+                event.status = EventStatus::Cancelled;
+                state.events.insert(id, event);
+                state
+            })
+            .when_action(EventAction::UpdateEvent {
+                event_id: id,
+                name: Some("New Name".to_string()),
+            })
+            .then_state(move |state| {
+                let event = state.get(&id).unwrap();
+                assert_eq!(event.name, "Cancelled Event"); // Name should not change
+                assert!(state
+                    .last_error
+                    .as_ref()
+                    .unwrap()
+                    .contains("cancelled"));
+            })
+            .then_effects(assertions::assert_no_effects)
+            .run();
+    }
+
+    #[test]
+    fn test_update_event_no_fields() {
+        let id = EventId::new();
+        let owner_id = UserId::new();
+
+        ReducerTest::new(EventReducer::new())
+            .with_env(create_test_env())
+            .given_state({
+                let mut state = EventState::new();
+                let event = Event::new(
+                    id,
+                    "Original Name".to_string(),
+                    owner_id,
+                    create_test_venue(),
+                    EventDate::new(Utc::now() + Duration::days(30)),
+                    create_test_pricing_tiers(),
+                    Utc::now(),
+                );
+                state.events.insert(id, event);
+                state
+            })
+            .when_action(EventAction::UpdateEvent {
+                event_id: id,
+                name: None,
+            })
+            .then_state(|state| {
+                assert!(state
+                    .last_error
+                    .as_ref()
+                    .unwrap()
+                    .contains("No fields to update"));
+            })
+            .then_effects(assertions::assert_no_effects)
+            .run();
     }
 }

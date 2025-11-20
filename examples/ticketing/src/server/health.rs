@@ -53,6 +53,8 @@ pub struct ComponentHealth {
     pub event_store: bool,
     /// Projections database connectivity
     pub projections_db: bool,
+    /// Auth database connectivity
+    pub auth_db: bool,
     /// Redis connectivity (not yet implemented)
     pub redis: bool,
     /// Event bus connectivity (not yet implemented)
@@ -67,6 +69,7 @@ pub struct ComponentHealth {
 /// Checks:
 /// - Event store database (PostgreSQL)
 /// - Projections database (PostgreSQL)
+/// - Auth database (PostgreSQL)
 /// - Redis (TODO: not yet implemented)
 /// - Event bus (TODO: not yet implemented)
 ///
@@ -77,7 +80,7 @@ pub struct ComponentHealth {
 ///
 /// ```bash
 /// curl http://localhost:8080/ready
-/// # {"ready":true,"components":{"event_store":true,"projections_db":true,"redis":true,"event_bus":true}}
+/// # {"ready":true,"components":{"event_store":true,"projections_db":true,"auth_db":true,"redis":true,"event_bus":true}}
 /// ```
 pub async fn readiness_check(State(state): State<AppState>) -> (StatusCode, Json<ReadinessResponse>) {
     // Check event store database connectivity
@@ -86,14 +89,26 @@ pub async fn readiness_check(State(state): State<AppState>) -> (StatusCode, Json
     // Check projections database connectivity
     let projections_healthy = check_database_health(state.available_seats_projection.pool()).await;
 
-    // TODO: Implement Redis health check (not critical for MVP)
+    // Check auth database connectivity
+    let auth_db_healthy = check_database_health(&state.auth_pool).await;
+
+    // TODO (Phase 14): Implement Redis health check (not critical for MVP)
+    // Redis is not yet used in the application. When Redis is added for caching or
+    // session storage, implement health check with: redis.ping().await
     let redis_healthy = true;
 
-    // TODO: Implement event bus health check (not critical for MVP)
+    // TODO (Phase 14): Implement event bus health check (not critical for MVP)
+    // Event bus health check is complex (requires checking Redpanda cluster connectivity).
+    // For now, event bus failures will surface through event publishing errors.
+    // Consider implementing: check_event_bus_health(&state.event_bus).await
     let event_bus_healthy = true;
 
     // Overall readiness: all components must be healthy
-    let ready = event_store_healthy && projections_healthy && redis_healthy && event_bus_healthy;
+    let ready = event_store_healthy
+        && projections_healthy
+        && auth_db_healthy
+        && redis_healthy
+        && event_bus_healthy;
 
     let status_code = if ready {
         StatusCode::OK
@@ -108,6 +123,7 @@ pub async fn readiness_check(State(state): State<AppState>) -> (StatusCode, Json
             components: ComponentHealth {
                 event_store: event_store_healthy,
                 projections_db: projections_healthy,
+                auth_db: auth_db_healthy,
                 redis: redis_healthy,
                 event_bus: event_bus_healthy,
             },

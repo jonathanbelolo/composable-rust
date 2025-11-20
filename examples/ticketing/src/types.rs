@@ -5,6 +5,7 @@
 //! reservation sagas, and payment processing.
 
 use chrono::{DateTime, Utc};
+use composable_rust_auth::state::UserId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
@@ -538,6 +539,8 @@ pub struct Event {
     pub id: EventId,
     /// Event name (e.g., "Taylor Swift Concert")
     pub name: String,
+    /// User who created this event
+    pub owner_id: UserId,
     /// Venue information
     pub venue: Venue,
     /// Event date and time
@@ -556,6 +559,7 @@ impl Event {
     pub const fn new(
         id: EventId,
         name: String,
+        owner_id: UserId,
         venue: Venue,
         date: EventDate,
         pricing_tiers: Vec<PricingTier>,
@@ -564,6 +568,7 @@ impl Event {
         Self {
             id,
             name,
+            owner_id,
             venue,
             date,
             pricing_tiers,
