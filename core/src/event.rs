@@ -263,10 +263,21 @@ impl Default for EventMetadata {
 /// This struct contains the event type name and the serialized bytes,
 /// along with optional metadata. It's used as the wire format between
 /// the application and the event store.
+///
+/// # Event Versioning
+///
+/// The `event_version` field supports schema evolution:
+/// - Extracted from the version suffix in `event_type` (e.g., "OrderPlaced.v1" → 1)
+/// - Stored as a separate database column for efficient querying
+/// - Enables version-specific deserialization and migration logic
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SerializedEvent {
     /// The event type identifier (e.g., "OrderPlaced.v1").
     pub event_type: String,
+
+    /// The schema version extracted from `event_type` (e.g., 1 for ".v1").
+    /// Defaults to 1 if no version suffix is found.
+    pub event_version: i32,
 
     /// The bincode-serialized event data.
     pub data: Vec<u8>,
@@ -276,7 +287,36 @@ pub struct SerializedEvent {
 }
 
 impl SerializedEvent {
+    /// Extract version number from event type string.
+    ///
+    /// Parses version suffix like ".v1", ".v2", etc. from event type strings.
+    /// Returns 1 if no version suffix is found (backward compatibility).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use composable_rust_core::event::SerializedEvent;
+    ///
+    /// assert_eq!(SerializedEvent::extract_version("OrderPlaced.v1"), 1);
+    /// assert_eq!(SerializedEvent::extract_version("OrderPlaced.v2"), 2);
+    /// assert_eq!(SerializedEvent::extract_version("OrderPlaced"), 1); // No version = v1
+    /// assert_eq!(SerializedEvent::extract_version("PaymentProcessed.v10"), 10);
+    /// ```
+    #[must_use]
+    pub fn extract_version(event_type: &str) -> i32 {
+        // Look for version pattern: ".v" followed by digits
+        if let Some(pos) = event_type.rfind(".v") {
+            let version_str = &event_type[pos + 2..];
+            version_str.parse::<i32>().unwrap_or(1)
+        } else {
+            1 // Default to version 1 if no version suffix
+        }
+    }
+
     /// Create a new serialized event.
+    ///
+    /// The version is automatically extracted from the `event_type` string
+    /// (e.g., "OrderPlaced.v1" → version = 1).
     ///
     /// # Examples
     ///
@@ -288,25 +328,32 @@ impl SerializedEvent {
     ///     vec![1, 2, 3, 4],
     ///     None,
     /// );
+    /// assert_eq!(event.event_version, 1);
     ///
     /// // With metadata
     /// let event_with_metadata = SerializedEvent::new(
-    ///     "OrderPlaced.v1".to_string(),
+    ///     "OrderPlaced.v2".to_string(),
     ///     vec![1, 2, 3, 4],
     ///     Some(EventMetadata::with_correlation_id("abc-123")),
     /// );
+    /// assert_eq!(event_with_metadata.event_version, 2);
     /// ```
     #[must_use]
     #[allow(clippy::missing_const_for_fn)] // Parameters cannot be const-constructed
     pub fn new(event_type: String, data: Vec<u8>, metadata: Option<EventMetadata>) -> Self {
+        let event_version = Self::extract_version(&event_type);
         Self {
             event_type,
+            event_version,
             data,
             metadata,
         }
     }
 
     /// Create a serialized event from an `Event` trait object.
+    ///
+    /// The version is automatically extracted from the event type returned by
+    /// `event.event_type()`.
     ///
     /// # Errors
     ///
@@ -331,13 +378,17 @@ impl SerializedEvent {
     ///
     /// let serialized = SerializedEvent::from_event(&event, None).unwrap();
     /// assert_eq!(serialized.event_type, "OrderPlaced.v1");
+    /// assert_eq!(serialized.event_version, 1);
     /// ```
     pub fn from_event<E: Event + Serialize>(
         event: &E,
         metadata: Option<EventMetadata>,
     ) -> Result<Self, EventError> {
+        let event_type = event.event_type().to_string();
+        let event_version = Self::extract_version(&event_type);
         Ok(Self {
-            event_type: event.event_type().to_string(),
+            event_type,
+            event_version,
             data: event.to_bytes()?,
             metadata,
         })
@@ -417,6 +468,7 @@ mod tests {
             .expect("serialization should succeed");
 
         assert_eq!(serialized.event_type, "TestEvent.Updated.v1");
+        assert_eq!(serialized.event_version, 1); // Verify version extracted
         assert!(!serialized.data.is_empty());
         assert_eq!(serialized.metadata, Some(metadata));
     }
@@ -429,5 +481,33 @@ mod tests {
         let display = format!("{serialized}");
         assert!(display.contains("TestEvent.v1"));
         assert!(display.contains("5 bytes"));
+    }
+
+    #[test]
+    fn extract_version_from_event_type() {
+        // Test version extraction
+        assert_eq!(SerializedEvent::extract_version("OrderPlaced.v1"), 1);
+        assert_eq!(SerializedEvent::extract_version("OrderPlaced.v2"), 2);
+        assert_eq!(SerializedEvent::extract_version("OrderPlaced.v10"), 10);
+        assert_eq!(SerializedEvent::extract_version("PaymentProcessed.v123"), 123);
+
+        // Test without version suffix (backward compatibility)
+        assert_eq!(SerializedEvent::extract_version("OrderPlaced"), 1);
+        assert_eq!(SerializedEvent::extract_version("SomeEvent"), 1);
+
+        // Test malformed version (falls back to default)
+        assert_eq!(SerializedEvent::extract_version("Event.vABC"), 1);
+    }
+
+    #[test]
+    fn serialized_event_new_extracts_version() {
+        let event_v1 = SerializedEvent::new("OrderPlaced.v1".to_string(), vec![1, 2, 3], None);
+        assert_eq!(event_v1.event_version, 1);
+
+        let event_v2 = SerializedEvent::new("OrderPlaced.v2".to_string(), vec![1, 2, 3], None);
+        assert_eq!(event_v2.event_version, 2);
+
+        let event_no_version = SerializedEvent::new("OrderPlaced".to_string(), vec![1, 2, 3], None);
+        assert_eq!(event_no_version.event_version, 1); // Default to v1
     }
 }

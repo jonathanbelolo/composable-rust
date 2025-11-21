@@ -733,3 +733,204 @@ async fn test_append_batch_performance_vs_sequential() {
         sequential_duration.as_secs_f64() / batch_duration.as_secs_f64()
     );
 }
+
+// Dead Letter Queue Tests
+
+#[tokio::test]
+async fn test_dlq_add_and_list() {
+    let (_container, store) = setup_postgres_event_store().await;
+    let dlq = composable_rust_postgres::DeadLetterQueue::new(store.pool().clone());
+
+    // Create a test event
+    let event = create_test_event("TestEvent", b"test data".to_vec());
+    let stream_id = "test-stream";
+    let error_msg = "Database connection failed";
+    let error_details = "Connection timed out after 30s";
+
+    // Add entry to DLQ
+    let dlq_id = dlq
+        .add_entry(
+            stream_id,
+            &event,
+            chrono::Utc::now(),
+            error_msg,
+            Some(error_details),
+            3, // retry count
+        )
+        .await
+        .expect("Should add DLQ entry");
+
+    assert!(dlq_id > 0);
+
+    // List pending entries
+    let pending = dlq
+        .list_pending(10)
+        .await
+        .expect("Should list pending entries");
+
+    assert_eq!(pending.len(), 1);
+    let entry = &pending[0];
+    assert_eq!(entry.stream_id, stream_id);
+    assert_eq!(entry.event.event_type, "TestEvent");
+    assert_eq!(entry.error_message, error_msg);
+    assert_eq!(entry.retry_count, 3);
+    assert_eq!(entry.status, composable_rust_postgres::DLQStatus::Pending);
+}
+
+#[tokio::test]
+async fn test_dlq_status_transitions() {
+    let (_container, store) = setup_postgres_event_store().await;
+    let dlq = composable_rust_postgres::DeadLetterQueue::new(store.pool().clone());
+
+    // Add entry
+    let event = create_test_event("TestEvent", b"data".to_vec());
+    let dlq_id = dlq
+        .add_entry(
+            "stream-1",
+            &event,
+            chrono::Utc::now(),
+            "Error",
+            None,
+            0,
+        )
+        .await
+        .expect("Should add entry");
+
+    // Check initial status
+    let entry = dlq.get_by_id(dlq_id).await.expect("Should get entry");
+    assert_eq!(entry.status, composable_rust_postgres::DLQStatus::Pending);
+
+    // Update to Processing
+    dlq.update_status(dlq_id, composable_rust_postgres::DLQStatus::Processing)
+        .await
+        .expect("Should update status");
+
+    let entry = dlq.get_by_id(dlq_id).await.expect("Should get entry");
+    assert_eq!(entry.status, composable_rust_postgres::DLQStatus::Processing);
+
+    // Mark as resolved
+    dlq.mark_resolved(dlq_id, "admin", Some("Manual reprocessing succeeded"))
+        .await
+        .expect("Should mark resolved");
+
+    let entry = dlq.get_by_id(dlq_id).await.expect("Should get entry");
+    assert_eq!(entry.status, composable_rust_postgres::DLQStatus::Resolved);
+    assert_eq!(entry.resolved_by, Some("admin".to_string()));
+    assert!(entry.resolved_at.is_some());
+}
+
+#[tokio::test]
+async fn test_dlq_mark_discarded() {
+    let (_container, store) = setup_postgres_event_store().await;
+    let dlq = composable_rust_postgres::DeadLetterQueue::new(store.pool().clone());
+
+    // Add entry
+    let event = create_test_event("CorruptEvent", b"invalid".to_vec());
+    let dlq_id = dlq
+        .add_entry(
+            "stream-1",
+            &event,
+            chrono::Utc::now(),
+            "Data corruption",
+            None,
+            0,
+        )
+        .await
+        .expect("Should add entry");
+
+    // Mark as discarded
+    dlq.mark_discarded(dlq_id, "Event data is permanently corrupted")
+        .await
+        .expect("Should mark discarded");
+
+    let entry = dlq.get_by_id(dlq_id).await.expect("Should get entry");
+    assert_eq!(entry.status, composable_rust_postgres::DLQStatus::Discarded);
+    assert_eq!(
+        entry.resolution_notes,
+        Some("Event data is permanently corrupted".to_string())
+    );
+    assert!(entry.resolved_at.is_some());
+}
+
+#[tokio::test]
+async fn test_dlq_count_pending() {
+    let (_container, store) = setup_postgres_event_store().await;
+    let dlq = composable_rust_postgres::DeadLetterQueue::new(store.pool().clone());
+
+    // Initial count should be 0
+    let count = dlq.count_pending().await.expect("Should count");
+    assert_eq!(count, 0);
+
+    // Add some entries
+    let event = create_test_event("Event", b"data".to_vec());
+    for i in 0..5 {
+        dlq.add_entry(
+            &format!("stream-{i}"),
+            &event,
+            chrono::Utc::now(),
+            "Error",
+            None,
+            0,
+        )
+        .await
+        .expect("Should add entry");
+    }
+
+    // Count should be 5
+    let count = dlq.count_pending().await.expect("Should count");
+    assert_eq!(count, 5);
+
+    // Mark one as resolved
+    dlq.mark_resolved(1, "admin", None)
+        .await
+        .expect("Should mark resolved");
+
+    // Count should be 4
+    let count = dlq.count_pending().await.expect("Should count");
+    assert_eq!(count, 4);
+}
+
+#[tokio::test]
+async fn test_dlq_list_by_status() {
+    let (_container, store) = setup_postgres_event_store().await;
+    let dlq = composable_rust_postgres::DeadLetterQueue::new(store.pool().clone());
+
+    // Add entries with different statuses
+    let event = create_test_event("Event", b"data".to_vec());
+
+    // Add 3 pending
+    for i in 0..3 {
+        dlq.add_entry(
+            &format!("stream-{i}"),
+            &event,
+            chrono::Utc::now(),
+            "Error",
+            None,
+            0,
+        )
+        .await
+        .expect("Should add entry");
+    }
+
+    // Mark 2 as processing
+    dlq.update_status(1, composable_rust_postgres::DLQStatus::Processing)
+        .await
+        .expect("Should update");
+    dlq.update_status(2, composable_rust_postgres::DLQStatus::Processing)
+        .await
+        .expect("Should update");
+
+    // List pending - should get 1
+    let pending = dlq
+        .list_by_status(composable_rust_postgres::DLQStatus::Pending, 10)
+        .await
+        .expect("Should list");
+    assert_eq!(pending.len(), 1);
+
+    // List processing - should get 2
+    let processing = dlq
+        .list_by_status(composable_rust_postgres::DLQStatus::Processing, 10)
+        .await
+        .expect("Should list");
+    assert_eq!(processing.len(), 2);
+}

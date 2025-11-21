@@ -23,6 +23,10 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod dead_letter_queue;
+
+pub use dead_letter_queue::{DLQStatus, DeadLetterQueue, FailedEvent};
+
 use composable_rust_core::event::{EventMetadata, SerializedEvent};
 use composable_rust_core::event_store::{BatchAppend, EventStore, EventStoreError};
 use composable_rust_core::stream::{StreamId, Version};
@@ -99,6 +103,7 @@ impl PoolStats {
 /// ```
 pub struct PostgresEventStore {
     pool: PgPool,
+    dlq: DeadLetterQueue,
 }
 
 impl PostgresEventStore {
@@ -130,7 +135,9 @@ impl PostgresEventStore {
             .await
             .map_err(|e| EventStoreError::DatabaseError(e.to_string()))?;
 
-        Ok(Self { pool })
+        let dlq = DeadLetterQueue::new(pool.clone());
+
+        Ok(Self { pool, dlq })
     }
 
     /// Create a new `PostgreSQL` event store with optimized connection pool settings.
@@ -194,7 +201,9 @@ impl PostgresEventStore {
             .await
             .map_err(|e| EventStoreError::DatabaseError(e.to_string()))?;
 
-        Ok(Self { pool })
+        let dlq = DeadLetterQueue::new(pool.clone());
+
+        Ok(Self { pool, dlq })
     }
 
     /// Create a new `PostgreSQL` event store from an existing connection pool.
@@ -219,8 +228,9 @@ impl PostgresEventStore {
     /// # }
     /// ```
     #[must_use]
-    pub const fn from_pool(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn from_pool(pool: PgPool) -> Self {
+        let dlq = DeadLetterQueue::new(pool.clone());
+        Self { pool, dlq }
     }
 
     /// Get a reference to the underlying connection pool.
@@ -261,6 +271,50 @@ impl PostgresEventStore {
         PoolStats {
             size: self.pool.size(),
             idle: self.pool.num_idle(),
+        }
+    }
+
+    /// Log a failed event to the Dead Letter Queue.
+    ///
+    /// This is called when an event fails to be persisted to the event store
+    /// due to database errors. The event is logged with failure metadata for
+    /// later investigation and potential reprocessing.
+    ///
+    /// # Arguments
+    ///
+    /// * `stream_id` - The stream ID the event belongs to
+    /// * `event` - The event that failed to persist
+    /// * `error_message` - Human-readable error message
+    /// * `error_details` - Full error details for troubleshooting
+    async fn log_to_dlq(
+        &self,
+        stream_id: &str,
+        event: &SerializedEvent,
+        error_message: &str,
+        error_details: &str,
+    ) {
+        // Use current timestamp as the original_timestamp (when failure was detected)
+        let original_timestamp = chrono::Utc::now();
+
+        // Best effort logging - don't propagate DLQ errors
+        if let Err(dlq_err) = self
+            .dlq
+            .add_entry(
+                stream_id,
+                event,
+                original_timestamp,
+                error_message,
+                Some(error_details),
+                0, // No retries at EventStore level
+            )
+            .await
+        {
+            tracing::error!(
+                stream_id = stream_id,
+                event_type = %event.event_type,
+                error = %dlq_err,
+                "Failed to log event to Dead Letter Queue"
+            );
         }
     }
 
@@ -446,15 +500,16 @@ impl EventStore for PostgresEventStore {
                 // Insert event - PRIMARY KEY constraint provides race condition protection
                 let result = sqlx::query(
                 r"
-                INSERT INTO events (stream_id, version, event_type, event_data, metadata, created_at)
-                VALUES ($1, $2, $3, $4, $5, now())
+                INSERT INTO events (stream_id, version, event_type, event_version, event_data, metadata, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, now())
                 "
             )
             .bind(stream_id.as_str())
             .bind(version_i64)
             .bind(&event.event_type)
+            .bind(event.event_version) // Add event_version column
             .bind(&event.data)
-            .bind(event.metadata.as_ref().map(|m| m.to_json()))
+            .bind(event.metadata.as_ref().map(composable_rust_core::event::EventMetadata::to_json))
             .execute(&mut *tx)
             .await;
 
@@ -492,7 +547,11 @@ impl EventStore for PostgresEventStore {
                             });
                         }
                     }
-                    // Other database error - propagate
+                    // Other database error - log to DLQ and propagate
+                    let error_msg = format!("Failed to insert event: {e}");
+                    let error_details = format!("{e:?}");
+                    self.log_to_dlq(stream_id.as_str(), &event, &error_msg, &error_details)
+                        .await;
                     return Err(EventStoreError::DatabaseError(e.to_string()));
                 }
 
@@ -545,7 +604,7 @@ impl EventStore for PostgresEventStore {
             let events = if let Some(from_ver) = from_version {
                 sqlx::query(
                     r"
-                SELECT event_type, event_data, metadata
+                SELECT event_type, event_version, event_data, metadata
                 FROM events
                 WHERE stream_id = $1 AND version >= $2
                 ORDER BY version ASC
@@ -560,7 +619,7 @@ impl EventStore for PostgresEventStore {
             } else {
                 sqlx::query(
                     r"
-                SELECT event_type, event_data, metadata
+                SELECT event_type, event_version, event_data, metadata
                 FROM events
                 WHERE stream_id = $1
                 ORDER BY version ASC
@@ -579,11 +638,12 @@ impl EventStore for PostgresEventStore {
                     let metadata = metadata_json.and_then(|json| {
                         EventMetadata::from_json(&json).ok()
                     });
-                    SerializedEvent::new(
-                        row.get("event_type"),
-                        row.get("event_data"),
+                    SerializedEvent {
+                        event_type: row.get("event_type"),
+                        event_version: row.get("event_version"),
+                        data: row.get("event_data"),
                         metadata,
-                    )
+                    }
                 })
                 .collect();
 
@@ -800,15 +860,16 @@ impl EventStore for PostgresEventStore {
                 let event_count = validated_events.len();
 
                 let mut query_builder = sqlx::QueryBuilder::new(
-                    "INSERT INTO events (stream_id, version, event_type, event_data, metadata, created_at) "
+                    "INSERT INTO events (stream_id, version, event_type, event_version, event_data, metadata, created_at) "
                 );
 
                 query_builder.push_values(validated_events, |mut b, validated_event| {
                     b.push_bind(validated_event.stream_id)
                         .push_bind(validated_event.version)
                         .push_bind(validated_event.event.event_type)
+                        .push_bind(validated_event.event.event_version) // Add event_version
                         .push_bind(validated_event.event.data)
-                        .push_bind(validated_event.event.metadata.as_ref().map(|m| m.to_json()))
+                        .push_bind(validated_event.event.metadata.as_ref().map(composable_rust_core::event::EventMetadata::to_json))
                         .push("now()");
                 });
 
