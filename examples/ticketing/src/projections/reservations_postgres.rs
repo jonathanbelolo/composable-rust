@@ -104,6 +104,7 @@ impl Projection for PostgresReservationsProjection {
         "reservations"
     }
 
+    #[tracing::instrument(skip(self, event), fields(projection = "reservations"))]
     async fn apply_event(&self, event: &Self::Event) -> Result<()> {
         if let TicketingEvent::Reservation(reservation_action) = event {
             match reservation_action {

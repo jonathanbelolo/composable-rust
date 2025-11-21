@@ -252,6 +252,7 @@ impl Projection for PostgresCustomerHistoryProjection {
     }
 
     #[allow(clippy::too_many_lines)]
+    #[tracing::instrument(skip(self, event), fields(projection = "customer_history"))]
     async fn apply_event(&self, event: &Self::Event) -> Result<()> {
         match event {
             // Track reservation initiation

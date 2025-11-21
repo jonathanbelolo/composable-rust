@@ -32,6 +32,7 @@ use composable_rust_core::event_store::{BatchAppend, EventStore, EventStoreError
 use composable_rust_core::stream::{StreamId, Version};
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
+use tracing::Instrument;
 
 /// Connection pool statistics for monitoring and observability.
 ///
@@ -421,6 +422,14 @@ impl EventStore for PostgresEventStore {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Version, EventStoreError>> + Send + '_>,
     > {
+        // Create tracing span for distributed tracing
+        let span = tracing::info_span!(
+            "event_store.append_events",
+            stream_id = %stream_id,
+            expected_version = ?expected_version,
+            event_count = events.len(),
+        );
+
         Box::pin(async move {
             // Metrics: Start timing
             let start = std::time::Instant::now();
@@ -577,7 +586,7 @@ impl EventStore for PostgresEventStore {
 
             // Return the final version (last event inserted)
             Ok(next_version - 1)
-        })
+        }.instrument(span))
     }
 
     fn load_events(
@@ -591,6 +600,13 @@ impl EventStore for PostgresEventStore {
                 + '_,
         >,
     > {
+        // Create tracing span for distributed tracing
+        let span = tracing::info_span!(
+            "event_store.load_events",
+            stream_id = %stream_id,
+            from_version = ?from_version,
+        );
+
         Box::pin(async move {
             // Metrics: Start timing
             let start = std::time::Instant::now();
@@ -664,7 +680,7 @@ impl EventStore for PostgresEventStore {
             metrics::counter!("event_store.load.total", "result" => "success").increment(1);
 
             Ok(event_vec)
-        })
+        }.instrument(span))
     }
 
     fn save_snapshot(
@@ -674,6 +690,14 @@ impl EventStore for PostgresEventStore {
         state: Vec<u8>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), EventStoreError>> + Send + '_>>
     {
+        // Create tracing span for distributed tracing
+        let span = tracing::info_span!(
+            "event_store.save_snapshot",
+            stream_id = %stream_id,
+            version = ?version,
+            state_size = state.len(),
+        );
+
         Box::pin(async move {
             tracing::debug!(
                 stream_id = %stream_id,
@@ -710,7 +734,7 @@ impl EventStore for PostgresEventStore {
             );
 
             Ok(())
-        })
+        }.instrument(span))
     }
 
     fn load_snapshot(
@@ -723,6 +747,12 @@ impl EventStore for PostgresEventStore {
                 + '_,
         >,
     > {
+        // Create tracing span for distributed tracing
+        let span = tracing::info_span!(
+            "event_store.load_snapshot",
+            stream_id = %stream_id,
+        );
+
         Box::pin(async move {
             tracing::debug!(stream_id = %stream_id, "Loading snapshot");
 
@@ -760,7 +790,7 @@ impl EventStore for PostgresEventStore {
                 tracing::debug!(stream_id = %stream_id, "No snapshot found");
                 Ok(None)
             }
-        })
+        }.instrument(span))
     }
 
     fn append_batch(
@@ -769,6 +799,12 @@ impl EventStore for PostgresEventStore {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Vec<Result<Version, EventStoreError>>, EventStoreError>> + Send + '_>,
     > {
+        // Create tracing span for distributed tracing
+        let span = tracing::info_span!(
+            "event_store.append_batch",
+            batch_size = batch.len(),
+        );
+
         Box::pin(async move {
             // Helper struct for validated events (defined at scope start)
             struct ValidatedEvent {
@@ -896,7 +932,7 @@ impl EventStore for PostgresEventStore {
             );
 
             Ok(results)
-        })
+        }.instrument(span))
     }
 }
 

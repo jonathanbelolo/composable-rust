@@ -17,6 +17,7 @@ fn test_bincode_serialization_with_metadata() {
 
     let event = SerializedEvent {
         event_type: "TestEvent".to_string(),
+        event_version: 1,
         data: vec![1, 2, 3, 4],
         metadata: Some(metadata.clone()),
     };
@@ -47,6 +48,7 @@ fn test_bincode_serialization_without_metadata() {
     // SerializedEvent WITHOUT metadata should work fine
     let event = SerializedEvent {
         event_type: "TestEvent".to_string(),
+        event_version: 1,
         data: vec![1, 2, 3, 4],
         metadata: None,
     };

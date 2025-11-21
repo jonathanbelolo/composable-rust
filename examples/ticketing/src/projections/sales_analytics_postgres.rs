@@ -221,6 +221,7 @@ impl Projection for PostgresSalesAnalyticsProjection {
     }
 
     #[allow(clippy::too_many_lines)]
+    #[tracing::instrument(skip(self, event), fields(projection = "sales_analytics"))]
     async fn apply_event(&self, event: &Self::Event) -> Result<()> {
         match event {
             // Track reservation initiation

@@ -319,6 +319,7 @@ impl Projection for PostgresPaymentsProjection {
         "payments_projection"
     }
 
+    #[tracing::instrument(skip(self, event), fields(projection = "payments"))]
     async fn apply_event(&self, event: &Self::Event) -> Result<()> {
         match event {
             // Payment processed: create new payment record

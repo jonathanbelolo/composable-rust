@@ -61,11 +61,13 @@
 pub mod error;
 pub mod extractors;
 pub mod handlers;
+pub mod middleware;
 pub mod state;
 
 // Re-export key types for convenience
 pub use error::AppError;
 pub use extractors::{ClientIp, CorrelationId, UserAgent};
+pub use middleware::{correlation_id_layer, CorrelationIdExt, CORRELATION_ID_HEADER};
 pub use state::AppState;
 
 /// Result type alias for web handlers.

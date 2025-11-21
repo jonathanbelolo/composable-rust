@@ -10,6 +10,7 @@ use axum::{
     routing::{delete, get, post, put},
     Router,
 };
+use composable_rust_web::middleware::correlation_id_layer;
 
 /// Build the complete Axum router.
 ///
@@ -105,4 +106,6 @@ pub fn build_router(state: AppState) -> Router {
         // API routes under /api prefix
         .nest("/api", api_routes)
         .with_state(state)
+        // Add correlation ID middleware for distributed tracing
+        .layer(correlation_id_layer())
 }

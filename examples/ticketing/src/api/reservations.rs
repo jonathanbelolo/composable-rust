@@ -29,7 +29,7 @@ use crate::auth::middleware::{RequireOwnership, SessionUser};
 use crate::server::state::AppState;
 use crate::types::{CustomerId, EventId, ReservationId, ReservationStatus};
 use axum::{
-    extract::{Path, State},
+    extract::{Extension, Path, State},
     http::StatusCode,
     Json,
 };
@@ -148,6 +148,7 @@ pub struct CancelReservationResponse {
 /// ```
 pub async fn create_reservation(
     session: SessionUser,
+    Extension(correlation_uuid): Extension<Uuid>,
     State(state): State<AppState>,
     Json(request): Json<CreateReservationRequest>,
 ) -> Result<(StatusCode, Json<CreateReservationResponse>), AppError> {
@@ -169,8 +170,8 @@ pub async fn create_reservation(
     let event_id = EventId::from_uuid(request.event_id);
     let customer_id = CustomerId::from_uuid(session.user_id.0);
 
-    // Generate correlation ID for request tracking
-    let correlation_id = crate::projections::CorrelationId::new();
+    // Extract correlation ID from middleware (injected by correlation_id_layer)
+    let correlation_id = crate::projections::CorrelationId::from_uuid(correlation_uuid);
 
     // Convert specific_seats from Vec<String> to Vec<SeatNumber>
     // Note: For now, we skip specific seat conversion since SeatNumber is private

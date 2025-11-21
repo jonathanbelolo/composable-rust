@@ -236,6 +236,7 @@ impl Projection for PostgresAvailableSeatsProjection {
     }
 
     #[allow(clippy::too_many_lines)] // Event handling is naturally long but simple
+    #[tracing::instrument(skip(self, event), fields(projection = "available_seats"))]
     async fn apply_event(&self, event: &Self::Event) -> Result<()> {
         match event {
             // Initialize inventory creates new availability record

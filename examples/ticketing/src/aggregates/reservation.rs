@@ -568,6 +568,13 @@ impl Reducer for ReservationReducer {
                 specific_seats,
                 correlation_id,
             } => {
+                let _span = tracing::info_span!(
+                    "saga.reservation.initiate",
+                    reservation_id = %reservation_id.as_uuid(),
+                    event_id = %event_id.as_uuid(),
+                    step = "1_initiate"
+                ).entered();
+
                 tracing::info!(
                     reservation_id = %reservation_id.as_uuid(),
                     event_id = %event_id.as_uuid(),
@@ -662,6 +669,13 @@ impl Reducer for ReservationReducer {
                 ref seats,
                 total_amount,
             } => {
+                let _span = tracing::info_span!(
+                    "saga.reservation.seats_allocated",
+                    reservation_id = %reservation_id.as_uuid(),
+                    seat_count = seats.len(),
+                    step = "2_seats_allocated"
+                ).entered();
+
                 // Apply event
                 let expected_version = state.version;
                 Self::apply_event(state, &action);
@@ -715,6 +729,12 @@ impl Reducer for ReservationReducer {
                 reservation_id,
                 payment_id: _,
             } => {
+                let _span = tracing::info_span!(
+                    "saga.reservation.payment_succeeded",
+                    reservation_id = %reservation_id.as_uuid(),
+                    step = "3a_payment_succeeded"
+                ).entered();
+
                 // Apply event
                 let expected_version = state.version;
                 Self::apply_event(state, &action);
@@ -774,6 +794,19 @@ impl Reducer for ReservationReducer {
                 ref reason,
                 payment_id: _,
             } => {
+                let _span = tracing::info_span!(
+                    "saga.reservation.compensation",
+                    reservation_id = %reservation_id.as_uuid(),
+                    reason = %reason,
+                    step = "3b_compensation"
+                ).entered();
+
+                tracing::warn!(
+                    reservation_id = %reservation_id.as_uuid(),
+                    reason = %reason,
+                    "Payment failed, triggering saga compensation"
+                );
+
                 // Apply event
                 let expected_version = state.version;
                 Self::apply_event(state, &action);

@@ -26,7 +26,7 @@ use crate::projections::{CorrelationId, TicketingEvent};
 use crate::server::state::AppState;
 use crate::types::{CustomerId, Money, PaymentId, PaymentMethod, PaymentStatus, ReservationId};
 use axum::{
-    extract::{Path, State},
+    extract::{Extension, Path, State},
     http::StatusCode,
     Json,
 };
@@ -210,6 +210,7 @@ pub struct RefundPaymentResponse {
 /// ```
 pub async fn process_payment(
     session: SessionUser,
+    Extension(correlation_uuid): Extension<Uuid>,
     State(state): State<AppState>,
     Json(request): Json<ProcessPaymentRequest>,
 ) -> Result<(StatusCode, Json<ProcessPaymentResponse>), AppError> {
@@ -260,10 +261,9 @@ pub async fn process_payment(
     // For now, the reducer simulates payment processing
     let _ = request.billing_info; // Will be used for gateway integration in Phase 12.5
 
-    // Use payment_id as correlation_id for tracking through the event lifecycle
-    // This enables the payment aggregate to identify which payment to confirm
-    // when it receives the ProjectionCompleted event
-    let correlation_id = CorrelationId::from_uuid(*payment_id.as_uuid());
+    // Extract correlation ID from middleware (injected by correlation_id_layer)
+    // This enables tracking the request through the entire event lifecycle
+    let correlation_id = CorrelationId::from_uuid(correlation_uuid);
 
     // Prepare metadata with correlation_id for projection tracking
     let metadata = EventMetadata::with_correlation_id(correlation_id.to_string());

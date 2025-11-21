@@ -91,6 +91,7 @@ impl Projection for PostgresEventsProjection {
         "events"
     }
 
+    #[tracing::instrument(skip(self, event), fields(projection = "events"))]
     async fn apply_event(&self, event: &Self::Event) -> composable_rust_core::projection::Result<()> {
         if let TicketingEvent::Event(event_action) = event {
             match event_action {
