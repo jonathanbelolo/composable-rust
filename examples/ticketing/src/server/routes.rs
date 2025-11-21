@@ -3,10 +3,13 @@
 //! Builds the complete Axum router with all endpoints.
 
 use super::health::{health_check, readiness_check};
+use super::metrics::metrics_routes;
+use super::middleware::metrics_middleware;
 use super::state::AppState;
 use crate::api::{analytics, availability, events, payments, reservations, websocket};
 use crate::auth::handlers;
 use axum::{
+    middleware as axum_middleware,
     routing::{delete, get, post, put},
     Router,
 };
@@ -101,11 +104,15 @@ pub fn build_router(state: AppState) -> Router {
         // Health checks (no authentication)
         .route("/health", get(health_check))
         .route("/ready", get(readiness_check))
+        // Metrics endpoint (Prometheus scraping)
+        .merge(metrics_routes())
         // Authentication routes under /auth prefix
         .nest("/auth", auth_routes)
         // API routes under /api prefix
         .nest("/api", api_routes)
         .with_state(state)
+        // Add metrics middleware to record HTTP requests
+        .layer(axum_middleware::from_fn(metrics_middleware))
         // Add correlation ID middleware for distributed tracing
         .layer(correlation_id_layer())
 }

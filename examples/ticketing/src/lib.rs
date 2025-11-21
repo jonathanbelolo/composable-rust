@@ -85,6 +85,7 @@ pub mod app;
 pub mod auth;
 pub mod bootstrap;
 pub mod config;
+pub mod metrics;
 pub mod payment_gateway;
 pub mod projections;
 pub mod runtime;
