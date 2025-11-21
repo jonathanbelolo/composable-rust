@@ -9,7 +9,9 @@ use chrono::{DateTime, Duration, Utc};
 use composable_rust_auth::state::UserId;
 use composable_rust_core::{
     append_events, effect::Effect, environment::Clock, event_bus::EventBus,
-    event_store::EventStore, publish_event, reducer::Reducer, smallvec, stream::StreamId, SmallVec,
+    event_store::EventStore, publish_event, reducer::Reducer, smallvec,
+    stream::{StreamId, Version},
+    SmallVec,
 };
 use composable_rust_macros::Action;
 use serde::{Deserialize, Serialize};
@@ -189,6 +191,13 @@ pub enum EventAction {
         /// Status filter that was applied
         status_filter: Option<EventStatus>,
     },
+
+    /// Stream version was updated after successful event append
+    #[event]
+    VersionUpdated {
+        /// New version number
+        version: Version,
+    },
 }
 
 // ============================================================================
@@ -280,6 +289,7 @@ impl EventReducer {
     /// Creates effects for persisting and publishing an event
     fn create_effects(
         event: EventAction,
+        expected_version: Version,
         env: &EventEnvironment,
     ) -> SmallVec<[Effect<EventAction>; 4]> {
         let ticketing_event = TicketingEvent::Event(event);
@@ -291,9 +301,9 @@ impl EventReducer {
             append_events! {
                 store: env.event_store,
                 stream: env.stream_id.as_str(),
-                expected_version: None,
+                expected_version: Some(expected_version),
                 events: vec![serialized.clone()],
-                on_success: |_version| None,
+                on_success: |version| Some(EventAction::VersionUpdated { version }),
                 on_error: |error| Some(EventAction::ValidationFailed {
                     error: error.to_string()
                 })
@@ -505,6 +515,9 @@ impl EventReducer {
                 }
                 state.last_error = None;
             }
+            EventAction::VersionUpdated { version } => {
+                state.version = *version;
+            }
             EventAction::ValidationFailed { error } => {
                 state.last_error = Some(error.clone());
             }
@@ -568,9 +581,10 @@ impl Reducer for EventReducer {
                     pricing_tiers,
                     created_at: env.clock.now(),
                 };
+                let expected_version = state.version;
                 Self::apply_event(state, &event);
 
-                Self::create_effects(event, env)
+                Self::create_effects(event, expected_version, env)
             }
 
             EventAction::PublishEvent { event_id } => {
@@ -585,9 +599,10 @@ impl Reducer for EventReducer {
                     event_id,
                     published_at: env.clock.now(),
                 };
+                let expected_version = state.version;
                 Self::apply_event(state, &event);
 
-                Self::create_effects(event, env)
+                Self::create_effects(event, expected_version, env)
             }
 
             EventAction::OpenSales { event_id } => {
@@ -602,9 +617,10 @@ impl Reducer for EventReducer {
                     event_id,
                     opened_at: env.clock.now(),
                 };
+                let expected_version = state.version;
                 Self::apply_event(state, &event);
 
-                Self::create_effects(event, env)
+                Self::create_effects(event, expected_version, env)
             }
 
             EventAction::CloseSales { event_id } => {
@@ -619,9 +635,10 @@ impl Reducer for EventReducer {
                     event_id,
                     closed_at: env.clock.now(),
                 };
+                let expected_version = state.version;
                 Self::apply_event(state, &event);
 
-                Self::create_effects(event, env)
+                Self::create_effects(event, expected_version, env)
             }
 
             EventAction::CancelEvent { event_id, reason } => {
@@ -638,9 +655,10 @@ impl Reducer for EventReducer {
                     reason,
                     cancelled_at: now,
                 };
+                let expected_version = state.version;
                 Self::apply_event(state, &event);
 
-                Self::create_effects(event, env)
+                Self::create_effects(event, expected_version, env)
             }
 
             EventAction::UpdateEvent { event_id, name } => {
@@ -664,9 +682,10 @@ impl Reducer for EventReducer {
                     name,
                     updated_at: env.clock.now(),
                 };
+                let expected_version = state.version;
                 Self::apply_event(state, &event);
 
-                Self::create_effects(event, env)
+                Self::create_effects(event, expected_version, env)
             }
 
             // ========== Query Commands ==========

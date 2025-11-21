@@ -208,10 +208,11 @@ impl EventProjection {
             | EventAction::GetEvent { .. }
             | EventAction::ListEvents { .. } => {}
 
-            // Query results and validation failures don't affect projection
+            // Query results, version updates, and validation failures don't affect projection
             EventAction::EventQueried { .. }
             | EventAction::EventsListed { .. }
-            | EventAction::ValidationFailed { .. } => {}
+            | EventAction::ValidationFailed { .. }
+            | EventAction::VersionUpdated { .. } => {}
         }
     }
 

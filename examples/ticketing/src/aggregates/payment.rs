@@ -9,7 +9,7 @@ use crate::types::{CustomerId, Money, Payment, PaymentId, PaymentMethod, Payment
 use chrono::{DateTime, Utc};
 use composable_rust_core::{
     append_events, effect::Effect, environment::Clock, event_bus::EventBus,
-    event_store::EventStore, publish_event, reducer::Reducer, smallvec, stream::StreamId, SmallVec,
+    event_store::EventStore, publish_event, reducer::Reducer, smallvec, stream::{StreamId, Version}, SmallVec,
 };
 use composable_rust_macros::Action;
 use serde::{Deserialize, Serialize};
@@ -213,6 +213,13 @@ pub enum PaymentAction {
         /// Failure reason
         reason: String,
     },
+
+    /// Stream version was updated after successful event append
+    #[event]
+    VersionUpdated {
+        /// New version number
+        version: Version,
+    },
 }
 
 // ============================================================================
@@ -274,6 +281,7 @@ impl PaymentReducer {
     /// Creates effects for persisting and publishing an event
     fn create_effects(
         event: PaymentAction,
+        expected_version: Version,
         env: &PaymentEnvironment,
     ) -> SmallVec<[Effect<PaymentAction>; 4]> {
         let ticketing_event = TicketingEvent::Payment(event);
@@ -285,9 +293,9 @@ impl PaymentReducer {
             append_events! {
                 store: env.event_store,
                 stream: env.stream_id.as_str(),
-                expected_version: None,
+                expected_version: Some(expected_version),
                 events: vec![serialized.clone()],
-                on_success: |_version| None,
+                on_success: |version| Some(PaymentAction::VersionUpdated { version }),
                 on_error: |error| Some(PaymentAction::ValidationFailed {
                     error: error.to_string()
                 })
@@ -375,7 +383,8 @@ impl PaymentReducer {
             | PaymentAction::CustomerPaymentsListed { .. }
             | PaymentAction::ProjectionCompleted { .. }
             | PaymentAction::PaymentConfirmed { .. }
-            | PaymentAction::PaymentProjectionFailed { .. } => {}
+            | PaymentAction::PaymentProjectionFailed { .. }
+            | PaymentAction::VersionUpdated { .. } => {}
         }
     }
 }
@@ -413,6 +422,7 @@ impl Reducer for PaymentReducer {
                     payment_method: payment_method.clone(),
                     processed_at: env.clock.now(),
                 };
+                let expected_version = state.version;
                 Self::apply_event(state, &processed);
 
                 // Simulate payment processing
@@ -423,11 +433,12 @@ impl Reducer for PaymentReducer {
                     payment_id,
                     transaction_id: format!("txn_{}", Uuid::new_v4()),
                 };
+                let expected_version_2 = state.version;
                 Self::apply_event(state, &success);
 
                 // Persist and publish both events
-                let mut effects = Self::create_effects(processed, env);
-                effects.extend(Self::create_effects(success, env));
+                let mut effects = Self::create_effects(processed, expected_version, env);
+                effects.extend(Self::create_effects(success, expected_version_2, env));
                 effects
             }
 
@@ -443,9 +454,10 @@ impl Reducer for PaymentReducer {
                     reason,
                     failed_at: env.clock.now(),
                 };
+                let expected_version = state.version;
                 Self::apply_event(state, &failure);
 
-                Self::create_effects(failure, env)
+                Self::create_effects(failure, expected_version, env)
             }
 
             // ========== Refund Payment ==========
@@ -482,9 +494,10 @@ impl Reducer for PaymentReducer {
                     reason,
                     refunded_at: env.clock.now(),
                 };
+                let expected_version = state.version;
                 Self::apply_event(state, &refund);
 
-                Self::create_effects(refund, env)
+                Self::create_effects(refund, expected_version, env)
             }
 
             // ========== Query: Get Payment ==========
@@ -535,16 +548,18 @@ impl Reducer for PaymentReducer {
                         // Verify this payment exists in state
                         if state.payments.contains_key(&payment_id) {
                             let confirmed = PaymentAction::PaymentConfirmed { payment_id };
+                            let expected_version = state.version;
                             Self::apply_event(state, &confirmed);
-                            return Self::create_effects(confirmed, env);
+                            return Self::create_effects(confirmed, expected_version, env);
                         } else {
                             // Payment not found - emit failure event
                             let failed = PaymentAction::PaymentProjectionFailed {
                                 payment_id,
                                 reason: format!("Payment {payment_id:?} not found in state"),
                             };
+                            let expected_version = state.version;
                             Self::apply_event(state, &failed);
-                            return Self::create_effects(failed, env);
+                            return Self::create_effects(failed, expected_version, env);
                         }
                     } else {
                         // Failed to parse correlation_id as UUID

@@ -6,6 +6,7 @@
 
 use chrono::{DateTime, Utc};
 use composable_rust_auth::state::UserId;
+use composable_rust_core::stream::Version;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
@@ -959,6 +960,8 @@ pub struct EventState {
     pub events: HashMap<EventId, Event>,
     /// Last validation error
     pub last_error: Option<String>,
+    /// Current version for optimistic concurrency control
+    pub version: Version,
 }
 
 impl EventState {
@@ -968,6 +971,7 @@ impl EventState {
         Self {
             events: HashMap::new(),
             last_error: None,
+            version: Version::INITIAL,
         }
     }
 
@@ -1018,6 +1022,8 @@ pub struct InventoryState {
     pub loading_states: HashMap<(EventId, String), LoadingState>,
     /// Last validation error
     pub last_error: Option<String>,
+    /// Current version for optimistic concurrency control
+    pub version: Version,
 }
 
 impl InventoryState {
@@ -1029,6 +1035,7 @@ impl InventoryState {
             seat_assignments: HashMap::new(),
             loading_states: HashMap::new(),
             last_error: None,
+            version: Version::INITIAL,
         }
     }
 
@@ -1093,6 +1100,8 @@ pub struct ReservationState {
     pub loading_states: HashMap<ReservationId, LoadingState>,
     /// Last validation error
     pub last_error: Option<String>,
+    /// Current version for optimistic concurrency control
+    pub version: Version,
 }
 
 impl ReservationState {
@@ -1103,6 +1112,7 @@ impl ReservationState {
             reservations: HashMap::new(),
             loading_states: HashMap::new(),
             last_error: None,
+            version: Version::INITIAL,
         }
     }
 
@@ -1158,6 +1168,8 @@ pub struct PaymentState {
     pub loading_states: HashMap<PaymentId, LoadingState>,
     /// Last validation error
     pub last_error: Option<String>,
+    /// Current version for optimistic concurrency control
+    pub version: Version,
 }
 
 impl PaymentState {
@@ -1168,6 +1180,7 @@ impl PaymentState {
             payments: HashMap::new(),
             loading_states: HashMap::new(),
             last_error: None,
+            version: Version::INITIAL,
         }
     }
 

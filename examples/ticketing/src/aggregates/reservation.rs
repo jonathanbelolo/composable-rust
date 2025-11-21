@@ -18,7 +18,7 @@ use crate::types::{
 use chrono::{DateTime, Duration, Utc};
 use composable_rust_core::{
     append_events, delay, effect::Effect, environment::Clock, event_bus::EventBus,
-    event_store::EventStore, publish_event, reducer::Reducer, smallvec, stream::StreamId,
+    event_store::EventStore, publish_event, reducer::Reducer, smallvec, stream::{StreamId, Version},
     SmallVec,
 };
 use composable_rust_macros::Action;
@@ -267,6 +267,13 @@ pub enum ReservationAction {
         /// Error message
         error: String,
     },
+
+    /// Stream version was updated after successful event append
+    #[event]
+    VersionUpdated {
+        /// New version number
+        version: Version,
+    },
 }
 
 // ============================================================================
@@ -334,10 +341,12 @@ impl ReservationReducer {
     /// # Arguments
     ///
     /// - `event`: The event to persist and publish
+    /// - `expected_version`: Expected version for optimistic concurrency control
     /// - `env`: Environment for event store and bus
     /// - `correlation_id`: Optional correlation ID for request tracking
     fn create_effects(
         event: ReservationAction,
+        expected_version: Version,
         env: &ReservationEnvironment,
         correlation_id: Option<CorrelationId>,
     ) -> SmallVec<[Effect<ReservationAction>; 4]> {
@@ -356,9 +365,9 @@ impl ReservationReducer {
             append_events! {
                 store: env.event_store,
                 stream: env.stream_id.as_str(),
-                expected_version: None,
+                expected_version: Some(expected_version),
                 events: vec![serialized.clone()],
-                on_success: |_version| None,
+                on_success: |version| Some(ReservationAction::VersionUpdated { version }),
                 on_error: |error| Some(ReservationAction::ValidationFailed {
                     error: error.to_string()
                 })
@@ -508,6 +517,10 @@ impl ReservationReducer {
                 state.last_error = None;
             }
 
+            ReservationAction::VersionUpdated { version } => {
+                state.version = *version;
+            }
+
             ReservationAction::ValidationFailed { error } => {
                 state.last_error = Some(error.clone());
             }
@@ -582,10 +595,11 @@ impl Reducer for ReservationReducer {
                     expires_at,
                     initiated_at: now,
                 };
+                let expected_version = state.version;
                 Self::apply_event(state, &event);
 
                 // Persist and publish our event with correlation_id
-                let mut effects = Self::create_effects(event, env, correlation_id);
+                let mut effects = Self::create_effects(event, expected_version, env, correlation_id);
 
                 // TCA Pattern: Publish command to event bus for Inventory child aggregate
                 // The Inventory aggregate subscribes to its topic and will process this command
@@ -622,8 +636,9 @@ impl Reducer for ReservationReducer {
                         let failed_event = ReservationAction::ValidationFailed {
                             error: format!("Failed to serialize ReserveSeats command: {e}")
                         };
+                        let expected_version = state.version;
                         Self::apply_event(state, &failed_event);
-                        return Self::create_effects(failed_event, env, correlation_id);
+                        return Self::create_effects(failed_event, expected_version, env, correlation_id);
                     }
                 }
 
@@ -648,6 +663,7 @@ impl Reducer for ReservationReducer {
                 total_amount,
             } => {
                 // Apply event
+                let expected_version = state.version;
                 Self::apply_event(state, &action);
 
                 // Calculate price (simplified - in production would look up pricing tiers)
@@ -662,11 +678,12 @@ impl Reducer for ReservationReducer {
                     payment_id,
                     amount: total,
                 };
+                let expected_version_2 = state.version;
                 Self::apply_event(state, &payment_requested);
 
                 // Persist and publish our events
-                let mut effects = Self::create_effects(action, env, None);
-                effects.extend(Self::create_effects(payment_requested, env, None));
+                let mut effects = Self::create_effects(action, expected_version, env, None);
+                effects.extend(Self::create_effects(payment_requested, expected_version_2, env, None));
 
                 // TCA Pattern: Publish command to event bus for Payment child aggregate
                 let process_payment = PaymentAction::ProcessPayment {
@@ -699,6 +716,7 @@ impl Reducer for ReservationReducer {
                 payment_id: _,
             } => {
                 // Apply event
+                let expected_version = state.version;
                 Self::apply_event(state, &action);
 
                 // Get customer ID from reservation
@@ -722,11 +740,12 @@ impl Reducer for ReservationReducer {
                     tickets_issued: tickets,
                     completed_at: env.clock.now(),
                 };
+                let expected_version_2 = state.version;
                 Self::apply_event(state, &completion);
 
                 // Persist and publish our events
-                let mut effects = Self::create_effects(action, env, None);
-                effects.extend(Self::create_effects(completion, env, None));
+                let mut effects = Self::create_effects(action, expected_version, env, None);
+                effects.extend(Self::create_effects(completion, expected_version_2, env, None));
 
                 // TCA Pattern: Publish confirm command to event bus for Inventory
                 let confirm_seats = InventoryAction::ConfirmReservation {
@@ -756,6 +775,7 @@ impl Reducer for ReservationReducer {
                 payment_id: _,
             } => {
                 // Apply event
+                let expected_version = state.version;
                 Self::apply_event(state, &action);
 
                 let compensation = ReservationAction::ReservationCompensated {
@@ -763,11 +783,12 @@ impl Reducer for ReservationReducer {
                     reason: reason.clone(),
                     compensated_at: env.clock.now(),
                 };
+                let expected_version_2 = state.version;
                 Self::apply_event(state, &compensation);
 
                 // Persist and publish our events
-                let mut effects = Self::create_effects(action, env, None);
-                effects.extend(Self::create_effects(compensation, env, None));
+                let mut effects = Self::create_effects(action, expected_version, env, None);
+                effects.extend(Self::create_effects(compensation, expected_version_2, env, None));
 
                 // TCA Pattern: Publish release command to event bus (compensation)
                 let release_seats = InventoryAction::ReleaseReservation { reservation_id };
@@ -801,10 +822,11 @@ impl Reducer for ReservationReducer {
                             reservation_id,
                             expired_at: env.clock.now(),
                         };
+                        let expected_version = state.version;
                         Self::apply_event(state, &expiration);
 
                         // Persist and publish expiration event
-                        let mut effects = Self::create_effects(expiration, env, None);
+                        let mut effects = Self::create_effects(expiration, expected_version, env, None);
 
                         // TCA Pattern: Publish release command to event bus (compensation)
                         let release_seats =
@@ -840,10 +862,11 @@ impl Reducer for ReservationReducer {
                             reason: "Cancelled by customer".to_string(),
                             cancelled_at: env.clock.now(),
                         };
+                        let expected_version = state.version;
                         Self::apply_event(state, &cancellation);
 
                         // Persist and publish cancellation event
-                        let mut effects = Self::create_effects(cancellation, env, None);
+                        let mut effects = Self::create_effects(cancellation, expected_version, env, None);
 
                         // TCA Pattern: Publish release command to event bus (compensation)
                         let release_seats =

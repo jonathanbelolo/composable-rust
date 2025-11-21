@@ -14,7 +14,9 @@ use crate::types::{
 use chrono::{DateTime, Utc};
 use composable_rust_core::{
     append_events, delay, effect::Effect, environment::Clock, event_bus::EventBus,
-    event_store::EventStore, publish_event, reducer::Reducer, smallvec, stream::StreamId, SmallVec,
+    event_store::EventStore, publish_event, reducer::Reducer, smallvec,
+    stream::{StreamId, Version},
+    SmallVec,
 };
 use composable_rust_macros::Action;
 use serde::{Deserialize, Serialize};
@@ -315,6 +317,13 @@ pub enum InventoryAction {
         /// Total available seats across all sections
         total_available: u32,
     },
+
+    /// Stream version was updated after successful event append
+    #[event]
+    VersionUpdated {
+        /// New version number
+        version: Version,
+    },
 }
 
 // ============================================================================
@@ -377,6 +386,7 @@ impl InventoryReducer {
     /// Creates effects for persisting and publishing an event
     fn create_effects(
         event: InventoryAction,
+        expected_version: Version,
         env: &InventoryEnvironment,
     ) -> SmallVec<[Effect<InventoryAction>; 4]> {
         let ticketing_event = TicketingEvent::Inventory(event);
@@ -388,9 +398,9 @@ impl InventoryReducer {
             append_events! {
                 store: env.event_store,
                 stream: env.stream_id.as_str(),
-                expected_version: None,
+                expected_version: Some(expected_version),
                 events: vec![serialized.clone()],
-                on_success: |_version| None,
+                on_success: |version| Some(InventoryAction::VersionUpdated { version }),
                 on_error: |error| Some(InventoryAction::ValidationFailed {
                     error: error.to_string()
                 })
@@ -705,6 +715,10 @@ impl InventoryReducer {
                 state.last_error = None;
             }
 
+            InventoryAction::VersionUpdated { version } => {
+                state.version = *version;
+            }
+
             // Commands and informational events don't modify state
             InventoryAction::InsufficientInventory { .. }
             | InventoryAction::InitializeInventory { .. }
@@ -776,6 +790,7 @@ impl Reducer for InventoryReducer {
                     seats,
                     initialized_at: env.clock.now(),
                 };
+                let expected_version = state.version;
                 Self::apply_event(state, &event);
 
                 // Serialize event
@@ -793,9 +808,9 @@ impl Reducer for InventoryReducer {
                     append_events! {
                         store: env.event_store,
                         stream: env.stream_id.as_str(),
-                        expected_version: None,
+                        expected_version: Some(expected_version),
                         events: vec![serialized.clone()],
-                        on_success: |_version| None,
+                        on_success: |version| Some(InventoryAction::VersionUpdated { version }),
                         on_error: |error| Some(InventoryAction::ValidationFailed {
                             error: error.to_string()
                         })
@@ -941,6 +956,7 @@ impl Reducer for InventoryReducer {
                     expires_at,
                     reserved_at: env.clock.now(),
                 };
+                let expected_version = state.version;
                 Self::apply_event(state, &event);
 
                 // Serialize event
@@ -968,9 +984,9 @@ impl Reducer for InventoryReducer {
                     append_events! {
                         store: env.event_store,
                         stream: env.stream_id.as_str(),
-                        expected_version: None,
+                        expected_version: Some(expected_version),
                         events: vec![serialized.clone()],
-                        on_success: |_version| None,
+                        on_success: |version| Some(InventoryAction::VersionUpdated { version }),
                         on_error: |error| Some(InventoryAction::ValidationFailed {
                             error: error.to_string()
                         })
@@ -1028,9 +1044,10 @@ impl Reducer for InventoryReducer {
                     seats,
                     confirmed_at: env.clock.now(),
                 };
+                let expected_version = state.version;
                 Self::apply_event(state, &event);
 
-                Self::create_effects(event, env)
+                Self::create_effects(event, expected_version, env)
             }
 
             InventoryAction::ReleaseReservation { reservation_id } => {
@@ -1056,9 +1073,10 @@ impl Reducer for InventoryReducer {
                     seats,
                     released_at: env.clock.now(),
                 };
+                let expected_version = state.version;
                 Self::apply_event(state, &event);
 
-                Self::create_effects(event, env)
+                Self::create_effects(event, expected_version, env)
             }
 
             InventoryAction::ExpireReservation { reservation_id } => {
@@ -1082,9 +1100,10 @@ impl Reducer for InventoryReducer {
                     seats,
                     released_at: env.clock.now(),
                 };
+                let expected_version = state.version;
                 Self::apply_event(state, &event);
 
-                Self::create_effects(event, env)
+                Self::create_effects(event, expected_version, env)
             }
 
             // ========== Query Actions ==========
