@@ -38,6 +38,28 @@ impl InventoryProjectionQuery for MockInventoryQuery {
     > {
         Box::pin(async move { Ok(None) })
     }
+
+    fn get_all_sections(
+        &self,
+        _event_id: &EventId,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<ticketing::aggregates::inventory::SectionAvailabilityData>, String>> + Send + '_>> {
+        Box::pin(async move { Ok(vec![]) })
+    }
+
+    fn get_section_availability(
+        &self,
+        _event_id: &EventId,
+        _section: &str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<ticketing::aggregates::inventory::SectionAvailabilityData>, String>> + Send + '_>> {
+        Box::pin(async move { Ok(None) })
+    }
+
+    fn get_total_available(
+        &self,
+        _event_id: &EventId,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u32, String>> + Send + '_>> {
+        Box::pin(async move { Ok(0) })
+    }
 }
 
 fn create_test_env() -> InventoryEnvironment {

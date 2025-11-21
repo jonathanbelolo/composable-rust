@@ -87,12 +87,38 @@ pub async fn get_event_availability(
     Path(event_id): Path<Uuid>,
     State(state): State<AppState>,
 ) -> Result<Json<EventAvailabilityResponse>, AppError> {
-    // Query projection for all sections
-    let sections = state
-        .available_seats_projection
-        .get_all_sections(&crate::types::EventId::from_uuid(event_id))
+    // Query through store/reducer pattern
+    let event_id_typed = crate::types::EventId::from_uuid(event_id);
+    let inventory_store = state.create_inventory_store();
+
+    // Send GetAllSections query action and wait for AllSectionsQueried result
+    let result = inventory_store
+        .send_and_wait_for(
+            crate::aggregates::InventoryAction::GetAllSections {
+                event_id: event_id_typed,
+            },
+            |action| {
+                matches!(
+                    action,
+                    crate::aggregates::InventoryAction::AllSectionsQueried { .. }
+                        | crate::aggregates::InventoryAction::ValidationFailed { .. }
+                )
+            },
+            std::time::Duration::from_secs(5),
+        )
         .await
         .map_err(|e| AppError::internal(format!("Failed to query availability: {e}")))?;
+
+    // Extract sections from result action
+    let sections = match result {
+        crate::aggregates::InventoryAction::AllSectionsQueried { sections, .. } => sections,
+        crate::aggregates::InventoryAction::ValidationFailed { error } => {
+            return Err(AppError::internal(format!("Query failed: {error}")));
+        }
+        _ => {
+            return Err(AppError::internal("Unexpected response from inventory query"));
+        }
+    };
 
     // If no sections found, event doesn't exist or has no inventory
     if sections.is_empty() {
@@ -104,10 +130,14 @@ pub async fn get_event_availability(
         .into_iter()
         .map(|s| SectionAvailability {
             section: s.section,
-            total_capacity: s.total_capacity,
-            reserved: s.reserved,
-            sold: s.sold,
-            available: s.available,
+            #[allow(clippy::cast_possible_wrap)] // Counts fit in i32 range
+            total_capacity: s.total_capacity as i32,
+            #[allow(clippy::cast_possible_wrap)]
+            reserved: s.reserved as i32,
+            #[allow(clippy::cast_possible_wrap)]
+            sold: s.sold as i32,
+            #[allow(clippy::cast_possible_wrap)]
+            available: s.available as i32,
         })
         .collect();
 
@@ -145,16 +175,45 @@ pub async fn get_section_availability(
     Path((event_id, section)): Path<(Uuid, String)>,
     State(state): State<AppState>,
 ) -> Result<Json<SectionAvailability>, AppError> {
-    // Query projection for specific section
-    let section_data = state
-        .available_seats_projection
-        .get_availability(&crate::types::EventId::from_uuid(event_id), &section)
+    // Query through store/reducer pattern
+    let event_id_typed = crate::types::EventId::from_uuid(event_id);
+    let inventory_store = state.create_inventory_store();
+
+    // Send GetSectionAvailability query action and wait for SectionAvailabilityQueried result
+    let result = inventory_store
+        .send_and_wait_for(
+            crate::aggregates::InventoryAction::GetSectionAvailability {
+                event_id: event_id_typed,
+                section: section.clone(),
+            },
+            |action| {
+                matches!(
+                    action,
+                    crate::aggregates::InventoryAction::SectionAvailabilityQueried { .. }
+                        | crate::aggregates::InventoryAction::ValidationFailed { .. }
+                )
+            },
+            std::time::Duration::from_secs(5),
+        )
         .await
         .map_err(|e| AppError::internal(format!("Failed to query availability: {e}")))?;
 
+    // Extract section data from result action
+    let section_data = match result {
+        crate::aggregates::InventoryAction::SectionAvailabilityQueried { data, .. } => data,
+        crate::aggregates::InventoryAction::ValidationFailed { error } => {
+            return Err(AppError::internal(format!("Query failed: {error}")));
+        }
+        _ => {
+            return Err(AppError::internal(
+                "Unexpected response from inventory query",
+            ));
+        }
+    };
+
     // If no data found, return stub data for testing
     // TODO: Remove this stub once event creation is fully implemented
-    if section_data.is_none() {
+    let Some(data) = section_data else {
         let stub_capacity = match section.as_str() {
             "VIP" => 20,
             "General" => 100,
@@ -168,21 +227,16 @@ pub async fn get_section_availability(
             sold: 0,
             available: stub_capacity,
         }));
-    }
-
-    // Convert tuple to response format
-    let Some(section_data_tuple) = section_data else {
-        return Err(AppError::internal("Section data unexpectedly missing after check"));
     };
-    let (total_capacity, reserved, sold, available) = section_data_tuple;
 
+    // Convert to response format
     #[allow(clippy::cast_possible_wrap)] // Counts fit in i32 range
     Ok(Json(SectionAvailability {
-        section,
-        total_capacity: total_capacity as i32,
-        reserved: reserved as i32,
-        sold: sold as i32,
-        available: available as i32,
+        section: data.section,
+        total_capacity: data.total_capacity as i32,
+        reserved: data.reserved as i32,
+        sold: data.sold as i32,
+        available: data.available as i32,
     }))
 }
 
@@ -216,11 +270,35 @@ pub async fn get_total_available(
     Path(event_id): Path<Uuid>,
     State(state): State<AppState>,
 ) -> Result<Json<TotalAvailableResponse>, AppError> {
-    let total = state
-        .available_seats_projection
-        .get_total_available(&crate::types::EventId::from_uuid(event_id))
+    use crate::aggregates::inventory::InventoryAction;
+    use crate::types::EventId;
+
+    let event_id_typed = EventId::from_uuid(event_id);
+    let store = state.create_inventory_store();
+
+    let total = match store
+        .send_and_wait_for(
+            InventoryAction::GetTotalAvailable {
+                event_id: event_id_typed,
+            },
+            |action| {
+                matches!(
+                    action,
+                    InventoryAction::TotalAvailableQueried { .. }
+                        | InventoryAction::ValidationFailed { .. }
+                )
+            },
+            std::time::Duration::from_secs(5),
+        )
         .await
-        .map_err(|e| AppError::internal(format!("Failed to query total availability: {e}")))?;
+    {
+        Ok(InventoryAction::TotalAvailableQueried { total_available, .. }) => total_available,
+        Ok(InventoryAction::ValidationFailed { error }) => {
+            return Err(AppError::internal(format!("Query failed: {error}")))
+        }
+        Ok(_) => return Err(AppError::internal("Unexpected action received")),
+        Err(e) => return Err(AppError::internal(format!("Failed to query total availability: {e}"))),
+    };
 
     // If projection is empty, return stub data for testing
     // TODO: Remove this stub once event creation is fully implemented

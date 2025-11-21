@@ -217,6 +217,7 @@ impl EventHandler for PaymentHandler {
     }
 }
 
+
 // ============================================================================
 // Projection Handlers (Update Read Models)
 // ============================================================================
@@ -331,6 +332,65 @@ impl EventHandler for CustomerHistoryHandler {
             projection.handle_event(&event)?;
         } else {
             warn!("Failed to acquire write lock on customer projection");
+        }
+
+        Ok(())
+    }
+}
+
+/// Handler for maintaining ownership indices for WebSocket notification filtering.
+///
+/// This handler tracks which customers own which reservations and which payments
+/// belong to which reservations. These indices are used for security filtering in
+/// WebSocket notifications to ensure users only receive updates for their own data.
+///
+/// **Note**: Projections are now PostgreSQL-backed and updated by projection managers,
+/// not event consumers. This handler only maintains the in-memory ownership indices.
+pub struct OwnershipIndexHandler {
+    /// Ownership index: `ReservationId` → `CustomerId`
+    pub reservation_ownership: Arc<RwLock<HashMap<ReservationId, CustomerId>>>,
+
+    /// Ownership index: `PaymentId` → `ReservationId`
+    pub payment_ownership: Arc<RwLock<HashMap<PaymentId, ReservationId>>>,
+}
+
+#[async_trait]
+impl EventHandler for OwnershipIndexHandler {
+    async fn handle(&self, data: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Deserialize into application-specific event type
+        let event: TicketingEvent = bincode::deserialize(data)?;
+
+        // Track ownership for security (WebSocket notification filtering)
+        match &event {
+            TicketingEvent::Reservation(ReservationAction::ReservationInitiated {
+                reservation_id,
+                customer_id,
+                ..
+            }) => {
+                if let Ok(mut index) = self.reservation_ownership.write() {
+                    index.insert(*reservation_id, *customer_id);
+                    info!(
+                        reservation_id = %reservation_id.as_uuid(),
+                        customer_id = %customer_id.as_uuid(),
+                        "Tracked reservation ownership"
+                    );
+                }
+            }
+            TicketingEvent::Payment(PaymentAction::PaymentProcessed {
+                payment_id,
+                reservation_id,
+                ..
+            }) => {
+                if let Ok(mut index) = self.payment_ownership.write() {
+                    index.insert(*payment_id, *reservation_id);
+                    info!(
+                        payment_id = %payment_id.as_uuid(),
+                        reservation_id = %reservation_id.as_uuid(),
+                        "Tracked payment ownership"
+                    );
+                }
+            }
+            _ => {}
         }
 
         Ok(())

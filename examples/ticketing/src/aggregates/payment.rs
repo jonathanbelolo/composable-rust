@@ -188,6 +188,31 @@ pub enum PaymentAction {
         /// List of payments for the customer
         payments: Vec<Payment>,
     },
+
+    /// Projection completed (infrastructure event from projection system)
+    #[event]
+    ProjectionCompleted {
+        /// Correlation ID from original request
+        correlation_id: String,
+        /// Name of projection that completed
+        projection_name: String,
+    },
+
+    /// Payment confirmed - projection updated successfully (business domain event)
+    #[event]
+    PaymentConfirmed {
+        /// Payment ID
+        payment_id: PaymentId,
+    },
+
+    /// Payment projection failed (business domain event)
+    #[event]
+    PaymentProjectionFailed {
+        /// Payment ID
+        payment_id: PaymentId,
+        /// Failure reason
+        reason: String,
+    },
 }
 
 // ============================================================================
@@ -347,7 +372,10 @@ impl PaymentReducer {
             | PaymentAction::GetPayment { .. }
             | PaymentAction::ListCustomerPayments { .. }
             | PaymentAction::PaymentQueried { .. }
-            | PaymentAction::CustomerPaymentsListed { .. } => {}
+            | PaymentAction::CustomerPaymentsListed { .. }
+            | PaymentAction::ProjectionCompleted { .. }
+            | PaymentAction::PaymentConfirmed { .. }
+            | PaymentAction::PaymentProjectionFailed { .. } => {}
         }
     }
 }
@@ -490,6 +518,47 @@ impl Reducer for PaymentReducer {
                         }),
                     }
                 }))]
+            }
+
+            // ========== Infrastructure: Projection Completed ==========
+            PaymentAction::ProjectionCompleted {
+                correlation_id,
+                projection_name,
+            } => {
+                // Check if this is the payments projection completing
+                if projection_name == "payments_projection" {
+                    // Parse correlation_id to payment_id
+                    // The HTTP handler sets correlation_id = payment_id.to_string()
+                    if let Ok(uuid) = uuid::Uuid::parse_str(&correlation_id) {
+                        let payment_id = PaymentId::from_uuid(uuid);
+
+                        // Verify this payment exists in state
+                        if state.payments.contains_key(&payment_id) {
+                            let confirmed = PaymentAction::PaymentConfirmed { payment_id };
+                            Self::apply_event(state, &confirmed);
+                            return Self::create_effects(confirmed, env);
+                        } else {
+                            // Payment not found - emit failure event
+                            let failed = PaymentAction::PaymentProjectionFailed {
+                                payment_id,
+                                reason: format!("Payment {payment_id:?} not found in state"),
+                            };
+                            Self::apply_event(state, &failed);
+                            return Self::create_effects(failed, env);
+                        }
+                    } else {
+                        // Failed to parse correlation_id as UUID
+                        state.last_error = Some(format!(
+                            "Invalid correlation_id format: {correlation_id}"
+                        ));
+                    }
+                }
+                // Not our projection or parsing failed - just apply event
+                Self::apply_event(state, &PaymentAction::ProjectionCompleted {
+                    correlation_id: correlation_id.clone(),
+                    projection_name: projection_name.clone(),
+                });
+                SmallVec::new()
             }
 
             // ========== Events (from event store) ==========

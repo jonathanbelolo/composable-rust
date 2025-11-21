@@ -439,6 +439,110 @@ impl Projection for PostgresAvailableSeatsProjection {
     }
 }
 
+// ============================================================================
+// InventoryProjectionQuery Trait Implementation
+// ============================================================================
+
+impl crate::aggregates::inventory::InventoryProjectionQuery for PostgresAvailableSeatsProjection {
+    fn load_inventory(
+        &self,
+        event_id: &EventId,
+        section: &str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::result::Result<Option<((u32, u32, u32, u32), Vec<crate::types::SeatAssignment>)>, String>> + Send + '_>> {
+        let event_id = *event_id;
+        let section = section.to_string();
+        Box::pin(async move {
+            // Load aggregate counts
+            let counts = self
+                .get_availability(&event_id, &section)
+                .await
+                .map_err(|e| e.to_string())?;
+
+            // If no counts found, return None
+            let Some(counts) = counts else {
+                return Ok(None);
+            };
+
+            // Load individual seat assignments
+            let seat_assignments = self
+                .load_seat_assignments(&event_id, &section)
+                .await
+                .map_err(|e| e.to_string())?;
+
+            // Return complete snapshot: counts + seat assignments
+            Ok(Some((counts, seat_assignments)))
+        })
+    }
+
+    fn get_all_sections(
+        &self,
+        event_id: &EventId,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::result::Result<Vec<crate::aggregates::inventory::SectionAvailabilityData>, String>> + Send + '_>> {
+        let event_id = *event_id;
+        Box::pin(async move {
+            let sections = self
+                .get_all_sections(&event_id)
+                .await
+                .map_err(|e| format!("Failed to query sections: {e}"))?;
+
+            // Convert from projection's SectionAvailability (i32) to aggregate's SectionAvailabilityData (u32)
+            #[allow(clippy::cast_sign_loss)] // Counts are always non-negative in our domain
+            let data = sections
+                .into_iter()
+                .map(|s| crate::aggregates::inventory::SectionAvailabilityData {
+                    section: s.section,
+                    total_capacity: s.total_capacity as u32,
+                    reserved: s.reserved as u32,
+                    sold: s.sold as u32,
+                    available: s.available as u32,
+                })
+                .collect();
+
+            Ok(data)
+        })
+    }
+
+    fn get_section_availability(
+        &self,
+        event_id: &EventId,
+        section: &str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::result::Result<Option<crate::aggregates::inventory::SectionAvailabilityData>, String>> + Send + '_>> {
+        let event_id = *event_id;
+        let section = section.to_string();
+        Box::pin(async move {
+            let availability = self
+                .get_availability(&event_id, &section)
+                .await
+                .map_err(|e| format!("Failed to query availability: {e}"))?;
+
+            // Convert from tuple to SectionAvailabilityData
+            let data = availability.map(|(total_capacity, reserved, sold, available)| {
+                crate::aggregates::inventory::SectionAvailabilityData {
+                    section,
+                    total_capacity,
+                    reserved,
+                    sold,
+                    available,
+                }
+            });
+
+            Ok(data)
+        })
+    }
+
+    fn get_total_available(
+        &self,
+        event_id: &EventId,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::result::Result<u32, String>> + Send + '_>> {
+        let event_id = *event_id;
+        Box::pin(async move {
+            self.get_total_available(&event_id)
+                .await
+                .map_err(|e| format!("Failed to query total available: {e}"))
+        })
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Test code can use unwrap/expect
 mod tests {

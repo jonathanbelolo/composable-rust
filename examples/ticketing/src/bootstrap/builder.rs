@@ -45,7 +45,7 @@
 use crate::auth::setup::{build_auth_store, TicketingAuthStore};
 use crate::bootstrap::{register_aggregate_consumers, register_projections, ProjectionSystem, ResourceManager};
 use crate::config::Config;
-use crate::projections::query_adapters::{PostgresInventoryQuery, PostgresPaymentQuery, PostgresReservationQuery};
+use crate::projections::query_adapters::{PostgresAnalyticsQuery, PostgresInventoryQuery, PostgresPaymentQuery, PostgresReservationQuery};
 use crate::projections::{
     PostgresAvailableSeatsProjection, PostgresEventsProjection, PostgresPaymentsProjection,
     PostgresReservationsProjection, ProjectionCompletionTracker,
@@ -420,6 +420,10 @@ impl ApplicationBuilder {
         let inventory_query = Arc::new(PostgresInventoryQuery::new(available_seats_projection.clone()));
         let payment_query = Arc::new(PostgresPaymentQuery::new(payments_projection.clone()));
         let reservation_query = Arc::new(PostgresReservationQuery::new(reservations_projection.clone()));
+        let analytics_query = Arc::new(PostgresAnalyticsQuery::new(
+            projection_system.sales_analytics.clone(),
+            projection_system.customer_history.clone(),
+        ));
 
         // Create projection completion tracker
         let projection_completion_tracker = Arc::new(
@@ -439,6 +443,7 @@ impl ApplicationBuilder {
             inventory_query,
             payment_query,
             reservation_query,
+            analytics_query,
             events_projection,
             reservations_projection,
             payments_projection,

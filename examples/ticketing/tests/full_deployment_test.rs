@@ -38,6 +38,8 @@ const API_BASE: &str = "http://localhost:8080";
 async fn authenticate_with_magic_link() -> String {
     let client = reqwest::Client::new();
 
+    println!("  🔐 Step 1: Requesting magic link...");
+
     // Step 1: Request magic link
     let response = client
         .post(format!("{API_BASE}/auth/magic-link/request"))
@@ -48,13 +50,18 @@ async fn authenticate_with_magic_link() -> String {
         .await
         .expect("Failed to request magic link");
 
+    println!("  📨 Magic link request status: {}", response.status());
     assert_eq!(response.status(), 200, "Magic link request should succeed");
 
     let body: serde_json::Value = response.json().await.expect("Failed to parse response");
+    println!("  📝 Magic link response: {}", body);
 
     let magic_link_token = body["magic_link_token"]
         .as_str()
         .expect("magic_link_token should be present when AUTH_EXPOSE_MAGIC_LINKS_FOR_TESTING=true");
+
+    println!("  🎫 Extracted token: {}", magic_link_token);
+    println!("  🔐 Step 2: Verifying magic link token...");
 
     // Step 2: Verify magic link token
     let response = client
@@ -66,9 +73,17 @@ async fn authenticate_with_magic_link() -> String {
         .await
         .expect("Failed to verify magic link");
 
-    assert_eq!(response.status(), 200, "Magic link verification should succeed");
+    let status = response.status();
+    println!("  ✅ Verification response status: {}", status);
+
+    if status != 200 {
+        let error_body = response.text().await.unwrap_or_else(|_| "Could not read error body".to_string());
+        println!("  ❌ ERROR RESPONSE: {}", error_body);
+        panic!("Magic link verification failed with status {}", status);
+    }
 
     let body: serde_json::Value = response.json().await.expect("Failed to parse response");
+    println!("  📝 Verification response: {}", body);
 
     body["session_token"]
         .as_str()

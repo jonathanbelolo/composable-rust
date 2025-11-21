@@ -929,17 +929,49 @@ mod tests {
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<((u32, u32, u32, u32), Vec<crate::types::SeatAssignment>)>, String>> + Send + '_>> {
             Box::pin(async move { Ok(None) })
         }
+
+        fn get_all_sections(
+            &self,
+            _event_id: &EventId,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<crate::aggregates::inventory::SectionAvailabilityData>, String>> + Send + '_>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn get_section_availability(
+            &self,
+            _event_id: &EventId,
+            _section: &str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<crate::aggregates::inventory::SectionAvailabilityData>, String>> + Send + '_>> {
+            Box::pin(async move { Ok(None) })
+        }
+
+        fn get_total_available(
+            &self,
+            _event_id: &EventId,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u32, String>> + Send + '_>> {
+            Box::pin(async move { Ok(0) })
+        }
     }
 
     #[derive(Clone)]
     struct MockPaymentQuery;
 
+    #[async_trait::async_trait]
     impl crate::aggregates::payment::PaymentProjectionQuery for MockPaymentQuery {
-        fn load_payment(
+        async fn load_payment(
             &self,
             _payment_id: &crate::types::PaymentId,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<crate::types::Payment>, String>> + Send + '_>> {
-            Box::pin(async move { Ok(None) })
+        ) -> Result<Option<crate::types::Payment>, String> {
+            Ok(None)
+        }
+
+        async fn load_customer_payments(
+            &self,
+            _customer_id: &CustomerId,
+            _limit: usize,
+            _offset: usize,
+        ) -> Result<Vec<crate::types::Payment>, String> {
+            Ok(Vec::new())
         }
     }
 

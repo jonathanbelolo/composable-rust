@@ -219,17 +219,40 @@ pub async fn get_event_sales(
     Path(event_id): Path<Uuid>,
     State(state): State<AppState>,
 ) -> Result<Json<EventSalesResponse>, AppError> {
+    use crate::aggregates::analytics::AnalyticsAction;
     use crate::types::EventId;
 
-    // Query sales metrics from projection
-    let projection = state
-        .sales_analytics_projection
-        .read()
-        .map_err(|_| AppError::internal("Failed to acquire read lock on sales projection"))?;
+    let event_id_typed = EventId::from_uuid(event_id);
 
-    let metrics = projection
-        .get_metrics(&EventId::from_uuid(event_id))
-        .ok_or_else(|| AppError::not_found("Sales data", event_id))?;
+    // Create analytics store for this request
+    let store = state.create_analytics_store();
+
+    // Query sales metrics via store/reducer
+    let metrics = match store
+        .send_and_wait_for(
+            AnalyticsAction::GetEventSales {
+                event_id: event_id_typed,
+            },
+            |action| {
+                matches!(
+                    action,
+                    AnalyticsAction::EventSalesQueried { .. }
+                        | AnalyticsAction::ValidationFailed { .. }
+                )
+            },
+            std::time::Duration::from_secs(5),
+        )
+        .await
+    {
+        Ok(AnalyticsAction::EventSalesQueried { metrics, .. }) => {
+            metrics.ok_or_else(|| AppError::not_found("Sales data", event_id))?
+        }
+        Ok(AnalyticsAction::ValidationFailed { error }) => {
+            return Err(AppError::internal(format!("Query failed: {error}")))
+        }
+        Ok(_) => return Err(AppError::internal("Unexpected action received")),
+        Err(e) => return Err(AppError::internal(format!("Failed to query sales: {e}"))),
+    };
 
     // Convert revenue_by_section HashMap to Vec
     let sections: Vec<SectionSalesMetrics> = metrics
@@ -289,47 +312,73 @@ pub async fn get_popular_sections(
     Path(event_id): Path<Uuid>,
     State(state): State<AppState>,
 ) -> Result<Json<PopularSectionsResponse>, AppError> {
+    use crate::aggregates::analytics::AnalyticsAction;
     use crate::types::EventId;
-
-    // Query sales metrics from projection
-    let projection = state
-        .sales_analytics_projection
-        .read()
-        .map_err(|_| AppError::internal("Failed to acquire read lock on sales projection"))?;
 
     let event_id_typed = EventId::from_uuid(event_id);
 
-    // Get most popular section by ticket count
-    let most_popular = projection
-        .get_most_popular_section(&event_id_typed)
-        .map(|(section, count)| {
-            let revenue = projection
-                .get_metrics(&event_id_typed)
-                .and_then(|m| m.revenue_by_section.get(section).copied())
-                .unwrap_or_else(|| crate::types::Money::from_cents(0));
+    // Create analytics store for this request
+    let store = state.create_analytics_store();
 
-            SectionPopularity {
-                section: section.clone(),
-                tickets_sold: count,
-                revenue: revenue.cents() as i64,
-            }
-        });
+    // Query popular sections via store/reducer
+    let (most_popular_data, most_popular_revenue_data) = match store
+        .send_and_wait_for(
+            AnalyticsAction::GetPopularSections {
+                event_id: event_id_typed,
+            },
+            |action| {
+                matches!(
+                    action,
+                    AnalyticsAction::PopularSectionsQueried { .. }
+                        | AnalyticsAction::ValidationFailed { .. }
+                )
+            },
+            std::time::Duration::from_secs(5),
+        )
+        .await
+    {
+        Ok(AnalyticsAction::PopularSectionsQueried {
+            most_popular,
+            most_popular_revenue,
+            ..
+        }) => (most_popular, most_popular_revenue),
+        Ok(AnalyticsAction::ValidationFailed { error }) => {
+            return Err(AppError::internal(format!("Query failed: {error}")))
+        }
+        Ok(_) => return Err(AppError::internal("Unexpected action received")),
+        Err(e) => return Err(AppError::internal(format!("Failed to query sections: {e}"))),
+    };
 
-    // Get highest revenue section
-    let highest_revenue = projection
-        .get_highest_revenue_section(&event_id_typed)
-        .map(|(section, revenue)| {
-            let tickets = projection
-                .get_metrics(&event_id_typed)
-                .and_then(|m| m.tickets_by_section.get(section).copied())
-                .unwrap_or(0);
+    // Convert to response format
+    let most_popular = most_popular_data.as_ref().map(|(section, tickets_sold)| {
+        // Need to get revenue for this section - query again
+        let revenue = most_popular_revenue_data
+            .as_ref()
+            .filter(|(s, _)| s == section)
+            .map(|(_, r)| *r)
+            .unwrap_or_else(|| crate::types::Money::from_cents(0));
 
-            SectionPopularity {
-                section: section.clone(),
-                tickets_sold: tickets,
-                revenue: revenue.cents() as i64,
-            }
-        });
+        SectionPopularity {
+            section: section.clone(),
+            tickets_sold: *tickets_sold,
+            revenue: revenue.cents() as i64,
+        }
+    });
+
+    let highest_revenue = most_popular_revenue_data.as_ref().map(|(section, revenue)| {
+        // Need to get ticket count for this section
+        let tickets_sold = most_popular_data
+            .as_ref()
+            .filter(|(s, _)| s == section)
+            .map(|(_, count)| *count)
+            .unwrap_or(0);
+
+        SectionPopularity {
+            section: section.clone(),
+            tickets_sold,
+            revenue: revenue.cents() as i64,
+        }
+    });
 
     // Return 404 if no data at all
     if most_popular.is_none() && highest_revenue.is_none() {
@@ -372,19 +421,39 @@ pub async fn get_total_revenue(
     _admin: RequireAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<TotalRevenueResponse>, AppError> {
-    // Query sales metrics from projection
-    let projection = state
-        .sales_analytics_projection
-        .read()
-        .map_err(|_| AppError::internal("Failed to acquire read lock on sales projection"))?;
+    use crate::aggregates::analytics::AnalyticsAction;
 
-    let total_revenue = projection.get_total_revenue_all_events();
-    let total_tickets_sold = projection.get_total_tickets_sold();
+    // Create analytics store for this request
+    let store = state.create_analytics_store();
 
-    // Count events that have sales data
-    let events_with_sales = projection
-        .get_metrics(&crate::types::EventId::new()) // This is a hack - need to count all metrics
-        .map_or(0, |_| 1); // TODO: Add method to count all events with sales
+    // Query total revenue via store/reducer
+    let (total_revenue, total_tickets_sold) = match store
+        .send_and_wait_for(
+            AnalyticsAction::GetTotalRevenue,
+            |action| {
+                matches!(
+                    action,
+                    AnalyticsAction::TotalRevenueQueried { .. }
+                        | AnalyticsAction::ValidationFailed { .. }
+                )
+            },
+            std::time::Duration::from_secs(5),
+        )
+        .await
+    {
+        Ok(AnalyticsAction::TotalRevenueQueried {
+            total_revenue,
+            total_tickets_sold,
+        }) => (total_revenue, total_tickets_sold),
+        Ok(AnalyticsAction::ValidationFailed { error }) => {
+            return Err(AppError::internal(format!("Query failed: {error}")))
+        }
+        Ok(_) => return Err(AppError::internal("Unexpected action received")),
+        Err(e) => return Err(AppError::internal(format!("Failed to query revenue: {e}"))),
+    };
+
+    // TODO: Add method to count all events with sales
+    let events_with_sales = 0;
 
     Ok(Json(TotalRevenueResponse {
         total_revenue: total_revenue.cents() as i64,
@@ -434,6 +503,8 @@ pub async fn get_top_spenders(
     Query(params): Query<TopSpendersQuery>,
     State(state): State<AppState>,
 ) -> Result<Json<TopSpendersResponse>, AppError> {
+    use crate::aggregates::analytics::AnalyticsAction;
+
     // Validate limit
     if params.limit > 100 {
         return Err(AppError::bad_request(
@@ -441,14 +512,36 @@ pub async fn get_top_spenders(
         ));
     }
 
-    // Query customer history from projection
-    let projection = state
-        .customer_history_projection
-        .read()
-        .map_err(|_| AppError::internal("Failed to acquire read lock on customer projection"))?;
+    // Create analytics store for this request
+    let store = state.create_analytics_store();
 
-    let top_spenders = projection.get_top_spenders(params.limit);
-    let total_customers = projection.get_customer_count();
+    // Query top spenders via store/reducer
+    let (top_spenders, total_customers) = match store
+        .send_and_wait_for(
+            AnalyticsAction::GetTopSpenders {
+                limit: params.limit,
+            },
+            |action| {
+                matches!(
+                    action,
+                    AnalyticsAction::TopSpendersQueried { .. }
+                        | AnalyticsAction::ValidationFailed { .. }
+                )
+            },
+            std::time::Duration::from_secs(5),
+        )
+        .await
+    {
+        Ok(AnalyticsAction::TopSpendersQueried {
+            customers,
+            total_customers,
+        }) => (customers, total_customers),
+        Ok(AnalyticsAction::ValidationFailed { error }) => {
+            return Err(AppError::internal(format!("Query failed: {error}")))
+        }
+        Ok(_) => return Err(AppError::internal("Unexpected action received")),
+        Err(e) => return Err(AppError::internal(format!("Failed to query top spenders: {e}"))),
+    };
 
     // Map to response type
     let customers: Vec<CustomerSpendingSummary> = top_spenders
@@ -514,6 +607,8 @@ pub async fn get_customer_profile(
     Path(customer_id): Path<Uuid>,
     State(state): State<AppState>,
 ) -> Result<Json<CustomerProfileResponse>, AppError> {
+    use crate::aggregates::analytics::AnalyticsAction;
+
     // Ownership verified by RequireOwnership extractor
     // ownership.user_id is the authenticated user
     // ownership.resource is the CustomerId from the path
@@ -521,15 +616,41 @@ pub async fn get_customer_profile(
 
     // TODO: Also check if user is admin for override capability
 
-    // Query customer history from projection
-    let projection = state
-        .customer_history_projection
-        .read()
-        .map_err(|_| AppError::internal("Failed to acquire read lock on customer projection"))?;
+    let customer_id_typed = CustomerId::from_uuid(customer_id);
 
-    let profile = projection
-        .get_customer_profile(&CustomerId::from_uuid(customer_id))
-        .ok_or_else(|| AppError::not_found("Customer profile", customer_id))?;
+    // Create analytics store for this request
+    let store = state.create_analytics_store();
+
+    // Query customer profile via store/reducer
+    let profile = match store
+        .send_and_wait_for(
+            AnalyticsAction::GetCustomerProfile {
+                customer_id: customer_id_typed,
+            },
+            |action| {
+                matches!(
+                    action,
+                    AnalyticsAction::CustomerProfileQueried { .. }
+                        | AnalyticsAction::ValidationFailed { .. }
+                )
+            },
+            std::time::Duration::from_secs(5),
+        )
+        .await
+    {
+        Ok(AnalyticsAction::CustomerProfileQueried { profile, .. }) => {
+            profile.ok_or_else(|| AppError::not_found("Customer profile", customer_id))?
+        }
+        Ok(AnalyticsAction::ValidationFailed { error }) => {
+            return Err(AppError::internal(format!("Query failed: {error}")))
+        }
+        Ok(_) => return Err(AppError::internal("Unexpected action received")),
+        Err(e) => {
+            return Err(AppError::internal(format!(
+                "Failed to query customer profile: {e}"
+            )))
+        }
+    };
 
     // Sort purchases by completed_at descending and take last 10
     let mut sorted_purchases = profile.purchases.clone();

@@ -22,13 +22,18 @@ use std::sync::Arc;
 #[derive(Clone)]
 struct MockPaymentQuery;
 
+#[async_trait::async_trait]
 impl ticketing::aggregates::payment::PaymentProjectionQuery for MockPaymentQuery {
-    fn load_payment(
+    async fn load_payment(
         &self,
         _payment_id: &PaymentId,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<Payment>, String>> + Send + '_>> {
+    ) -> Result<Option<Payment>, String> {
         // Return None for tests - state will be built from events
-        Box::pin(async move { Ok(None) })
+        Ok(None)
+    }
+
+    async fn load_customer_payments(&self, _customer_id: &CustomerId, _limit: usize, _offset: usize) -> Result<Vec<Payment>, String> {
+        Ok(Vec::new())
     }
 }
 

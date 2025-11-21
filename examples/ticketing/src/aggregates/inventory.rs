@@ -21,6 +21,25 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 // ============================================================================
+// Data Structures
+// ============================================================================
+
+/// Section availability data for query results.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SectionAvailabilityData {
+    /// Section identifier
+    pub section: String,
+    /// Total capacity
+    pub total_capacity: u32,
+    /// Currently reserved seats (pending payment)
+    pub reserved: u32,
+    /// Sold seats (payment confirmed)
+    pub sold: u32,
+    /// Available seats (total - reserved - sold)
+    pub available: u32,
+}
+
+// ============================================================================
 // Projection Query Trait
 // ============================================================================
 
@@ -50,6 +69,37 @@ pub trait InventoryProjectionQuery: Send + Sync {
         event_id: &EventId,
         section: &str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<((u32, u32, u32, u32), Vec<SeatAssignment>)>, String>> + Send + '_>>;
+
+    /// Query all sections for an event.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database query fails.
+    fn get_all_sections(
+        &self,
+        event_id: &EventId,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<SectionAvailabilityData>, String>> + Send + '_>>;
+
+    /// Query availability for a specific section.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database query fails.
+    fn get_section_availability(
+        &self,
+        event_id: &EventId,
+        section: &str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<SectionAvailabilityData>, String>> + Send + '_>>;
+
+    /// Query total available seats across all sections for an event.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database query fails.
+    fn get_total_available(
+        &self,
+        event_id: &EventId,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u32, String>> + Send + '_>>;
 }
 
 // ============================================================================
@@ -114,6 +164,29 @@ pub enum InventoryAction {
     ExpireReservation {
         /// Reservation to expire
         reservation_id: ReservationId,
+    },
+
+    /// Query all sections for an event
+    #[command]
+    GetAllSections {
+        /// Event ID to query
+        event_id: EventId,
+    },
+
+    /// Query availability for a specific section
+    #[command]
+    GetSectionAvailability {
+        /// Event ID
+        event_id: EventId,
+        /// Section name
+        section: String,
+    },
+
+    /// Query total available seats across all sections for an event
+    #[command]
+    GetTotalAvailable {
+        /// Event ID to query
+        event_id: EventId,
     },
 
     // Events
@@ -212,6 +285,35 @@ pub enum InventoryAction {
         inventory_data: Option<(u32, u32, u32, u32)>,
         /// Loaded seat assignments from projection (complete snapshot)
         seat_assignments: Vec<SeatAssignment>,
+    },
+
+    /// All sections were queried (query result)
+    #[event]
+    AllSectionsQueried {
+        /// Event ID that was queried
+        event_id: EventId,
+        /// Section availability data
+        sections: Vec<SectionAvailabilityData>,
+    },
+
+    /// Section availability was queried (query result)
+    #[event]
+    SectionAvailabilityQueried {
+        /// Event ID that was queried
+        event_id: EventId,
+        /// Section that was queried
+        section: String,
+        /// Availability data (None if section not found)
+        data: Option<SectionAvailabilityData>,
+    },
+
+    /// Total available seats were queried (query result)
+    #[event]
+    TotalAvailableQueried {
+        /// Event ID that was queried
+        event_id: EventId,
+        /// Total available seats across all sections
+        total_available: u32,
     },
 }
 
@@ -609,7 +711,15 @@ impl InventoryReducer {
             | InventoryAction::ReserveSeats { .. }
             | InventoryAction::ConfirmReservation { .. }
             | InventoryAction::ReleaseReservation { .. }
-            | InventoryAction::ExpireReservation { .. } => {
+            | InventoryAction::ExpireReservation { .. }
+            | InventoryAction::GetAllSections { .. }
+            | InventoryAction::GetSectionAvailability { .. }
+            | InventoryAction::GetTotalAvailable { .. }
+            | InventoryAction::AllSectionsQueried { .. }
+            | InventoryAction::SectionAvailabilityQueried { .. }
+            | InventoryAction::TotalAvailableQueried { .. } => {
+                // Commands don't modify state
+                // Query actions and results are handled in reducer
                 // InsufficientInventory is informational - no state change needed
                 // Don't clear last_error - this represents a failure condition
             }
@@ -977,6 +1087,57 @@ impl Reducer for InventoryReducer {
                 Self::create_effects(event, env)
             }
 
+            // ========== Query Actions ==========
+            InventoryAction::GetAllSections { event_id } => {
+                let projection = env.projection.clone();
+                let event_id_clone = event_id;
+                smallvec![Effect::Future(Box::pin(async move {
+                    match projection.get_all_sections(&event_id_clone).await {
+                        Ok(sections) => Some(InventoryAction::AllSectionsQueried {
+                            event_id: event_id_clone,
+                            sections,
+                        }),
+                        Err(e) => Some(InventoryAction::ValidationFailed {
+                            error: format!("Failed to query sections: {e}"),
+                        }),
+                    }
+                }))]
+            }
+
+            InventoryAction::GetSectionAvailability { event_id, section } => {
+                let projection = env.projection.clone();
+                let event_id_clone = event_id;
+                let section_clone = section.clone();
+                smallvec![Effect::Future(Box::pin(async move {
+                    match projection.get_section_availability(&event_id_clone, &section_clone).await {
+                        Ok(data) => Some(InventoryAction::SectionAvailabilityQueried {
+                            event_id: event_id_clone,
+                            section: section_clone,
+                            data,
+                        }),
+                        Err(e) => Some(InventoryAction::ValidationFailed {
+                            error: format!("Failed to query section availability: {e}"),
+                        }),
+                    }
+                }))]
+            }
+
+            InventoryAction::GetTotalAvailable { event_id } => {
+                let projection = env.projection.clone();
+                let event_id_clone = event_id;
+                smallvec![Effect::Future(Box::pin(async move {
+                    match projection.get_total_available(&event_id_clone).await {
+                        Ok(total_available) => Some(InventoryAction::TotalAvailableQueried {
+                            event_id: event_id_clone,
+                            total_available,
+                        }),
+                        Err(e) => Some(InventoryAction::ValidationFailed {
+                            error: format!("Failed to query total available: {e}"),
+                        }),
+                    }
+                }))]
+            }
+
             // ========== Events (from event store replay) ==========
             event => {
                 Self::apply_event(state, &event);
@@ -1005,6 +1166,31 @@ mod tests {
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<((u32, u32, u32, u32), Vec<SeatAssignment>)>, String>> + Send + '_>> {
             // Return None for tests - state will be built from events
             Box::pin(async move { Ok(None) })
+        }
+
+        fn get_all_sections(
+            &self,
+            _event_id: &EventId,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<SectionAvailabilityData>, String>> + Send + '_>> {
+            // Return empty list for tests
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn get_section_availability(
+            &self,
+            _event_id: &EventId,
+            _section: &str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<SectionAvailabilityData>, String>> + Send + '_>> {
+            // Return None for tests
+            Box::pin(async move { Ok(None) })
+        }
+
+        fn get_total_available(
+            &self,
+            _event_id: &EventId,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u32, String>> + Send + '_>> {
+            // Return 0 for tests
+            Box::pin(async move { Ok(0) })
         }
     }
 

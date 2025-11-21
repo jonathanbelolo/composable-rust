@@ -57,18 +57,45 @@ impl InventoryProjectionQuery for MockInventoryQuery {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<((u32, u32, u32, u32), Vec<ticketing::SeatAssignment>)>, String>> + Send + '_>> {
         Box::pin(async move { Ok(None) }) // No cached state, use event sourcing
     }
+
+    fn get_all_sections(
+        &self,
+        _event_id: &EventId,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<ticketing::aggregates::inventory::SectionAvailabilityData>, String>> + Send + '_>> {
+        Box::pin(async move { Ok(vec![]) })
+    }
+
+    fn get_section_availability(
+        &self,
+        _event_id: &EventId,
+        _section: &str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<ticketing::aggregates::inventory::SectionAvailabilityData>, String>> + Send + '_>> {
+        Box::pin(async move { Ok(None) })
+    }
+
+    fn get_total_available(
+        &self,
+        _event_id: &EventId,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u32, String>> + Send + '_>> {
+        Box::pin(async move { Ok(0) })
+    }
 }
 
 /// Mock payment query that returns None (forcing event sourcing fallback)
 #[derive(Clone)]
 struct MockPaymentQuery;
 
+#[async_trait::async_trait]
 impl PaymentProjectionQuery for MockPaymentQuery {
-    fn load_payment(
+    async fn load_payment(
         &self,
         _payment_id: &PaymentId,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<Payment>, String>> + Send + '_>> {
-        Box::pin(async move { Ok(None) }) // No cached state, use event sourcing
+    ) -> Result<Option<Payment>, String> {
+        Ok(None) // No cached state, use event sourcing
+    }
+
+    async fn load_customer_payments(&self, _customer_id: &CustomerId, _limit: usize, _offset: usize) -> Result<Vec<Payment>, String> {
+        Ok(Vec::new())
     }
 }
 

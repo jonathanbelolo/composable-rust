@@ -34,9 +34,11 @@
 
 use crate::bootstrap::ResourceManager;
 use crate::projections::manager::setup_projection_managers;
-use crate::projections::{CustomerHistoryProjection, ProjectionManagers, SalesAnalyticsProjection};
+use crate::projections::{
+    PostgresCustomerHistoryProjection, PostgresSalesAnalyticsProjection, ProjectionManagers,
+};
 use crate::runtime::consumer::EventConsumer;
-use crate::runtime::handlers::{CustomerHistoryHandler, SalesAnalyticsHandler};
+use crate::runtime::handlers::OwnershipIndexHandler;
 use crate::types::{CustomerId, PaymentId, ReservationId};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -46,18 +48,18 @@ use tokio::sync::broadcast;
 ///
 /// This struct bundles together all projection-related components:
 /// - PostgreSQL projection managers (with checkpointing)
-/// - In-memory analytics projections (sales, customer history)
+/// - PostgreSQL analytics projections (sales, customer history) - production-ready
 /// - Ownership indices for security (WebSocket notification filtering)
-/// - Event consumers that update the projections
+/// - Event consumers that update ownership indices
 pub struct ProjectionSystem {
-    /// PostgreSQL projection managers (available seats, etc.)
+    /// PostgreSQL projection managers (available seats, sales analytics, customer history, etc.)
     pub managers: ProjectionManagers,
 
-    /// In-memory sales analytics projection
-    pub sales_analytics: Arc<RwLock<SalesAnalyticsProjection>>,
+    /// PostgreSQL sales analytics projection (production-ready, crash-safe)
+    pub sales_analytics: Arc<PostgresSalesAnalyticsProjection>,
 
-    /// In-memory customer history projection
-    pub customer_history: Arc<RwLock<CustomerHistoryProjection>>,
+    /// PostgreSQL customer history projection (production-ready, crash-safe)
+    pub customer_history: Arc<PostgresCustomerHistoryProjection>,
 
     /// Ownership index: ReservationId → CustomerId (for WebSocket filtering)
     pub reservation_ownership: Arc<RwLock<HashMap<ReservationId, CustomerId>>>,
@@ -65,17 +67,17 @@ pub struct ProjectionSystem {
     /// Ownership index: PaymentId → ReservationId (for WebSocket filtering)
     pub payment_ownership: Arc<RwLock<HashMap<PaymentId, ReservationId>>>,
 
-    /// Event consumers that update projections
+    /// Event consumers that update ownership indices
     pub consumers: Vec<EventConsumer>,
 }
 
 /// Register all projection consumers and create the complete projection system.
 ///
 /// This function:
-/// 1. Sets up PostgreSQL projection managers (available seats)
-/// 2. Creates in-memory projections (sales analytics, customer history)
+/// 1. Sets up PostgreSQL projection managers (available seats, sales analytics, customer history)
+/// 2. Creates PostgreSQL projections (production-ready, crash-safe)
 /// 3. Creates ownership indices for security
-/// 4. Registers event consumers to update projections
+/// 4. Registers event consumers to update ownership indices
 ///
 /// # Arguments
 ///
@@ -98,7 +100,7 @@ pub struct ProjectionSystem {
 /// // Start PostgreSQL projection managers
 /// let manager_handles = projection_system.managers.start_all();
 ///
-/// // Spawn event consumers
+/// // Spawn event consumers for ownership indices
 /// let consumer_handles: Vec<_> = projection_system.consumers
 ///     .into_iter()
 ///     .map(|c| c.spawn())
@@ -108,7 +110,7 @@ pub async fn register_projections(
     resources: &ResourceManager,
     shutdown: broadcast::Receiver<()>,
 ) -> Result<ProjectionSystem, Box<dyn std::error::Error>> {
-    // Setup PostgreSQL projection managers (available seats, etc.)
+    // Setup PostgreSQL projection managers (available seats, sales analytics, customer history)
     let managers = setup_projection_managers(
         resources.config.as_ref(),
         resources.event_bus.clone(),
@@ -116,30 +118,26 @@ pub async fn register_projections(
     )
     .await?;
 
-    // Create in-memory analytics projections
-    let sales_analytics = Arc::new(RwLock::new(SalesAnalyticsProjection::new()));
-    let customer_history = Arc::new(RwLock::new(CustomerHistoryProjection::new()));
+    // Create PostgreSQL analytics projections (production-ready, persistent)
+    let sales_analytics = Arc::new(PostgresSalesAnalyticsProjection::new(
+        resources.projections_pool.clone(),
+    ));
+    let customer_history = Arc::new(PostgresCustomerHistoryProjection::new(
+        resources.projections_pool.clone(),
+    ));
 
-    // Create security ownership indices
+    // Create security ownership indices (still in-memory for fast WebSocket filtering)
     let reservation_ownership = Arc::new(RwLock::new(HashMap::new()));
     let payment_ownership = Arc::new(RwLock::new(HashMap::new()));
 
-    // Create event consumers
-    let consumers = vec![
-        create_sales_analytics_consumer(
-            resources,
-            sales_analytics.clone(),
-            reservation_ownership.clone(),
-            payment_ownership.clone(),
-            shutdown.resubscribe(),
-        ),
-        create_customer_history_consumer(
-            resources,
-            customer_history.clone(),
-            reservation_ownership.clone(),
-            shutdown.resubscribe(),
-        ),
-    ];
+    // Create event consumer for ownership indices
+    // Note: PostgreSQL projections are updated by projection managers, not event consumers
+    let consumers = vec![create_ownership_index_consumer(
+        resources,
+        reservation_ownership.clone(),
+        payment_ownership.clone(),
+        shutdown.resubscribe(),
+    )];
 
     Ok(ProjectionSystem {
         managers,
@@ -151,21 +149,24 @@ pub async fn register_projections(
     })
 }
 
-/// Create sales analytics projection consumer.
+/// Create ownership index consumer.
 ///
-/// The sales analytics consumer listens to reservation and payment topics,
-/// updating revenue and sales volume statistics. It also maintains ownership
-/// indices for security filtering in WebSocket notifications.
-fn create_sales_analytics_consumer(
+/// The ownership index consumer listens to reservation and payment topics,
+/// maintaining in-memory indices for fast WebSocket notification filtering.
+/// These indices map:
+/// - `ReservationId` → `CustomerId` (who owns which reservation)
+/// - `PaymentId` → `ReservationId` (which payment belongs to which reservation)
+///
+/// These indices are kept in-memory for fast lookups during WebSocket message
+/// routing, while the actual projection data is persisted to PostgreSQL.
+fn create_ownership_index_consumer(
     resources: &ResourceManager,
-    sales_projection: Arc<RwLock<SalesAnalyticsProjection>>,
     reservation_ownership: Arc<RwLock<HashMap<ReservationId, CustomerId>>>,
     payment_ownership: Arc<RwLock<HashMap<PaymentId, ReservationId>>>,
     shutdown: broadcast::Receiver<()>,
 ) -> EventConsumer {
     // Create handler
-    let handler = Arc::new(SalesAnalyticsHandler {
-        projection: sales_projection,
+    let handler = Arc::new(OwnershipIndexHandler {
         reservation_ownership,
         payment_ownership,
     });
@@ -173,38 +174,11 @@ fn create_sales_analytics_consumer(
     // Create consumer with EventConsumer builder
     // Subscribe to both reservation and payment topics
     EventConsumer::builder()
-        .name("sales-analytics")
+        .name("ownership-indices")
         .topics(vec![
             resources.config.redpanda.reservation_topic.clone(),
             resources.config.redpanda.payment_topic.clone(),
         ])
-        .event_bus(resources.event_bus.clone())
-        .handler(handler)
-        .shutdown(shutdown)
-        .build()
-}
-
-/// Create customer history projection consumer.
-///
-/// The customer history consumer listens to reservation topic, building
-/// per-customer reservation history for analytics. It also maintains a
-/// backup copy of the reservation ownership index.
-fn create_customer_history_consumer(
-    resources: &ResourceManager,
-    customer_projection: Arc<RwLock<CustomerHistoryProjection>>,
-    reservation_ownership: Arc<RwLock<HashMap<ReservationId, CustomerId>>>,
-    shutdown: broadcast::Receiver<()>,
-) -> EventConsumer {
-    // Create handler
-    let handler = Arc::new(CustomerHistoryHandler {
-        projection: customer_projection,
-        reservation_ownership,
-    });
-
-    // Create consumer with EventConsumer builder
-    EventConsumer::builder()
-        .name("customer-history")
-        .topics(vec![resources.config.redpanda.reservation_topic.clone()])
         .event_bus(resources.event_bus.clone())
         .handler(handler)
         .shutdown(shutdown)

@@ -129,3 +129,4 @@ fn create_payment_consumer(
         .shutdown(shutdown)
         .build()
 }
+

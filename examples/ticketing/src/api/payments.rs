@@ -22,6 +22,7 @@
 
 use crate::aggregates::PaymentAction;
 use crate::auth::middleware::{RequireOwnership, SessionUser};
+use crate::projections::{CorrelationId, TicketingEvent};
 use crate::server::state::AppState;
 use crate::types::{CustomerId, Money, PaymentId, PaymentMethod, PaymentStatus, ReservationId};
 use axum::{
@@ -30,7 +31,9 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, Utc};
+use composable_rust_core::event::EventMetadata;
 use composable_rust_web::error::AppError;
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use uuid::Uuid;
@@ -257,6 +260,14 @@ pub async fn process_payment(
     // For now, the reducer simulates payment processing
     let _ = request.billing_info; // Will be used for gateway integration in Phase 12.5
 
+    // Use payment_id as correlation_id for tracking through the event lifecycle
+    // This enables the payment aggregate to identify which payment to confirm
+    // when it receives the ProjectionCompleted event
+    let correlation_id = CorrelationId::from_uuid(*payment_id.as_uuid());
+
+    // Prepare metadata with correlation_id for projection tracking
+    let metadata = EventMetadata::with_correlation_id(correlation_id.to_string());
+
     // Create Payment store for this request
     let store = state.create_payment_store();
 
@@ -268,13 +279,143 @@ pub async fn process_payment(
         payment_method,
     };
 
-    // Send action to store (Store executes effects automatically)
+    // Subscribe to BOTH topics BEFORE sending command to avoid race conditions:
+    // - payment topic: for PaymentConfirmed business domain event
+    // - projection.completed: for ProjectionCompleted infrastructure event
+    let mut payment_subscriber = state
+        .event_bus
+        .subscribe(&[&state.config.redpanda.payment_topic])
+        .await
+        .map_err(|e| AppError::internal(format!("Failed to subscribe to payment events: {e}")))?;
+
+    let mut projection_subscriber = state
+        .event_bus
+        .subscribe(&["projection.completed"])
+        .await
+        .map_err(|e| {
+            AppError::internal(format!("Failed to subscribe to projection events: {e}"))
+        })?;
+
+    // Send action with metadata to store (Store executes effects automatically)
+    // The correlation_id in metadata will be propagated to events and projections
     store
-        .send(action)
+        .send_with_metadata(action, Some(metadata))
         .await
         .map_err(|e| AppError::internal(format!("Failed to process payment: {e}")))?;
 
-    // Return success response
+    // Event loop: forward ProjectionCompleted to store, wait for PaymentConfirmed
+    // Flow: ProcessPayment → PaymentProcessed → Projection → ProjectionCompleted →
+    //       (HTTP handler forwards to same store) → PaymentConfirmed
+    let timeout = Duration::from_secs(10);
+    let start = std::time::Instant::now();
+
+    loop {
+        let remaining = timeout
+            .checked_sub(start.elapsed())
+            .unwrap_or(Duration::ZERO);
+
+        if remaining.is_zero() {
+            return Err(AppError::internal(
+                "Timeout waiting for payment confirmation".to_string(),
+            ));
+        }
+
+        tokio::select! {
+            // Listen for ProjectionCompleted from projection.completed topic
+            result = tokio::time::timeout(remaining, projection_subscriber.next()) => {
+                match result {
+                    Ok(Some(Ok(event_data))) => {
+                        // Deserialize ProjectionCompleted (JSON from projections)
+                        if let Ok(completed) = serde_json::from_slice::<crate::projections::ProjectionCompleted>(&event_data.data) {
+                            // Check if this is for our payment
+                            if completed.correlation_id.to_string() == correlation_id.to_string()
+                                && completed.projection_name == "payments_projection"
+                            {
+                                tracing::info!(
+                                    correlation_id = %correlation_id,
+                                    "Received ProjectionCompleted - forwarding to store"
+                                );
+
+                                // Forward ProjectionCompleted to the SAME store instance
+                                let action = PaymentAction::ProjectionCompleted {
+                                    correlation_id: correlation_id.to_string(),
+                                    projection_name: completed.projection_name.clone(),
+                                };
+
+                                store.send(action).await.map_err(|e| {
+                                    AppError::internal(format!("Failed to forward ProjectionCompleted: {e}"))
+                                })?;
+                            }
+                        }
+                    }
+                    Ok(Some(Err(e))) => {
+                        return Err(AppError::internal(format!("Projection event bus error: {e}")));
+                    }
+                    Ok(None) => {
+                        return Err(AppError::internal(
+                            "Projection stream ended unexpectedly".to_string(),
+                        ));
+                    }
+                    Err(_) => {
+                        return Err(AppError::internal(
+                            "Timeout waiting for projection completion".to_string(),
+                        ));
+                    }
+                }
+            }
+
+            // Listen for PaymentConfirmed from payment topic
+            result = tokio::time::timeout(remaining, payment_subscriber.next()) => {
+                match result {
+                    Ok(Some(Ok(event_data))) => {
+                        // Deserialize event from SerializedEvent.data
+                        if let Ok(event) = bincode::deserialize::<TicketingEvent>(&event_data.data) {
+                            // Check if this is our PaymentConfirmed event
+                            if let TicketingEvent::Payment(PaymentAction::PaymentConfirmed {
+                                payment_id: confirmed_id,
+                            }) = event
+                            {
+                                if confirmed_id == payment_id {
+                                    tracing::info!(
+                                        payment_id = %payment_id.as_uuid(),
+                                        "Payment confirmed - projection updated"
+                                    );
+                                    break;
+                                }
+                            }
+                            // Check for PaymentProjectionFailed
+                            else if let TicketingEvent::Payment(PaymentAction::PaymentProjectionFailed {
+                                payment_id: failed_id,
+                                reason,
+                            }) = event
+                            {
+                                if failed_id == payment_id {
+                                    return Err(AppError::internal(format!(
+                                        "Payment projection failed: {reason}"
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                    Ok(Some(Err(e))) => {
+                        return Err(AppError::internal(format!("Payment event bus error: {e}")));
+                    }
+                    Ok(None) => {
+                        return Err(AppError::internal(
+                            "Payment stream ended unexpectedly".to_string(),
+                        ));
+                    }
+                    Err(_) => {
+                        return Err(AppError::internal(
+                            "Timeout waiting for payment confirmation".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    // Return success response (projection either completed or will complete soon)
     Ok((
         StatusCode::CREATED,
         Json(ProcessPaymentResponse {

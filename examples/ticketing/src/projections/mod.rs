@@ -96,11 +96,12 @@ pub use completion::{
     CorrelationId, ProjectionCompleted, ProjectionCompletionEvent, ProjectionCompletionTracker,
     ProjectionFailed, ProjectionResult,
 };
-pub use customer_history::{CustomerHistoryProjection, CustomerPurchase};
+pub use customer_history::{CustomerHistoryProjection, CustomerProfile, CustomerPurchase};
 pub use customer_history_postgres::PostgresCustomerHistoryProjection;
 pub use events_postgres::PostgresEventsProjection;
 pub use manager::{setup_projection_managers, ProjectionManagers};
 pub use payments_postgres::PostgresPaymentsProjection;
+pub use query_adapters::PostgresAnalyticsQuery;
 pub use reservations_postgres::PostgresReservationsProjection;
 pub use sales_analytics::{SalesAnalyticsProjection, SalesMetrics};
 pub use sales_analytics_postgres::PostgresSalesAnalyticsProjection;

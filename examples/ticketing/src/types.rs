@@ -18,7 +18,7 @@ use uuid::Uuid;
 // ============================================================================
 
 /// Unique identifier for an event
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct EventId(Uuid);
 
 impl EventId {

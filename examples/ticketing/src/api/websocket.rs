@@ -300,24 +300,44 @@ async fn handle_availability_socket(socket: WebSocket, event_id: Uuid, state: Ap
     let (sender, mut receiver) = socket.split();
     let sender = Arc::new(tokio::sync::Mutex::new(sender));
 
-    // Send initial availability snapshot
+    // Send initial availability snapshot via store/reducer pattern
     let event_id_typed = EventId::from_uuid(event_id);
-    if let Ok(sections) = state.available_seats_projection.get_all_sections(&event_id_typed).await {
-        for section_availability in sections {
-            let initial_msg = TicketingWsMessage::AvailabilityUpdate {
-                event_id,
-                section: section_availability.section.clone(),
-                available: section_availability.available as u32,
-                reserved: section_availability.reserved as u32,
-                sold: section_availability.sold as u32,
-            };
+    let inventory_store = state.create_inventory_store();
 
-            if let Ok(json) = serde_json::to_string(&initial_msg) {
-                let mut sender_guard = sender.lock().await;
-                if sender_guard.send(Message::Text(json)).await.is_err() {
-                    debug!("Client disconnected before initial message");
-                    ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::Relaxed);
-                    return;
+    // Query through store for initial snapshot
+    if let Ok(result) = inventory_store
+        .send_and_wait_for(
+            crate::aggregates::InventoryAction::GetAllSections {
+                event_id: event_id_typed,
+            },
+            |action| {
+                matches!(
+                    action,
+                    crate::aggregates::InventoryAction::AllSectionsQueried { .. }
+                )
+            },
+            std::time::Duration::from_secs(5),
+        )
+        .await
+    {
+        // Extract sections from result
+        if let crate::aggregates::InventoryAction::AllSectionsQueried { sections, .. } = result {
+            for section_availability in sections {
+                let initial_msg = TicketingWsMessage::AvailabilityUpdate {
+                    event_id,
+                    section: section_availability.section.clone(),
+                    available: section_availability.available,
+                    reserved: section_availability.reserved,
+                    sold: section_availability.sold,
+                };
+
+                if let Ok(json) = serde_json::to_string(&initial_msg) {
+                    let mut sender_guard = sender.lock().await;
+                    if sender_guard.send(Message::Text(json)).await.is_err() {
+                        debug!("Client disconnected before initial message");
+                        ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::Relaxed);
+                        return;
+                    }
                 }
             }
         }
@@ -325,7 +345,7 @@ async fn handle_availability_socket(socket: WebSocket, event_id: Uuid, state: Ap
 
     // Spawn EventBus consumer task for real-time updates
     let event_sender = sender.clone();
-    let event_projection = state.available_seats_projection.clone();
+    let event_inventory_store = state.create_inventory_store();
     let event_bus = state.event_bus.clone();
     let config = Config::from_env();
 
@@ -352,22 +372,39 @@ async fn handle_availability_socket(socket: WebSocket, event_id: Uuid, state: Ap
                                 };
 
                                 if matches_event {
-                                    // Query updated availability from projection for all sections
-                                    if let Ok(sections) = event_projection.get_all_sections(&event_id_typed).await {
-                                        for section_availability in sections {
-                                            let update_msg = TicketingWsMessage::AvailabilityUpdate {
-                                                event_id,
-                                                section: section_availability.section.clone(),
-                                                available: section_availability.available as u32,
-                                                reserved: section_availability.reserved as u32,
-                                                sold: section_availability.sold as u32,
-                                            };
+                                    // Query updated availability through store/reducer pattern
+                                    if let Ok(result) = event_inventory_store
+                                        .send_and_wait_for(
+                                            crate::aggregates::InventoryAction::GetAllSections {
+                                                event_id: event_id_typed,
+                                            },
+                                            |action| {
+                                                matches!(
+                                                    action,
+                                                    crate::aggregates::InventoryAction::AllSectionsQueried { .. }
+                                                )
+                                            },
+                                            std::time::Duration::from_secs(5),
+                                        )
+                                        .await
+                                    {
+                                        // Extract sections from result
+                                        if let crate::aggregates::InventoryAction::AllSectionsQueried { sections, .. } = result {
+                                            for section_availability in sections {
+                                                let update_msg = TicketingWsMessage::AvailabilityUpdate {
+                                                    event_id,
+                                                    section: section_availability.section.clone(),
+                                                    available: section_availability.available,
+                                                    reserved: section_availability.reserved,
+                                                    sold: section_availability.sold,
+                                                };
 
-                                            if let Ok(json) = serde_json::to_string(&update_msg) {
-                                                let mut sender_guard = event_sender.lock().await;
-                                                if sender_guard.send(Message::Text(json)).await.is_err() {
-                                                    debug!("Client disconnected during event stream");
-                                                    return;
+                                                if let Ok(json) = serde_json::to_string(&update_msg) {
+                                                    let mut sender_guard = event_sender.lock().await;
+                                                    if sender_guard.send(Message::Text(json)).await.is_err() {
+                                                        debug!("Client disconnected during event stream");
+                                                        return;
+                                                    }
                                                 }
                                             }
                                         }

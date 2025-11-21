@@ -20,6 +20,7 @@
 //! - **Event sourcing**: Each store rebuilds state from events
 
 use crate::aggregates::{
+    analytics::AnalyticsReducer,
     inventory::InventoryReducer,
     payment::PaymentReducer,
     reservation::ReservationReducer,
@@ -27,10 +28,13 @@ use crate::aggregates::{
 use crate::auth::setup::TicketingAuthStore;
 use crate::config::Config;
 use crate::projections::{
-    query_adapters::{PostgresInventoryQuery, PostgresPaymentQuery, PostgresReservationQuery},
-    CustomerHistoryProjection, PostgresAvailableSeatsProjection, PostgresEventsProjection,
-    PostgresPaymentsProjection, PostgresReservationsProjection, ProjectionCompletionTracker,
-    SalesAnalyticsProjection,
+    query_adapters::{
+        PostgresAnalyticsQuery, PostgresInventoryQuery, PostgresPaymentQuery,
+        PostgresReservationQuery,
+    },
+    PostgresAvailableSeatsProjection, PostgresCustomerHistoryProjection, PostgresEventsProjection,
+    PostgresPaymentsProjection, PostgresReservationsProjection, PostgresSalesAnalyticsProjection,
+    ProjectionCompletionTracker,
 };
 use crate::types::{CustomerId, PaymentId, ReservationId};
 use composable_rust_core::{environment::Clock, event_bus::EventBus};
@@ -53,9 +57,9 @@ use std::sync::{Arc, RwLock};
 ///
 /// # Projections
 ///
-/// - **PostgreSQL-backed**: `available_seats_projection` (persistent, crash-safe)
-/// - **In-memory**: `sales_analytics_projection`, `customer_history_projection`
-///   (fast, but need rebuilding on restart - consumed from `EventBus`)
+/// - **All PostgreSQL-backed**: All projections (`available_seats_projection`,
+///   `sales_analytics_projection`, `customer_history_projection`, etc.) are now
+///   persisted to PostgreSQL for crash safety and production reliability
 ///
 /// # Security Indices
 ///
@@ -92,6 +96,9 @@ pub struct AppState {
     /// Reservation projection query
     pub reservation_query: Arc<PostgresReservationQuery>,
 
+    /// Analytics projection query (PostgreSQL-backed)
+    pub analytics_query: Arc<PostgresAnalyticsQuery>,
+
     // ===== Projections (CQRS read side) =====
     /// Events projection for querying event data (PostgreSQL-backed)
     pub events_projection: Arc<PostgresEventsProjection>,
@@ -105,11 +112,11 @@ pub struct AppState {
     /// Available seats projection for fast seat availability queries (PostgreSQL-backed)
     pub available_seats_projection: Arc<PostgresAvailableSeatsProjection>,
 
-    /// Sales analytics projection for revenue and sales metrics (in-memory)
-    pub sales_analytics_projection: Arc<RwLock<SalesAnalyticsProjection>>,
+    /// Sales analytics projection for revenue and sales metrics (PostgreSQL-backed)
+    pub sales_analytics_projection: Arc<PostgresSalesAnalyticsProjection>,
 
-    /// Customer history projection for purchase tracking (in-memory)
-    pub customer_history_projection: Arc<RwLock<CustomerHistoryProjection>>,
+    /// Customer history projection for purchase tracking (PostgreSQL-backed)
+    pub customer_history_projection: Arc<PostgresCustomerHistoryProjection>,
 
     // ===== Security Indices =====
     /// Ownership index: `ReservationId` → `CustomerId` (for WebSocket notification filtering)
@@ -141,9 +148,9 @@ impl AppState {
     /// - `events_projection`: Projection for event data queries
     /// - `reservations_projection`: Projection for reservation data queries
     /// - `payments_projection`: Projection for payment data queries
-    /// - `available_seats_projection`: Projection for seat availability queries
-    /// - `sales_analytics_projection`: Projection for sales and revenue analytics
-    /// - `customer_history_projection`: Projection for customer purchase history
+    /// - `available_seats_projection`: Projection for seat availability queries (PostgreSQL)
+    /// - `sales_analytics_projection`: Projection for sales and revenue analytics (PostgreSQL)
+    /// - `customer_history_projection`: Projection for customer purchase history (PostgreSQL)
     /// - `reservation_ownership`: Ownership index for reservation authorization
     /// - `payment_ownership`: Ownership index for payment authorization
     /// - `projection_completion_tracker`: Singleton tracker for projection completion events
@@ -159,12 +166,13 @@ impl AppState {
         inventory_query: Arc<PostgresInventoryQuery>,
         payment_query: Arc<PostgresPaymentQuery>,
         reservation_query: Arc<PostgresReservationQuery>,
+        analytics_query: Arc<PostgresAnalyticsQuery>,
         events_projection: Arc<PostgresEventsProjection>,
         reservations_projection: Arc<PostgresReservationsProjection>,
         payments_projection: Arc<PostgresPaymentsProjection>,
         available_seats_projection: Arc<PostgresAvailableSeatsProjection>,
-        sales_analytics_projection: Arc<RwLock<SalesAnalyticsProjection>>,
-        customer_history_projection: Arc<RwLock<CustomerHistoryProjection>>,
+        sales_analytics_projection: Arc<PostgresSalesAnalyticsProjection>,
+        customer_history_projection: Arc<PostgresCustomerHistoryProjection>,
         reservation_ownership: Arc<RwLock<HashMap<ReservationId, CustomerId>>>,
         payment_ownership: Arc<RwLock<HashMap<PaymentId, ReservationId>>>,
         projection_completion_tracker: Arc<ProjectionCompletionTracker>,
@@ -179,6 +187,7 @@ impl AppState {
             inventory_query,
             payment_query,
             reservation_query,
+            analytics_query,
             events_projection,
             reservations_projection,
             payments_projection,
@@ -321,6 +330,31 @@ impl AppState {
         );
 
         Store::new(EventState::new(), EventReducer::new(), env)
+    }
+
+    /// Create a fresh Analytics store for this request.
+    ///
+    /// Analytics queries are stateless, but we follow the same per-request
+    /// store pattern for architectural consistency.
+    ///
+    /// # Returns
+    ///
+    /// A new Analytics store instance for this request.
+    #[must_use]
+    pub fn create_analytics_store(
+        &self,
+    ) -> composable_rust_runtime::Store<
+        crate::aggregates::analytics::AnalyticsState,
+        crate::aggregates::analytics::AnalyticsAction,
+        crate::aggregates::analytics::AnalyticsEnvironment,
+        AnalyticsReducer,
+    > {
+        use crate::aggregates::analytics::{AnalyticsEnvironment, AnalyticsState};
+        use composable_rust_runtime::Store;
+
+        let env = AnalyticsEnvironment::new(self.analytics_query.clone());
+
+        Store::new(AnalyticsState::new(), AnalyticsReducer::new(), env)
     }
 }
 
