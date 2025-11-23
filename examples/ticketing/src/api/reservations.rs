@@ -27,7 +27,7 @@
 
 use crate::auth::middleware::{RequireOwnership, SessionUser};
 use crate::server::state::AppState;
-use crate::types::{CustomerId, EventId, ReservationId, ReservationStatus};
+use crate::types::{CustomerId, EventId, ReservationId, ReservationStatus, ResponseChannel};
 use axum::{
     extract::{Extension, Path, State},
     http::StatusCode,
@@ -187,6 +187,7 @@ pub async fn create_reservation(
         quantity: request.quantity,
         specific_seats,
         correlation_id: None, // Will be injected by send_with_metadata
+        respond_to: ResponseChannel::none(),
     };
 
     // Prepare metadata with correlation_id for projection tracking

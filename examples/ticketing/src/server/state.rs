@@ -26,6 +26,7 @@ use crate::aggregates::{
     reservation::ReservationReducer,
 };
 use crate::auth::setup::TicketingAuthStore;
+use crate::bootstrap::resources::ResourceManager;
 use crate::config::Config;
 use crate::projections::{
     query_adapters::{
@@ -36,7 +37,7 @@ use crate::projections::{
     PostgresPaymentsProjection, PostgresReservationsProjection, PostgresSalesAnalyticsProjection,
     ProjectionCompletionTracker,
 };
-use crate::types::{CustomerId, EventId, PaymentId, ReservationId};
+use crate::types::{CustomerId, EventId, GlobalActionChannels, PaymentId, ReservationId};
 use composable_rust_core::{environment::Clock, event_bus::EventBus};
 use composable_rust_postgres::PostgresEventStore;
 use axum::extract::FromRef;
@@ -129,6 +130,10 @@ pub struct AppState {
     /// Singleton projection completion tracker (ONE consumer for entire app)
     /// Tracks when projections complete processing events for read-after-write consistency
     pub projection_completion_tracker: Arc<ProjectionCompletionTracker>,
+
+    // ===== Resource Manager =====
+    /// Resource manager for accessing global action channels
+    pub resources: ResourceManager,
 }
 
 impl AppState {
@@ -154,6 +159,7 @@ impl AppState {
     /// - `reservation_ownership`: Ownership index for reservation authorization
     /// - `payment_ownership`: Ownership index for payment authorization
     /// - `projection_completion_tracker`: Singleton tracker for projection completion events
+    /// - `resources`: Resource manager for global action channels
     #[must_use]
     #[allow(clippy::too_many_arguments)] // AppState construction requires all dependencies
     pub fn new(
@@ -176,6 +182,7 @@ impl AppState {
         reservation_ownership: Arc<RwLock<HashMap<ReservationId, CustomerId>>>,
         payment_ownership: Arc<RwLock<HashMap<PaymentId, ReservationId>>>,
         projection_completion_tracker: Arc<ProjectionCompletionTracker>,
+        resources: ResourceManager,
     ) -> Self {
         Self {
             config,
@@ -197,6 +204,22 @@ impl AppState {
             reservation_ownership,
             payment_ownership,
             projection_completion_tracker,
+            resources,
+        }
+    }
+
+    /// Get global action channels for cross-aggregate coordination.
+    ///
+    /// # Returns
+    ///
+    /// A `GlobalActionChannels` instance containing broadcast senders for all aggregates.
+    #[must_use]
+    pub fn global_actions(&self) -> GlobalActionChannels {
+        GlobalActionChannels {
+            event_actions: self.resources.event_actions.clone(),
+            inventory_actions: self.resources.inventory_actions.clone(),
+            reservation_actions: self.resources.reservation_actions.clone(),
+            payment_actions: self.resources.payment_actions.clone(),
         }
     }
 
@@ -234,6 +257,7 @@ impl AppState {
             self.event_bus.clone(),
             stream_id,
             self.inventory_query.clone(),
+            self.global_actions(),
         );
 
         Store::new(InventoryState::new(), InventoryReducer::new(), env)
@@ -286,6 +310,7 @@ impl AppState {
             stream_id,
             self.config.redpanda.payment_topic.clone(),
             self.payment_query.clone(),
+            self.global_actions(),
         );
 
         Store::new(PaymentState::new(), PaymentReducer::new(), env)
@@ -325,6 +350,7 @@ impl AppState {
             self.event_bus.clone(),
             stream_id,
             self.reservation_query.clone(),
+            self.global_actions(),
         );
 
         Store::new(ReservationState::new(), ReservationReducer::new(), env)
@@ -364,6 +390,7 @@ impl AppState {
             self.event_bus.clone(),
             stream_id,
             self.events_projection.clone(),
+            self.global_actions(),
         );
 
         Store::new(EventState::new(), EventReducer::new(), env)

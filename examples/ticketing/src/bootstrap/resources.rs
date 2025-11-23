@@ -28,6 +28,7 @@
 //! // ... etc
 //! ```
 
+use crate::aggregates::{EventAction, InventoryAction, PaymentAction, ReservationAction};
 use crate::config::Config;
 use composable_rust_core::environment::SystemClock;
 use composable_rust_core::event_bus::EventBus;
@@ -37,6 +38,7 @@ use composable_rust_runtime::circuit_breaker::{CircuitBreaker, CircuitBreakerCon
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::broadcast;
 use tracing::info;
 
 /// Central resource manager for all infrastructure components.
@@ -76,6 +78,21 @@ pub struct ResourceManager {
 
     /// Circuit breaker for payment gateway
     pub payment_gateway_breaker: Arc<CircuitBreaker>,
+
+    /// Global action channels for cross-aggregate coordination
+    /// Channel capacity: 1000 (sufficient for high-throughput monolith)
+
+    /// Event aggregate action channel
+    pub event_actions: broadcast::Sender<EventAction>,
+
+    /// Inventory aggregate action channel
+    pub inventory_actions: broadcast::Sender<InventoryAction>,
+
+    /// Reservation aggregate action channel
+    pub reservation_actions: broadcast::Sender<ReservationAction>,
+
+    /// Payment aggregate action channel
+    pub payment_actions: broadcast::Sender<PaymentAction>,
 }
 
 impl ResourceManager {
@@ -217,6 +234,14 @@ impl ResourceManager {
         ));
         info!("Payment gateway initialized (using mock)");
 
+        // Initialize global action channels (capacity: 1000)
+        info!("Initializing global action channels...");
+        let (event_actions, _) = broadcast::channel(1000);
+        let (inventory_actions, _) = broadcast::channel(1000);
+        let (reservation_actions, _) = broadcast::channel(1000);
+        let (payment_actions, _) = broadcast::channel(1000);
+        info!("Global action channels initialized");
+
         Ok(Self {
             config: Arc::new(config.clone()),
             clock,
@@ -226,6 +251,10 @@ impl ResourceManager {
             auth_pool: Arc::new(auth_pool),
             payment_gateway,
             payment_gateway_breaker,
+            event_actions,
+            inventory_actions,
+            reservation_actions,
+            payment_actions,
         })
     }
 }

@@ -4,7 +4,10 @@
 //! Demonstrates validation, state transitions, and business rules enforcement.
 
 use crate::projections::TicketingEvent;
-use crate::types::{Event, EventDate, EventId, EventState, EventStatus, PricingTier, Venue};
+use crate::types::{
+    Event, EventDate, EventId, EventState, EventStatus, GlobalActionChannels, PricingTier,
+    ResponseChannel, Venue,
+};
 use chrono::{DateTime, Duration, Utc};
 use composable_rust_auth::state::UserId;
 use composable_rust_core::{
@@ -43,6 +46,10 @@ pub enum EventAction {
         date: EventDate,
         /// Pricing tiers
         pricing_tiers: Vec<PricingTier>,
+
+        /// Response channel for projection completion
+        #[serde(skip)]
+        respond_to: ResponseChannel,
     },
 
     /// Publish an event (make visible to public)
@@ -244,6 +251,8 @@ pub struct EventEnvironment {
     pub stream_id: StreamId,
     /// Projection for querying event state
     pub projection: Arc<dyn EventProjectionQuery>,
+    /// Global action channels for cross-aggregate coordination
+    pub global_actions: GlobalActionChannels,
 }
 
 impl EventEnvironment {
@@ -255,6 +264,7 @@ impl EventEnvironment {
         event_bus: Arc<dyn EventBus>,
         stream_id: StreamId,
         projection: Arc<dyn EventProjectionQuery>,
+        global_actions: GlobalActionChannels,
     ) -> Self {
         Self {
             clock,
@@ -262,6 +272,7 @@ impl EventEnvironment {
             event_bus,
             stream_id,
             projection,
+            global_actions,
         }
     }
 }
@@ -562,6 +573,7 @@ impl Reducer for EventReducer {
                 venue,
                 date,
                 pricing_tiers,
+                respond_to,
             } => {
                 // Validate command
                 if let Err(error) =
@@ -574,17 +586,36 @@ impl Reducer for EventReducer {
                 // Create and apply event
                 let event = EventAction::EventCreated {
                     id,
-                    name,
+                    name: name.clone(),
                     owner_id,
-                    venue,
-                    date,
-                    pricing_tiers,
+                    venue: venue.clone(),
+                    date: date.clone(),
+                    pricing_tiers: pricing_tiers.clone(),
                     created_at: env.clock.now(),
                 };
                 let expected_version = state.version;
                 Self::apply_event(state, &event);
 
-                Self::create_effects(event, expected_version, env)
+                // Create base effects (append + publish to Redpanda)
+                let mut effects = Self::create_effects(event, expected_version, env);
+
+                // Publish to global channel for projections
+                let action_to_publish = EventAction::CreateEvent {
+                    id,
+                    name,
+                    owner_id,
+                    venue,
+                    date,
+                    pricing_tiers,
+                    respond_to,
+                };
+                let global_channel = env.global_actions.event_actions.clone();
+                effects.push(Effect::Future(Box::pin(async move {
+                    let _ = global_channel.send(action_to_publish);
+                    None
+                })));
+
+                effects
             }
 
             EventAction::PublishEvent { event_id } => {
@@ -751,6 +782,20 @@ mod tests {
         }
     }
 
+    fn create_test_global_actions() -> crate::types::GlobalActionChannels {
+        use tokio::sync::broadcast;
+        let (event_tx, _) = broadcast::channel(10);
+        let (inventory_tx, _) = broadcast::channel(10);
+        let (reservation_tx, _) = broadcast::channel(10);
+        let (payment_tx, _) = broadcast::channel(10);
+        crate::types::GlobalActionChannels {
+            event_actions: event_tx,
+            inventory_actions: inventory_tx,
+            reservation_actions: reservation_tx,
+            payment_actions: payment_tx,
+        }
+    }
+
     fn create_test_env() -> EventEnvironment {
         EventEnvironment::new(
             Arc::new(SystemClock),
@@ -758,6 +803,7 @@ mod tests {
             Arc::new(InMemoryEventBus::new()),
             StreamId::new("test-stream"),
             Arc::new(MockEventProjection),
+            create_test_global_actions(),
         )
     }
 
@@ -798,6 +844,7 @@ mod tests {
                 venue: create_test_venue(),
                 date: event_date,
                 pricing_tiers: create_test_pricing_tiers(),
+                respond_to: ResponseChannel::none(),
             })
             .then_state(move |state| {
                 assert_eq!(state.count(), 1);
@@ -827,6 +874,7 @@ mod tests {
                 venue: create_test_venue(),
                 date: EventDate::new(Utc::now() + Duration::days(30)),
                 pricing_tiers: create_test_pricing_tiers(),
+                respond_to: ResponseChannel::none(),
             })
             .then_state(|state| {
                 assert_eq!(state.count(), 0);
@@ -857,6 +905,7 @@ mod tests {
                 venue,
                 date: EventDate::new(Utc::now() + Duration::days(30)),
                 pricing_tiers: create_test_pricing_tiers(),
+                respond_to: ResponseChannel::none(),
             })
             .then_state(|state| {
                 assert_eq!(state.count(), 0);
@@ -921,6 +970,7 @@ mod tests {
                 venue: create_test_venue(),
                 date: EventDate::new(Utc::now() + Duration::days(30)),
                 pricing_tiers: create_test_pricing_tiers(),
+                respond_to: ResponseChannel::none(),
             },
             &env,
         );

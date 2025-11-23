@@ -41,6 +41,21 @@ impl ReservationProjectionQuery for MockReservationQuery {
     }
 }
 
+/// Helper to create test global actions channels
+fn create_test_global_actions() -> ticketing::types::GlobalActionChannels {
+    use tokio::sync::broadcast;
+    let (event_tx, _) = broadcast::channel(10);
+    let (inventory_tx, _) = broadcast::channel(10);
+    let (reservation_tx, _) = broadcast::channel(10);
+    let (payment_tx, _) = broadcast::channel(10);
+    ticketing::types::GlobalActionChannels {
+        event_actions: event_tx,
+        inventory_actions: inventory_tx,
+        reservation_actions: reservation_tx,
+        payment_actions: payment_tx,
+    }
+}
+
 /// Helper to create test environment for reservation saga
 fn create_test_env() -> ReservationEnvironment {
     ReservationEnvironment::new(
@@ -49,6 +64,7 @@ fn create_test_env() -> ReservationEnvironment {
         Arc::new(InMemoryEventBus::new()) as Arc<dyn EventBus>,
         StreamId::new("reservation-test"),
         Arc::new(MockReservationQuery),
+        create_test_global_actions(),
     )
 }
 
@@ -81,6 +97,7 @@ fn test_saga_happy_path() {
             quantity: 2,
             specific_seats: None,
             correlation_id: None,
+            respond_to: ticketing::types::ResponseChannel::none(),
         },
         &env,
     );
@@ -160,6 +177,7 @@ fn test_saga_compensation_on_payment_failure() {
             quantity: 2,
             specific_seats: None,
             correlation_id: None,
+            respond_to: ticketing::types::ResponseChannel::none(),
         },
         &env,
     );
@@ -233,6 +251,7 @@ fn test_saga_timeout_expiration() {
             quantity: 1,
             specific_seats: None,
             correlation_id: None,
+            respond_to: ticketing::types::ResponseChannel::none(),
         },
         &env,
     );
@@ -297,6 +316,7 @@ fn test_saga_timeout_ignored_when_completed() {
             quantity: 2,
             specific_seats: None,
             correlation_id: None,
+            respond_to: ticketing::types::ResponseChannel::none(),
         },
         &env,
     );
@@ -374,6 +394,7 @@ fn test_saga_manual_cancellation() {
             quantity: 1,
             specific_seats: None,
             correlation_id: None,
+            respond_to: ticketing::types::ResponseChannel::none(),
         },
         &env,
     );

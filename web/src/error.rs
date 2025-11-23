@@ -147,6 +147,53 @@ impl AppError {
             "SERVICE_UNAVAILABLE".to_string(),
         )
     }
+
+    /// Create a 504 Gateway Timeout error (for projection timeouts).
+    #[must_use]
+    pub fn gateway_timeout(message: impl Into<String>) -> Self {
+        Self::new(
+            StatusCode::GATEWAY_TIMEOUT,
+            message.into(),
+            "GATEWAY_TIMEOUT".to_string(),
+        )
+    }
+
+    /// Create a projection timeout error (504 Gateway Timeout).
+    ///
+    /// # Arguments
+    ///
+    /// * `aggregate` - The aggregate type (e.g., "Event", "Inventory")
+    /// * `action` - The action name (e.g., "CreateEvent")
+    /// * `timeout` - The timeout duration that was exceeded
+    #[must_use]
+    pub fn projection_timeout(
+        aggregate: impl fmt::Display,
+        action: impl fmt::Display,
+        timeout: std::time::Duration,
+    ) -> Self {
+        Self::gateway_timeout(format!(
+            "Projection timed out after {}ms while processing {aggregate}.{action}",
+            timeout.as_millis()
+        ))
+    }
+
+    /// Create a projection failure error (503 Service Unavailable).
+    ///
+    /// # Arguments
+    ///
+    /// * `aggregate` - The aggregate type (e.g., "Event", "Inventory")
+    /// * `action` - The action name (e.g., "CreateEvent")
+    /// * `error` - The projection error that occurred
+    #[must_use]
+    pub fn projection_failed(
+        aggregate: impl fmt::Display,
+        action: impl fmt::Display,
+        error: impl fmt::Display,
+    ) -> Self {
+        Self::unavailable(format!(
+            "Projection failed while processing {aggregate}.{action}: {error}"
+        ))
+    }
 }
 
 impl fmt::Display for AppError {

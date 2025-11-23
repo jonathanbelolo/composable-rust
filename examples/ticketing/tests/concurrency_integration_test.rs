@@ -57,6 +57,22 @@ impl ticketing::aggregates::inventory::InventoryProjectionQuery for MockInventor
     }
 }
 
+fn create_test_global_channels() -> ticketing::types::GlobalActionChannels {
+    use tokio::sync::broadcast;
+
+    let (event_actions, _) = broadcast::channel(1000);
+    let (inventory_actions, _) = broadcast::channel(1000);
+    let (reservation_actions, _) = broadcast::channel(1000);
+    let (payment_actions, _) = broadcast::channel(1000);
+
+    ticketing::types::GlobalActionChannels {
+        event_actions,
+        inventory_actions,
+        reservation_actions,
+        payment_actions,
+    }
+}
+
 fn create_test_env() -> InventoryEnvironment {
     InventoryEnvironment::new(
         Arc::new(SystemClock),
@@ -64,6 +80,7 @@ fn create_test_env() -> InventoryEnvironment {
         Arc::new(InMemoryEventBus::new()),
         StreamId::new("inventory-test"),
         Arc::new(MockInventoryQuery),
+        create_test_global_channels(),
     )
 }
 
@@ -213,6 +230,7 @@ async fn test_zero_capacity_rejected() {
             section: "VIP".to_string(),
             capacity: Capacity::new(0), // Invalid!
             seat_numbers: None,
+            respond_to: ticketing::types::ResponseChannel::none(),
         })
         .then_state(|state| {
             assert!(state.last_error.is_some());
@@ -252,6 +270,7 @@ async fn test_cannot_initialize_twice() {
             section,
             capacity: Capacity::new(50), // Different capacity - shouldn't matter
             seat_numbers: None,
+            respond_to: ticketing::types::ResponseChannel::none(),
         })
         .then_state(move |state| {
             assert!(state.last_error.is_some());

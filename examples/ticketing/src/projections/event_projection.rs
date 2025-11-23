@@ -119,6 +119,7 @@ impl EventProjection {
                 venue,
                 date,
                 pricing_tiers,
+                respond_to: _,
             } => {
                 // Treat command as if event already happened
                 // Use current time since projection doesn't have access to exact event timestamp

@@ -29,8 +29,19 @@ use crate::projections::query_adapters::{PostgresInventoryQuery, PostgresPayment
 use crate::projections::{PostgresAvailableSeatsProjection, PostgresPaymentsProjection};
 use crate::runtime::consumer::EventConsumer;
 use crate::runtime::handlers::{InventoryHandler, PaymentHandler};
+use crate::types::GlobalActionChannels;
 use std::sync::Arc;
 use tokio::sync::broadcast;
+
+/// Helper function to create `GlobalActionChannels` from `ResourceManager`.
+fn global_actions_from_resources(resources: &ResourceManager) -> GlobalActionChannels {
+    GlobalActionChannels {
+        event_actions: resources.event_actions.clone(),
+        inventory_actions: resources.inventory_actions.clone(),
+        reservation_actions: resources.reservation_actions.clone(),
+        payment_actions: resources.payment_actions.clone(),
+    }
+}
 
 /// Register all aggregate event consumers.
 ///
@@ -86,6 +97,7 @@ fn create_inventory_consumer(
         event_store: resources.event_store.clone(),
         event_bus: resources.event_bus.clone(),
         query: inventory_query,
+        global_actions: global_actions_from_resources(resources),
     });
 
     // Create consumer with EventConsumer builder
@@ -119,6 +131,7 @@ fn create_payment_consumer(
         event_bus: resources.event_bus.clone(),
         payment_topic: resources.config.redpanda.payment_topic.clone(),
         query: payment_query,
+        global_actions: global_actions_from_resources(resources),
     });
 
     // Create consumer with EventConsumer builder

@@ -453,6 +453,7 @@ impl ApplicationBuilder {
             projection_system.reservation_ownership,
             projection_system.payment_ownership,
             projection_completion_tracker,
+            resources.clone(),
         );
 
         // Build HTTP router

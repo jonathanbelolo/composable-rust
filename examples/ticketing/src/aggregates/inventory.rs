@@ -8,8 +8,8 @@
 
 use crate::projections::TicketingEvent;
 use crate::types::{
-    Capacity, CustomerId, EventId, Inventory, InventoryState, ReservationId, SeatAssignment,
-    SeatId, SeatNumber, SeatStatus,
+    Capacity, CustomerId, EventId, GlobalActionChannels, Inventory, InventoryState, ReservationId, ResponseChannel,
+    SeatAssignment, SeatId, SeatNumber, SeatStatus,
 };
 use chrono::{DateTime, Utc};
 use composable_rust_core::{
@@ -126,6 +126,10 @@ pub enum InventoryAction {
         capacity: Capacity,
         /// Optional specific seat numbers (None for general admission)
         seat_numbers: Option<Vec<SeatNumber>>,
+
+        /// Response channel for projection completion
+        #[serde(skip)]
+        respond_to: ResponseChannel,
     },
 
     /// Reserve seats for a reservation
@@ -343,6 +347,8 @@ pub struct InventoryEnvironment {
     pub stream_id: StreamId,
     /// Projection query for loading state on-demand
     pub projection: Arc<dyn InventoryProjectionQuery>,
+    /// Global action channels for cross-aggregate coordination
+    pub global_actions: GlobalActionChannels,
 }
 
 impl InventoryEnvironment {
@@ -354,6 +360,7 @@ impl InventoryEnvironment {
         event_bus: Arc<dyn EventBus>,
         stream_id: StreamId,
         projection: Arc<dyn InventoryProjectionQuery>,
+        global_actions: GlobalActionChannels,
     ) -> Self {
         Self {
             clock,
@@ -361,6 +368,7 @@ impl InventoryEnvironment {
             event_bus,
             stream_id,
             projection,
+            global_actions,
         }
     }
 }
@@ -766,6 +774,7 @@ impl Reducer for InventoryReducer {
                 section,
                 capacity,
                 seat_numbers,
+                respond_to,
             } => {
                 // Validate
                 if let Err(error) =
@@ -780,12 +789,12 @@ impl Reducer for InventoryReducer {
                 let seats: Vec<SeatId> = (0..seat_count).map(|_| SeatId::new()).collect();
 
                 // In a real system, we'd use specific seat numbers if provided
-                let _ = seat_numbers;
+                let seat_numbers_clone = seat_numbers.clone();
 
                 // Create and apply event
                 let event = InventoryAction::InventoryInitialized {
                     event_id,
-                    section,
+                    section: section.clone(),
                     capacity,
                     seats,
                     initialized_at: env.clock.now(),
@@ -803,8 +812,8 @@ impl Reducer for InventoryReducer {
                     }
                 };
 
-                // Return effects for persistence and publishing
-                smallvec![
+                // Create base effects for persistence and publishing
+                let mut effects = smallvec![
                     append_events! {
                         store: env.event_store,
                         stream: env.stream_id.as_str(),
@@ -824,7 +833,23 @@ impl Reducer for InventoryReducer {
                             error: error.to_string()
                         })
                     }
-                ]
+                ];
+
+                // Publish to global channel for projections
+                let action_to_publish = InventoryAction::InitializeInventory {
+                    event_id,
+                    section,
+                    capacity,
+                    seat_numbers: seat_numbers_clone,
+                    respond_to,
+                };
+                let global_channel = env.global_actions.inventory_actions.clone();
+                effects.push(Effect::Future(Box::pin(async move {
+                    let _ = global_channel.send(action_to_publish);
+                    None
+                })));
+
+                effects
             }
 
             InventoryAction::ReserveSeats {
@@ -1213,6 +1238,23 @@ mod tests {
         }
     }
 
+    fn create_test_global_channels() -> GlobalActionChannels {
+        use tokio::sync::broadcast;
+        use crate::aggregates::{EventAction, PaymentAction, ReservationAction};
+
+        let (event_actions, _) = broadcast::channel(1000);
+        let (inventory_actions, _) = broadcast::channel(1000);
+        let (reservation_actions, _) = broadcast::channel(1000);
+        let (payment_actions, _) = broadcast::channel(1000);
+
+        GlobalActionChannels {
+            event_actions,
+            inventory_actions,
+            reservation_actions,
+            payment_actions,
+        }
+    }
+
     fn create_test_env() -> InventoryEnvironment {
         InventoryEnvironment::new(
             Arc::new(SystemClock),
@@ -1220,6 +1262,7 @@ mod tests {
             Arc::new(InMemoryEventBus::new()),
             StreamId::new("inventory-test"),
             Arc::new(MockInventoryQuery),
+            create_test_global_channels(),
         )
     }
 
@@ -1235,6 +1278,7 @@ mod tests {
                 section: "General".to_string(),
                 capacity: Capacity::new(100),
                 seat_numbers: None,
+                respond_to: ResponseChannel::none(),
             })
             .then_state(move |state| {
                 assert_eq!(state.count_inventories(), 1);
@@ -1271,6 +1315,7 @@ mod tests {
                         section: "General".to_string(),
                         capacity: Capacity::new(100),
                         seat_numbers: None,
+                        respond_to: ResponseChannel::none(),
                     },
                     &env,
                 );
@@ -1317,6 +1362,7 @@ mod tests {
                         section: "VIP".to_string(),
                         capacity: Capacity::new(5),
                         seat_numbers: None,
+                        respond_to: ResponseChannel::none(),
                     },
                     &env,
                 );
@@ -1366,6 +1412,7 @@ mod tests {
                         section: "General".to_string(),
                         capacity: Capacity::new(100),
                         seat_numbers: None,
+                        respond_to: ResponseChannel::none(),
                     },
                     &env,
                 );
@@ -1422,6 +1469,7 @@ mod tests {
                         section: "General".to_string(),
                         capacity: Capacity::new(100),
                         seat_numbers: None,
+                        respond_to: ResponseChannel::none(),
                     },
                     &env,
                 );
@@ -1474,6 +1522,7 @@ mod tests {
                 section: "VIP".to_string(),
                 capacity: Capacity::new(1),
                 seat_numbers: None,
+                respond_to: ResponseChannel::none(),
             },
             &env,
         );

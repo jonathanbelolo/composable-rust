@@ -37,6 +37,22 @@ impl ticketing::aggregates::payment::PaymentProjectionQuery for MockPaymentQuery
     }
 }
 
+fn create_test_global_channels() -> ticketing::types::GlobalActionChannels {
+    use tokio::sync::broadcast;
+
+    let (event_actions, _) = broadcast::channel(1000);
+    let (inventory_actions, _) = broadcast::channel(1000);
+    let (reservation_actions, _) = broadcast::channel(1000);
+    let (payment_actions, _) = broadcast::channel(1000);
+
+    ticketing::types::GlobalActionChannels {
+        event_actions,
+        inventory_actions,
+        reservation_actions,
+        payment_actions,
+    }
+}
+
 fn create_test_env() -> PaymentEnvironment {
     PaymentEnvironment::new(
         Arc::new(SystemClock),
@@ -45,6 +61,7 @@ fn create_test_env() -> PaymentEnvironment {
         StreamId::new("payment-test"),
         "payment".to_string(),
         Arc::new(MockPaymentQuery),
+        create_test_global_channels(),
     )
 }
 
@@ -71,6 +88,7 @@ async fn test_successful_payment_flow() {
             payment_method: PaymentMethod::CreditCard {
                 last_four: "4242".to_string(),
             },
+            respond_to: ticketing::types::ResponseChannel::none(),
         })
         .then_state(move |state| {
             assert_eq!(state.count(), 1);
@@ -325,6 +343,7 @@ async fn test_credit_card_payment_method() {
             customer_id,
             amount: Money::from_dollars(50),
             payment_method: payment_method.clone(),
+            respond_to: ticketing::types::ResponseChannel::none(),
         })
         .then_state(move |state| {
             let payment = state.get(&payment_id).unwrap();
@@ -366,6 +385,7 @@ async fn test_full_payment_lifecycle() {
             payment_method: PaymentMethod::CreditCard {
                 last_four: "5555".to_string(),
             },
+            respond_to: ticketing::types::ResponseChannel::none(),
         },
         &env,
     );

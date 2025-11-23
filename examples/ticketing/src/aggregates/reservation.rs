@@ -12,13 +12,14 @@
 
 use crate::projections::{CorrelationId, TicketingEvent};
 use crate::types::{
-    CustomerId, EventId, Money, Reservation, ReservationExpiry, ReservationId, ReservationState,
-    ReservationStatus, SeatId, SeatNumber, TicketId,
+    CustomerId, EventId, GlobalActionChannels, Money, Reservation, ReservationExpiry, ReservationId, ReservationState,
+    ReservationStatus, ResponseChannel, SeatId, SeatNumber, TicketId,
 };
 use chrono::{DateTime, Duration, Utc};
 use composable_rust_core::{
     append_events, delay, effect::Effect, environment::Clock, event_bus::EventBus,
-    event_store::EventStore, publish_event, reducer::Reducer, smallvec, stream::{StreamId, Version},
+    event_store::EventStore, publish_event, reducer::Reducer, smallvec,
+    stream::{StreamId, Version},
     SmallVec,
 };
 use composable_rust_macros::Action;
@@ -100,6 +101,10 @@ pub enum ReservationAction {
         /// Optional correlation ID for request tracking
         #[serde(skip_serializing_if = "Option::is_none")]
         correlation_id: Option<CorrelationId>,
+
+        /// Response channel for projection completion
+        #[serde(skip)]
+        respond_to: ResponseChannel,
     },
 
     /// Complete payment for reservation
@@ -296,6 +301,8 @@ pub struct ReservationEnvironment {
     pub stream_id: StreamId,
     /// Projection query for loading state on-demand
     pub projection: Arc<dyn ReservationProjectionQuery>,
+    /// Global action channels for cross-aggregate coordination
+    pub global_actions: GlobalActionChannels,
 }
 
 impl ReservationEnvironment {
@@ -307,6 +314,7 @@ impl ReservationEnvironment {
         event_bus: Arc<dyn EventBus>,
         stream_id: StreamId,
         projection: Arc<dyn ReservationProjectionQuery>,
+        global_actions: GlobalActionChannels,
     ) -> Self {
         Self {
             clock,
@@ -314,6 +322,7 @@ impl ReservationEnvironment {
             event_bus,
             stream_id,
             projection,
+            global_actions,
         }
     }
 }
@@ -567,6 +576,7 @@ impl Reducer for ReservationReducer {
                 quantity,
                 specific_seats,
                 correlation_id,
+                respond_to,
             } => {
                 let _span = tracing::info_span!(
                     "saga.reservation.initiate",
@@ -580,6 +590,16 @@ impl Reducer for ReservationReducer {
                     event_id = %event_id.as_uuid(),
                     "Processing InitiateReservation command"
                 );
+
+                // Clone fields for publishing to global channel
+                let reservation_id_clone = reservation_id;
+                let event_id_clone = event_id;
+                let customer_id_clone = customer_id;
+                let section_clone = section.clone();
+                let quantity_clone = quantity;
+                let specific_seats_clone = specific_seats.clone();
+                let correlation_id_clone = correlation_id;
+
                 // Validate
                 if let Err(error) =
                     Self::validate_initiate_reservation(state, &reservation_id, quantity)
@@ -655,6 +675,23 @@ impl Reducer for ReservationReducer {
                     action: ReservationAction::ExpireReservation { reservation_id }
                 });
 
+                // Publish to global channel for projections
+                let action_to_publish = ReservationAction::InitiateReservation {
+                    reservation_id: reservation_id_clone,
+                    event_id: event_id_clone,
+                    customer_id: customer_id_clone,
+                    section: section_clone,
+                    quantity: quantity_clone,
+                    specific_seats: specific_seats_clone,
+                    correlation_id: correlation_id_clone,
+                    respond_to,
+                };
+                let global_channel = env.global_actions.reservation_actions.clone();
+                effects.push(Effect::Future(Box::pin(async move {
+                    let _ = global_channel.send(action_to_publish);
+                    None
+                })));
+
                 tracing::info!(
                     reservation_id = %reservation_id.as_uuid(),
                     effects_count = effects.len(),
@@ -714,6 +751,7 @@ impl Reducer for ReservationReducer {
                     payment_method: crate::types::PaymentMethod::CreditCard {
                         last_four: "4242".to_string(),
                     },
+                    respond_to: ResponseChannel::none(),
                 };
                 let ticketing_event = crate::projections::TicketingEvent::Payment(process_payment);
                 if let Ok(serialized) = ticketing_event.serialize() {
@@ -976,127 +1014,6 @@ impl Reducer for ReservationReducer {
     }
 }
 
-// ============================================================================
-// Saga Consumer Infrastructure
-// ============================================================================
-
-/// Spawns background consumers that translate child aggregate events to Reservation saga actions.
-///
-/// This infrastructure wires up the saga's event-driven choreography:
-/// - Inventory aggregate publishes `SeatsReserved` → Reservation receives `SeatsAllocated`
-/// - Payment aggregate publishes `PaymentProcessed` → Reservation receives `PaymentSucceeded` or `PaymentFailed`
-///
-/// **Why this is needed**: The Reservation saga coordinates independent Inventory and Payment
-/// aggregates via EventBus. This helper provides the explicit wiring for distributed choreography,
-/// translating child events into parent saga actions.
-///
-/// # Usage
-///
-/// ```no_run
-/// # use std::sync::Arc;
-/// # use composable_rust_runtime::Store;
-/// # use ticketing::aggregates::reservation::*;
-/// # async fn example(event_bus: Arc<dyn composable_rust_core::event_bus::EventBus>, reservation_store: Arc<Store<ReservationState, ReservationAction, ReservationEnvironment, ReservationReducer>>) {
-/// // After creating reservation store
-/// spawn_reservation_saga_consumers(event_bus.clone(), reservation_store.clone());
-/// # }
-/// ```
-pub fn spawn_reservation_saga_consumers(
-    event_bus: Arc<dyn composable_rust_core::event_bus::EventBus>,
-    reservation_store: Arc<
-        composable_rust_runtime::Store<
-            ReservationState,
-            ReservationAction,
-            ReservationEnvironment,
-            ReservationReducer,
-        >,
-    >,
-) {
-    use crate::projections::TicketingEvent;
-    use futures::StreamExt;
-
-    // Consumer 1: Inventory.SeatsReserved → Reservation.SeatsAllocated
-    // Listens to "inventory" topic and translates SeatsReserved to SeatsAllocated
-    let inventory_to_reservation_bus = event_bus.clone();
-    let inventory_to_reservation_store = reservation_store.clone();
-    tokio::spawn(async move {
-        if let Ok(mut stream) = inventory_to_reservation_bus.subscribe(&["inventory"]).await {
-            while let Some(result) = stream.next().await {
-                if let Ok(serialized) = result {
-                    if let Ok(TicketingEvent::Inventory(crate::aggregates::InventoryAction::SeatsReserved {
-                        reservation_id,
-                        seats,
-                        ..
-                    })) = TicketingEvent::deserialize(&serialized)
-                    {
-                        // Calculate total amount from seat count
-                        // TODO: In production, this should come from pricing data
-                        #[allow(clippy::cast_possible_truncation)]
-                        let total_amount = crate::types::Money::from_dollars(50 * seats.len() as u64);
-
-                        let reservation_action = ReservationAction::SeatsAllocated {
-                            reservation_id,
-                            seats,
-                            total_amount,
-                        };
-
-                        if let Err(e) = inventory_to_reservation_store.send(reservation_action).await {
-                            tracing::error!(
-                                reservation_id = %reservation_id.as_uuid(),
-                                error = %e,
-                                "Failed to send SeatsAllocated to Reservation saga"
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    });
-
-    // Consumer 2: Payment.PaymentProcessed → Reservation.PaymentSucceeded or PaymentFailed
-    // Listens to "payment" topic and translates payment events to reservation actions
-    let payment_to_reservation_bus = event_bus;
-    let payment_to_reservation_store = reservation_store;
-    tokio::spawn(async move {
-        if let Ok(mut stream) = payment_to_reservation_bus.subscribe(&["payment"]).await {
-            while let Some(result) = stream.next().await {
-                if let Ok(serialized) = result {
-                    match TicketingEvent::deserialize(&serialized) {
-                        Ok(TicketingEvent::Payment(crate::aggregates::PaymentAction::PaymentProcessed {
-                            payment_id,
-                            reservation_id,
-                            ..
-                        })) => {
-                            // PaymentProcessed means success
-                            let reservation_action = ReservationAction::PaymentSucceeded {
-                                reservation_id,
-                                payment_id,
-                            };
-
-                            if let Err(e) = payment_to_reservation_store.send(reservation_action).await {
-                                tracing::error!(
-                                    reservation_id = %reservation_id.as_uuid(),
-                                    payment_id = %payment_id.as_uuid(),
-                                    error = %e,
-                                    "Failed to send PaymentSucceeded to Reservation saga"
-                                );
-                            }
-                        }
-                        // NOTE: PaymentFailed event doesn't include reservation_id
-                        // So we can't automatically route it back to the reservation saga.
-                        // For compensation flows, tests should manually inject PaymentFailed
-                        // or we need to track payment_id → reservation_id mapping.
-                        Ok(TicketingEvent::Payment(crate::aggregates::PaymentAction::PaymentFailed { .. })) => {
-                            tracing::warn!("PaymentFailed event received but cannot route to Reservation - missing reservation_id in event");
-                        }
-                        _ => {} // Ignore other payment events
-                    }
-                }
-            }
-        }
-    });
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -1127,6 +1044,20 @@ mod tests {
         }
     }
 
+    fn create_test_global_actions() -> GlobalActionChannels {
+        use tokio::sync::broadcast;
+        let (event_tx, _) = broadcast::channel(10);
+        let (inventory_tx, _) = broadcast::channel(10);
+        let (reservation_tx, _) = broadcast::channel(10);
+        let (payment_tx, _) = broadcast::channel(10);
+        GlobalActionChannels {
+            event_actions: event_tx,
+            inventory_actions: inventory_tx,
+            reservation_actions: reservation_tx,
+            payment_actions: payment_tx,
+        }
+    }
+
     fn create_test_env_and_state() -> (
         ReservationEnvironment,
         ReservationState,
@@ -1138,6 +1069,7 @@ mod tests {
             Arc::new(InMemoryEventBus::new()),
             StreamId::new("reservation-test"),
             Arc::new(MockReservationQuery),
+            create_test_global_actions(),
         );
 
         let state = ReservationState::new();
@@ -1168,6 +1100,7 @@ mod tests {
                 quantity: 2,
                 specific_seats: None,
                 correlation_id: None,
+                respond_to: ResponseChannel::none(),
             })
             .then_state(move |state| {
                 assert_eq!(state.count(), 1);

@@ -55,7 +55,7 @@ use crate::{
         query_adapters::{PostgresInventoryQuery, PostgresPaymentQuery},
         CustomerHistoryProjection, Projection, SalesAnalyticsProjection, TicketingEvent,
     },
-    types::{CustomerId, InventoryState, PaymentId, PaymentState, ReservationId},
+    types::{CustomerId, GlobalActionChannels, InventoryState, PaymentId, PaymentState, ReservationId},
 };
 
 /// Handler for processing deserialized events.
@@ -134,6 +134,9 @@ pub struct InventoryHandler {
 
     /// Query adapter for loading inventory state on-demand
     pub query: Arc<PostgresInventoryQuery>,
+
+    /// Global action channels for cross-aggregate coordination
+    pub global_actions: GlobalActionChannels,
 }
 
 #[async_trait]
@@ -153,6 +156,7 @@ impl EventHandler for InventoryHandler {
                 self.event_bus.clone(),
                 StreamId::new("inventory"),
                 self.query.clone(),
+                self.global_actions.clone(),
             );
 
             let store = Store::new(InventoryState::new(), InventoryReducer::new(), env);
@@ -187,6 +191,9 @@ pub struct PaymentHandler {
 
     /// Query adapter for loading payment state on-demand
     pub query: Arc<PostgresPaymentQuery>,
+
+    /// Global action channels for cross-aggregate coordination
+    pub global_actions: GlobalActionChannels,
 }
 
 #[async_trait]
@@ -207,6 +214,7 @@ impl EventHandler for PaymentHandler {
                 StreamId::new("payment"),
                 self.payment_topic.clone(),
                 self.query.clone(),
+                self.global_actions.clone(),
             );
 
             let store = Store::new(PaymentState::new(), PaymentReducer::new(), env);

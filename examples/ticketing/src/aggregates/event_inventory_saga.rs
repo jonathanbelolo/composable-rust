@@ -23,7 +23,7 @@
 
 use crate::aggregates::{EventAction, InventoryAction};
 use crate::projections::TicketingEvent;
-use crate::types::{Capacity, EventDate, EventId, PricingTier, Venue};
+use crate::types::{Capacity, EventDate, EventId, PricingTier, ResponseChannel, Venue};
 use chrono::{DateTime, Utc};
 use composable_rust_auth::state::UserId;
 use composable_rust_core::{
@@ -463,6 +463,7 @@ impl Reducer for EventInventorySaga {
                     venue: venue.clone(),
                     date,
                     pricing_tiers,
+                    respond_to: ResponseChannel::none(),
                 };
 
                 let ticketing_event = TicketingEvent::Event(create_event_cmd);
@@ -567,6 +568,7 @@ impl Reducer for EventInventorySaga {
                         section: section_name.clone(),
                         capacity,
                         seat_numbers: None,
+                        respond_to: ResponseChannel::none(),
                     };
 
                     let ticketing_event = TicketingEvent::Inventory(init_inventory);
@@ -943,118 +945,4 @@ mod tests {
             .then_effects(assertions::assert_no_effects)
             .run();
     }
-}
-
-// ============================================================================
-// Saga Consumer Infrastructure
-// ============================================================================
-
-/// Spawns background consumers that translate child aggregate events to saga actions.
-///
-/// This infrastructure wires up the saga's event-driven choreography:
-/// - Event aggregate publishes `EventCreated` → Saga receives `EventCreated`
-/// - Inventory aggregate publishes `InventoryInitialized` → Saga receives `SectionInventoryInitialized`
-///
-/// **Why this is needed**: Unlike TCA's Scope pattern where parent owns child state
-/// and actions flow synchronously, our sagas coordinate independent aggregates via
-/// EventBus. This helper provides the explicit wiring for distributed choreography.
-///
-/// # Usage
-///
-/// ```no_run
-/// # use std::sync::Arc;
-/// # use composable_rust_runtime::Store;
-/// # use ticketing::aggregates::event_inventory_saga::*;
-/// # async fn example(event_bus: Arc<dyn composable_rust_core::event_bus::EventBus>, saga_store: Arc<Store<EventInventorySagaState, EventInventorySagaAction, EventInventorySagaEnvironment, EventInventorySaga>>) {
-/// // After creating saga store
-/// spawn_event_inventory_saga_consumers(event_bus.clone(), saga_store.clone());
-/// # }
-/// ```
-pub fn spawn_event_inventory_saga_consumers(
-    event_bus: Arc<dyn composable_rust_core::event_bus::EventBus>,
-    saga_store: Arc<
-        composable_rust_runtime::Store<
-            EventInventorySagaState,
-            EventInventorySagaAction,
-            EventInventorySagaEnvironment,
-            EventInventorySaga,
-        >,
-    >,
-) {
-    use crate::projections::TicketingEvent;
-    use futures::StreamExt;
-
-    // Consumer 1: Event.EventCreated → Saga.EventCreated
-    // Listens to "events" topic and translates EventAction::EventCreated to EventInventorySagaAction::EventCreated
-    let event_to_saga_bus = event_bus.clone();
-    let event_to_saga_store = saga_store.clone();
-    tokio::spawn(async move {
-        if let Ok(mut stream) = event_to_saga_bus.subscribe(&["events"]).await {
-            while let Some(result) = stream.next().await {
-                if let Ok(serialized) = result {
-                    if let Ok(TicketingEvent::Event(crate::aggregates::EventAction::EventCreated {
-                        id,
-                        venue,
-                        created_at,
-                        ..
-                    })) = TicketingEvent::deserialize(&serialized)
-                    {
-                        let section_names: Vec<String> =
-                            venue.sections.iter().map(|s| s.name.clone()).collect();
-
-                        let saga_action = EventInventorySagaAction::EventCreated {
-                            event_id: id,
-                            sections: section_names,
-                            created_at,
-                        };
-
-                        if let Err(e) = event_to_saga_store.send(saga_action).await {
-                            tracing::error!(
-                                event_id = %id.as_uuid(),
-                                error = %e,
-                                "Failed to send EventCreated to saga"
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    });
-
-    // Consumer 2: Inventory.InventoryInitialized → Saga.SectionInventoryInitialized
-    // Listens to "inventory" topic and translates InventoryAction::InventoryInitialized to EventInventorySagaAction::SectionInventoryInitialized
-    let inventory_to_saga_bus = event_bus;
-    let inventory_to_saga_store = saga_store;
-    tokio::spawn(async move {
-        if let Ok(mut stream) = inventory_to_saga_bus.subscribe(&["inventory"]).await {
-            while let Some(result) = stream.next().await {
-                if let Ok(serialized) = result {
-                    if let Ok(TicketingEvent::Inventory(
-                        crate::aggregates::InventoryAction::InventoryInitialized {
-                            event_id,
-                            section,
-                            initialized_at,
-                            ..
-                        },
-                    )) = TicketingEvent::deserialize(&serialized)
-                    {
-                        let saga_action = EventInventorySagaAction::SectionInventoryInitialized {
-                            event_id,
-                            section: section.clone(),
-                            initialized_at,
-                        };
-
-                        if let Err(e) = inventory_to_saga_store.send(saga_action).await {
-                            tracing::error!(
-                                event_id = %event_id.as_uuid(),
-                                section = %section,
-                                error = %e,
-                                "Failed to send SectionInventoryInitialized to saga"
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    });
 }

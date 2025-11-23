@@ -5,11 +5,16 @@
 //! and provide a command to simulate failures for testing compensation flows.
 
 use crate::projections::TicketingEvent;
-use crate::types::{CustomerId, Money, Payment, PaymentId, PaymentMethod, PaymentState, PaymentStatus, ReservationId};
+use crate::types::{
+    CustomerId, GlobalActionChannels, Money, Payment, PaymentId, PaymentMethod, PaymentState, PaymentStatus,
+    ReservationId, ResponseChannel,
+};
 use chrono::{DateTime, Utc};
 use composable_rust_core::{
     append_events, effect::Effect, environment::Clock, event_bus::EventBus,
-    event_store::EventStore, publish_event, reducer::Reducer, smallvec, stream::{StreamId, Version}, SmallVec,
+    event_store::EventStore, publish_event, reducer::Reducer, smallvec,
+    stream::{StreamId, Version},
+    SmallVec,
 };
 use composable_rust_macros::Action;
 use serde::{Deserialize, Serialize};
@@ -75,6 +80,10 @@ pub enum PaymentAction {
         amount: Money,
         /// Payment method
         payment_method: PaymentMethod,
+
+        /// Response channel for projection completion
+        #[serde(skip)]
+        respond_to: ResponseChannel,
     },
 
     /// Refund a payment
@@ -245,6 +254,8 @@ pub struct PaymentEnvironment {
     pub payment_topic: String,
     /// Projection query for loading state on-demand
     pub projection: Arc<dyn PaymentProjectionQuery>,
+    /// Global action channels for cross-aggregate coordination
+    pub global_actions: GlobalActionChannels,
 }
 
 impl PaymentEnvironment {
@@ -257,6 +268,7 @@ impl PaymentEnvironment {
         stream_id: StreamId,
         payment_topic: String,
         projection: Arc<dyn PaymentProjectionQuery>,
+        global_actions: GlobalActionChannels,
     ) -> Self {
         Self {
             clock,
@@ -265,6 +277,7 @@ impl PaymentEnvironment {
             stream_id,
             payment_topic,
             projection,
+            global_actions,
         }
     }
 }
@@ -428,7 +441,15 @@ impl Reducer for PaymentReducer {
                 customer_id,
                 amount,
                 payment_method,
+                respond_to,
             } => {
+                // Clone fields for publishing to global channel
+                let payment_id_clone = payment_id;
+                let reservation_id_clone = reservation_id;
+                let customer_id_clone = customer_id;
+                let amount_clone = amount;
+                let payment_method_clone = payment_method.clone();
+
                 // Record payment attempt
                 let processed = PaymentAction::PaymentProcessed {
                     payment_id,
@@ -459,9 +480,26 @@ impl Reducer for PaymentReducer {
                 let effects1 = Self::create_effects(processed, expected_version, env);
                 let effects2 = Self::create_effects(success, expected_version_2, env);
 
-                smallvec![Effect::Sequential(
+                let mut effects = smallvec![Effect::Sequential(
                     effects1.into_iter().chain(effects2).collect()
-                )]
+                )];
+
+                // Publish to global channel for projections
+                let action_to_publish = PaymentAction::ProcessPayment {
+                    payment_id: payment_id_clone,
+                    reservation_id: reservation_id_clone,
+                    customer_id: customer_id_clone,
+                    amount: amount_clone,
+                    payment_method: payment_method_clone,
+                    respond_to,
+                };
+                let global_channel = env.global_actions.payment_actions.clone();
+                effects.push(Effect::Future(Box::pin(async move {
+                    let _ = global_channel.send(action_to_publish);
+                    None
+                })));
+
+                effects
             }
 
             // ========== Simulate Failure (For Testing) ==========
@@ -633,6 +671,23 @@ mod tests {
         }
     }
 
+    fn create_test_global_channels() -> GlobalActionChannels {
+        use tokio::sync::broadcast;
+        use crate::aggregates::{EventAction, InventoryAction, ReservationAction};
+
+        let (event_actions, _) = broadcast::channel(1000);
+        let (inventory_actions, _) = broadcast::channel(1000);
+        let (reservation_actions, _) = broadcast::channel(1000);
+        let (payment_actions, _) = broadcast::channel(1000);
+
+        GlobalActionChannels {
+            event_actions,
+            inventory_actions,
+            reservation_actions,
+            payment_actions,
+        }
+    }
+
     fn create_test_env() -> PaymentEnvironment {
         PaymentEnvironment::new(
             Arc::new(SystemClock),
@@ -641,6 +696,7 @@ mod tests {
             StreamId::new("payment-test"),
             "payment".to_string(),
             Arc::new(MockPaymentQuery),
+            create_test_global_channels(),
         )
     }
 
@@ -661,6 +717,7 @@ mod tests {
                 payment_method: PaymentMethod::CreditCard {
                     last_four: "4242".to_string(),
                 },
+                respond_to: ResponseChannel::none(),
             })
             .then_state(move |state| {
                 assert_eq!(state.count(), 1);

@@ -78,6 +78,7 @@ pub mod completion;
 pub mod available_seats_postgres;
 pub mod customer_history_postgres;
 pub mod events_postgres;
+pub mod local_stream;
 pub mod manager;
 pub mod payments_postgres;
 pub mod query_adapters;
@@ -99,6 +100,7 @@ pub use completion::{
 pub use customer_history::{CustomerHistoryProjection, CustomerProfile, CustomerPurchase};
 pub use customer_history_postgres::PostgresCustomerHistoryProjection;
 pub use events_postgres::PostgresEventsProjection;
+pub use local_stream::{LocalProjectionStream, RecvError};
 pub use manager::{setup_projection_managers, ProjectionManagers};
 pub use payments_postgres::PostgresPaymentsProjection;
 pub use query_adapters::PostgresAnalyticsQuery;

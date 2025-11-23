@@ -47,6 +47,25 @@ use composable_rust_auth::state::UserId;
 use chrono::Utc;
 
 // ============================================================================
+// Test Helpers
+// ============================================================================
+
+/// Helper to create test global actions channels
+fn create_test_global_actions() -> ticketing::types::GlobalActionChannels {
+    use tokio::sync::broadcast;
+    let (event_tx, _) = broadcast::channel(100);
+    let (inventory_tx, _) = broadcast::channel(100);
+    let (reservation_tx, _) = broadcast::channel(100);
+    let (payment_tx, _) = broadcast::channel(100);
+    ticketing::types::GlobalActionChannels {
+        event_actions: event_tx,
+        inventory_actions: inventory_tx,
+        reservation_actions: reservation_tx,
+        payment_actions: payment_tx,
+    }
+}
+
+// ============================================================================
 // Mock Projection Queries for Testing
 // ============================================================================
 
@@ -177,6 +196,7 @@ async fn create_event_with_inventory(
         event_bus.clone(),
         StreamId::new(&format!("event-{}", event_id.as_uuid())),
         Arc::new(MockEventQuery),
+        create_test_global_actions(),
     );
     let event_store_agg = Arc::new(Store::new(
         EventState::new(),
@@ -231,14 +251,16 @@ async fn create_event_with_inventory(
         }
     });
 
-    // Spawn saga consumers (wires Event/Inventory events → Saga actions)
-    ticketing::aggregates::event_inventory_saga::spawn_event_inventory_saga_consumers(
-        event_bus.clone(),
-        saga_store.clone(),
-    );
+    // NOTE: Saga consumer spawning removed in Phase 5 (orchestration pattern)
+    // TODO: Phase 10 - Update this test for orchestration or remove if no longer relevant
+    // ticketing::aggregates::event_inventory_saga::spawn_event_inventory_saga_consumers(
+    //     event_bus.clone(),
+    //     saga_store.clone(),
+    // );
 
     // Give consumers time to subscribe
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // NOTE: No longer needed with orchestration pattern
+    // tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Send CreateEventWithInventory and wait for completion
     let result = saga_store
@@ -348,6 +370,7 @@ async fn test_e2e_saga_happy_path_with_event_bus() {
         event_bus.clone(),
         StreamId::new("inventory"),
         Arc::new(MockInventoryQuery),
+        create_test_global_actions(),
     );
     let inventory = Arc::new(Store::new(
         InventoryState::new(),
@@ -363,6 +386,7 @@ async fn test_e2e_saga_happy_path_with_event_bus() {
         StreamId::new("payment"),
         payment_topic.to_string(),
         Arc::new(MockPaymentQuery),
+        create_test_global_actions(),
     );
     let payment = Arc::new(Store::new(
         PaymentState::new(),
@@ -377,6 +401,7 @@ async fn test_e2e_saga_happy_path_with_event_bus() {
         event_bus.clone(),
         StreamId::new("reservation"),
         Arc::new(MockReservationQuery),
+        create_test_global_actions(),
     );
     let reservation = Arc::new(Store::new(
         ReservationState::new(),
@@ -417,11 +442,13 @@ async fn test_e2e_saga_happy_path_with_event_bus() {
     // ✨ KEY: Subscribe payment aggregate to event bus (for reservation saga)
     spawn_aggregate_consumers(event_bus.clone(), inventory.clone(), payment.clone());
 
+    // NOTE: Saga consumer spawning removed in Phase 5 (orchestration pattern)
+    // TODO: Phase 10 - Update this test for orchestration or remove if no longer relevant
     // ✨ KEY: Wire up Reservation saga consumers (translates child events → parent actions)
-    ticketing::aggregates::reservation::spawn_reservation_saga_consumers(
-        event_bus.clone(),
-        reservation.clone(),
-    );
+    // ticketing::aggregates::reservation::spawn_reservation_saga_consumers(
+    //     event_bus.clone(),
+    //     reservation.clone(),
+    // );
 
     // Step 2: Initiate reservation and wait for completion
     let result = reservation
@@ -434,6 +461,7 @@ async fn test_e2e_saga_happy_path_with_event_bus() {
                 quantity: 2,
                 specific_seats: None,
                 correlation_id: None,
+                respond_to: ticketing::types::ResponseChannel::none(),
             },
             |action| {
                 matches!(action, ReservationAction::ReservationCompleted { .. })
@@ -484,6 +512,7 @@ async fn test_e2e_saga_compensation_flow() {
         event_bus.clone(),
         StreamId::new("inventory"),
         Arc::new(MockInventoryQuery),
+        create_test_global_actions(),
     );
     let inventory = Arc::new(Store::new(
         InventoryState::new(),
@@ -498,6 +527,7 @@ async fn test_e2e_saga_compensation_flow() {
         StreamId::new("payment"),
         payment_topic.to_string(),
         Arc::new(MockPaymentQuery),
+        create_test_global_actions(),
     );
     let payment = Arc::new(Store::new(
         PaymentState::new(),
@@ -511,6 +541,7 @@ async fn test_e2e_saga_compensation_flow() {
         event_bus.clone(),
         StreamId::new("reservation"),
         Arc::new(MockReservationQuery),
+        create_test_global_actions(),
     );
     let reservation = Arc::new(Store::new(
         ReservationState::new(),
@@ -561,6 +592,7 @@ async fn test_e2e_saga_compensation_flow() {
             quantity: 2,
             specific_seats: None,
             correlation_id: None,
+            respond_to: ticketing::types::ResponseChannel::none(),
         })
         .await
         .expect("Failed to initiate reservation");
@@ -632,6 +664,7 @@ async fn test_e2e_manual_cancellation() {
         event_bus.clone(),
         StreamId::new("inventory"),
         Arc::new(MockInventoryQuery),
+        create_test_global_actions(),
     );
     let inventory = Arc::new(Store::new(
         InventoryState::new(),
@@ -646,6 +679,7 @@ async fn test_e2e_manual_cancellation() {
         StreamId::new("payment"),
         payment_topic.to_string(),
         Arc::new(MockPaymentQuery),
+        create_test_global_actions(),
     );
     let payment = Arc::new(Store::new(
         PaymentState::new(),
@@ -659,6 +693,7 @@ async fn test_e2e_manual_cancellation() {
         event_bus.clone(),
         StreamId::new("reservation"),
         Arc::new(MockReservationQuery),
+        create_test_global_actions(),
     );
     let reservation = Arc::new(Store::new(
         ReservationState::new(),
@@ -709,6 +744,7 @@ async fn test_e2e_manual_cancellation() {
             quantity: 1,
             specific_seats: None,
             correlation_id: None,
+            respond_to: ticketing::types::ResponseChannel::none(),
         })
         .await
         .expect("Failed to initiate reservation");

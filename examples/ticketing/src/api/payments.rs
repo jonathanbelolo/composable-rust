@@ -24,7 +24,9 @@ use crate::aggregates::PaymentAction;
 use crate::auth::middleware::{RequireOwnership, SessionUser};
 use crate::projections::CorrelationId;
 use crate::server::state::AppState;
-use crate::types::{CustomerId, Money, PaymentId, PaymentMethod, PaymentStatus, ReservationId};
+use crate::types::{
+    CustomerId, Money, PaymentId, PaymentMethod, PaymentStatus, ReservationId, ResponseChannel,
+};
 use axum::{
     extract::{Extension, Path, State},
     http::StatusCode,
@@ -278,6 +280,7 @@ pub async fn process_payment(
         customer_id,
         amount,
         payment_method,
+        respond_to: ResponseChannel::none(),
     };
 
     // Register interest in projection completion BEFORE sending command

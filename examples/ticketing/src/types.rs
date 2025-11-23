@@ -6,13 +6,97 @@
 
 use chrono::{DateTime, Utc};
 use composable_rust_auth::state::UserId;
-use composable_rust_core::stream::Version;
+use composable_rust_core::{projection::ProjectionError, stream::Version};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
+use tokio::sync::oneshot;
 use uuid::Uuid;
 
 // Import Store and aggregate types for parent-child pattern
+
+// ============================================================================
+// Global Action Channels
+// ============================================================================
+
+/// Global action channels for cross-aggregate coordination.
+///
+/// This struct holds broadcast channels for all aggregate types, enabling
+/// intra-process communication between aggregates and projections without
+/// using Redpanda.
+///
+/// # Pattern: Two-Level Channel Architecture
+///
+/// - **Level 1 (Store-local)**: Ephemeral channels created per-request for
+///   `send_and_wait_for()` coordination within a single store instance.
+/// - **Level 2 (Global)**: These channels live for the entire server lifetime
+///   and multiplex actions from all aggregate instances to subscribers
+///   (projections, sagas, analytics).
+///
+/// Channel capacity is 1000, which provides sufficient buffering for
+/// high-throughput monolith deployments.
+#[derive(Clone)]
+pub struct GlobalActionChannels {
+    /// Event aggregate actions
+    pub event_actions: tokio::sync::broadcast::Sender<crate::aggregates::EventAction>,
+    /// Inventory aggregate actions
+    pub inventory_actions: tokio::sync::broadcast::Sender<crate::aggregates::InventoryAction>,
+    /// Reservation aggregate actions
+    pub reservation_actions: tokio::sync::broadcast::Sender<crate::aggregates::ReservationAction>,
+    /// Payment aggregate actions
+    pub payment_actions: tokio::sync::broadcast::Sender<crate::aggregates::PaymentAction>,
+}
+
+// ============================================================================
+// Response Channels
+// ============================================================================
+
+/// Wrapper for response channels that implements `Clone` by always returning `None`.
+///
+/// This allows action enums to derive `Clone` even though `oneshot::Sender` is not cloneable.
+/// When an action is cloned, the response channel is intentionally set to `None` because
+/// the response should only be sent to the original requester, not to cloned copies.
+#[derive(Debug)]
+pub struct ResponseChannel(pub Option<oneshot::Sender<Result<(), ProjectionError>>>);
+
+impl Clone for ResponseChannel {
+    fn clone(&self) -> Self {
+        // Always clone as None - response should only go to original sender
+        Self(None)
+    }
+}
+
+impl ResponseChannel {
+    /// Create a new response channel from an optional sender.
+    #[must_use]
+    pub const fn new(sender: Option<oneshot::Sender<Result<(), ProjectionError>>>) -> Self {
+        Self(sender)
+    }
+
+    /// Create an empty response channel (None).
+    #[must_use]
+    pub const fn none() -> Self {
+        Self(None)
+    }
+
+    /// Take the sender out of the channel.
+    #[must_use]
+    pub fn take(&mut self) -> Option<oneshot::Sender<Result<(), ProjectionError>>> {
+        self.0.take()
+    }
+}
+
+impl Default for ResponseChannel {
+    fn default() -> Self {
+        Self::none()
+    }
+}
+
+impl From<Option<oneshot::Sender<Result<(), ProjectionError>>>> for ResponseChannel {
+    fn from(sender: Option<oneshot::Sender<Result<(), ProjectionError>>>) -> Self {
+        Self(sender)
+    }
+}
 
 // ============================================================================
 // Identifiers

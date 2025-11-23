@@ -62,6 +62,22 @@ impl InventoryProjectionQuery for MockInventoryQuery {
     }
 }
 
+fn create_test_global_channels() -> ticketing::types::GlobalActionChannels {
+    use tokio::sync::broadcast;
+
+    let (event_actions, _) = broadcast::channel(1000);
+    let (inventory_actions, _) = broadcast::channel(1000);
+    let (reservation_actions, _) = broadcast::channel(1000);
+    let (payment_actions, _) = broadcast::channel(1000);
+
+    ticketing::types::GlobalActionChannels {
+        event_actions,
+        inventory_actions,
+        reservation_actions,
+        payment_actions,
+    }
+}
+
 fn create_test_env() -> InventoryEnvironment {
     InventoryEnvironment::new(
         Arc::new(SystemClock),
@@ -69,6 +85,7 @@ fn create_test_env() -> InventoryEnvironment {
         Arc::new(InMemoryEventBus::new()),
         StreamId::new("inventory-test"),
         Arc::new(MockInventoryQuery),
+        create_test_global_channels(),
     )
 }
 

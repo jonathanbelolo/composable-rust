@@ -12,7 +12,10 @@
 use crate::aggregates::event::EventAction;
 use crate::auth::middleware::SessionUser;
 use crate::server::state::AppState;
-use crate::types::{Capacity, EventDate, EventId, EventStatus, Money, PricingTier, SeatType, TierType, Venue, VenueSection};
+use crate::types::{
+    Capacity, EventDate, EventId, EventStatus, Money, PricingTier, ResponseChannel, SeatType,
+    TierType, Venue, VenueSection,
+};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -206,6 +209,7 @@ pub async fn create_event(
         venue,
         date,
         pricing_tiers,
+        respond_to: ResponseChannel::none(),
     };
 
     // Send action to store (Store executes effects automatically)

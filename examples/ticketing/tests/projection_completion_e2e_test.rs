@@ -127,6 +127,23 @@ impl ReservationProjectionQuery for MockReservationQuery {
 // Test Infrastructure
 // ============================================================================
 
+/// Helper to create test global action channels
+fn create_test_global_channels() -> ticketing::types::GlobalActionChannels {
+    use tokio::sync::broadcast;
+
+    let (event_actions, _) = broadcast::channel(1000);
+    let (inventory_actions, _) = broadcast::channel(1000);
+    let (reservation_actions, _) = broadcast::channel(1000);
+    let (payment_actions, _) = broadcast::channel(1000);
+
+    ticketing::types::GlobalActionChannels {
+        event_actions,
+        inventory_actions,
+        reservation_actions,
+        payment_actions,
+    }
+}
+
 /// Test infrastructure setup
 struct TestInfrastructure {
     event_store: Arc<PostgresEventStore>,
@@ -396,6 +413,7 @@ async fn start_inventory_consumer(
                                 Arc::clone(&event_bus) as Arc<dyn EventBus>,
                                 StreamId::new(&inventory_stream_id),
                                 projection_query as Arc<dyn InventoryProjectionQuery>,
+                                create_test_global_channels(),
                             );
 
                             let inventory_store = Store::new(
@@ -558,6 +576,7 @@ async fn test_complete_request_lifecycle_with_projection_completion(
         Arc::clone(&infra.event_bus) as Arc<dyn EventBus>,
         StreamId::new(&event_stream_id),
         Arc::new(MockEventQuery) as Arc<dyn EventProjectionQuery>,
+        create_test_global_channels(),
     );
     let event_store_agg = Arc::new(Store::new(
         EventState::new(),
@@ -603,13 +622,16 @@ async fn test_complete_request_lifecycle_with_projection_completion(
     ) as Arc<dyn EventBus>;
 
     let saga_consumer_store = Arc::new(saga_store);
-    ticketing::aggregates::event_inventory_saga::spawn_event_inventory_saga_consumers(
-        saga_consumer_bus,
-        saga_consumer_store.clone(),
-    );
+    // NOTE: Saga consumer spawning removed in Phase 5 (orchestration pattern)
+    // TODO: Phase 10 - Update this test for orchestration or remove if no longer relevant
+    // ticketing::aggregates::event_inventory_saga::spawn_event_inventory_saga_consumers(
+    //     saga_consumer_bus,
+    //     saga_consumer_store.clone(),
+    // );
 
     // Give consumers time to subscribe
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // NOTE: No longer needed with orchestration pattern
+    // tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Create Event + Inventory using saga
     let venue = Venue::new(
@@ -692,6 +714,7 @@ async fn test_complete_request_lifecycle_with_projection_completion(
         Arc::clone(&infra.event_bus) as Arc<dyn EventBus>,
         StreamId::new(&reservation_stream_id),
         Arc::new(MockReservationQuery),
+        create_test_global_channels(),
     );
 
     let reservation_store = Store::new(
@@ -715,6 +738,7 @@ async fn test_complete_request_lifecycle_with_projection_completion(
                 quantity: 2,
                 specific_seats: None,
                 correlation_id: None, // Will be injected by send_with_metadata
+                respond_to: ticketing::types::ResponseChannel::none(),
             },
             Some(metadata),
         )
