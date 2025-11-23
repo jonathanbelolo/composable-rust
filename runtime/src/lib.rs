@@ -2082,6 +2082,69 @@ pub mod store {
             .map_err(|_| StoreError::Timeout)?
         }
 
+        /// Send an action with metadata and wait for a matching result action
+        ///
+        /// Like [`send_and_wait_for`] but propagates metadata (e.g., correlation IDs)
+        /// through the effect chain for distributed tracing and request tracking.
+        ///
+        /// # Arguments
+        ///
+        /// - `action`: The initial action to send
+        /// - `metadata`: Metadata to attach (correlation IDs, tracing context, etc.)
+        /// - `predicate`: Function to test if an action is the terminal result
+        /// - `timeout`: Maximum time to wait for matching action
+        ///
+        /// # Returns
+        ///
+        /// The first action matching the predicate, or timeout error.
+        ///
+        /// # Errors
+        ///
+        /// - [`StoreError::Timeout`]: Timeout expired before matching action received
+        /// - [`StoreError::ChannelClosed`]: Action broadcast channel closed
+        /// - [`StoreError::ShutdownInProgress`]: Store is shutting down
+        pub async fn send_and_wait_for_with_metadata<F>(
+            &self,
+            action: A,
+            metadata: Option<composable_rust_core::event::EventMetadata>,
+            predicate: F,
+            timeout: Duration,
+        ) -> Result<A, StoreError>
+        where
+            R: Clone,
+            E: Clone,
+            A: Clone,
+            F: Fn(&A) -> bool,
+        {
+            // Subscribe BEFORE sending to avoid race condition
+            let mut rx = self.action_broadcast.subscribe();
+
+            // Send the initial action with metadata
+            self.send_with_metadata(action, metadata).await?;
+
+            // Wait for matching action with timeout
+            tokio::time::timeout(timeout, async {
+                loop {
+                    match rx.recv().await {
+                        Ok(action) if predicate(&action) => return Ok(action),
+                        Ok(_) => {} // Not the action we want, keep waiting
+                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                            tracing::warn!(
+                                skipped,
+                                "Action observer lagged, {} actions skipped",
+                                skipped
+                            );
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            return Err(StoreError::ChannelClosed);
+                        }
+                    }
+                }
+            })
+            .await
+            .map_err(|_| StoreError::Timeout)?
+        }
+
         /// Subscribe to all actions from this store
         ///
         /// This method is designed for event streaming (`WebSockets`, SSE).
