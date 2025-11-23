@@ -106,7 +106,9 @@ pub use reservations_postgres::PostgresReservationsProjection;
 pub use sales_analytics::{SalesAnalyticsProjection, SalesMetrics};
 pub use sales_analytics_postgres::PostgresSalesAnalyticsProjection;
 
-use crate::aggregates::{EventAction, InventoryAction, PaymentAction, ReservationAction};
+use crate::aggregates::{
+    EventAction, EventInventorySagaAction, InventoryAction, PaymentAction, ReservationAction,
+};
 use composable_rust_core::event::SerializedEvent;
 use serde::{Deserialize, Serialize};
 
@@ -123,6 +125,8 @@ pub enum TicketingEvent {
     Reservation(ReservationAction),
     /// Event from the Payment aggregate
     Payment(PaymentAction),
+    /// Event from the Event-Inventory Saga
+    EventInventorySaga(EventInventorySagaAction),
 }
 
 impl TicketingEvent {
@@ -137,6 +141,7 @@ impl TicketingEvent {
             Self::Inventory(action) => format!("Inventory{action:?}"),
             Self::Reservation(action) => format!("Reservation{action:?}"),
             Self::Payment(action) => format!("Payment{action:?}"),
+            Self::EventInventorySaga(action) => format!("EventInventorySaga{action:?}"),
         }
         .split('(')
         .next()
