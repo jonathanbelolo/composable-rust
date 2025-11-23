@@ -36,7 +36,7 @@ use crate::projections::{
     PostgresPaymentsProjection, PostgresReservationsProjection, PostgresSalesAnalyticsProjection,
     ProjectionCompletionTracker,
 };
-use crate::types::{CustomerId, PaymentId, ReservationId};
+use crate::types::{CustomerId, EventId, PaymentId, ReservationId};
 use composable_rust_core::{environment::Clock, event_bus::EventBus};
 use composable_rust_postgres::PostgresEventStore;
 use axum::extract::FromRef;
@@ -205,12 +205,17 @@ impl AppState {
     /// Each call creates a new Store with empty state. The store will load
     /// only the data it needs from the event store when processing actions.
     ///
+    /// # Arguments
+    ///
+    /// * `event_id` - The event ID to create the inventory stream for
+    ///
     /// # Returns
     ///
     /// A new Inventory store instance for this request.
     #[must_use]
     pub fn create_inventory_store(
         &self,
+        event_id: EventId,
     ) -> composable_rust_runtime::Store<
         crate::types::InventoryState,
         crate::aggregates::InventoryAction,
@@ -222,11 +227,12 @@ impl AppState {
         use composable_rust_core::stream::StreamId;
         use composable_rust_runtime::Store;
 
+        let stream_id = StreamId::new(&format!("inventory-{}", event_id.as_uuid()));
         let env = InventoryEnvironment::new(
             self.clock.clone(),
             self.event_store.clone(),
             self.event_bus.clone(),
-            StreamId::new("inventory"),
+            stream_id,
             self.inventory_query.clone(),
         );
 
@@ -238,12 +244,17 @@ impl AppState {
     /// Each call creates a new Store with empty state. The store will load
     /// only the data it needs from the event store when processing actions.
     ///
+    /// # Arguments
+    ///
+    /// * `payment_id` - The payment ID to create the payment stream for
+    ///
     /// # Returns
     ///
     /// A new Payment store instance for this request.
     #[must_use]
     pub fn create_payment_store(
         &self,
+        payment_id: PaymentId,
     ) -> composable_rust_runtime::Store<
         crate::types::PaymentState,
         crate::aggregates::PaymentAction,
@@ -254,12 +265,26 @@ impl AppState {
         use crate::types::PaymentState;
         use composable_rust_core::stream::StreamId;
         use composable_rust_runtime::Store;
+        use composable_rust_redpanda::RedpandaEventBus;
 
+        // Create a unique EventBus for this store instance
+        // Each store gets its own consumer group to avoid competing for events
+        let unique_consumer_group = format!("ticketing-payment-store-{}", payment_id.as_uuid());
+        let store_event_bus: Arc<dyn EventBus> = Arc::new(
+            RedpandaEventBus::builder()
+                .brokers(&self.config.redpanda.brokers)
+                .consumer_group(&unique_consumer_group)
+                .build()
+                .expect("Failed to create event bus for payment store"),
+        );
+
+        let stream_id = StreamId::new(&format!("payment-{}", payment_id.as_uuid()));
         let env = PaymentEnvironment::new(
             self.clock.clone(),
             self.event_store.clone(),
-            self.event_bus.clone(),
-            StreamId::new("payment"),
+            store_event_bus,
+            stream_id,
+            self.config.redpanda.payment_topic.clone(),
             self.payment_query.clone(),
         );
 
@@ -271,12 +296,17 @@ impl AppState {
     /// Each call creates a new Store with empty state. The store will load
     /// only the data it needs from the event store when processing actions.
     ///
+    /// # Arguments
+    ///
+    /// * `reservation_id` - The reservation ID to create the reservation stream for
+    ///
     /// # Returns
     ///
     /// A new Reservation store instance for this request.
     #[must_use]
     pub fn create_reservation_store(
         &self,
+        reservation_id: ReservationId,
     ) -> composable_rust_runtime::Store<
         crate::types::ReservationState,
         crate::aggregates::ReservationAction,
@@ -288,11 +318,12 @@ impl AppState {
         use composable_rust_core::stream::StreamId;
         use composable_rust_runtime::Store;
 
+        let stream_id = StreamId::new(&format!("reservation-{}", reservation_id.as_uuid()));
         let env = ReservationEnvironment::new(
             self.clock.clone(),
             self.event_store.clone(),
             self.event_bus.clone(),
-            StreamId::new("reservation"),
+            stream_id,
             self.reservation_query.clone(),
         );
 
@@ -304,12 +335,17 @@ impl AppState {
     /// Each call creates a new Store with empty state. The store will load
     /// only the data it needs from the event store when processing actions.
     ///
+    /// # Arguments
+    ///
+    /// * `event_id` - The event ID to create the event stream for
+    ///
     /// # Returns
     ///
     /// A new Event store instance for this request.
     #[must_use]
     pub fn create_event_store(
         &self,
+        event_id: EventId,
     ) -> composable_rust_runtime::Store<
         crate::types::EventState,
         crate::aggregates::event::EventAction,
@@ -321,11 +357,12 @@ impl AppState {
         use composable_rust_core::stream::StreamId;
         use composable_rust_runtime::Store;
 
+        let stream_id = StreamId::new(&format!("event-{}", event_id.as_uuid()));
         let env = EventEnvironment::new(
             self.clock.clone(),
             self.event_store.clone(),
             self.event_bus.clone(),
-            StreamId::new("event"),
+            stream_id,
             self.events_projection.clone(),
         );
 

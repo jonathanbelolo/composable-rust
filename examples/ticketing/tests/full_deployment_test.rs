@@ -17,9 +17,7 @@
 #![allow(clippy::expect_used)] // Integration tests can use expect for setup
 #![allow(clippy::unwrap_used)] // Integration tests can use unwrap for assertions
 
-use futures::StreamExt;
 use serde_json::json;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 /// Base URL for the ticketing API
 const API_BASE: &str = "http://localhost:8080";
@@ -103,89 +101,6 @@ fn create_event_payload(name: &str, _vip_capacity: u32, general_capacity: u32) -
         "capacity": general_capacity,
         "price": 50.0
     })
-}
-
-/// Helper to wait for request lifecycle completion via WebSocket.
-///
-/// Connects to the topic-based WebSocket endpoint and waits for a
-/// `request_lifecycle` message with status "completed" for the given correlation_id.
-///
-/// Returns all progress events received during the request lifecycle.
-///
-/// # Panics
-///
-/// Panics if:
-/// - WebSocket connection fails
-/// - Message parsing fails
-/// - Timeout occurs (30 seconds)
-/// - Request fails or times out
-async fn wait_for_request_completion(correlation_id: &str) -> Vec<serde_json::Value> {
-    let ws_url = "ws://localhost:8080/api/ws";
-
-    let (ws_stream, _) = connect_async(ws_url)
-        .await
-        .expect("Failed to connect to WebSocket");
-
-    let (_write, mut read) = ws_stream.split();
-
-    let mut progress_events = Vec::new();
-
-    // Wait up to 30 seconds for request completion
-    let timeout_duration = tokio::time::Duration::from_secs(30);
-
-    match tokio::time::timeout(timeout_duration, async {
-        while let Some(msg) = read.next().await {
-            match msg {
-                Ok(Message::Text(text)) => {
-                    if let Ok(data) = serde_json::from_str::<serde_json::Value>(&text) {
-                        // Check if this is a request_lifecycle message for our correlation_id
-                        if data["type"] == "request_lifecycle"
-                            && data["correlation_id"] == correlation_id {
-
-                            let status = data["status"].as_str().unwrap_or("");
-                            progress_events.push(data.clone());
-
-                            // Check for terminal states
-                            match status {
-                                "completed" => {
-                                    println!("  ✅ Request completed: {correlation_id}");
-                                    return progress_events;
-                                }
-                                "failed" => {
-                                    panic!("Request failed: {}", data["message"].as_str().unwrap_or("Unknown error"));
-                                }
-                                "timed_out" => {
-                                    panic!("Request timed out");
-                                }
-                                "cancelled" => {
-                                    panic!("Request was cancelled");
-                                }
-                                _ => {
-                                    // Intermediate progress event, continue waiting
-                                    println!("  📊 Progress: {} - {}", status, data["message"].as_str().unwrap_or(""));
-                                }
-                            }
-                        }
-                    }
-                }
-                Ok(Message::Close(_)) => {
-                    panic!("WebSocket closed before request completed");
-                }
-                Err(e) => {
-                    panic!("WebSocket error: {e}");
-                }
-                _ => {
-                    // Ignore ping/pong and binary messages
-                }
-            }
-        }
-        panic!("WebSocket stream ended without request completion");
-    })
-    .await
-    {
-        Ok(events) => events,
-        Err(_) => panic!("Timeout waiting for request completion (correlation_id: {correlation_id})"),
-    }
 }
 
 /// Test 1: Health Check

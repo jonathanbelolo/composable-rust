@@ -31,7 +31,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use ticketing::{
     aggregates::{
-        inventory::{InventoryAction, InventoryEnvironment, InventoryProjectionQuery, InventoryReducer},
+        event::{EventEnvironment, EventProjectionQuery, EventReducer},
+        event_inventory_saga::{EventInventorySaga, EventInventorySagaAction, EventInventorySagaEnvironment, EventInventorySagaState},
+        inventory::{InventoryAction, InventoryProjectionQuery},
         reservation::{ReservationAction, ReservationEnvironment, ReservationProjectionQuery, ReservationReducer},
     },
     projections::{
@@ -39,8 +41,9 @@ use ticketing::{
         CorrelationId, PostgresAvailableSeatsProjection, ProjectionCompletionTracker,
         TicketingEvent,
     },
-    types::{Capacity, CustomerId, EventId, InventoryState, ReservationId, ReservationState},
+    types::{Capacity, CustomerId, EventDate, EventId, EventState, Money, PricingTier, ReservationId, ReservationState, SeatType, TierType, Venue, VenueSection},
 };
+use composable_rust_auth::state::UserId;
 use tokio::time::timeout;
 use uuid::Uuid;
 
@@ -50,6 +53,7 @@ use uuid::Uuid;
 
 /// Mock inventory query that returns None (forcing event sourcing fallback)
 #[derive(Clone)]
+#[allow(dead_code)]
 struct MockInventoryQuery;
 
 impl InventoryProjectionQuery for MockInventoryQuery {
@@ -81,6 +85,21 @@ impl InventoryProjectionQuery for MockInventoryQuery {
         _event_id: &EventId,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u32, String>> + Send + '_>> {
         Box::pin(async move { Ok(0) })
+    }
+}
+
+/// Mock event query that returns None (forcing event sourcing fallback)
+#[derive(Clone)]
+struct MockEventQuery;
+
+#[async_trait::async_trait]
+impl EventProjectionQuery for MockEventQuery {
+    async fn load_event(&self, _event_id: &EventId) -> Result<Option<ticketing::types::Event>, String> {
+        Ok(None) // No cached state, use event sourcing
+    }
+
+    async fn load_events(&self, _status_filter: Option<ticketing::types::EventStatus>) -> Result<Vec<ticketing::types::Event>, String> {
+        Ok(vec![])
     }
 }
 
@@ -191,7 +210,7 @@ async fn start_projection_consumer(
         RedpandaEventBus::builder()
             .brokers("localhost:9092")
             .consumer_group(&format!("test-available-seats-{test_id}"))
-            .auto_offset_reset("earliest")  // Read from beginning to process historical events
+            .auto_offset_reset("latest")  // Read only new events published during this test
             .build()?,
     );
 
@@ -503,7 +522,7 @@ async fn test_complete_request_lifecycle_with_projection_completion(
     infra.cleanup().await?;
 
     // ========================================================================
-    // Step 1: Setup Inventory with available seats
+    // Step 1: Create Event + Inventory using EventInventorySaga
     // ========================================================================
 
     let event_id = EventId::new();
@@ -516,33 +535,134 @@ async fn test_complete_request_lifecycle_with_projection_completion(
 
     // Give consumers time to fully initialize
     tokio::time::sleep(Duration::from_millis(500)).await;
-    let inventory_stream_id = format!("inventory-{}", event_id.as_uuid());
 
-    let inventory_env = InventoryEnvironment::new(
+    // Set up EventInventorySaga
+    let saga_stream_id = format!("event-inventory-saga-{}", event_id.as_uuid());
+    let saga_env = EventInventorySagaEnvironment::new(
         Arc::new(FixedClock::new(Utc::now())) as Arc<dyn Clock>,
         Arc::clone(&infra.event_store) as Arc<dyn EventStore>,
         Arc::clone(&infra.event_bus) as Arc<dyn EventBus>,
-        StreamId::new(&inventory_stream_id),
-        Arc::new(MockInventoryQuery),
+        StreamId::new(&saga_stream_id),
+    );
+    let saga_store = Store::new(
+        EventInventorySagaState::new(),
+        EventInventorySaga::new(),
+        saga_env,
     );
 
-    let inventory_store = Store::new(
-        InventoryState::new(),
-        InventoryReducer::new(),
-        inventory_env,
+    // Set up Event aggregate (needed for saga)
+    let event_stream_id = format!("event-{}", event_id.as_uuid());
+    let event_env = EventEnvironment::new(
+        Arc::new(FixedClock::new(Utc::now())) as Arc<dyn Clock>,
+        Arc::clone(&infra.event_store) as Arc<dyn EventStore>,
+        Arc::clone(&infra.event_bus) as Arc<dyn EventBus>,
+        StreamId::new(&event_stream_id),
+        Arc::new(MockEventQuery) as Arc<dyn EventProjectionQuery>,
+    );
+    let event_store_agg = Arc::new(Store::new(
+        EventState::new(),
+        EventReducer::new(),
+        event_env,
+    ));
+
+    // Spawn Event aggregate consumer (listens to "events" topic)
+    // Each consumer MUST have its own EventBus with unique consumer group (Kafka/Redpanda requirement)
+    let test_id = Uuid::new_v4();
+    let event_consumer_bus = Arc::new(
+        RedpandaEventBus::builder()
+            .brokers("localhost:9092")
+            .consumer_group(&format!("test-event-aggregate-{test_id}"))
+            .auto_offset_reset("latest")
+            .build()
+            .expect("Failed to create event consumer bus"),
+    ) as Arc<dyn EventBus>;
+
+    let event_consumer_store = event_store_agg.clone();
+    let _event_handle = tokio::spawn(async move {
+        let mut stream = event_consumer_bus.subscribe(&["events"]).await.unwrap();
+        while let Some(result) = stream.next().await {
+            if let Ok(serialized) = result {
+                if let Ok(TicketingEvent::Event(action)) =
+                    TicketingEvent::deserialize(&serialized)
+                {
+                    let _ = event_consumer_store.send(action).await;
+                }
+            }
+        }
+    });
+
+    // Spawn saga consumers (wires Event/Inventory events → Saga actions)
+    // Saga gets its own EventBus with unique consumer group
+    let saga_consumer_bus = Arc::new(
+        RedpandaEventBus::builder()
+            .brokers("localhost:9092")
+            .consumer_group(&format!("test-saga-{test_id}"))
+            .auto_offset_reset("latest")
+            .build()
+            .expect("Failed to create saga consumer bus"),
+    ) as Arc<dyn EventBus>;
+
+    let saga_consumer_store = Arc::new(saga_store);
+    ticketing::aggregates::event_inventory_saga::spawn_event_inventory_saga_consumers(
+        saga_consumer_bus,
+        saga_consumer_store.clone(),
     );
 
-    // Initialize inventory with 3 seats
-    inventory_store
-        .send(InventoryAction::InitializeInventory {
-            event_id,
-            section: "VIP".to_string(),
-            capacity: Capacity::new(3),
-            seat_numbers: None, // General admission
-        })
+    // Give consumers time to subscribe
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Create Event + Inventory using saga
+    let venue = Venue::new(
+        "Test Venue".to_string(),
+        Capacity::new(3),
+        vec![VenueSection::new(
+            "VIP".to_string(),
+            Capacity::new(3),
+            SeatType::GeneralAdmission,
+        )],
+    );
+    let pricing_tiers = vec![PricingTier::new(
+        TierType::Regular,
+        "VIP".to_string(),
+        Money::from_dollars(100),
+        Utc::now(),
+        None,
+    )];
+
+    let result = saga_consumer_store
+        .send_and_wait_for(
+            EventInventorySagaAction::CreateEventWithInventory {
+                event_id,
+                name: "Test Event".to_string(),
+                owner_id: UserId::new(),
+                venue,
+                date: EventDate::new(Utc::now() + chrono::Duration::days(30)),
+                pricing_tiers,
+            },
+            |action| {
+                matches!(
+                    action,
+                    EventInventorySagaAction::EventCreationCompleted { .. }
+                        | EventInventorySagaAction::EventCreationFailed { .. }
+                )
+            },
+            Duration::from_secs(10),
+        )
         .await?;
 
-    // Wait for inventory events to be processed
+    match result {
+        EventInventorySagaAction::EventCreationCompleted { .. } => {
+            tracing::info!("Event and inventory created successfully via saga");
+        }
+        EventInventorySagaAction::EventCreationFailed { error, .. } => {
+            return Err(format!("Saga failed: {error}").into());
+        }
+        _ => {
+            return Err("Unexpected saga result".into());
+        }
+    }
+
+    // Wait for events to be fully processed
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // ========================================================================

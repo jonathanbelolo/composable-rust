@@ -51,6 +51,8 @@ pub struct EventInventorySagaState {
     pub event_id: Option<EventId>,
     /// Sections that still need inventory initialized
     pub pending_sections: HashSet<String>,
+    /// Section capacities from the venue (section_name -> capacity)
+    pub section_capacities: std::collections::HashMap<String, Capacity>,
     /// Whether the Event aggregate has created the event
     pub event_created: bool,
     /// Whether all inventory has been initialized
@@ -70,6 +72,7 @@ impl EventInventorySagaState {
         Self {
             event_id: None,
             pending_sections: HashSet::new(),
+            section_capacities: std::collections::HashMap::new(),
             event_created: false,
             inventory_complete: false,
             completed: false,
@@ -134,6 +137,8 @@ pub enum EventInventorySagaAction {
         name: String,
         /// Number of sections that need inventory
         section_count: u32,
+        /// Section capacities from the venue (section_name -> capacity)
+        section_capacities: std::collections::HashMap<String, Capacity>,
         /// When initiated
         initiated_at: DateTime<Utc>,
     },
@@ -336,8 +341,13 @@ impl EventInventorySaga {
     /// Applies an event to state
     fn apply_event(state: &mut EventInventorySagaState, action: &EventInventorySagaAction) {
         match action {
-            EventInventorySagaAction::EventCreationInitiated { event_id, .. } => {
+            EventInventorySagaAction::EventCreationInitiated {
+                event_id,
+                section_capacities,
+                ..
+            } => {
                 state.event_id = Some(*event_id);
+                state.section_capacities = section_capacities.clone();
                 state.last_error = None;
             }
 
@@ -426,10 +436,17 @@ impl Reducer for EventInventorySaga {
 
                 // Create saga initiation event
                 #[allow(clippy::cast_possible_truncation)]
+                let section_capacities: std::collections::HashMap<String, Capacity> = venue
+                    .sections
+                    .iter()
+                    .map(|section| (section.name.clone(), section.capacity))
+                    .collect();
+
                 let initiated = EventInventorySagaAction::EventCreationInitiated {
                     event_id,
                     name: name.clone(),
                     section_count: venue.sections.len() as u32,
+                    section_capacities,
                     initiated_at: env.clock.now(),
                 };
                 let expected_version = state.version;
@@ -479,7 +496,16 @@ impl Reducer for EventInventorySaga {
                         };
                         let expected_version_2 = state.version;
                         Self::apply_event(state, &failed);
-                        return Self::create_effects(failed, expected_version_2, env);
+
+                        let mut effects = Self::create_effects(failed.clone(), expected_version_2, env);
+
+                        // Emit as observable action for send_and_wait_for
+                        let failed_clone = failed;
+                        effects.push(Effect::Future(Box::pin(async move {
+                            Some(failed_clone)
+                        })));
+
+                        return effects;
                     }
                 }
 
@@ -523,18 +549,23 @@ impl Reducer for EventInventorySaga {
                 // In production, EventCreated would include full section details
 
                 for section_name in &sections_clone {
-                    // We need capacity - this should come from the EventCreated event
-                    // For now, we'll use a placeholder
-                    // TODO: EventCreated should include Vec<(String, Capacity)> not just Vec<String>
-
-                    tracing::warn!(
-                        "EventCreated event doesn't include section capacity - using placeholder"
-                    );
+                    // Get capacity from saga state (populated during EventCreationInitiated)
+                    let capacity = state
+                        .section_capacities
+                        .get(section_name)
+                        .copied()
+                        .unwrap_or_else(|| {
+                            tracing::error!(
+                                section = %section_name,
+                                "Section capacity not found in saga state - using default"
+                            );
+                            Capacity::new(100) // Fallback
+                        });
 
                     let init_inventory = InventoryAction::InitializeInventory {
                         event_id,
                         section: section_name.clone(),
-                        capacity: Capacity::new(100), // PLACEHOLDER - should come from event
+                        capacity,
                         seat_numbers: None,
                     };
 
@@ -618,7 +649,15 @@ impl Reducer for EventInventorySaga {
                     };
                     let expected_version_2 = state.version;
                     Self::apply_event(state, &completed);
-                    effects.extend(Self::create_effects(completed, expected_version_2, env));
+
+                    // Persist and publish the completion event
+                    effects.extend(Self::create_effects(completed.clone(), expected_version_2, env));
+
+                    // Emit as observable action for send_and_wait_for
+                    let completed_clone = completed;
+                    effects.push(Effect::Future(Box::pin(async move {
+                        Some(completed_clone)
+                    })));
 
                     tracing::info!(
                         event_id = %event_id.as_uuid(),
@@ -809,9 +848,10 @@ mod tests {
             })
             .then_effects(|effects| {
                 // Should return:
-                // - 2 effects for SectionInventoryInitialized
-                // - 2 effects for EventCreationCompleted
-                assert_eq!(effects.len(), 4);
+                // - 2 effects for SectionInventoryInitialized (persist + publish)
+                // - 2 effects for EventCreationCompleted (persist + publish)
+                // - 1 effect for observable completion (Future for send_and_wait_for)
+                assert_eq!(effects.len(), 5);
             })
             .run();
     }
@@ -903,4 +943,118 @@ mod tests {
             .then_effects(assertions::assert_no_effects)
             .run();
     }
+}
+
+// ============================================================================
+// Saga Consumer Infrastructure
+// ============================================================================
+
+/// Spawns background consumers that translate child aggregate events to saga actions.
+///
+/// This infrastructure wires up the saga's event-driven choreography:
+/// - Event aggregate publishes `EventCreated` → Saga receives `EventCreated`
+/// - Inventory aggregate publishes `InventoryInitialized` → Saga receives `SectionInventoryInitialized`
+///
+/// **Why this is needed**: Unlike TCA's Scope pattern where parent owns child state
+/// and actions flow synchronously, our sagas coordinate independent aggregates via
+/// EventBus. This helper provides the explicit wiring for distributed choreography.
+///
+/// # Usage
+///
+/// ```no_run
+/// # use std::sync::Arc;
+/// # use composable_rust_runtime::Store;
+/// # use ticketing::aggregates::event_inventory_saga::*;
+/// # async fn example(event_bus: Arc<dyn composable_rust_core::event_bus::EventBus>, saga_store: Arc<Store<EventInventorySagaState, EventInventorySagaAction, EventInventorySagaEnvironment, EventInventorySaga>>) {
+/// // After creating saga store
+/// spawn_event_inventory_saga_consumers(event_bus.clone(), saga_store.clone());
+/// # }
+/// ```
+pub fn spawn_event_inventory_saga_consumers(
+    event_bus: Arc<dyn composable_rust_core::event_bus::EventBus>,
+    saga_store: Arc<
+        composable_rust_runtime::Store<
+            EventInventorySagaState,
+            EventInventorySagaAction,
+            EventInventorySagaEnvironment,
+            EventInventorySaga,
+        >,
+    >,
+) {
+    use crate::projections::TicketingEvent;
+    use futures::StreamExt;
+
+    // Consumer 1: Event.EventCreated → Saga.EventCreated
+    // Listens to "events" topic and translates EventAction::EventCreated to EventInventorySagaAction::EventCreated
+    let event_to_saga_bus = event_bus.clone();
+    let event_to_saga_store = saga_store.clone();
+    tokio::spawn(async move {
+        if let Ok(mut stream) = event_to_saga_bus.subscribe(&["events"]).await {
+            while let Some(result) = stream.next().await {
+                if let Ok(serialized) = result {
+                    if let Ok(TicketingEvent::Event(crate::aggregates::EventAction::EventCreated {
+                        id,
+                        venue,
+                        created_at,
+                        ..
+                    })) = TicketingEvent::deserialize(&serialized)
+                    {
+                        let section_names: Vec<String> =
+                            venue.sections.iter().map(|s| s.name.clone()).collect();
+
+                        let saga_action = EventInventorySagaAction::EventCreated {
+                            event_id: id,
+                            sections: section_names,
+                            created_at,
+                        };
+
+                        if let Err(e) = event_to_saga_store.send(saga_action).await {
+                            tracing::error!(
+                                event_id = %id.as_uuid(),
+                                error = %e,
+                                "Failed to send EventCreated to saga"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    // Consumer 2: Inventory.InventoryInitialized → Saga.SectionInventoryInitialized
+    // Listens to "inventory" topic and translates InventoryAction::InventoryInitialized to EventInventorySagaAction::SectionInventoryInitialized
+    let inventory_to_saga_bus = event_bus;
+    let inventory_to_saga_store = saga_store;
+    tokio::spawn(async move {
+        if let Ok(mut stream) = inventory_to_saga_bus.subscribe(&["inventory"]).await {
+            while let Some(result) = stream.next().await {
+                if let Ok(serialized) = result {
+                    if let Ok(TicketingEvent::Inventory(
+                        crate::aggregates::InventoryAction::InventoryInitialized {
+                            event_id,
+                            section,
+                            initialized_at,
+                            ..
+                        },
+                    )) = TicketingEvent::deserialize(&serialized)
+                    {
+                        let saga_action = EventInventorySagaAction::SectionInventoryInitialized {
+                            event_id,
+                            section: section.clone(),
+                            initialized_at,
+                        };
+
+                        if let Err(e) = inventory_to_saga_store.send(saga_action).await {
+                            tracing::error!(
+                                event_id = %event_id.as_uuid(),
+                                section = %section,
+                                error = %e,
+                                "Failed to send SectionInventoryInitialized to saga"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    });
 }

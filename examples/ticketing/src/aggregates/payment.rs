@@ -69,6 +69,8 @@ pub enum PaymentAction {
         payment_id: PaymentId,
         /// Reservation this payment is for
         reservation_id: ReservationId,
+        /// Customer making the payment
+        customer_id: CustomerId,
         /// Amount to charge
         amount: Money,
         /// Payment method
@@ -123,6 +125,8 @@ pub enum PaymentAction {
         payment_id: PaymentId,
         /// Reservation ID
         reservation_id: ReservationId,
+        /// Customer ID
+        customer_id: CustomerId,
         /// Amount
         amount: Money,
         /// Payment method
@@ -237,6 +241,8 @@ pub struct PaymentEnvironment {
     pub event_bus: Arc<dyn EventBus>,
     /// Stream ID for this aggregate instance
     pub stream_id: StreamId,
+    /// Topic for publishing payment events
+    pub payment_topic: String,
     /// Projection query for loading state on-demand
     pub projection: Arc<dyn PaymentProjectionQuery>,
 }
@@ -249,6 +255,7 @@ impl PaymentEnvironment {
         event_store: Arc<dyn EventStore>,
         event_bus: Arc<dyn EventBus>,
         stream_id: StreamId,
+        payment_topic: String,
         projection: Arc<dyn PaymentProjectionQuery>,
     ) -> Self {
         Self {
@@ -256,6 +263,7 @@ impl PaymentEnvironment {
             event_store,
             event_bus,
             stream_id,
+            payment_topic,
             projection,
         }
     }
@@ -284,7 +292,7 @@ impl PaymentReducer {
         expected_version: Version,
         env: &PaymentEnvironment,
     ) -> SmallVec<[Effect<PaymentAction>; 4]> {
-        let ticketing_event = TicketingEvent::Payment(event);
+        let ticketing_event = TicketingEvent::Payment(event.clone());
         let Ok(serialized) = ticketing_event.serialize() else {
             return SmallVec::new();
         };
@@ -302,13 +310,18 @@ impl PaymentReducer {
             },
             publish_event! {
                 bus: env.event_bus,
-                topic: "payment",
+                topic: &env.payment_topic,
                 event: serialized,
                 on_success: || None,
                 on_error: |error| Some(PaymentAction::ValidationFailed {
                     error: error.to_string()
                 })
-            }
+            },
+            // Echo the event back as an action so it broadcasts to action_broadcast channel
+            // This allows send_and_wait_for to receive it (e.g., PaymentConfirmed)
+            Effect::Future(Box::pin(async move {
+                Some(event)
+            }))
         ]
     }
 
@@ -318,6 +331,7 @@ impl PaymentReducer {
             PaymentAction::PaymentProcessed {
                 payment_id,
                 reservation_id,
+                customer_id,
                 amount,
                 payment_method,
                 processed_at,
@@ -325,7 +339,7 @@ impl PaymentReducer {
                 let payment = Payment::new(
                     *payment_id,
                     *reservation_id,
-                    CustomerId::new(), // Simplified
+                    *customer_id,
                     *amount,
                     payment_method.clone(),
                 );
@@ -411,6 +425,7 @@ impl Reducer for PaymentReducer {
             PaymentAction::ProcessPayment {
                 payment_id,
                 reservation_id,
+                customer_id,
                 amount,
                 payment_method,
             } => {
@@ -418,12 +433,14 @@ impl Reducer for PaymentReducer {
                 let processed = PaymentAction::PaymentProcessed {
                     payment_id,
                     reservation_id,
+                    customer_id,
                     amount,
                     payment_method: payment_method.clone(),
                     processed_at: env.clock.now(),
                 };
                 let expected_version = state.version;
                 Self::apply_event(state, &processed);
+                state.version = state.version.next();  // Increment version after applying event
 
                 // Simulate payment processing
                 // In production: This would call Stripe/PayPal/etc.
@@ -435,11 +452,16 @@ impl Reducer for PaymentReducer {
                 };
                 let expected_version_2 = state.version;
                 Self::apply_event(state, &success);
+                state.version = state.version.next();  // Increment version after applying event
 
-                // Persist and publish both events
-                let mut effects = Self::create_effects(processed, expected_version, env);
-                effects.extend(Self::create_effects(success, expected_version_2, env));
-                effects
+                // Persist and publish both events sequentially (not in parallel)
+                // to ensure version increments are respected
+                let effects1 = Self::create_effects(processed, expected_version, env);
+                let effects2 = Self::create_effects(success, expected_version_2, env);
+
+                smallvec![Effect::Sequential(
+                    effects1.into_iter().chain(effects2).collect()
+                )]
             }
 
             // ========== Simulate Failure (For Testing) ==========
@@ -456,6 +478,7 @@ impl Reducer for PaymentReducer {
                 };
                 let expected_version = state.version;
                 Self::apply_event(state, &failure);
+                state.version = state.version.next();  // Increment version after applying event
 
                 Self::create_effects(failure, expected_version, env)
             }
@@ -496,6 +519,7 @@ impl Reducer for PaymentReducer {
                 };
                 let expected_version = state.version;
                 Self::apply_event(state, &refund);
+                state.version = state.version.next();  // Increment version after applying event
 
                 Self::create_effects(refund, expected_version, env)
             }
@@ -615,6 +639,7 @@ mod tests {
             Arc::new(InMemoryEventStore::new()),
             Arc::new(InMemoryEventBus::new()),
             StreamId::new("payment-test"),
+            "payment".to_string(),
             Arc::new(MockPaymentQuery),
         )
     }
@@ -623,6 +648,7 @@ mod tests {
     fn test_process_payment_success() {
         let payment_id = PaymentId::new();
         let reservation_id = ReservationId::new();
+        let customer_id = CustomerId::new();
 
         ReducerTest::new(PaymentReducer::new())
             .with_env(create_test_env())
@@ -630,6 +656,7 @@ mod tests {
             .when_action(PaymentAction::ProcessPayment {
                 payment_id,
                 reservation_id,
+                customer_id,
                 amount: Money::from_dollars(100),
                 payment_method: PaymentMethod::CreditCard {
                     last_four: "4242".to_string(),
@@ -642,10 +669,11 @@ mod tests {
                 assert_eq!(payment.amount, Money::from_dollars(100));
             })
             .then_effects(|effects| {
-                // Should return 4 effects:
-                // 2 for PaymentProcessed (AppendEvents + PublishEvent)
-                // 2 for PaymentSucceeded (AppendEvents + PublishEvent)
-                assert_eq!(effects.len(), 4);
+                // Should return 1 Sequential effect containing:
+                // 3 for PaymentProcessed (AppendEvents + PublishEvent + Echo)
+                // 3 for PaymentSucceeded (AppendEvents + PublishEvent + Echo)
+                assert_eq!(effects.len(), 1);
+                assert!(matches!(effects[0], Effect::Sequential(_)));
             })
             .run();
     }
@@ -668,8 +696,8 @@ mod tests {
                 assert!(state.last_error.as_ref().unwrap().contains("declined"));
             })
             .then_effects(|effects| {
-                // Should return 2 effects: AppendEvents + PublishEvent
-                assert_eq!(effects.len(), 2);
+                // Should return 3 effects: AppendEvents + PublishEvent + Echo
+                assert_eq!(effects.len(), 3);
             })
             .run();
     }
@@ -708,8 +736,8 @@ mod tests {
                 ));
             })
             .then_effects(|effects| {
-                // Should return 2 effects: AppendEvents + PublishEvent
-                assert_eq!(effects.len(), 2);
+                // Should return 3 effects: AppendEvents + PublishEvent + Echo
+                assert_eq!(effects.len(), 3);
             })
             .run();
     }

@@ -192,9 +192,9 @@ pub async fn create_reservation(
     // Prepare metadata with correlation_id for projection tracking
     let metadata = EventMetadata::with_correlation_id(correlation_id.to_string());
 
-    // Create fresh Reservation store for this request (per-request pattern)
+    // Create fresh Reservation store for this request (per-request pattern, per-instance stream)
     // The store starts with empty state and loads only what it needs from event store
-    let reservation_store = state.create_reservation_store();
+    let reservation_store = state.create_reservation_store(reservation_id);
 
     // Send command with metadata to Reservation Store
     // The Store will:
@@ -255,8 +255,8 @@ pub async fn get_reservation(
     // ✅ CORRECT: Query goes through Store/Reducer for testability
     let reservation_id_typed = ReservationId::from_uuid(reservation_id);
 
-    // Create fresh Reservation store for this request (per-request pattern)
-    let reservation_store = state.create_reservation_store();
+    // Create fresh Reservation store for this request (per-request pattern, per-instance stream)
+    let reservation_store = state.create_reservation_store(reservation_id_typed);
 
     // Send GetReservation query action to Store
     let action = ReservationAction::GetReservation {
@@ -352,8 +352,8 @@ pub async fn cancel_reservation(
 
     let reservation_id_typed = ReservationId::from_uuid(reservation_id);
 
-    // Create fresh Reservation store for this request (per-request pattern)
-    let reservation_store = state.create_reservation_store();
+    // Create fresh Reservation store for this request (per-request pattern, per-instance stream)
+    let reservation_store = state.create_reservation_store(reservation_id_typed);
 
     // Send CancelReservation command to Store
     let action = ReservationAction::CancelReservation {
@@ -446,8 +446,9 @@ pub async fn list_user_reservations(
     // ✅ CORRECT: Query goes through Store/Reducer for testability
     let customer_id = CustomerId::from_uuid(session.user_id.0);
 
-    // Create fresh Reservation store for this request (per-request pattern)
-    let reservation_store = state.create_reservation_store();
+    // Use nil UUID for query-only operations (no event store access)
+    // This operation queries projections, not event streams
+    let reservation_store = state.create_reservation_store(ReservationId::from_uuid(uuid::Uuid::nil()));
 
     // Send ListReservations query action to Store
     let action = ReservationAction::ListReservations { customer_id };

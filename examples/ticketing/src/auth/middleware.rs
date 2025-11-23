@@ -582,8 +582,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{RequireOwnership, SessionUser};
-
     #[test]
     fn test_bearer_token_parsing() {
         // Valid bearer token

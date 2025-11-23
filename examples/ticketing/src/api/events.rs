@@ -195,8 +195,8 @@ pub async fn create_event(
     // Map API request to domain types
     let (venue, date, pricing_tiers) = request.to_domain_types();
 
-    // Create Event store for this request
-    let store = state.create_event_store();
+    // Create Event store for this request (per-instance stream)
+    let store = state.create_event_store(event_id);
 
     // Build CreateEvent action
     let action = EventAction::CreateEvent {
@@ -237,8 +237,8 @@ pub async fn get_event(
     State(state): State<AppState>,
 ) -> Result<Json<EventResponse>, AppError> {
     // Query event from projection via store query action
-    let store = state.create_event_store();
     let event_id_typed = crate::types::EventId::from_uuid(event_id);
+    let store = state.create_event_store(event_id_typed);
 
     let event = match store
         .send_and_wait_for(
@@ -305,8 +305,9 @@ pub async fn list_events(
     // Validate page size
     let page_size = query.page_size.min(100);
 
-    // Query events from projection via store query action
-    let store = state.create_event_store();
+    // Use nil UUID for query-only operations (no event store access)
+    // This operation queries projections, not event streams
+    let store = state.create_event_store(crate::types::EventId::from_uuid(uuid::Uuid::nil()));
     let all_events = match store
         .send_and_wait_for(
             EventAction::ListEvents {
@@ -381,9 +382,10 @@ pub async fn update_event(
 ) -> Result<Json<EventResponse>, AppError> {
     use crate::types::EventId;
 
-    // Create event store once for all operations
-    let store = state.create_event_store();
     let event_id_typed = EventId::from_uuid(event_id);
+
+    // Create event store once for all operations (per-instance stream)
+    let store = state.create_event_store(event_id_typed);
 
     // Check if event exists and get it via query action
     let event = match store
@@ -503,9 +505,10 @@ pub async fn delete_event(
 ) -> Result<StatusCode, AppError> {
     use crate::types::EventId;
 
-    // Create event store once for all operations
-    let store = state.create_event_store();
     let event_id_typed = EventId::from_uuid(event_id);
+
+    // Create event store once for all operations (per-instance stream)
+    let store = state.create_event_store(event_id_typed);
 
     // Check if event exists and get it via query action
     let event = match store

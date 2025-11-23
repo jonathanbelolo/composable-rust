@@ -21,11 +21,9 @@ use serde_json::json;
 const API_BASE: &str = "http://localhost:8080";
 
 /// Test user A (first customer)
-const USER_A_UUID: &str = "00000000-0000-0000-0000-000000000001";
 const USER_A_TOKEN: &str = "test-user-00000000-0000-0000-0000-000000000001";
 
 /// Test user B (second customer, trying to access User A's resources)
-const USER_B_UUID: &str = "00000000-0000-0000-0000-000000000002";
 const USER_B_TOKEN: &str = "test-user-00000000-0000-0000-0000-000000000002";
 
 /// Helper function to create a test event for payment tests

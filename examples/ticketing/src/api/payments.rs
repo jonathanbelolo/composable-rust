@@ -22,7 +22,7 @@
 
 use crate::aggregates::PaymentAction;
 use crate::auth::middleware::{RequireOwnership, SessionUser};
-use crate::projections::{CorrelationId, TicketingEvent};
+use crate::projections::CorrelationId;
 use crate::server::state::AppState;
 use crate::types::{CustomerId, Money, PaymentId, PaymentMethod, PaymentStatus, ReservationId};
 use axum::{
@@ -33,7 +33,6 @@ use axum::{
 use chrono::{DateTime, Utc};
 use composable_rust_core::event::EventMetadata;
 use composable_rust_web::error::AppError;
-use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use uuid::Uuid;
@@ -261,159 +260,86 @@ pub async fn process_payment(
     // For now, the reducer simulates payment processing
     let _ = request.billing_info; // Will be used for gateway integration in Phase 12.5
 
-    // Extract correlation ID from middleware (injected by correlation_id_layer)
-    // This enables tracking the request through the entire event lifecycle
-    let correlation_id = CorrelationId::from_uuid(correlation_uuid);
+    // Use payment_id as correlation_id for tracking through projection completion
+    // The payment reducer expects correlation_id to be the payment_id UUID
+    let correlation_id = CorrelationId::from_uuid(*payment_id.as_uuid());
+    let _ = correlation_uuid; // Middleware provides request-level correlation, but we use payment_id here
 
     // Prepare metadata with correlation_id for projection tracking
     let metadata = EventMetadata::with_correlation_id(correlation_id.to_string());
 
-    // Create Payment store for this request
-    let store = state.create_payment_store();
+    // Create Payment store for this request (per-instance stream)
+    let store = state.create_payment_store(payment_id);
 
     // Build ProcessPayment action
     let action = PaymentAction::ProcessPayment {
         payment_id,
         reservation_id,
+        customer_id,
         amount,
         payment_method,
     };
 
-    // Subscribe to BOTH topics BEFORE sending command to avoid race conditions:
-    // - payment topic: for PaymentConfirmed business domain event
-    // - projection.completed: for ProjectionCompleted infrastructure event
-    let mut payment_subscriber = state
-        .event_bus
-        .subscribe(&[&state.config.redpanda.payment_topic])
-        .await
-        .map_err(|e| AppError::internal(format!("Failed to subscribe to payment events: {e}")))?;
+    // Register interest in projection completion BEFORE sending command
+    // Uses singleton ProjectionCompletionTracker to avoid creating multiple consumers
+    let projection_waiter = state
+        .projection_completion_tracker
+        .register_interest(correlation_id, &["payments_projection"]);
 
-    let mut projection_subscriber = state
-        .event_bus
-        .subscribe(&["projection.completed"])
-        .await
-        .map_err(|e| {
-            AppError::internal(format!("Failed to subscribe to projection events: {e}"))
-        })?;
+    // Clone store for spawning the projection completion forwarder task
+    let store_clone = store.clone();
 
-    // Send action with metadata to store (Store executes effects automatically)
-    // The correlation_id in metadata will be propagated to events and projections
-    store
-        .send_with_metadata(action, Some(metadata))
+    // Spawn task to forward ProjectionCompleted to store when it arrives
+    // This allows the reducer to emit PaymentConfirmed after projection updates
+    tokio::spawn(async move {
+        match tokio::time::timeout(Duration::from_secs(10), projection_waiter).await {
+            Ok(Ok(result)) => {
+                match result {
+                    crate::projections::ProjectionResult::Completed(_) => {
+                        tracing::debug!("Forwarding ProjectionCompleted to payment store");
+                        let action = PaymentAction::ProjectionCompleted {
+                            correlation_id: correlation_id.to_string(),
+                            projection_name: "payments_projection".to_string(),
+                        };
+                        if let Err(e) = store_clone.send(action).await {
+                            tracing::error!(error = ?e, "Failed to forward ProjectionCompleted");
+                        }
+                    }
+                    crate::projections::ProjectionResult::Failed(failures) => {
+                        tracing::warn!(failures = ?failures, "Projection failed");
+                    }
+                }
+            }
+            Ok(Err(_)) => {
+                tracing::warn!("Projection completion channel closed");
+            }
+            Err(_) => {
+                tracing::warn!("Timeout waiting for projection completion");
+            }
+        }
+    });
+
+    // Send action and wait for PaymentConfirmed using Store's built-in mechanism
+    // This handles subscription, filtering, and cleanup automatically
+    let confirmed_action = store
+        .send_and_wait_for_with_metadata(
+            action,
+            Some(metadata),
+            |action| matches!(action, PaymentAction::PaymentConfirmed { .. } | PaymentAction::PaymentProjectionFailed { .. }),
+            Duration::from_secs(15),
+        )
         .await
         .map_err(|e| AppError::internal(format!("Failed to process payment: {e}")))?;
 
-    // Event loop: forward ProjectionCompleted to store, wait for PaymentConfirmed
-    // Flow: ProcessPayment → PaymentProcessed → Projection → ProjectionCompleted →
-    //       (HTTP handler forwards to same store) → PaymentConfirmed
-    let timeout = Duration::from_secs(10);
-    let start = std::time::Instant::now();
-
-    loop {
-        let remaining = timeout
-            .checked_sub(start.elapsed())
-            .unwrap_or(Duration::ZERO);
-
-        if remaining.is_zero() {
-            return Err(AppError::internal(
-                "Timeout waiting for payment confirmation".to_string(),
-            ));
-        }
-
-        tokio::select! {
-            // Listen for ProjectionCompleted from projection.completed topic
-            result = tokio::time::timeout(remaining, projection_subscriber.next()) => {
-                match result {
-                    Ok(Some(Ok(event_data))) => {
-                        // Deserialize ProjectionCompleted (JSON from projections)
-                        if let Ok(completed) = serde_json::from_slice::<crate::projections::ProjectionCompleted>(&event_data.data) {
-                            // Check if this is for our payment
-                            if completed.correlation_id.to_string() == correlation_id.to_string()
-                                && completed.projection_name == "payments_projection"
-                            {
-                                tracing::info!(
-                                    correlation_id = %correlation_id,
-                                    "Received ProjectionCompleted - forwarding to store"
-                                );
-
-                                // Forward ProjectionCompleted to the SAME store instance
-                                let action = PaymentAction::ProjectionCompleted {
-                                    correlation_id: correlation_id.to_string(),
-                                    projection_name: completed.projection_name.clone(),
-                                };
-
-                                store.send(action).await.map_err(|e| {
-                                    AppError::internal(format!("Failed to forward ProjectionCompleted: {e}"))
-                                })?;
-                            }
-                        }
-                    }
-                    Ok(Some(Err(e))) => {
-                        return Err(AppError::internal(format!("Projection event bus error: {e}")));
-                    }
-                    Ok(None) => {
-                        return Err(AppError::internal(
-                            "Projection stream ended unexpectedly".to_string(),
-                        ));
-                    }
-                    Err(_) => {
-                        return Err(AppError::internal(
-                            "Timeout waiting for projection completion".to_string(),
-                        ));
-                    }
-                }
-            }
-
-            // Listen for PaymentConfirmed from payment topic
-            result = tokio::time::timeout(remaining, payment_subscriber.next()) => {
-                match result {
-                    Ok(Some(Ok(event_data))) => {
-                        // Deserialize event from SerializedEvent.data
-                        if let Ok(event) = bincode::deserialize::<TicketingEvent>(&event_data.data) {
-                            // Check if this is our PaymentConfirmed event
-                            if let TicketingEvent::Payment(PaymentAction::PaymentConfirmed {
-                                payment_id: confirmed_id,
-                            }) = event
-                            {
-                                if confirmed_id == payment_id {
-                                    tracing::info!(
-                                        payment_id = %payment_id.as_uuid(),
-                                        "Payment confirmed - projection updated"
-                                    );
-                                    break;
-                                }
-                            }
-                            // Check for PaymentProjectionFailed
-                            else if let TicketingEvent::Payment(PaymentAction::PaymentProjectionFailed {
-                                payment_id: failed_id,
-                                reason,
-                            }) = event
-                            {
-                                if failed_id == payment_id {
-                                    return Err(AppError::internal(format!(
-                                        "Payment projection failed: {reason}"
-                                    )));
-                                }
-                            }
-                        }
-                    }
-                    Ok(Some(Err(e))) => {
-                        return Err(AppError::internal(format!("Payment event bus error: {e}")));
-                    }
-                    Ok(None) => {
-                        return Err(AppError::internal(
-                            "Payment stream ended unexpectedly".to_string(),
-                        ));
-                    }
-                    Err(_) => {
-                        return Err(AppError::internal(
-                            "Timeout waiting for payment confirmation".to_string(),
-                        ));
-                    }
-                }
-            }
-        }
+    // Check if payment failed
+    if let PaymentAction::PaymentProjectionFailed { payment_id: _, reason } = confirmed_action {
+        return Err(AppError::internal(format!("Payment projection failed: {reason}")));
     }
+
+    tracing::info!(
+        payment_id = %payment_id.as_uuid(),
+        "Payment confirmed and projection updated"
+    );
 
     // Return success response (projection either completed or will complete soon)
     Ok((
@@ -460,7 +386,7 @@ pub async fn get_payment(
 ) -> Result<Json<PaymentResponse>, AppError> {
     // Query payment through store/reducer pattern
     let payment_id_typed = PaymentId::from_uuid(payment_id);
-    let store = state.create_payment_store();
+    let store = state.create_payment_store(payment_id_typed);
 
     // Send GetPayment query action and wait for PaymentQueried result
     let result = store
@@ -570,7 +496,7 @@ pub async fn refund_payment(
     let payment_id_typed = PaymentId::from_uuid(payment_id);
 
     // Query payment through store/reducer pattern to get current amount and status
-    let store = state.create_payment_store();
+    let store = state.create_payment_store(payment_id_typed);
 
     let result = store
         .send_and_wait_for(
@@ -626,8 +552,8 @@ pub async fn refund_payment(
     // - Admins can override refund policy
     // This requires querying the reservation and event from projections
 
-    // Create Payment store for this request
-    let store = state.create_payment_store();
+    // Create Payment store for this request (per-instance stream)
+    let store = state.create_payment_store(payment_id_typed);
 
     // Build RefundPayment action
     let action = PaymentAction::RefundPayment {
@@ -713,7 +639,10 @@ pub async fn list_user_payments(
 ) -> Result<Json<ListPaymentsResponse>, AppError> {
     // Query payments through store/reducer pattern
     let customer_id = CustomerId::from_uuid(session.user_id.0);
-    let store = state.create_payment_store();
+
+    // Use nil UUID for query-only operations (no event store access)
+    // This operation queries projections, not event streams
+    let store = state.create_payment_store(PaymentId::from_uuid(uuid::Uuid::nil()));
 
     // Get all payments (limit 100 for now, TODO: add pagination query params)
     let result = store

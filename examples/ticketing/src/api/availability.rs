@@ -87,9 +87,9 @@ pub async fn get_event_availability(
     Path(event_id): Path<Uuid>,
     State(state): State<AppState>,
 ) -> Result<Json<EventAvailabilityResponse>, AppError> {
-    // Query through store/reducer pattern
+    // Query through store/reducer pattern (per-instance stream)
     let event_id_typed = crate::types::EventId::from_uuid(event_id);
-    let inventory_store = state.create_inventory_store();
+    let inventory_store = state.create_inventory_store(event_id_typed);
 
     // Send GetAllSections query action and wait for AllSectionsQueried result
     let result = inventory_store
@@ -175,9 +175,9 @@ pub async fn get_section_availability(
     Path((event_id, section)): Path<(Uuid, String)>,
     State(state): State<AppState>,
 ) -> Result<Json<SectionAvailability>, AppError> {
-    // Query through store/reducer pattern
+    // Query through store/reducer pattern (per-instance stream)
     let event_id_typed = crate::types::EventId::from_uuid(event_id);
-    let inventory_store = state.create_inventory_store();
+    let inventory_store = state.create_inventory_store(event_id_typed);
 
     // Send GetSectionAvailability query action and wait for SectionAvailabilityQueried result
     let result = inventory_store
@@ -274,7 +274,7 @@ pub async fn get_total_available(
     use crate::types::EventId;
 
     let event_id_typed = EventId::from_uuid(event_id);
-    let store = state.create_inventory_store();
+    let store = state.create_inventory_store(event_id_typed);
 
     let total = match store
         .send_and_wait_for(

@@ -699,10 +699,17 @@ impl Reducer for ReservationReducer {
                 let mut effects = Self::create_effects(action, expected_version, env, None);
                 effects.extend(Self::create_effects(payment_requested, expected_version_2, env, None));
 
+                // Get customer_id from the reservation state
+                let customer_id = state.reservations
+                    .get(&reservation_id)
+                    .map(|r| r.customer_id)
+                    .unwrap_or_else(CustomerId::new);
+
                 // TCA Pattern: Publish command to event bus for Payment child aggregate
                 let process_payment = PaymentAction::ProcessPayment {
                     payment_id,
                     reservation_id,
+                    customer_id,
                     amount: total_amount,
                     payment_method: crate::types::PaymentMethod::CreditCard {
                         last_four: "4242".to_string(),
@@ -765,7 +772,13 @@ impl Reducer for ReservationReducer {
 
                 // Persist and publish our events
                 let mut effects = Self::create_effects(action, expected_version, env, None);
-                effects.extend(Self::create_effects(completion, expected_version_2, env, None));
+                effects.extend(Self::create_effects(completion.clone(), expected_version_2, env, None));
+
+                // Emit as observable action for send_and_wait_for
+                let completion_clone = completion;
+                effects.push(Effect::Future(Box::pin(async move {
+                    Some(completion_clone)
+                })));
 
                 // TCA Pattern: Publish confirm command to event bus for Inventory
                 let confirm_seats = InventoryAction::ConfirmReservation {
@@ -963,6 +976,127 @@ impl Reducer for ReservationReducer {
     }
 }
 
+// ============================================================================
+// Saga Consumer Infrastructure
+// ============================================================================
+
+/// Spawns background consumers that translate child aggregate events to Reservation saga actions.
+///
+/// This infrastructure wires up the saga's event-driven choreography:
+/// - Inventory aggregate publishes `SeatsReserved` → Reservation receives `SeatsAllocated`
+/// - Payment aggregate publishes `PaymentProcessed` → Reservation receives `PaymentSucceeded` or `PaymentFailed`
+///
+/// **Why this is needed**: The Reservation saga coordinates independent Inventory and Payment
+/// aggregates via EventBus. This helper provides the explicit wiring for distributed choreography,
+/// translating child events into parent saga actions.
+///
+/// # Usage
+///
+/// ```no_run
+/// # use std::sync::Arc;
+/// # use composable_rust_runtime::Store;
+/// # use ticketing::aggregates::reservation::*;
+/// # async fn example(event_bus: Arc<dyn composable_rust_core::event_bus::EventBus>, reservation_store: Arc<Store<ReservationState, ReservationAction, ReservationEnvironment, ReservationReducer>>) {
+/// // After creating reservation store
+/// spawn_reservation_saga_consumers(event_bus.clone(), reservation_store.clone());
+/// # }
+/// ```
+pub fn spawn_reservation_saga_consumers(
+    event_bus: Arc<dyn composable_rust_core::event_bus::EventBus>,
+    reservation_store: Arc<
+        composable_rust_runtime::Store<
+            ReservationState,
+            ReservationAction,
+            ReservationEnvironment,
+            ReservationReducer,
+        >,
+    >,
+) {
+    use crate::projections::TicketingEvent;
+    use futures::StreamExt;
+
+    // Consumer 1: Inventory.SeatsReserved → Reservation.SeatsAllocated
+    // Listens to "inventory" topic and translates SeatsReserved to SeatsAllocated
+    let inventory_to_reservation_bus = event_bus.clone();
+    let inventory_to_reservation_store = reservation_store.clone();
+    tokio::spawn(async move {
+        if let Ok(mut stream) = inventory_to_reservation_bus.subscribe(&["inventory"]).await {
+            while let Some(result) = stream.next().await {
+                if let Ok(serialized) = result {
+                    if let Ok(TicketingEvent::Inventory(crate::aggregates::InventoryAction::SeatsReserved {
+                        reservation_id,
+                        seats,
+                        ..
+                    })) = TicketingEvent::deserialize(&serialized)
+                    {
+                        // Calculate total amount from seat count
+                        // TODO: In production, this should come from pricing data
+                        #[allow(clippy::cast_possible_truncation)]
+                        let total_amount = crate::types::Money::from_dollars(50 * seats.len() as u64);
+
+                        let reservation_action = ReservationAction::SeatsAllocated {
+                            reservation_id,
+                            seats,
+                            total_amount,
+                        };
+
+                        if let Err(e) = inventory_to_reservation_store.send(reservation_action).await {
+                            tracing::error!(
+                                reservation_id = %reservation_id.as_uuid(),
+                                error = %e,
+                                "Failed to send SeatsAllocated to Reservation saga"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    // Consumer 2: Payment.PaymentProcessed → Reservation.PaymentSucceeded or PaymentFailed
+    // Listens to "payment" topic and translates payment events to reservation actions
+    let payment_to_reservation_bus = event_bus;
+    let payment_to_reservation_store = reservation_store;
+    tokio::spawn(async move {
+        if let Ok(mut stream) = payment_to_reservation_bus.subscribe(&["payment"]).await {
+            while let Some(result) = stream.next().await {
+                if let Ok(serialized) = result {
+                    match TicketingEvent::deserialize(&serialized) {
+                        Ok(TicketingEvent::Payment(crate::aggregates::PaymentAction::PaymentProcessed {
+                            payment_id,
+                            reservation_id,
+                            ..
+                        })) => {
+                            // PaymentProcessed means success
+                            let reservation_action = ReservationAction::PaymentSucceeded {
+                                reservation_id,
+                                payment_id,
+                            };
+
+                            if let Err(e) = payment_to_reservation_store.send(reservation_action).await {
+                                tracing::error!(
+                                    reservation_id = %reservation_id.as_uuid(),
+                                    payment_id = %payment_id.as_uuid(),
+                                    error = %e,
+                                    "Failed to send PaymentSucceeded to Reservation saga"
+                                );
+                            }
+                        }
+                        // NOTE: PaymentFailed event doesn't include reservation_id
+                        // So we can't automatically route it back to the reservation saga.
+                        // For compensation flows, tests should manually inject PaymentFailed
+                        // or we need to track payment_id → reservation_id mapping.
+                        Ok(TicketingEvent::Payment(crate::aggregates::PaymentAction::PaymentFailed { .. })) => {
+                            tracing::warn!("PaymentFailed event received but cannot route to Reservation - missing reservation_id in event");
+                        }
+                        _ => {} // Ignore other payment events
+                    }
+                }
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -974,63 +1108,6 @@ mod tests {
     use crate::types::{CustomerId, EventId, Money, Reservation, ReservationExpiry, ReservationId};
 
     // Mock projection queries for tests
-    #[derive(Clone)]
-    struct MockInventoryQuery;
-
-    impl crate::aggregates::inventory::InventoryProjectionQuery for MockInventoryQuery {
-        fn load_inventory(
-            &self,
-            _event_id: &EventId,
-            _section: &str,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<((u32, u32, u32, u32), Vec<crate::types::SeatAssignment>)>, String>> + Send + '_>> {
-            Box::pin(async move { Ok(None) })
-        }
-
-        fn get_all_sections(
-            &self,
-            _event_id: &EventId,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<crate::aggregates::inventory::SectionAvailabilityData>, String>> + Send + '_>> {
-            Box::pin(async move { Ok(Vec::new()) })
-        }
-
-        fn get_section_availability(
-            &self,
-            _event_id: &EventId,
-            _section: &str,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<crate::aggregates::inventory::SectionAvailabilityData>, String>> + Send + '_>> {
-            Box::pin(async move { Ok(None) })
-        }
-
-        fn get_total_available(
-            &self,
-            _event_id: &EventId,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u32, String>> + Send + '_>> {
-            Box::pin(async move { Ok(0) })
-        }
-    }
-
-    #[derive(Clone)]
-    struct MockPaymentQuery;
-
-    #[async_trait::async_trait]
-    impl crate::aggregates::payment::PaymentProjectionQuery for MockPaymentQuery {
-        async fn load_payment(
-            &self,
-            _payment_id: &crate::types::PaymentId,
-        ) -> Result<Option<crate::types::Payment>, String> {
-            Ok(None)
-        }
-
-        async fn load_customer_payments(
-            &self,
-            _customer_id: &CustomerId,
-            _limit: usize,
-            _offset: usize,
-        ) -> Result<Vec<crate::types::Payment>, String> {
-            Ok(Vec::new())
-        }
-    }
-
     #[derive(Clone)]
     struct MockReservationQuery;
 

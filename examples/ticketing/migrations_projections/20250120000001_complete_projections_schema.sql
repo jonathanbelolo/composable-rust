@@ -86,6 +86,35 @@ CREATE INDEX IF NOT EXISTS idx_seat_assignments_expires
     WHERE expires_at IS NOT NULL;
 
 -- =============================================================================
+-- Payments Projection
+-- =============================================================================
+
+-- Tracks payment state for fast payment queries and status checks
+CREATE TABLE IF NOT EXISTS payments_projection (
+    payment_id UUID PRIMARY KEY,
+    reservation_id UUID NOT NULL,
+    customer_id UUID NOT NULL,
+    amount_cents BIGINT NOT NULL,
+    currency VARCHAR(3) NOT NULL DEFAULT 'USD',
+    status VARCHAR(50) NOT NULL,
+    payment_method_type VARCHAR(50) NOT NULL,
+    payment_method_details JSONB,
+    transaction_id TEXT,
+    processed_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_payments_reservation_id
+    ON payments_projection(reservation_id);
+CREATE INDEX IF NOT EXISTS idx_payments_customer_id
+    ON payments_projection(customer_id);
+CREATE INDEX IF NOT EXISTS idx_payments_status
+    ON payments_projection(status);
+CREATE INDEX IF NOT EXISTS idx_payments_processed_at
+    ON payments_projection(processed_at);
+
+-- =============================================================================
 -- Events Projection (JSONB-based)
 -- =============================================================================
 

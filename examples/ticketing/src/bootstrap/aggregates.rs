@@ -117,6 +117,7 @@ fn create_payment_consumer(
         clock: resources.clock.clone(),
         event_store: resources.event_store.clone(),
         event_bus: resources.event_bus.clone(),
+        payment_topic: resources.config.redpanda.payment_topic.clone(),
         query: payment_query,
     });
 

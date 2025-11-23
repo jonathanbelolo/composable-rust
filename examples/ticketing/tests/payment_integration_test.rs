@@ -43,6 +43,7 @@ fn create_test_env() -> PaymentEnvironment {
         Arc::new(InMemoryEventStore::new()),
         Arc::new(InMemoryEventBus::new()),
         StreamId::new("payment-test"),
+        "payment".to_string(),
         Arc::new(MockPaymentQuery),
     )
 }
@@ -56,6 +57,7 @@ async fn test_successful_payment_flow() {
 
     let payment_id = PaymentId::new();
     let reservation_id = ReservationId::new();
+    let customer_id = CustomerId::new();
     let amount = Money::from_dollars(100);
 
     ReducerTest::new(PaymentReducer::new())
@@ -64,6 +66,7 @@ async fn test_successful_payment_flow() {
         .when_action(PaymentAction::ProcessPayment {
             payment_id,
             reservation_id,
+            customer_id,
             amount,
             payment_method: PaymentMethod::CreditCard {
                 last_four: "4242".to_string(),
@@ -308,6 +311,7 @@ async fn test_credit_card_payment_method() {
 
     let payment_id = PaymentId::new();
     let reservation_id = ReservationId::new();
+    let customer_id = CustomerId::new();
     let payment_method = PaymentMethod::CreditCard {
         last_four: "4242".to_string(),
     };
@@ -318,6 +322,7 @@ async fn test_credit_card_payment_method() {
         .when_action(PaymentAction::ProcessPayment {
             payment_id,
             reservation_id,
+            customer_id,
             amount: Money::from_dollars(50),
             payment_method: payment_method.clone(),
         })
@@ -343,6 +348,7 @@ async fn test_full_payment_lifecycle() {
 
     let payment_id = PaymentId::new();
     let reservation_id = ReservationId::new();
+    let customer_id = CustomerId::new();
     let amount = Money::from_dollars(75);
 
     let reducer = PaymentReducer::new();
@@ -355,6 +361,7 @@ async fn test_full_payment_lifecycle() {
         PaymentAction::ProcessPayment {
             payment_id,
             reservation_id,
+            customer_id,
             amount,
             payment_method: PaymentMethod::CreditCard {
                 last_four: "5555".to_string(),

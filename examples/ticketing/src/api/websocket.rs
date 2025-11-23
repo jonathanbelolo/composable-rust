@@ -300,9 +300,9 @@ async fn handle_availability_socket(socket: WebSocket, event_id: Uuid, state: Ap
     let (sender, mut receiver) = socket.split();
     let sender = Arc::new(tokio::sync::Mutex::new(sender));
 
-    // Send initial availability snapshot via store/reducer pattern
+    // Send initial availability snapshot via store/reducer pattern (per-instance stream)
     let event_id_typed = EventId::from_uuid(event_id);
-    let inventory_store = state.create_inventory_store();
+    let inventory_store = state.create_inventory_store(event_id_typed);
 
     // Query through store for initial snapshot
     if let Ok(result) = inventory_store
@@ -343,9 +343,9 @@ async fn handle_availability_socket(socket: WebSocket, event_id: Uuid, state: Ap
         }
     }
 
-    // Spawn EventBus consumer task for real-time updates
+    // Spawn EventBus consumer task for real-time updates (per-instance stream)
     let event_sender = sender.clone();
-    let event_inventory_store = state.create_inventory_store();
+    let event_inventory_store = state.create_inventory_store(event_id_typed);
     let event_bus = state.event_bus.clone();
     let config = Config::from_env();
 

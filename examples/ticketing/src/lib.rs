@@ -81,7 +81,6 @@
 #![warn(missing_docs)]
 
 pub mod aggregates;
-pub mod app;
 pub mod auth;
 pub mod bootstrap;
 pub mod config;
@@ -94,7 +93,6 @@ pub mod server;
 pub mod api;
 
 pub use aggregates::{EventAction, EventReducer, InventoryAction, InventoryReducer};
-pub use app::TicketingApp;
 pub use config::Config;
 pub use projections::{
     AvailableSeatsProjection, CustomerHistoryProjection, Projection, SalesAnalyticsProjection,

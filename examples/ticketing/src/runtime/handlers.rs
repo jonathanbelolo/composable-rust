@@ -182,6 +182,9 @@ pub struct PaymentHandler {
     /// Event bus for publishing events
     pub event_bus: Arc<dyn EventBus>,
 
+    /// Topic for publishing payment events
+    pub payment_topic: String,
+
     /// Query adapter for loading payment state on-demand
     pub query: Arc<PostgresPaymentQuery>,
 }
@@ -202,6 +205,7 @@ impl EventHandler for PaymentHandler {
                 self.event_store.clone(),
                 self.event_bus.clone(),
                 StreamId::new("payment"),
+                self.payment_topic.clone(),
                 self.query.clone(),
             );
 

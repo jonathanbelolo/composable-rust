@@ -326,23 +326,12 @@ impl Projection for PostgresPaymentsProjection {
             TicketingEvent::Payment(PaymentAction::PaymentProcessed {
                 payment_id,
                 reservation_id,
+                customer_id,
                 amount,
                 payment_method,
                 processed_at,
             }) => {
-                // Query customer_id from reservations projection
-                let customer_id: sqlx::types::Uuid = sqlx::query_scalar(
-                    "SELECT customer_id FROM reservations_projection WHERE id = $1"
-                )
-                .bind(reservation_id.as_uuid())
-                .fetch_one(self.pool.as_ref())
-                .await
-                .map_err(|e| {
-                    ProjectionError::Storage(format!(
-                        "Failed to query customer_id for reservation {reservation_id}: {e}"
-                    ))
-                })?;
-
+                // Use customer_id directly from event (no need to query reservations)
                 let (method_type, method_details) =
                     Self::serialize_payment_method(payment_method);
 
@@ -357,7 +346,7 @@ impl Projection for PostgresPaymentsProjection {
                 )
                 .bind(payment_id.as_uuid())
                 .bind(reservation_id.as_uuid())
-                .bind(customer_id)
+                .bind(customer_id.as_uuid())
                 .bind(amount.cents() as i64)
                 .bind("USD")
                 .bind("Pending")

@@ -537,6 +537,124 @@ async fn test_with_real_redpanda() {
 }
 ```
 
+### Waiting for Specific Events (CRITICAL PATTERN)
+
+**⚠️ DO NOT FORGET THIS PATTERN** - Use `send_and_wait_for` / `send_and_wait_for_with_metadata` to wait for saga completion or specific events in tests.
+
+#### Pattern: Wait for Single Event Type
+
+```rust
+use std::time::Duration;
+
+// Send command and wait for completion event
+let result = store.send_and_wait_for(
+    SagaAction::StartWorkflow { ... },
+    |action| matches!(action, SagaAction::WorkflowCompleted { .. }),
+    Duration::from_secs(10)
+).await?;
+
+// Result is the WorkflowCompleted action
+match result {
+    SagaAction::WorkflowCompleted { id, .. } => {
+        // Assert on completion
+    }
+    _ => unreachable!()
+}
+```
+
+#### Pattern: Wait for Success OR Failure
+
+```rust
+// Wait for EITHER completion OR failure (handles both paths)
+let result = saga_store.send_and_wait_for(
+    EventInventorySagaAction::CreateEventWithInventory {
+        event_id,
+        name: "Test Event".to_string(),
+        venue,
+        // ...
+    },
+    |action| matches!(action,
+        EventInventorySagaAction::EventCreationCompleted { .. } |
+        EventInventorySagaAction::EventCreationFailed { .. }
+    ),
+    Duration::from_secs(10)
+).await?;
+
+// Then match on what we got
+match result {
+    EventInventorySagaAction::EventCreationCompleted { event_id, sections_initialized, .. } => {
+        // Happy path - saga succeeded
+        println!("Event created with {} sections", sections_initialized);
+    }
+    EventInventorySagaAction::EventCreationFailed { event_id, error, .. } => {
+        // Error path - saga failed
+        panic!("Event creation failed: {}", error);
+    }
+    _ => unreachable!()
+}
+```
+
+#### Pattern: With Metadata (Correlation IDs)
+
+```rust
+use composable_rust_core::event::EventMetadata;
+use ticketing::projections::CorrelationId;
+
+// Generate correlation ID for tracking
+let correlation_id = CorrelationId::new();
+let metadata = EventMetadata::with_correlation_id(correlation_id.to_string());
+
+// Send with metadata and wait for result
+let result = saga_store.send_and_wait_for_with_metadata(
+    EventInventorySagaAction::CreateEventWithInventory { ... },
+    Some(metadata),
+    |action| matches!(action,
+        EventInventorySagaAction::EventCreationCompleted { .. } |
+        EventInventorySagaAction::EventCreationFailed { .. }
+    ),
+    Duration::from_secs(10)
+).await?;
+
+// Metadata propagates through event chain for distributed tracing
+```
+
+#### Why This Pattern?
+
+**✅ Correct**:
+```rust
+// WAIT for saga completion before assertions
+let result = saga_store.send_and_wait_for(...).await?;
+assert_eq!(result.event_id, expected_id);
+```
+
+**❌ WRONG**:
+```rust
+// DON'T use wait() - only waits for effects, not saga completion!
+let mut handle = saga_store.send(...).await?;
+handle.wait().await; // ⚠️ Saga may not be complete!
+assert!(...); // ⚠️ Projection may not have caught up!
+```
+
+**❌ WRONG**:
+```rust
+// DON'T use sleep - flaky and slow!
+store.send(...).await?;
+tokio::time::sleep(Duration::from_millis(500)).await; // ❌ Race condition!
+assert!(...);
+```
+
+**Key Benefits**:
+- **Deterministic**: Wait for EXACT event, not arbitrary time
+- **Fast**: Returns immediately when event arrives
+- **Clear**: Predicate explicitly states what we're waiting for
+- **Debuggable**: Timeout error shows what event we expected
+
+**When to Use**:
+- Testing sagas (wait for completion/failure)
+- Testing projections (wait for projection to catch up)
+- E2E tests (wait for full workflow completion)
+- Integration tests with async workflows
+
 ### Integration Test Organization
 
 ```rust

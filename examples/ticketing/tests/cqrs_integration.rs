@@ -143,6 +143,7 @@ async fn test_full_cqrs_flow_with_event_sourcing() {
             TicketingEvent::Reservation(_) => "ReservationEvent",
             TicketingEvent::Payment(_) => "PaymentEvent",
             TicketingEvent::Event(_) => "EventEvent",
+            TicketingEvent::EventInventorySaga(_) => "EventInventorySagaEvent",
         };
 
         SerializedEvent::new(event_type.to_string(), event_data, None)
