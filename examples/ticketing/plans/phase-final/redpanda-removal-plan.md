@@ -165,6 +165,287 @@ while let Ok(action) = stream.recv().await {
 
 ---
 
+## API Response Pattern
+
+### Synchronous Wait (Strong Consistency)
+
+**For initial ticketing implementation**: All API calls use synchronous pattern.
+
+```rust
+pub async fn create_event(
+    session: SessionUser,
+    State(state): State<AppState>,
+    Json(request): Json<CreateEventRequest>,
+) -> Result<(StatusCode, Json<CreateEventResponse>), AppError> {
+    let event_id = EventId::new();
+
+    // Create response channel
+    let (response_tx, response_rx) = oneshot::channel();
+
+    // Create action with response channel
+    let action = EventAction::CreateEvent {
+        id: event_id,
+        name: request.title,
+        owner_id: session.user_id,
+        venue: request.venue,
+        date: request.date,
+        pricing_tiers: request.pricing_tiers,
+        respond_to: Some(response_tx),  // ← Wait for projection
+    };
+
+    // Send to aggregate
+    store.send(action).await?;
+
+    // Wait for projection completion with configurable timeout
+    let timeout = state.config.projection_timeout;
+    match tokio::time::timeout(timeout, response_rx).await {
+        Ok(Ok(Ok(()))) => {
+            // Projection completed successfully
+            Ok((StatusCode::CREATED, Json(CreateEventResponse {
+                event_id: *event_id.as_uuid(),
+                message: "Event created successfully".to_string(),
+            })))
+        }
+        Ok(Ok(Err(e))) => {
+            // Projection failed (database error, etc.)
+            tracing::error!(
+                event_id = %event_id.as_uuid(),
+                error = %e,
+                "Projection failed"
+            );
+            Err(AppError::internal(format!("Projection failed: {e}")))
+        }
+        Ok(Err(_)) => {
+            // Channel closed (projection service died)
+            tracing::error!(
+                event_id = %event_id.as_uuid(),
+                "Projection channel closed"
+            );
+            Err(AppError::service_unavailable("Projection service unavailable"))
+        }
+        Err(_) => {
+            // Timeout waiting for projection
+            tracing::warn!(
+                event_id = %event_id.as_uuid(),
+                timeout = ?timeout,
+                "Projection timeout"
+            );
+            Err(AppError::gateway_timeout("Projection took too long"))
+        }
+    }
+}
+```
+
+### Error Handling
+
+**HTTP Status Codes:**
+- **201 Created**: Projection completed successfully
+- **500 Internal Server Error**: Projection failed (database error, logic error)
+- **503 Service Unavailable**: Projection service died (channel closed)
+- **504 Gateway Timeout**: Projection exceeded timeout (upstream dependency timeout)
+
+**Rationale for 504 Gateway Timeout:**
+- Projection is an upstream dependency (like a microservice)
+- Semantically correct: we're waiting for downstream processing that timed out
+- Standard HTTP semantics for proxy/gateway timeouts
+- Clear to clients: request was valid, but downstream processing exceeded time limit
+
+---
+
+## Configuration
+
+### Projection Timeout Configuration
+
+**File**: `src/config.rs`
+
+```rust
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct Config {
+    // ... existing fields ...
+
+    /// Timeout for waiting on projection completion
+    /// Default: 5 seconds
+    /// Environment: PROJECTION_TIMEOUT_MS
+    #[serde(default = "default_projection_timeout")]
+    pub projection_timeout: Duration,
+}
+
+fn default_projection_timeout() -> Duration {
+    Duration::from_millis(
+        std::env::var("PROJECTION_TIMEOUT_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(5000)
+    )
+}
+```
+
+**Environment variables:**
+- `PROJECTION_TIMEOUT_MS=5000` - Production (5 seconds)
+- `PROJECTION_TIMEOUT_MS=1000` - Development (1 second for fast feedback)
+- `PROJECTION_TIMEOUT_MS=30000` - Heavy load testing (30 seconds)
+
+---
+
+## Observability
+
+### Metrics (Prometheus)
+
+**Projection Response Time Histogram:**
+```rust
+use prometheus::{register_histogram, Histogram};
+
+lazy_static! {
+    static ref PROJECTION_DURATION: Histogram = register_histogram!(
+        "projection_response_duration_seconds",
+        "Time taken for projection to respond",
+        vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]
+    ).unwrap();
+
+    static ref PROJECTION_TIMEOUTS: IntCounter = register_int_counter!(
+        "projection_timeouts_total",
+        "Total number of projection timeouts"
+    ).unwrap();
+
+    static ref PROJECTION_FAILURES: IntCounter = register_int_counter!(
+        "projection_failures_total",
+        "Total number of projection failures"
+    ).unwrap();
+
+    static ref PROJECTION_SUCCESSES: IntCounter = register_int_counter!(
+        "projection_successes_total",
+        "Total number of successful projections"
+    ).unwrap();
+
+    static ref PROJECTION_LAG: Gauge = register_gauge!(
+        "projection_channel_lag_messages",
+        "Number of messages in projection channel (lag indicator)"
+    ).unwrap();
+}
+```
+
+**Usage in projection:**
+```rust
+// Projection side
+let start = Instant::now();
+let result = self.process_event_created(...).await;
+let duration = start.elapsed();
+
+// Record metrics
+PROJECTION_DURATION.observe(duration.as_secs_f64());
+match &result {
+    Ok(_) => PROJECTION_SUCCESSES.inc(),
+    Err(_) => PROJECTION_FAILURES.inc(),
+}
+
+// Send response
+if let Some(tx) = respond_to {
+    let _ = tx.send(result);
+}
+```
+
+**Usage in API handler (timeout):**
+```rust
+Err(_) => {
+    // Timeout
+    PROJECTION_TIMEOUTS.inc();
+    tracing::warn!("Projection timeout");
+    Err(AppError::gateway_timeout(...))
+}
+```
+
+### Alerts (Prometheus AlertManager)
+
+**Alert rules:**
+```yaml
+groups:
+  - name: projections
+    rules:
+      - alert: ProjectionHighLatency
+        expr: histogram_quantile(0.99, projection_response_duration_seconds) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Projection p99 latency > 500ms"
+          description: "Projections are slow (p99: {{ $value }}s)"
+
+      - alert: ProjectionTimeout
+        expr: rate(projection_timeouts_total[5m]) > 0.01
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Projection timeout rate > 1%"
+          description: "{{ $value | humanizePercentage }} of projections timing out"
+
+      - alert: ProjectionFailures
+        expr: rate(projection_failures_total[5m]) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Projection failure rate > 5%"
+          description: "{{ $value | humanizePercentage }} of projections failing"
+
+      - alert: ProjectionLag
+        expr: projection_channel_lag_messages > 100
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Projection lag > 100 messages"
+          description: "Projection falling behind ({{ $value }} messages queued)"
+```
+
+### Logs
+
+**Structured logging with tracing:**
+
+```rust
+// Projection completion (info)
+tracing::info!(
+    event_id = %event_id.as_uuid(),
+    projection = "available_seats",
+    duration_ms = duration.as_millis(),
+    "Projection completed"
+);
+
+// Projection slow (warn)
+if duration > timeout * 90 / 100 {  // 90% of timeout
+    tracing::warn!(
+        event_id = %event_id.as_uuid(),
+        projection = "available_seats",
+        duration_ms = duration.as_millis(),
+        timeout_ms = timeout.as_millis(),
+        "Projection approaching timeout"
+    );
+}
+
+// Projection timeout (error)
+tracing::error!(
+    event_id = %event_id.as_uuid(),
+    projection = "available_seats",
+    timeout_ms = timeout.as_millis(),
+    "Projection timeout - check projection health"
+);
+
+// Projection failure (error)
+tracing::error!(
+    event_id = %event_id.as_uuid(),
+    projection = "available_seats",
+    error = %e,
+    "Projection failed"
+);
+```
+
+**Log levels:**
+- **INFO**: Successful completions (with duration)
+- **WARN**: Slow projections (>90% of timeout), lag warnings
+- **ERROR**: Timeouts, failures, channel closed
+
+---
+
 ## Step-by-Step Implementation Plan
 
 ### Phase 1: Add Global Channels Infrastructure
@@ -201,13 +482,32 @@ let (payment_actions, _) = broadcast::channel(1000);
 - Prevents slow subscribers from blocking fast publishers
 - Lagging subscribers drop old messages (acceptable for projections - they rebuild from PostgreSQL)
 
-#### Step 1.2: Remove Redpanda from ResourceManager
-**File**: `src/bootstrap/resources.rs`
+#### Step 1.2: Add AppError Helper Methods
+**File**: `src/api/error.rs`
 
-- ❌ Remove `event_bus: Arc<dyn EventBus>` field
-- ❌ Remove RedpandaEventBus creation
-- ❌ Remove topic initialization logic
-- ❌ Remove `use composable_rust_redpanda::RedpandaEventBus`
+Add helper methods for new HTTP status codes:
+
+```rust
+impl AppError {
+    // ... existing methods ...
+
+    /// Create a 503 Service Unavailable error
+    pub fn service_unavailable(message: impl Into<String>) -> Self {
+        Self {
+            status_code: StatusCode::SERVICE_UNAVAILABLE,
+            message: message.into(),
+        }
+    }
+
+    /// Create a 504 Gateway Timeout error
+    pub fn gateway_timeout(message: impl Into<String>) -> Self {
+        Self {
+            status_code: StatusCode::GATEWAY_TIMEOUT,
+            message: message.into(),
+        }
+    }
+}
+```
 
 ---
 
@@ -864,6 +1164,22 @@ Remove from:
 - `src/aggregates/payment.rs`
 
 Replace with global channel publish (via Effect::Future).
+
+#### Step 9.6: Remove EventBus from ResourceManager
+**File**: `src/bootstrap/resources.rs`
+
+```rust
+// REMOVE these:
+- use composable_rust_redpanda::RedpandaEventBus;
+- use composable_rust_core::event_bus::EventBus;
+- pub event_bus: Arc<dyn EventBus>,
+- RedpandaEventBus creation in from_config()
+- Topic initialization logic
+```
+
+**Also remove from aggregate environments:**
+- `event_bus` field from EventEnvironment, InventoryEnvironment, etc.
+- `event_bus` parameter from environment constructors
 
 ---
 
