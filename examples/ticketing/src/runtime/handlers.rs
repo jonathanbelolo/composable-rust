@@ -153,7 +153,6 @@ impl EventHandler for InventoryHandler {
             let env = InventoryEnvironment::new(
                 self.clock.clone(),
                 self.event_store.clone(),
-                self.event_bus.clone(),
                 StreamId::new("inventory"),
                 self.query.clone(),
                 self.global_actions.clone(),
@@ -210,9 +209,7 @@ impl EventHandler for PaymentHandler {
             let env = PaymentEnvironment::new(
                 self.clock.clone(),
                 self.event_store.clone(),
-                self.event_bus.clone(),
                 StreamId::new("payment"),
-                self.payment_topic.clone(),
                 self.query.clone(),
                 self.global_actions.clone(),
             );

@@ -27,7 +27,7 @@
 
 use crate::auth::middleware::{RequireOwnership, SessionUser};
 use crate::server::state::AppState;
-use crate::types::{CustomerId, EventId, ReservationId, ReservationStatus, ResponseChannel};
+use crate::types::{CustomerId, EventId, ReservationId, ReservationStatus, ResponseChannel, SeatNumber};
 use axum::{
     extract::{Extension, Path, State},
     http::StatusCode,
@@ -174,9 +174,9 @@ pub async fn create_reservation(
     let correlation_id = crate::projections::CorrelationId::from_uuid(correlation_uuid);
 
     // Convert specific_seats from Vec<String> to Vec<SeatNumber>
-    // Note: For now, we skip specific seat conversion since SeatNumber is private
-    // In a real system, you'd have a public API for creating SeatNumbers
-    let specific_seats = None; // TODO: Convert request.specific_seats properly
+    let specific_seats = request.specific_seats.as_ref().map(|seats| {
+        seats.iter().map(|s| SeatNumber::new(s.clone())).collect()
+    });
 
     // Create InitiateReservation command (correlation_id injected at Store level)
     let command = ReservationAction::InitiateReservation {
@@ -197,17 +197,48 @@ pub async fn create_reservation(
     // The store starts with empty state and loads only what it needs from event store
     let reservation_store = state.create_reservation_store(reservation_id);
 
-    // Send command with metadata to Reservation Store
+    // Send command with metadata and wait for projection confirmation
     // The Store will:
     // 1. Call the reducer
-    // 2. Post-process effects to inject correlation_id metadata
+    // 2. Use Effect::PublishWithResponse to wait for projection updates
     // 3. Execute effects (persist with metadata, publish, send to child stores)
     // 4. Handle the saga coordination
-    let _ = reservation_store.send_with_metadata(command, Some(metadata)).await;
+    // 5. Return ReservationProjectionConfirmed or ReservationProjectionFailed
+    let result_action = reservation_store
+        .send_and_wait_for_with_metadata(
+            command,
+            Some(metadata),
+            |action| matches!(
+                action,
+                ReservationAction::ReservationProjectionConfirmed { .. }
+                | ReservationAction::ReservationProjectionFailed { .. }
+                | ReservationAction::ValidationFailed { .. }
+            ),
+            std::time::Duration::from_secs(10),
+        )
+        .await
+        .map_err(|e| AppError::internal(format!("Failed to create reservation: {e}")))?;
+
+    // Check if projection failed
+    match result_action {
+        ReservationAction::ReservationProjectionFailed { reservation_id: _, reason } => {
+            return Err(AppError::projection_failed("Reservation", "InitiateReservation", reason));
+        }
+        ReservationAction::ValidationFailed { error, .. } => {
+            return Err(AppError::bad_request(error));
+        }
+        _ => {} // ReservationProjectionConfirmed - continue
+    }
+
     // Store dropped here - memory freed
 
     // Calculate expiration (5 minutes from now)
     let expires_at = Utc::now() + chrono::Duration::minutes(5);
+
+    tracing::info!(
+        reservation_id = %reservation_id.as_uuid(),
+        "Reservation created and projection confirmed"
+    );
 
     Ok((
         StatusCode::CREATED,

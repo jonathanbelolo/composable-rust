@@ -200,6 +200,18 @@ pub struct ProjectionCompletionTracker {
 }
 
 impl ProjectionCompletionTracker {
+    /// Create a new tracker without EventBus tracking (for local channel-based architecture).
+    ///
+    /// This version doesn't track projection completions via EventBus.
+    /// Projections are assumed to be synchronous in the monolith architecture.
+    #[must_use]
+    pub fn new_without_tracking() -> Self {
+        Self {
+            pending: Arc::new(RwLock::new(HashMap::new())),
+            consumer_handle: None,
+        }
+    }
+
     /// Create a new tracker and start the background consumer.
     ///
     /// # Arguments

@@ -11,8 +11,8 @@ use crate::types::{
 };
 use chrono::{DateTime, Utc};
 use composable_rust_core::{
-    append_events, effect::Effect, environment::Clock, event_bus::EventBus,
-    event_store::EventStore, publish_event, reducer::Reducer, smallvec,
+    append_events, effect::Effect, environment::Clock,
+    event_store::EventStore, reducer::Reducer, smallvec,
     stream::{StreamId, Version},
     SmallVec,
 };
@@ -246,12 +246,8 @@ pub struct PaymentEnvironment {
     pub clock: Arc<dyn Clock>,
     /// Event store for persistence
     pub event_store: Arc<dyn EventStore>,
-    /// Event bus for publishing
-    pub event_bus: Arc<dyn EventBus>,
     /// Stream ID for this aggregate instance
     pub stream_id: StreamId,
-    /// Topic for publishing payment events
-    pub payment_topic: String,
     /// Projection query for loading state on-demand
     pub projection: Arc<dyn PaymentProjectionQuery>,
     /// Global action channels for cross-aggregate coordination
@@ -264,18 +260,14 @@ impl PaymentEnvironment {
     pub fn new(
         clock: Arc<dyn Clock>,
         event_store: Arc<dyn EventStore>,
-        event_bus: Arc<dyn EventBus>,
         stream_id: StreamId,
-        payment_topic: String,
         projection: Arc<dyn PaymentProjectionQuery>,
         global_actions: GlobalActionChannels,
     ) -> Self {
         Self {
             clock,
             event_store,
-            event_bus,
             stream_id,
-            payment_topic,
             projection,
             global_actions,
         }
@@ -299,7 +291,10 @@ impl PaymentReducer {
         Self
     }
 
-    /// Creates effects for persisting and publishing an event
+    /// Creates effects for persisting events (PostgreSQL only, no Redpanda)
+    ///
+    /// With direct orchestration, we use local channels for coordination,
+    /// so Redpanda publishing is no longer needed.
     fn create_effects(
         event: PaymentAction,
         expected_version: Version,
@@ -317,15 +312,6 @@ impl PaymentReducer {
                 expected_version: Some(expected_version),
                 events: vec![serialized.clone()],
                 on_success: |version| Some(PaymentAction::VersionUpdated { version }),
-                on_error: |error| Some(PaymentAction::ValidationFailed {
-                    error: error.to_string()
-                })
-            },
-            publish_event! {
-                bus: env.event_bus,
-                topic: &env.payment_topic,
-                event: serialized,
-                on_success: || None,
                 on_error: |error| Some(PaymentAction::ValidationFailed {
                     error: error.to_string()
                 })
@@ -441,15 +427,8 @@ impl Reducer for PaymentReducer {
                 customer_id,
                 amount,
                 payment_method,
-                respond_to,
+                respond_to: _,
             } => {
-                // Clone fields for publishing to global channel
-                let payment_id_clone = payment_id;
-                let reservation_id_clone = reservation_id;
-                let customer_id_clone = customer_id;
-                let amount_clone = amount;
-                let payment_method_clone = payment_method.clone();
-
                 // Record payment attempt
                 let processed = PaymentAction::PaymentProcessed {
                     payment_id,
@@ -484,18 +463,53 @@ impl Reducer for PaymentReducer {
                     effects1.into_iter().chain(effects2).collect()
                 )];
 
-                // Publish to global channel for projections
-                let action_to_publish = PaymentAction::ProcessPayment {
-                    payment_id: payment_id_clone,
-                    reservation_id: reservation_id_clone,
-                    customer_id: customer_id_clone,
-                    amount: amount_clone,
-                    payment_method: payment_method_clone,
-                    respond_to,
+                // Clone data for PublishWithResponse closure
+                let payment_id_clone_for_publish = payment_id;
+                let reservation_id_clone_for_publish = reservation_id;
+                let customer_id_clone_for_publish = customer_id;
+                let amount_clone_for_publish = amount;
+                let payment_method_clone_for_publish = payment_method.clone();
+
+                // Clone IDs for callbacks (closures need separate owned values)
+                let payment_id_for_success = payment_id;
+                let payment_id_for_error = payment_id;
+
+                // Publish ProcessPayment command to global channel for projections
+                // Note: We publish the command (ProcessPayment) not the event (PaymentProcessed)
+                // because projections need the respond_to field for completion tracking
+                effects.push(Effect::PublishWithResponse {
+                    channel: env.global_actions.payment_actions.clone(),
+                    create_action: Box::new(move |respond_to| PaymentAction::ProcessPayment {
+                        payment_id: payment_id_clone_for_publish,
+                        reservation_id: reservation_id_clone_for_publish,
+                        customer_id: customer_id_clone_for_publish,
+                        amount: amount_clone_for_publish,
+                        payment_method: payment_method_clone_for_publish,
+                        respond_to,
+                    }),
+                    on_success: Box::new(move || {
+                        Some(PaymentAction::PaymentConfirmed {
+                            payment_id: payment_id_for_success,
+                        })
+                    }),
+                    on_error: Box::new(move |reason| {
+                        Some(PaymentAction::PaymentProjectionFailed {
+                            payment_id: payment_id_for_error,
+                            reason,
+                        })
+                    }),
+                });
+
+                // Direct orchestration: Send response to reservation aggregate
+                let reservation_response = crate::aggregates::ReservationAction::PaymentSucceeded {
+                    reservation_id,
+                    payment_id,
                 };
-                let global_channel = env.global_actions.payment_actions.clone();
+                let reservation_channel = env.global_actions.reservation_actions.clone();
                 effects.push(Effect::Future(Box::pin(async move {
-                    let _ = global_channel.send(action_to_publish);
+                    if let Err(e) = reservation_channel.send(reservation_response) {
+                        tracing::error!(error = %e, "Failed to send PaymentSucceeded to reservation channel");
+                    }
                     None
                 })));
 
@@ -652,7 +666,7 @@ impl Reducer for PaymentReducer {
 mod tests {
     use super::*;
     use composable_rust_core::environment::SystemClock;
-    use composable_rust_testing::{assertions, mocks::{InMemoryEventBus, InMemoryEventStore}, ReducerTest};
+    use composable_rust_testing::{assertions, mocks::InMemoryEventStore, ReducerTest};
 
     // Mock projection query for tests
     #[derive(Clone)]
@@ -673,7 +687,7 @@ mod tests {
 
     fn create_test_global_channels() -> GlobalActionChannels {
         use tokio::sync::broadcast;
-        use crate::aggregates::{EventAction, InventoryAction, ReservationAction};
+        // Note: With direct orchestration, we don't need cross-aggregate action imports in tests
 
         let (event_actions, _) = broadcast::channel(1000);
         let (inventory_actions, _) = broadcast::channel(1000);
@@ -692,9 +706,7 @@ mod tests {
         PaymentEnvironment::new(
             Arc::new(SystemClock),
             Arc::new(InMemoryEventStore::new()),
-            Arc::new(InMemoryEventBus::new()),
             StreamId::new("payment-test"),
-            "payment".to_string(),
             Arc::new(MockPaymentQuery),
             create_test_global_channels(),
         )
@@ -726,10 +738,11 @@ mod tests {
                 assert_eq!(payment.amount, Money::from_dollars(100));
             })
             .then_effects(|effects| {
-                // Should return 1 Sequential effect containing:
-                // 3 for PaymentProcessed (AppendEvents + PublishEvent + Echo)
-                // 3 for PaymentSucceeded (AppendEvents + PublishEvent + Echo)
-                assert_eq!(effects.len(), 1);
+                // Should return 3 effects:
+                // 1. Sequential effect (PaymentProcessed + PaymentSucceeded persistence and Redpanda publish)
+                // 2. Channel send to payment_actions (for projections)
+                // 3. Channel send to reservation_actions (direct orchestration response)
+                assert_eq!(effects.len(), 3);
                 assert!(matches!(effects[0], Effect::Sequential(_)));
             })
             .run();
@@ -753,8 +766,8 @@ mod tests {
                 assert!(state.last_error.as_ref().unwrap().contains("declined"));
             })
             .then_effects(|effects| {
-                // Should return 3 effects: AppendEvents + PublishEvent + Echo
-                assert_eq!(effects.len(), 3);
+                // Should return 2 effects: AppendEvents + Echo (no Redpanda)
+                assert_eq!(effects.len(), 2);
             })
             .run();
     }
@@ -793,8 +806,8 @@ mod tests {
                 ));
             })
             .then_effects(|effects| {
-                // Should return 3 effects: AppendEvents + PublishEvent + Echo
-                assert_eq!(effects.len(), 3);
+                // Should return 2 effects: AppendEvents + Echo (no Redpanda)
+                assert_eq!(effects.len(), 2);
             })
             .run();
     }

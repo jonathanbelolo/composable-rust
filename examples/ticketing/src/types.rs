@@ -6,12 +6,14 @@
 
 use chrono::{DateTime, Utc};
 use composable_rust_auth::state::UserId;
-use composable_rust_core::{projection::ProjectionError, stream::Version};
+use composable_rust_core::stream::Version;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
-use tokio::sync::oneshot;
 use uuid::Uuid;
+
+// Re-export framework ResponseChannel for use in actions
+pub use composable_rust_core::ResponseChannel;
 
 // Import Store and aggregate types for parent-child pattern
 
@@ -47,56 +49,9 @@ pub struct GlobalActionChannels {
     pub payment_actions: tokio::sync::broadcast::Sender<crate::aggregates::PaymentAction>,
 }
 
-// ============================================================================
-// Response Channels
-// ============================================================================
-
-/// Wrapper for response channels that implements `Clone` by always returning `None`.
-///
-/// This allows action enums to derive `Clone` even though `oneshot::Sender` is not cloneable.
-/// When an action is cloned, the response channel is intentionally set to `None` because
-/// the response should only be sent to the original requester, not to cloned copies.
-#[derive(Debug)]
-pub struct ResponseChannel(pub Option<oneshot::Sender<Result<(), ProjectionError>>>);
-
-impl Clone for ResponseChannel {
-    fn clone(&self) -> Self {
-        // Always clone as None - response should only go to original sender
-        Self(None)
-    }
-}
-
-impl ResponseChannel {
-    /// Create a new response channel from an optional sender.
-    #[must_use]
-    pub const fn new(sender: Option<oneshot::Sender<Result<(), ProjectionError>>>) -> Self {
-        Self(sender)
-    }
-
-    /// Create an empty response channel (None).
-    #[must_use]
-    pub const fn none() -> Self {
-        Self(None)
-    }
-
-    /// Take the sender out of the channel.
-    #[must_use]
-    pub fn take(&mut self) -> Option<oneshot::Sender<Result<(), ProjectionError>>> {
-        self.0.take()
-    }
-}
-
-impl Default for ResponseChannel {
-    fn default() -> Self {
-        Self::none()
-    }
-}
-
-impl From<Option<oneshot::Sender<Result<(), ProjectionError>>>> for ResponseChannel {
-    fn from(sender: Option<oneshot::Sender<Result<(), ProjectionError>>>) -> Self {
-        Self(sender)
-    }
-}
+// Note: ResponseChannel is now provided by the framework (composable_rust_core)
+// and re-exported above. It uses Arc<Mutex<Option<Sender>>> to enable cloning
+// while maintaining the ability to send exactly once.
 
 // ============================================================================
 // Identifiers

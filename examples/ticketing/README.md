@@ -586,7 +586,7 @@ This is a **production-ready** ticketing application that can be deployed to rea
 The easiest way to run the complete system:
 
 ```bash
-# 1. Start infrastructure (PostgreSQL + RedPanda + Console)
+# 1. Start infrastructure (PostgreSQL + Redis)
 cd examples/ticketing
 docker compose up -d
 
@@ -601,44 +601,52 @@ cargo run --bin migrate
 
 # 5. Start the application (when ready)
 cargo run --release
-
-# 6. View RedPanda Console for event monitoring
-open http://localhost:8080
 ```
 
 ### Infrastructure Components
 
-**PostgreSQL** (port 5432)
-- Event store for sourced events
-- Projection state storage
+**PostgreSQL Event Store** (port 5436)
+- Event sourcing storage (ticketing_events database)
+- Durable event history
+- Event replay capability
+
+**PostgreSQL Projections Store** (port 5433)
+- Read model storage (ticketing_projections database)
+- Available seats projection
 - Checkpoint tracking
 
-**RedPanda** (ports 9092, 8081, 8082, 9644)
-- Kafka-compatible event bus
-- Cross-aggregate communication
-- At-least-once delivery
-- Topic: `ticketing-inventory-events`
-- Topic: `ticketing-reservation-events`
-- Topic: `ticketing-payment-events`
+**PostgreSQL Analytics Store** (port 5434)
+- Analytics projections (ticketing_analytics database)
+- Sales analytics
+- Customer history
 
-**RedPanda Console** (port 8080)
-- Web UI for monitoring topics
-- View events in real-time
-- Consumer group status
-- Message inspection
+**PostgreSQL Auth Store** (port 5435)
+- Authentication data (ticketing_auth database)
+- User sessions
+- OAuth tokens
+
+**Redis** (port 6379)
+- Session storage
+- Token caching
+- Rate limiting
 
 ### Configuration
 
 All configuration via environment variables (see `.env.example`):
 
 ```bash
-# PostgreSQL
-DATABASE_URL=postgres://postgres:postgres@localhost:5432/ticketing
+# PostgreSQL Event Store
+DATABASE_URL=postgres://postgres:postgres@localhost:5436/ticketing_events
 DATABASE_MAX_CONNECTIONS=10
 
-# RedPanda
-REDPANDA_BROKERS=localhost:9092
-CONSUMER_GROUP=ticketing-projections
+# PostgreSQL Projections Store
+PROJECTION_DATABASE_URL=postgres://postgres:postgres@localhost:5433/ticketing_projections
+
+# PostgreSQL Auth Store
+AUTH_DATABASE_URL=postgres://postgres:postgres@localhost:5435/ticketing_auth
+
+# Redis
+REDIS_URL=redis://localhost:6379
 
 # Logging
 RUST_LOG=info,ticketing=debug
@@ -654,49 +662,48 @@ RUST_LOG=info,ticketing=debug
       ┌───────────┴───────────┐
       │                       │
 ┌─────▼─────┐         ┌───────▼─────┐
-│  App 1    │         │    App 2    │  (Horizontal scaling)
-│  (Write)  │         │   (Write)   │
+│  App 1    │◄───────►│    App 2    │  (Horizontal scaling)
+│  (Write)  │         │   (Write)   │  Direct orchestration
+│           │         │             │  via broadcast channels
 └─────┬─────┘         └───────┬─────┘
       │                       │
-      └───────────┬───────────┘
-                  │
-          ┌───────▼────────┐
-          │   PostgreSQL   │  (Event Store - Source of Truth)
-          │  + Write-Ahead │
-          │      Log       │
-          └───────┬────────┘
-                  │
-          ┌───────▼────────┐
-          │    RedPanda    │  (Event Bus - Pub/Sub)
-          │  3 brokers     │
-          │  Replication:3 │
-          └───────┬────────┘
-                  │
-      ┌───────────┴───────────┐
-      │                       │
-┌─────▼──────┐       ┌────────▼─────┐
-│ Projection │       │  Projection  │  (Read replicas)
-│  Manager 1 │       │  Manager 2   │
-│            │       │              │
-│ - Available│       │ - Sales      │
-│   Seats    │       │   Analytics  │
-│ - Customer │       │              │
-│   History  │       │              │
-└────────────┘       └──────────────┘
+      │     Event Store       │     Projection Stores
+      ├───────────┬───────────┤
+      │           │           │
+┌─────▼─────┐ ┌──▼──────┐ ┌──▼─────────┐
+│PostgreSQL │ │PostgreSQL│ │ PostgreSQL │
+│  Events   │ │Projection│ │  Analytics │
+│  (5436)   │ │ (5433)   │ │   (5434)   │
+└───────────┘ └──────────┘ └────────────┘
+
+┌──────────────────────────────────────────┐
+│  Projection Managers (Background Tasks)  │
+│  ┌──────────────┐  ┌──────────────────┐ │
+│  │ Available    │  │ Sales Analytics  │ │
+│  │ Seats        │  │ Customer History │ │
+│  └──────────────┘  └──────────────────┘ │
+│  Subscribe to event store changes        │
+└──────────────────────────────────────────┘
 ```
+
+**Architecture Notes:**
+- **Direct Orchestration**: Aggregates communicate via `tokio::sync::broadcast` channels within the same process
+- **Event Store**: PostgreSQL provides durable event history (single source of truth)
+- **Projections**: Background tasks consume events from PostgreSQL to build read models
+- **No Event Bus**: Removed Redpanda/Kafka - simpler architecture for single-node deployments
 
 ### What's Production-Ready
 
 ✅ **Event Sourcing**: PostgreSQL event store with full audit trail
-✅ **Event Bus**: RedPanda integration for cross-aggregate communication
+✅ **Direct Orchestration**: In-process communication via typed broadcast channels
 ✅ **Projections**: Real-time read models with checkpoint tracking
 ✅ **CQRS**: Complete write/read separation
 ✅ **Concurrency Safety**: Atomic operations prevent double-booking
 ✅ **Idempotency**: Projections handle duplicate events
 ✅ **Observability**: Structured logging with tracing
 ✅ **Configuration**: Environment-based config
-✅ **Docker**: Complete deployment stack
-✅ **Bug-Free**: All 5 critical bugs fixed, 36 tests passing
+✅ **Docker**: Complete deployment stack with PostgreSQL + Redis
+✅ **Bug-Free**: 147 tests passing, zero clippy warnings
 
 ### What's Coming Next
 
@@ -722,20 +729,21 @@ RUST_LOG=info,ticketing=debug
 - Event append is O(1) - fast writes
 - Optimistic concurrency control prevents conflicts
 
-**Event Bus (RedPanda)**
-- Horizontal scaling: Add brokers for throughput
-- Partitioning by aggregate ID for ordered delivery
-- Consumer groups for parallel processing
+**Coordination (Direct Orchestration)**
+- In-process broadcast channels (zero network hops)
+- Single-node deployment simplicity
+- For multi-node: Consider adding message queue (NATS, RabbitMQ) or service mesh
 
 **Read Side (Projections)**
-- Horizontal scaling: Multiple projection managers
+- Background tasks consume from event store
 - Each projection is independent
 - Eventual consistency (milliseconds lag)
+- Horizontal scaling: Deploy projection managers separately
 
 **Observed Performance** (Development machine)
 - Event persistence: ~1ms (PostgreSQL)
-- Projection update: <1ms (in-memory)
-- End-to-end latency: ~5ms (write → event bus → projection)
+- Projection update: <1ms (PostgreSQL)
+- End-to-end latency: ~3ms (write → broadcast → handler)
 
 ## File Structure
 

@@ -106,49 +106,54 @@ services:
       - ticketing
 
   # Redpanda (Kafka-compatible event bus)
-  redpanda:
-    image: redpandadata/redpanda:v24.2.4
-    container_name: ticketing-redpanda
-    command:
-      - redpanda
-      - start
-      - --smp
-      - '1'
-      - --reserve-memory
-      - 0M
-      - --overprovisioned
-      - --node-id
-      - '0'
-      - --kafka-addr
-      - internal://0.0.0.0:29092,external://0.0.0.0:9092
-      - --advertise-kafka-addr
-      - internal://redpanda:29092,external://localhost:9092
-    ports:
-      - "9092:9092"     # Kafka API
-      - "9644:9644"     # Admin API
-    volumes:
-      - redpanda_data:/var/lib/redpanda/data
-    healthcheck:
-      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true'"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    networks:
-      - ticketing
+  # REMOVED: Application now uses direct orchestration via tokio::sync::broadcast channels
+  # instead of EventBus choreography. Redpanda is no longer needed.
+  #
+  # redpanda:
+  #   image: redpandadata/redpanda:v24.2.4
+  #   container_name: ticketing-redpanda
+  #   command:
+  #     - redpanda
+  #     - start
+  #     - --smp
+  #     - '1'
+  #     - --reserve-memory
+  #     - 0M
+  #     - --overprovisioned
+  #     - --node-id
+  #     - '0'
+  #     - --kafka-addr
+  #     - internal://0.0.0.0:29092,external://0.0.0.0:9092
+  #     - --advertise-kafka-addr
+  #     - internal://redpanda:29092,external://localhost:9092
+  #   ports:
+  #     - "9092:9092"     # Kafka API
+  #     - "9644:9644"     # Admin API
+  #   volumes:
+  #     - redpanda_data:/var/lib/redpanda/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true'"]
+  #     interval: 5s
+  #     timeout: 5s
+  #     retries: 10
+  #   networks:
+  #     - ticketing
 
   # Redpanda Console for monitoring (optional)
-  console:
-    image: redpandadata/console:v2.7.2
-    container_name: ticketing-console
-    environment:
-      KAFKA_BROKERS: redpanda:29092
-    ports:
-      - "8081:8080"  # Changed to 8081 to avoid conflict with HTTP server
-    depends_on:
-      redpanda:
-        condition: service_healthy
-    networks:
-      - ticketing
+  # REMOVED: Console depends on Redpanda which is no longer used.
+  #
+  # console:
+  #   image: redpandadata/console:v2.7.2
+  #   container_name: ticketing-console
+  #   environment:
+  #     KAFKA_BROKERS: redpanda:29092
+  #   ports:
+  #     - "8081:8080"  # Changed to 8081 to avoid conflict with HTTP server
+  #   depends_on:
+  #     redpanda:
+  #       condition: service_healthy
+  #   networks:
+  #     - ticketing
 
 networks:
   ticketing:
@@ -160,4 +165,4 @@ volumes:
   postgres_analytics_data:
   postgres_auth_data:
   redis_data:
-  redpanda_data:
+  # redpanda_data:  # REMOVED: Redpanda service no longer used

@@ -624,18 +624,10 @@ where
             }
 
             // ═══════════════════════════════════════════════════════════════
-            // SessionValidated: No-op (response action)
+            // SessionValidated, SessionExpired: No-op (response actions)
             // ═══════════════════════════════════════════════════════════════
-            AuthAction::SessionValidated { .. } => {
-                // This is a response action, no further effects needed
-                smallvec![Effect::None]
-            }
-
-            // ═══════════════════════════════════════════════════════════════
-            // SessionExpired: No-op (response action)
-            // ═══════════════════════════════════════════════════════════════
-            AuthAction::SessionExpired { .. } => {
-                // This is a response action, no further effects needed
+            AuthAction::SessionValidated { .. } | AuthAction::SessionExpired { .. } => {
+                // These are response actions, no further effects needed
                 smallvec![Effect::None]
             }
 

@@ -245,18 +245,39 @@ pub async fn process_payment(
     let reservation_id = ReservationId::from_uuid(request.reservation_id);
     let customer_id = CustomerId::from_uuid(session.user_id.0);
 
-    // TODO (Phase 12.4): Verify reservation ownership via query layer
-    // CRITICAL SECURITY: Must verify reservation ownership before processing payment
-    // This requires query infrastructure from Phase 12.4:
-    // - Query reservation from projection
-    // - Verify customer_id matches session.user_id
-    // - Verify status is PaymentPending
-    // - Get actual amount from reservation
-    let _ = customer_id; // Will be used for ownership check in Phase 12.4
+    // SECURITY: Verify reservation ownership before processing payment
+    // Query reservation from projection to verify:
+    // 1. Reservation exists
+    // 2. Customer owns this reservation
+    // 3. Reservation status is PaymentPending
+    // 4. Get actual amount from reservation
+    let reservation = state
+        .reservations_projection
+        .get(&reservation_id)
+        .await
+        .map_err(|e| AppError::internal(format!("Failed to query reservation: {e}")))?
+        .ok_or_else(|| AppError::not_found("Reservation", request.reservation_id))?;
 
-    // TODO (Phase 12.5): Replace placeholder amount with actual amount from reservation
-    // For now, using hardcoded amount since query layer not yet implemented
-    let amount = Money::from_dollars(200); // Placeholder
+    // Verify ownership: reservation must belong to the authenticated user
+    if reservation.customer_id != customer_id {
+        return Err(AppError::forbidden(
+            "You do not have permission to pay for this reservation",
+        ));
+    }
+
+    // Verify reservation status is PaymentPending
+    if !matches!(
+        reservation.status,
+        crate::types::ReservationStatus::PaymentPending
+    ) {
+        return Err(AppError::bad_request(format!(
+            "Reservation is not in payment pending status (current: {:?})",
+            reservation.status
+        )));
+    }
+
+    // Use actual amount from reservation (not placeholder)
+    let amount = reservation.total_amount;
 
     // TODO (Phase 12.5): Payment gateway integration (Stripe, PayPal, etc.)
     // For now, the reducer simulates payment processing
@@ -273,7 +294,7 @@ pub async fn process_payment(
     // Create Payment store for this request (per-instance stream)
     let store = state.create_payment_store(payment_id);
 
-    // Build ProcessPayment action
+    // Build ProcessPayment action (respond_to will be created by reducer infrastructure)
     let action = PaymentAction::ProcessPayment {
         payment_id,
         reservation_id,
@@ -283,60 +304,32 @@ pub async fn process_payment(
         respond_to: ResponseChannel::none(),
     };
 
-    // Register interest in projection completion BEFORE sending command
-    // Uses singleton ProjectionCompletionTracker to avoid creating multiple consumers
-    let projection_waiter = state
-        .projection_completion_tracker
-        .register_interest(correlation_id, &["payments_projection"]);
-
-    // Clone store for spawning the projection completion forwarder task
-    let store_clone = store.clone();
-
-    // Spawn task to forward ProjectionCompleted to store when it arrives
-    // This allows the reducer to emit PaymentConfirmed after projection updates
-    tokio::spawn(async move {
-        match tokio::time::timeout(Duration::from_secs(10), projection_waiter).await {
-            Ok(Ok(result)) => {
-                match result {
-                    crate::projections::ProjectionResult::Completed(_) => {
-                        tracing::debug!("Forwarding ProjectionCompleted to payment store");
-                        let action = PaymentAction::ProjectionCompleted {
-                            correlation_id: correlation_id.to_string(),
-                            projection_name: "payments_projection".to_string(),
-                        };
-                        if let Err(e) = store_clone.send(action).await {
-                            tracing::error!(error = ?e, "Failed to forward ProjectionCompleted");
-                        }
-                    }
-                    crate::projections::ProjectionResult::Failed(failures) => {
-                        tracing::warn!(failures = ?failures, "Projection failed");
-                    }
-                }
-            }
-            Ok(Err(_)) => {
-                tracing::warn!("Projection completion channel closed");
-            }
-            Err(_) => {
-                tracing::warn!("Timeout waiting for projection completion");
-            }
-        }
-    });
-
-    // Send action and wait for PaymentConfirmed using Store's built-in mechanism
-    // This handles subscription, filtering, and cleanup automatically
+    // Use send_and_wait_for_with_metadata to wait for PaymentConfirmed or failure
+    // The reducer uses Effect::PublishWithResponse which waits for projection completion
     let confirmed_action = store
         .send_and_wait_for_with_metadata(
             action,
             Some(metadata),
-            |action| matches!(action, PaymentAction::PaymentConfirmed { .. } | PaymentAction::PaymentProjectionFailed { .. }),
+            |action| matches!(
+                action,
+                PaymentAction::PaymentConfirmed { .. }
+                | PaymentAction::PaymentFailed { .. }
+                | PaymentAction::PaymentProjectionFailed { .. }
+            ),
             Duration::from_secs(15),
         )
         .await
         .map_err(|e| AppError::internal(format!("Failed to process payment: {e}")))?;
 
-    // Check if payment failed
-    if let PaymentAction::PaymentProjectionFailed { payment_id: _, reason } = confirmed_action {
-        return Err(AppError::internal(format!("Payment projection failed: {reason}")));
+    // Check if payment or projection failed
+    match confirmed_action {
+        PaymentAction::PaymentFailed { payment_id: _, reason, .. } => {
+            return Err(AppError::bad_request(format!("Payment failed: {reason}")));
+        }
+        PaymentAction::PaymentProjectionFailed { payment_id: _, reason } => {
+            return Err(AppError::projection_failed("Payment", "ProcessPayment", reason));
+        }
+        _ => {} // PaymentConfirmed - continue
     }
 
     tracing::info!(
@@ -351,7 +344,7 @@ pub async fn process_payment(
             payment_id: *payment_id.as_uuid(),
             reservation_id: request.reservation_id,
             status: PaymentStatus::Captured,
-            amount: 200.0, // TODO: Get from reservation in Phase 12.4
+            amount: amount.dollars() as f64,
             transaction_id: Some("simulated_txn".to_string()),
             message: "Payment successful! Your tickets will be issued shortly.".to_string(),
         }),

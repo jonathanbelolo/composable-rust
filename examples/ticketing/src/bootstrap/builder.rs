@@ -425,11 +425,9 @@ impl ApplicationBuilder {
             projection_system.customer_history.clone(),
         ));
 
-        // Create projection completion tracker
+        // Create projection completion tracker (without EventBus tracking for channel-based architecture)
         let projection_completion_tracker = Arc::new(
-            ProjectionCompletionTracker::new(resources.event_bus.clone())
-                .await
-                .map_err(|e| format!("Failed to create projection completion tracker: {e}"))?,
+            ProjectionCompletionTracker::new_without_tracking()
         );
 
         // Build AppState
@@ -439,7 +437,6 @@ impl ApplicationBuilder {
             resources.auth_pool.clone(),
             Arc::new(SystemClock),
             resources.event_store.clone(),
-            resources.event_bus.clone(),
             inventory_query,
             payment_query,
             reservation_query,

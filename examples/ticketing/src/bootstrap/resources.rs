@@ -31,9 +31,7 @@
 use crate::aggregates::{EventAction, InventoryAction, PaymentAction, ReservationAction};
 use crate::config::Config;
 use composable_rust_core::environment::SystemClock;
-use composable_rust_core::event_bus::EventBus;
 use composable_rust_postgres::PostgresEventStore;
-use composable_rust_redpanda::RedpandaEventBus;
 use composable_rust_runtime::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -63,9 +61,6 @@ pub struct ResourceManager {
 
     /// Event store (write side)
     pub event_store: Arc<PostgresEventStore>,
-
-    /// Event bus for cross-aggregate coordination
-    pub event_bus: Arc<dyn EventBus>,
 
     /// Projections database (read side)
     pub projections_pool: Arc<PgPool>,
@@ -151,46 +146,6 @@ impl ResourceManager {
             .await?;
         info!("Projection migrations complete");
 
-        // Setup event bus
-        info!("Connecting to Redpanda event bus...");
-        let event_bus: Arc<dyn EventBus> = Arc::new(
-            RedpandaEventBus::builder()
-                .brokers(&config.redpanda.brokers)
-                .consumer_group(&config.redpanda.consumer_group)
-                .build()?,
-        );
-        info!("Event bus connected");
-
-        // Create Redpanda topics if they don't exist
-        // Redpanda auto-creates topics on first publish, but we need topics to exist
-        // before subscription (which happens later). So we publish a dummy event
-        // to each topic to trigger auto-creation.
-        info!("Ensuring Redpanda topics exist...");
-        let projection_completed_topic = "projection.completed".to_string();
-        let topics_to_create = vec![
-            (&config.redpanda.inventory_topic, "inventory"),
-            (&config.redpanda.reservation_topic, "reservation"),
-            (&config.redpanda.payment_topic, "payment"),
-            (&projection_completed_topic, "projection-completion"),
-        ];
-
-        for (topic, name) in &topics_to_create {
-            tracing::debug!("Ensuring topic exists: {}", topic);
-            // Publish a bootstrap event to trigger topic creation
-            let bootstrap_event = composable_rust_core::event::SerializedEvent::new(
-                format!("{}Bootstrap", name),
-                b"{}".to_vec(), // Empty JSON object
-                None,
-            );
-
-            if let Err(e) = event_bus.publish(topic, &bootstrap_event).await {
-                tracing::warn!("Failed to create topic {}: {} (may already exist)", topic, e);
-            } else {
-                tracing::debug!("✓ Topic {} created or verified", topic);
-            }
-        }
-        info!("Redpanda topics initialized");
-
         // Setup system clock
         let clock = Arc::new(SystemClock);
 
@@ -246,7 +201,6 @@ impl ResourceManager {
             config: Arc::new(config.clone()),
             clock,
             event_store,
-            event_bus,
             projections_pool: Arc::new(projections_pool),
             auth_pool: Arc::new(auth_pool),
             payment_gateway,

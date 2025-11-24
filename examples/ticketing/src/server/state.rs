@@ -38,7 +38,7 @@ use crate::projections::{
     ProjectionCompletionTracker,
 };
 use crate::types::{CustomerId, EventId, GlobalActionChannels, PaymentId, ReservationId};
-use composable_rust_core::{environment::Clock, event_bus::EventBus};
+use composable_rust_core::environment::Clock;
 use composable_rust_postgres::PostgresEventStore;
 use axum::extract::FromRef;
 use std::collections::HashMap;
@@ -83,9 +83,6 @@ pub struct AppState {
 
     /// Event store for event-sourced aggregates (write side)
     pub event_store: Arc<PostgresEventStore>,
-
-    /// Event bus for publishing events to sagas and projections
-    pub event_bus: Arc<dyn EventBus>,
 
     // ===== Projection Queries (for on-demand state loading) =====
     /// Inventory projection query
@@ -146,7 +143,6 @@ impl AppState {
     /// - `auth_pool`: Authentication database pool for role queries
     /// - `clock`: Clock for timestamps
     /// - `event_store`: Event store for event sourcing
-    /// - `event_bus`: Event bus for cross-aggregate communication
     /// - `inventory_query`: Projection query for inventory state loading
     /// - `payment_query`: Projection query for payment state loading
     /// - `reservation_query`: Projection query for reservation state loading
@@ -168,7 +164,6 @@ impl AppState {
         auth_pool: Arc<sqlx::PgPool>,
         clock: Arc<dyn Clock>,
         event_store: Arc<PostgresEventStore>,
-        event_bus: Arc<dyn EventBus>,
         inventory_query: Arc<PostgresInventoryQuery>,
         payment_query: Arc<PostgresPaymentQuery>,
         reservation_query: Arc<PostgresReservationQuery>,
@@ -190,7 +185,6 @@ impl AppState {
             auth_pool,
             clock,
             event_store,
-            event_bus,
             inventory_query,
             payment_query,
             reservation_query,
@@ -254,7 +248,6 @@ impl AppState {
         let env = InventoryEnvironment::new(
             self.clock.clone(),
             self.event_store.clone(),
-            self.event_bus.clone(),
             stream_id,
             self.inventory_query.clone(),
             self.global_actions(),
@@ -289,26 +282,12 @@ impl AppState {
         use crate::types::PaymentState;
         use composable_rust_core::stream::StreamId;
         use composable_rust_runtime::Store;
-        use composable_rust_redpanda::RedpandaEventBus;
-
-        // Create a unique EventBus for this store instance
-        // Each store gets its own consumer group to avoid competing for events
-        let unique_consumer_group = format!("ticketing-payment-store-{}", payment_id.as_uuid());
-        let store_event_bus: Arc<dyn EventBus> = Arc::new(
-            RedpandaEventBus::builder()
-                .brokers(&self.config.redpanda.brokers)
-                .consumer_group(&unique_consumer_group)
-                .build()
-                .expect("Failed to create event bus for payment store"),
-        );
 
         let stream_id = StreamId::new(&format!("payment-{}", payment_id.as_uuid()));
         let env = PaymentEnvironment::new(
             self.clock.clone(),
             self.event_store.clone(),
-            store_event_bus,
             stream_id,
-            self.config.redpanda.payment_topic.clone(),
             self.payment_query.clone(),
             self.global_actions(),
         );
@@ -347,7 +326,6 @@ impl AppState {
         let env = ReservationEnvironment::new(
             self.clock.clone(),
             self.event_store.clone(),
-            self.event_bus.clone(),
             stream_id,
             self.reservation_query.clone(),
             self.global_actions(),
@@ -387,7 +365,6 @@ impl AppState {
         let env = EventEnvironment::new(
             self.clock.clone(),
             self.event_store.clone(),
-            self.event_bus.clone(),
             stream_id,
             self.events_projection.clone(),
             self.global_actions(),

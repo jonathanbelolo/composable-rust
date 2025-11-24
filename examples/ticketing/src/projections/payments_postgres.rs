@@ -322,15 +322,19 @@ impl Projection for PostgresPaymentsProjection {
     #[tracing::instrument(skip(self, event), fields(projection = "payments"))]
     async fn apply_event(&self, event: &Self::Event) -> Result<()> {
         match event {
-            // Payment processed: create new payment record
-            TicketingEvent::Payment(PaymentAction::PaymentProcessed {
+            // Payment command: create new payment record
+            // Note: We handle the command (ProcessPayment) not the event (PaymentProcessed)
+            // because the command has the respond_to field needed for projection completion tracking
+            TicketingEvent::Payment(PaymentAction::ProcessPayment {
                 payment_id,
                 reservation_id,
                 customer_id,
                 amount,
                 payment_method,
-                processed_at,
+                ..
             }) => {
+                // Use current time for processed_at
+                let processed_at = chrono::Utc::now();
                 // Use customer_id directly from event (no need to query reservations)
                 let (method_type, method_details) =
                     Self::serialize_payment_method(payment_method);

@@ -15,7 +15,7 @@ use ticketing::types::{
 use composable_rust_core::environment::SystemClock;
 use composable_rust_core::reducer::Reducer;
 use composable_rust_core::stream::StreamId;
-use composable_rust_testing::{assertions, mocks::{InMemoryEventBus, InMemoryEventStore}, ReducerTest};
+use composable_rust_testing::{assertions, mocks::InMemoryEventStore, ReducerTest};
 use std::sync::Arc;
 
 // Mock projection query for tests
@@ -57,9 +57,7 @@ fn create_test_env() -> PaymentEnvironment {
     PaymentEnvironment::new(
         Arc::new(SystemClock),
         Arc::new(InMemoryEventStore::new()),
-        Arc::new(InMemoryEventBus::new()),
         StreamId::new("payment-test"),
-        "payment".to_string(),
         Arc::new(MockPaymentQuery),
         create_test_global_channels(),
     )
@@ -98,10 +96,11 @@ async fn test_successful_payment_flow() {
             assert_eq!(payment.reservation_id, reservation_id);
         })
         .then_effects(|effects| {
-            // Should return 4 effects:
-            // 2 for PaymentProcessed (AppendEvents + PublishEvent)
-            // 2 for PaymentSucceeded (AppendEvents + PublishEvent)
-            assert_eq!(effects.len(), 4);
+            // Should return 3 effects (direct orchestration):
+            // 1. Sequential(AppendEvents for PaymentProcessed + PaymentSucceeded)
+            // 2. Future(publish to payment_actions channel)
+            // 3. Future(send PaymentSucceeded to reservation_actions channel)
+            assert_eq!(effects.len(), 3);
         })
         .run();
 
@@ -351,7 +350,8 @@ async fn test_credit_card_payment_method() {
             assert_eq!(payment.payment_method, payment_method);
         })
         .then_effects(|effects| {
-            assert_eq!(effects.len(), 4);
+            // 3 effects (direct orchestration): Sequential + 2 Futures for channels
+            assert_eq!(effects.len(), 3);
         })
         .run();
 

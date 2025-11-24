@@ -163,7 +163,7 @@ impl AppError {
     /// # Arguments
     ///
     /// * `aggregate` - The aggregate type (e.g., "Event", "Inventory")
-    /// * `action` - The action name (e.g., "CreateEvent")
+    /// * `action` - The action name (e.g., "`CreateEvent`")
     /// * `timeout` - The timeout duration that was exceeded
     #[must_use]
     pub fn projection_timeout(
@@ -182,7 +182,7 @@ impl AppError {
     /// # Arguments
     ///
     /// * `aggregate` - The aggregate type (e.g., "Event", "Inventory")
-    /// * `action` - The action name (e.g., "CreateEvent")
+    /// * `action` - The action name (e.g., "`CreateEvent`")
     /// * `error` - The projection error that occurred
     #[must_use]
     pub fn projection_failed(

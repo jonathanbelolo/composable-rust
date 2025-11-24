@@ -5,9 +5,8 @@
 //! - PostgreSQL Projections (port 5433) - CQRS read models
 //! - PostgreSQL Auth (port 5435) - user sessions and tokens
 //! - Redis (port 6379) - session and token storage
-//! - Redpanda (port 9092) - event bus coordination
 //!
-//! Run with: `cargo test --test full_deployment_test -- --test-threads=1 --nocapture`
+//! Run with: `cargo test --test full_deployment_test -- --ignored`
 //!
 //! Prerequisites:
 //! - `docker compose up -d` must be running
@@ -18,6 +17,7 @@
 #![allow(clippy::unwrap_used)] // Integration tests can use unwrap for assertions
 
 use serde_json::json;
+use uuid::Uuid;
 
 /// Base URL for the ticketing API
 const API_BASE: &str = "http://localhost:8080";
@@ -25,7 +25,7 @@ const API_BASE: &str = "http://localhost:8080";
 /// Helper function to authenticate via magic link and return session token.
 ///
 /// This uses the real authentication flow:
-/// 1. Request magic link for test email
+/// 1. Request magic link for unique test email (prevents race conditions in concurrent tests)
 /// 2. Extract magic link token from response (only works when AUTH_EXPOSE_MAGIC_LINKS_FOR_TESTING=true)
 /// 3. Verify the token to get a session token
 /// 4. Return the session token for use as Bearer token
@@ -36,13 +36,16 @@ const API_BASE: &str = "http://localhost:8080";
 async fn authenticate_with_magic_link() -> String {
     let client = reqwest::Client::new();
 
-    println!("  🔐 Step 1: Requesting magic link...");
+    // Generate unique email to avoid race conditions when tests run concurrently
+    let unique_email = format!("test-{}@example.com", Uuid::new_v4());
+
+    println!("  🔐 Step 1: Requesting magic link for {}...", unique_email);
 
     // Step 1: Request magic link
     let response = client
         .post(format!("{API_BASE}/auth/magic-link/request"))
         .json(&json!({
-            "email": "test@example.com"
+            "email": unique_email
         }))
         .send()
         .await
@@ -107,6 +110,7 @@ fn create_event_payload(name: &str, _vip_capacity: u32, general_capacity: u32) -
 ///
 /// Verifies that the server is running and healthy.
 #[tokio::test]
+#[ignore = "Requires running server (docker compose up + cargo run). Run with: cargo test --test full_deployment_test -- --ignored"]
 async fn test_health_check() {
     println!("🧪 Test 1: Health Check");
 
@@ -130,6 +134,7 @@ async fn test_health_check() {
 /// Verifies event creation, listing, retrieval, update, and deletion.
 /// This tests the Event aggregate and PostgreSQL event store persistence.
 #[tokio::test]
+#[ignore = "Requires running server (docker compose up + cargo run). Run with: cargo test --test full_deployment_test -- --ignored"]
 async fn test_event_crud_operations() {
     println!("🧪 Test 2: Event CRUD Operations (Event Store Persistence)");
 
@@ -183,6 +188,7 @@ async fn test_event_crud_operations() {
 /// Verifies that the availability projection correctly tracks seat availability
 /// across event lifecycle. This tests PostgreSQL projection database persistence.
 #[tokio::test]
+#[ignore = "Requires running server (docker compose up + cargo run). Run with: cargo test --test full_deployment_test -- --ignored"]
 async fn test_availability_queries() {
     println!("🧪 Test 3: Availability Queries (Projection Persistence)");
 
@@ -214,8 +220,7 @@ async fn test_availability_queries() {
 
     println!("  ✅ Created test event: {event_id}");
 
-    // Give projections a moment to update
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    // No sleep needed - API waits for projection completion before returning
 
     // Query section availability
     let section_availability = client
@@ -284,16 +289,17 @@ async fn test_availability_queries() {
         .expect("Failed to delete event");
 }
 
-/// Test 4: Reservation Flow (Saga Coordination via Event Bus)
+/// Test 4: Reservation Flow (Saga Coordination via Direct Orchestration)
 ///
 /// Verifies multi-aggregate coordination:
 /// - Reservation saga
 /// - Inventory seat reservation
 /// - Payment processing
-/// - Redpanda event bus coordination
+/// - Direct orchestration via tokio::sync::broadcast channels
 #[tokio::test]
+#[ignore = "Requires running server (docker compose up + cargo run). Run with: cargo test --test full_deployment_test -- --ignored"]
 async fn test_reservation_flow() {
-    println!("🧪 Test 4: Reservation Flow (Saga + Event Bus Coordination)");
+    println!("🧪 Test 4: Reservation Flow (Saga + Direct Orchestration)");
 
     let auth_token = authenticate_with_magic_link().await;
     let client = reqwest::Client::new();
@@ -322,8 +328,7 @@ async fn test_reservation_flow() {
 
     println!("  ✅ Created test event: {event_id}");
 
-    // Give projections a moment to update
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    // No sleep needed - API waits for projection completion before returning
 
     // Create a reservation
     let reservation_payload = json!({
@@ -357,9 +362,7 @@ async fn test_reservation_flow() {
 
     println!("  ✅ Created reservation: {reservation_id}");
 
-    // TODO: Add request lifecycle tracking for reservations
-    // For now, projections should update quickly enough
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    // No sleep needed - API waits for projection completion before returning
 
     // Verify availability decreased
     let availability = client
@@ -436,6 +439,7 @@ async fn test_reservation_flow() {
 /// - Payment status tracking
 /// - Payment refund
 #[tokio::test]
+#[ignore = "Requires running server (docker compose up + cargo run). Run with: cargo test --test full_deployment_test -- --ignored"]
 async fn test_payment_processing() {
     println!("🧪 Test 5: Payment Processing (Payment Gateway)");
 
@@ -466,8 +470,7 @@ async fn test_payment_processing() {
 
     println!("  ✅ Created test event: {event_id}");
 
-    // Give projections a moment to update
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    // No sleep needed - API waits for projection completion before returning
 
     let reservation_payload = json!({
         "event_id": event_id,
@@ -603,6 +606,7 @@ async fn test_payment_processing() {
 /// - Customer lifetime value
 /// - Top spenders
 #[tokio::test]
+#[ignore = "Requires running server (docker compose up + cargo run). Run with: cargo test --test full_deployment_test -- --ignored"]
 async fn test_analytics_queries() {
     println!("🧪 Test 6: Analytics Queries (Analytics Projections)");
 
@@ -631,8 +635,7 @@ async fn test_analytics_queries() {
 
     println!("  ✅ Created test event: {event_id}");
 
-    // Wait for projections
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    // No sleep needed - API waits for projection completion before returning
 
     // Query event sales
     let sales_response = client
@@ -705,7 +708,7 @@ async fn test_magic_link_authentication() {
     });
 
     let send_response = client
-        .post(format!("{API_BASE}/auth/magic-link/send"))
+        .post(format!("{API_BASE}/auth/magic-link/request"))
         .json(&send_request)
         .send()
         .await

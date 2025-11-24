@@ -14,7 +14,7 @@ composable-rust-runtime = { path = "../../runtime" }
 composable-rust-testing = { path = "../../testing" }
 composable-rust-macros = { path = "../../macros" }
 composable-rust-postgres = { path = "../../postgres" }
-composable-rust-redpanda = { path = "../../redpanda" }
+# composable-rust-redpanda = { path = "../../redpanda" }  # REMOVED: No longer using EventBus choreography
 composable-rust-projections = { path = "../../projections" }
 composable-rust-web = { path = "../../web" }
 composable-rust-auth = { path = "../../auth", features = ["postgres", "axum"] }

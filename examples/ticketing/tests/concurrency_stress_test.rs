@@ -8,7 +8,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)] // Test code can use unwrap/expect
 
 use composable_rust_core::{environment::SystemClock, stream::StreamId};
-use composable_rust_testing::mocks::{InMemoryEventBus, InMemoryEventStore};
+use composable_rust_testing::mocks::InMemoryEventStore;
 use std::sync::{Arc, Mutex};
 use ticketing::{
     aggregates::{
@@ -82,7 +82,6 @@ fn create_test_env() -> InventoryEnvironment {
     InventoryEnvironment::new(
         Arc::new(SystemClock),
         Arc::new(InMemoryEventStore::new()),
-        Arc::new(InMemoryEventBus::new()),
         StreamId::new("inventory-test"),
         Arc::new(MockInventoryQuery),
         create_test_global_channels(),

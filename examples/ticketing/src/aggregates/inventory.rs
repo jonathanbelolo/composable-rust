@@ -8,13 +8,13 @@
 
 use crate::projections::TicketingEvent;
 use crate::types::{
-    Capacity, CustomerId, EventId, GlobalActionChannels, Inventory, InventoryState, ReservationId, ResponseChannel,
+    Capacity, CustomerId, EventId, GlobalActionChannels, Inventory, InventoryState, Money, ReservationId, ResponseChannel,
     SeatAssignment, SeatId, SeatNumber, SeatStatus,
 };
 use chrono::{DateTime, Utc};
 use composable_rust_core::{
-    append_events, delay, effect::Effect, environment::Clock, event_bus::EventBus,
-    event_store::EventStore, publish_event, reducer::Reducer, smallvec,
+    append_events, delay, effect::Effect, environment::Clock,
+    event_store::EventStore, reducer::Reducer, smallvec,
     stream::{StreamId, Version},
     SmallVec,
 };
@@ -341,8 +341,6 @@ pub struct InventoryEnvironment {
     pub clock: Arc<dyn Clock>,
     /// Event store for persistence
     pub event_store: Arc<dyn EventStore>,
-    /// Event bus for publishing
-    pub event_bus: Arc<dyn EventBus>,
     /// Stream ID for this aggregate instance
     pub stream_id: StreamId,
     /// Projection query for loading state on-demand
@@ -357,7 +355,6 @@ impl InventoryEnvironment {
     pub fn new(
         clock: Arc<dyn Clock>,
         event_store: Arc<dyn EventStore>,
-        event_bus: Arc<dyn EventBus>,
         stream_id: StreamId,
         projection: Arc<dyn InventoryProjectionQuery>,
         global_actions: GlobalActionChannels,
@@ -365,7 +362,6 @@ impl InventoryEnvironment {
         Self {
             clock,
             event_store,
-            event_bus,
             stream_id,
             projection,
             global_actions,
@@ -391,7 +387,37 @@ impl InventoryReducer {
         Self
     }
 
-    /// Creates effects for persisting and publishing an event
+    /// Calculate price per seat based on section name.
+    ///
+    /// This is a simplified pricing model for demonstration purposes.
+    /// In a production system, prices would be queried from the Event projection's
+    /// pricing tiers based on (event_id, section, tier_type).
+    ///
+    /// # Pricing Logic
+    ///
+    /// - Sections containing "VIP" or "Premium": $10,000 cents ($100)
+    /// - Sections containing "General": $3,000 cents ($30)
+    /// - All other sections (Regular): $5,000 cents ($50)
+    ///
+    /// # Returns
+    ///
+    /// Price in cents
+    fn calculate_section_price(section: &str) -> u64 {
+        let section_lower = section.to_lowercase();
+
+        if section_lower.contains("vip") || section_lower.contains("premium") {
+            10_000 // $100 per seat
+        } else if section_lower.contains("general") {
+            3_000 // $30 per seat
+        } else {
+            5_000 // $50 per seat (default for regular sections)
+        }
+    }
+
+    /// Creates effects for persisting events (PostgreSQL only, no Redpanda)
+    ///
+    /// With direct orchestration, we use local channels for coordination,
+    /// so Redpanda publishing is no longer needed.
     fn create_effects(
         event: InventoryAction,
         expected_version: Version,
@@ -409,15 +435,6 @@ impl InventoryReducer {
                 expected_version: Some(expected_version),
                 events: vec![serialized.clone()],
                 on_success: |version| Some(InventoryAction::VersionUpdated { version }),
-                on_error: |error| Some(InventoryAction::ValidationFailed {
-                    error: error.to_string()
-                })
-            },
-            publish_event! {
-                bus: env.event_bus,
-                topic: "inventory",
-                event: serialized,
-                on_success: || None,
                 on_error: |error| Some(InventoryAction::ValidationFailed {
                     error: error.to_string()
                 })
@@ -517,6 +534,56 @@ impl InventoryReducer {
 
         // Take only the requested quantity
         available.into_iter().take(quantity as usize).collect()
+    }
+
+    /// Select specific seats by seat numbers.
+    ///
+    /// # Errors
+    ///
+    /// Returns error message if:
+    /// - Any requested seat doesn't exist
+    /// - Any seat doesn't belong to the event/section
+    /// - Any seat is not available
+    fn select_specific_seats(
+        state: &InventoryState,
+        event_id: &EventId,
+        section: &str,
+        seat_numbers: &[SeatNumber],
+    ) -> Result<Vec<SeatId>, String> {
+        let mut seat_ids = Vec::with_capacity(seat_numbers.len());
+
+        for seat_number in seat_numbers {
+            // Find seat by number in the requested event and section
+            let seat = state
+                .seat_assignments
+                .values()
+                .find(|seat| {
+                    seat.event_id == *event_id
+                        && seat.section == *section
+                        && seat.seat_number.as_ref() == Some(seat_number)
+                });
+
+            let Some(seat) = seat else {
+                return Err(format!(
+                    "Seat {} not found in section {} for this event",
+                    seat_number.as_str(),
+                    section
+                ));
+            };
+
+            // Verify seat is available
+            if seat.status != SeatStatus::Available {
+                return Err(format!(
+                    "Seat {} is not available (status: {:?})",
+                    seat_number.as_str(),
+                    seat.status
+                ));
+            }
+
+            seat_ids.push(seat.seat_id);
+        }
+
+        Ok(seat_ids)
     }
 
     /// Finds seats by reservation ID
@@ -812,7 +879,7 @@ impl Reducer for InventoryReducer {
                     }
                 };
 
-                // Create base effects for persistence and publishing
+                // Create base effects for persistence (no Redpanda)
                 let mut effects = smallvec![
                     append_events! {
                         store: env.event_store,
@@ -820,15 +887,6 @@ impl Reducer for InventoryReducer {
                         expected_version: Some(expected_version),
                         events: vec![serialized.clone()],
                         on_success: |version| Some(InventoryAction::VersionUpdated { version }),
-                        on_error: |error| Some(InventoryAction::ValidationFailed {
-                            error: error.to_string()
-                        })
-                    },
-                    publish_event! {
-                        bus: env.event_bus,
-                        topic: "inventory",
-                        event: serialized,
-                        on_success: || None,
                         on_error: |error| Some(InventoryAction::ValidationFailed {
                             error: error.to_string()
                         })
@@ -929,6 +987,22 @@ impl Reducer for InventoryReducer {
                     state.get_inventory(&event_id, &section).is_some()
                 );
 
+                // Validate specific_seats matches quantity
+                if let Some(ref seat_numbers) = specific_seats {
+                    if seat_numbers.len() != quantity as usize {
+                        let error = format!(
+                            "Quantity mismatch: requested {} seats but provided {} specific seat numbers",
+                            quantity,
+                            seat_numbers.len()
+                        );
+                        tracing::warn!("Validation failed: {}", error);
+                        Self::apply_event(state, &InventoryAction::ValidationFailed {
+                            error: error.clone(),
+                        });
+                        return SmallVec::new();
+                    }
+                }
+
                 // Validate
                 if let Err(error) =
                     Self::validate_reserve_seats(state, &event_id, &section, quantity)
@@ -963,14 +1037,27 @@ impl Reducer for InventoryReducer {
                     "Validation passed. Creating SeatsReserved event."
                 );
 
-                // Select seats
-                let seats = if let Some(_specific) = specific_seats {
-                    // In a real system, validate and use specific seats
-                    // For now, just use general admission
-                    Self::select_available_seats(state, &event_id, &section, quantity)
+                // Select seats (specific or automatic)
+                let seats = if let Some(ref seat_numbers) = specific_seats {
+                    // User requested specific seats - validate and reserve them
+                    match Self::select_specific_seats(state, &event_id, &section, seat_numbers) {
+                        Ok(seat_ids) => seat_ids,
+                        Err(error) => {
+                            // Specific seat selection failed - return validation error
+                            Self::apply_event(state, &InventoryAction::ValidationFailed {
+                                error: error.clone(),
+                            });
+                            tracing::warn!("Specific seat selection failed: {}", error);
+                            return SmallVec::new();
+                        }
+                    }
                 } else {
+                    // Automatic seat selection - pick any available seats
                     Self::select_available_seats(state, &event_id, &section, quantity)
                 };
+
+                // Clone seats for later use in reservation response
+                let seats_for_response = seats.clone();
 
                 // Create and apply event
                 let event = InventoryAction::SeatsReserved {
@@ -1004,7 +1091,29 @@ impl Reducer for InventoryReducer {
                     std::time::Duration::from_secs(0)
                 };
 
-                // Return effects: persist, publish, and schedule expiration
+                // Calculate pricing based on section and quantity
+                // In a real system, this would query event pricing tiers from the event projection
+                // For now, using simple section-based pricing as a pragmatic solution
+                let price_per_seat = Self::calculate_section_price(&section);
+                let total_amount = Money::from_cents(price_per_seat * u64::from(quantity));
+
+                tracing::debug!(
+                    "Calculated pricing: section={}, quantity={}, price_per_seat={}, total={}",
+                    section,
+                    quantity,
+                    price_per_seat,
+                    total_amount.dollars()
+                );
+
+                // Direct orchestration: Send response to reservation aggregate
+                let reservation_response = crate::aggregates::ReservationAction::SeatsAllocated {
+                    reservation_id,
+                    seats: seats_for_response,
+                    total_amount,
+                };
+                let reservation_channel = env.global_actions.reservation_actions.clone();
+
+                // Return effects: persist, notify reservation, and schedule expiration (no Redpanda)
                 smallvec![
                     append_events! {
                         store: env.event_store,
@@ -1016,15 +1125,12 @@ impl Reducer for InventoryReducer {
                             error: error.to_string()
                         })
                     },
-                    publish_event! {
-                        bus: env.event_bus,
-                        topic: "inventory",
-                        event: serialized,
-                        on_success: || None,
-                        on_error: |error| Some(InventoryAction::ValidationFailed {
-                            error: error.to_string()
-                        })
-                    },
+                    Effect::Future(Box::pin(async move {
+                        if let Err(e) = reservation_channel.send(reservation_response) {
+                            tracing::error!(error = %e, "Failed to send SeatsAllocated to reservation channel");
+                        }
+                        None
+                    })),
                     delay! {
                         duration: timeout_duration,
                         action: InventoryAction::ExpireReservation { reservation_id }
@@ -1196,7 +1302,7 @@ impl Reducer for InventoryReducer {
 mod tests {
     use super::*;
     use composable_rust_core::environment::SystemClock;
-    use composable_rust_testing::{mocks::{InMemoryEventBus, InMemoryEventStore}, ReducerTest};
+    use composable_rust_testing::{mocks::InMemoryEventStore, ReducerTest};
 
     // Mock projection query for tests
     #[derive(Clone)]
@@ -1240,7 +1346,7 @@ mod tests {
 
     fn create_test_global_channels() -> GlobalActionChannels {
         use tokio::sync::broadcast;
-        use crate::aggregates::{EventAction, PaymentAction, ReservationAction};
+        // Note: With direct orchestration, we don't need cross-aggregate action imports in tests
 
         let (event_actions, _) = broadcast::channel(1000);
         let (inventory_actions, _) = broadcast::channel(1000);
@@ -1259,7 +1365,6 @@ mod tests {
         InventoryEnvironment::new(
             Arc::new(SystemClock),
             Arc::new(InMemoryEventStore::new()),
-            Arc::new(InMemoryEventBus::new()),
             StreamId::new("inventory-test"),
             Arc::new(MockInventoryQuery),
             create_test_global_channels(),
@@ -1290,7 +1395,7 @@ mod tests {
                 assert_eq!(state.count_seats(), 100);
             })
             .then_effects(|effects| {
-                // Should return 2 effects: AppendEvents + PublishEvent
+                // Should return 2 effects: AppendEvents + Channel Send (no Redpanda)
                 assert_eq!(effects.len(), 2);
             })
             .run();
@@ -1338,7 +1443,7 @@ mod tests {
                 assert_eq!(inventory.available(), 98);
             })
             .then_effects(|effects| {
-                // Should return 3 effects: AppendEvents + PublishEvent + Delay (for expiration)
+                // Should return 3 effects: AppendEvents + Channel Send + Delay (for expiration, no Redpanda)
                 assert_eq!(effects.len(), 3);
             })
             .run();
@@ -1443,8 +1548,8 @@ mod tests {
                 assert_eq!(inventory.available(), 98);
             })
             .then_effects(|effects| {
-                // Should return 2 effects: AppendEvents + PublishEvent
-                assert_eq!(effects.len(), 2);
+                // Should return 1 effect: AppendEvents (no Redpanda)
+                assert_eq!(effects.len(), 1);
             })
             .run();
     }
@@ -1497,8 +1602,8 @@ mod tests {
                 assert_eq!(inventory.available(), 100);
             })
             .then_effects(|effects| {
-                // Should return 2 effects: AppendEvents + PublishEvent
-                assert_eq!(effects.len(), 2);
+                // Should return 1 effect: AppendEvents (no Redpanda)
+                assert_eq!(effects.len(), 1);
             })
             .run();
     }

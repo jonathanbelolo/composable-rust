@@ -16,8 +16,8 @@ pub mod payment;
 pub mod reservation;
 
 pub use analytics::{AnalyticsAction, AnalyticsReducer};
-pub use event::{EventAction, EventReducer};
+pub use event::{EventAction, EventEnvironment, EventReducer};
 pub use event_inventory_saga::{EventInventorySagaAction, EventInventorySaga};
-pub use inventory::{InventoryAction, InventoryReducer};
+pub use inventory::{InventoryAction, InventoryEnvironment, InventoryReducer};
 pub use payment::{PaymentAction, PaymentReducer};
 pub use reservation::{ReservationAction, ReservationReducer};

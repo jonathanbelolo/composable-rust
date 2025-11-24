@@ -25,122 +25,28 @@
 //! ```
 
 use crate::bootstrap::ResourceManager;
-use crate::projections::query_adapters::{PostgresInventoryQuery, PostgresPaymentQuery};
-use crate::projections::{PostgresAvailableSeatsProjection, PostgresPaymentsProjection};
 use crate::runtime::consumer::EventConsumer;
-use crate::runtime::handlers::{InventoryHandler, PaymentHandler};
-use crate::types::GlobalActionChannels;
-use std::sync::Arc;
 use tokio::sync::broadcast;
-
-/// Helper function to create `GlobalActionChannels` from `ResourceManager`.
-fn global_actions_from_resources(resources: &ResourceManager) -> GlobalActionChannels {
-    GlobalActionChannels {
-        event_actions: resources.event_actions.clone(),
-        inventory_actions: resources.inventory_actions.clone(),
-        reservation_actions: resources.reservation_actions.clone(),
-        payment_actions: resources.payment_actions.clone(),
-    }
-}
 
 /// Register all aggregate event consumers.
 ///
-/// Creates consumers for:
-/// - Inventory aggregate (seat reservation/release)
-/// - Payment aggregate (payment processing)
+/// **Note**: With direct orchestration via broadcast channels, EventConsumers are no longer needed.
+/// Aggregates now communicate directly via typed channels (inventory_actions, payment_actions, etc.)
+/// instead of going through Redpanda topics. This function returns an empty vector for backwards
+/// compatibility with the builder pattern.
 ///
 /// # Arguments
 ///
-/// * `resources` - Infrastructure resources (event bus, event store, etc.)
-/// * `shutdown` - Shutdown signal receiver for graceful termination
+/// * `resources` - Infrastructure resources (unused, kept for API compatibility)
+/// * `shutdown` - Shutdown signal receiver (unused, kept for API compatibility)
 ///
 /// # Returns
 ///
-/// A vector of `EventConsumer` instances ready to be spawned.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// let consumers = register_aggregate_consumers(&resources, shutdown_rx);
-/// let handles: Vec<_> = consumers
-///     .into_iter()
-///     .map(|c| c.spawn())
-///     .collect();
-/// ```
+/// An empty vector (aggregates use direct channel communication now).
 pub fn register_aggregate_consumers(
-    resources: &ResourceManager,
-    shutdown: broadcast::Receiver<()>,
+    _resources: &ResourceManager,
+    _shutdown: broadcast::Receiver<()>,
 ) -> Vec<EventConsumer> {
-    vec![
-        create_inventory_consumer(resources, shutdown.resubscribe()),
-        create_payment_consumer(resources, shutdown.resubscribe()),
-    ]
+    // No consumers needed - aggregates communicate via direct channels
+    vec![]
 }
-
-/// Create inventory aggregate consumer.
-///
-/// The inventory consumer listens to the inventory topic and dispatches
-/// commands to the inventory aggregate (seat reservation, release, etc.).
-fn create_inventory_consumer(
-    resources: &ResourceManager,
-    shutdown: broadcast::Receiver<()>,
-) -> EventConsumer {
-    // Create projection query for on-demand state loading
-    let available_seats_projection = Arc::new(PostgresAvailableSeatsProjection::new(
-        resources.projections_pool.clone(),
-    ));
-    let inventory_query = Arc::new(PostgresInventoryQuery::new(available_seats_projection));
-
-    // Create handler
-    let handler = Arc::new(InventoryHandler {
-        clock: resources.clock.clone(),
-        event_store: resources.event_store.clone(),
-        event_bus: resources.event_bus.clone(),
-        query: inventory_query,
-        global_actions: global_actions_from_resources(resources),
-    });
-
-    // Create consumer with EventConsumer builder
-    EventConsumer::builder()
-        .name("inventory")
-        .topics(vec![resources.config.redpanda.inventory_topic.clone()])
-        .event_bus(resources.event_bus.clone())
-        .handler(handler)
-        .shutdown(shutdown)
-        .build()
-}
-
-/// Create payment aggregate consumer.
-///
-/// The payment consumer listens to the payment topic and dispatches
-/// commands to the payment aggregate (process payment, refund, etc.).
-fn create_payment_consumer(
-    resources: &ResourceManager,
-    shutdown: broadcast::Receiver<()>,
-) -> EventConsumer {
-    // Create projection query for on-demand state loading
-    let payments_projection = Arc::new(PostgresPaymentsProjection::new(
-        resources.projections_pool.clone(),
-    ));
-    let payment_query = Arc::new(PostgresPaymentQuery::new(payments_projection));
-
-    // Create handler
-    let handler = Arc::new(PaymentHandler {
-        clock: resources.clock.clone(),
-        event_store: resources.event_store.clone(),
-        event_bus: resources.event_bus.clone(),
-        payment_topic: resources.config.redpanda.payment_topic.clone(),
-        query: payment_query,
-        global_actions: global_actions_from_resources(resources),
-    });
-
-    // Create consumer with EventConsumer builder
-    EventConsumer::builder()
-        .name("payment")
-        .topics(vec![resources.config.redpanda.payment_topic.clone()])
-        .event_bus(resources.event_bus.clone())
-        .handler(handler)
-        .shutdown(shutdown)
-        .build()
-}
-

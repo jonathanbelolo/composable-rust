@@ -11,8 +11,8 @@ use crate::types::{
 use chrono::{DateTime, Duration, Utc};
 use composable_rust_auth::state::UserId;
 use composable_rust_core::{
-    append_events, effect::Effect, environment::Clock, event_bus::EventBus,
-    event_store::EventStore, publish_event, reducer::Reducer, smallvec,
+    append_events, effect::Effect, environment::Clock,
+    event_store::EventStore, reducer::Reducer, smallvec,
     stream::{StreamId, Version},
     SmallVec,
 };
@@ -245,8 +245,6 @@ pub struct EventEnvironment {
     pub clock: Arc<dyn Clock>,
     /// Event store for persistence
     pub event_store: Arc<dyn EventStore>,
-    /// Event bus for publishing
-    pub event_bus: Arc<dyn EventBus>,
     /// Stream ID for this aggregate instance
     pub stream_id: StreamId,
     /// Projection for querying event state
@@ -261,7 +259,6 @@ impl EventEnvironment {
     pub fn new(
         clock: Arc<dyn Clock>,
         event_store: Arc<dyn EventStore>,
-        event_bus: Arc<dyn EventBus>,
         stream_id: StreamId,
         projection: Arc<dyn EventProjectionQuery>,
         global_actions: GlobalActionChannels,
@@ -269,7 +266,6 @@ impl EventEnvironment {
         Self {
             clock,
             event_store,
-            event_bus,
             stream_id,
             projection,
             global_actions,
@@ -297,7 +293,10 @@ impl EventReducer {
         Self
     }
 
-    /// Creates effects for persisting and publishing an event
+    /// Creates effects for persisting events (PostgreSQL only, no Redpanda)
+    ///
+    /// With direct orchestration, we use local channels for coordination,
+    /// so Redpanda publishing is no longer needed.
     fn create_effects(
         event: EventAction,
         expected_version: Version,
@@ -315,15 +314,6 @@ impl EventReducer {
                 expected_version: Some(expected_version),
                 events: vec![serialized.clone()],
                 on_success: |version| Some(EventAction::VersionUpdated { version }),
-                on_error: |error| Some(EventAction::ValidationFailed {
-                    error: error.to_string()
-                })
-            },
-            publish_event! {
-                bus: env.event_bus,
-                topic: "events",
-                event: serialized,
-                on_success: || None,
                 on_error: |error| Some(EventAction::ValidationFailed {
                     error: error.to_string()
                 })
@@ -764,7 +754,7 @@ mod tests {
     use composable_rust_core::environment::SystemClock;
     use composable_rust_testing::{
         assertions,
-        mocks::{InMemoryEventBus, InMemoryEventStore},
+        mocks::InMemoryEventStore,
         ReducerTest,
     };
 
@@ -800,7 +790,6 @@ mod tests {
         EventEnvironment::new(
             Arc::new(SystemClock),
             Arc::new(InMemoryEventStore::new()),
-            Arc::new(InMemoryEventBus::new()),
             StreamId::new("test-stream"),
             Arc::new(MockEventProjection),
             create_test_global_actions(),
@@ -854,7 +843,7 @@ mod tests {
                 assert_eq!(event.status, EventStatus::Draft);
             })
             .then_effects(|effects| {
-                // Should return 2 effects: AppendEvents + PublishEvent
+                // Should return 2 effects: AppendEvents + Channel Send (no Redpanda)
                 assert_eq!(effects.len(), 2);
             })
             .run();
@@ -945,8 +934,8 @@ mod tests {
                 assert_eq!(event.status, EventStatus::Published);
             })
             .then_effects(|effects| {
-                // Should return 2 effects: AppendEvents + PublishEvent
-                assert_eq!(effects.len(), 2);
+                // Should return 1 effect: AppendEvents (no Redpanda)
+                assert_eq!(effects.len(), 1);
             })
             .run();
     }
@@ -1019,7 +1008,7 @@ mod tests {
                 assert_eq!(event.name, "Updated Name");
                 assert!(state.last_error.is_none());
             })
-            .then_effects(|effects| assertions::assert_effects_count(effects, 2))
+            .then_effects(|effects| assertions::assert_effects_count(effects, 1))
             .run();
     }
 

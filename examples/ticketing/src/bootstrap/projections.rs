@@ -38,7 +38,6 @@ use crate::projections::{
     PostgresCustomerHistoryProjection, PostgresSalesAnalyticsProjection, ProjectionManagers,
 };
 use crate::runtime::consumer::EventConsumer;
-use crate::runtime::handlers::OwnershipIndexHandler;
 use crate::types::{CustomerId, PaymentId, ReservationId};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -108,15 +107,17 @@ pub struct ProjectionSystem {
 /// ```
 pub async fn register_projections(
     resources: &ResourceManager,
-    shutdown: broadcast::Receiver<()>,
+    _shutdown: broadcast::Receiver<()>,
 ) -> Result<ProjectionSystem, Box<dyn std::error::Error>> {
     // Setup PostgreSQL projection managers (available seats, sales analytics, customer history)
-    let managers = setup_projection_managers(
-        resources.config.as_ref(),
-        resources.event_bus.clone(),
-        resources.event_bus.clone(),
-    )
-    .await?;
+    let global_channels = crate::types::GlobalActionChannels {
+        event_actions: resources.event_actions.clone(),
+        inventory_actions: resources.inventory_actions.clone(),
+        reservation_actions: resources.reservation_actions.clone(),
+        payment_actions: resources.payment_actions.clone(),
+    };
+
+    let managers = setup_projection_managers(resources.config.as_ref(), global_channels).await?;
 
     // Create PostgreSQL analytics projections (production-ready, persistent)
     let sales_analytics = Arc::new(PostgresSalesAnalyticsProjection::new(
@@ -130,14 +131,9 @@ pub async fn register_projections(
     let reservation_ownership = Arc::new(RwLock::new(HashMap::new()));
     let payment_ownership = Arc::new(RwLock::new(HashMap::new()));
 
-    // Create event consumer for ownership indices
-    // Note: PostgreSQL projections are updated by projection managers, not event consumers
-    let consumers = vec![create_ownership_index_consumer(
-        resources,
-        reservation_ownership.clone(),
-        payment_ownership.clone(),
-        shutdown.resubscribe(),
-    )];
+    // No event consumers needed with direct orchestration
+    // Ownership indices are now updated directly via broadcast channels in WebSocket handlers
+    let consumers = vec![];
 
     Ok(ProjectionSystem {
         managers,
@@ -149,6 +145,10 @@ pub async fn register_projections(
     })
 }
 
+// The following function is kept for reference but is no longer used
+// since we moved from EventBus choreography to direct channel orchestration.
+
+/*
 /// Create ownership index consumer.
 ///
 /// The ownership index consumer listens to reservation and payment topics,
@@ -184,3 +184,4 @@ fn create_ownership_index_consumer(
         .shutdown(shutdown)
         .build()
 }
+*/

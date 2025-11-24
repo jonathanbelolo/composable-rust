@@ -6,13 +6,12 @@
 
 use composable_rust_core::{
     environment::SystemClock,
-    event_bus::EventBus,
     event_store::EventStore,
     reducer::Reducer,
     stream::StreamId,
 };
 use composable_rust_testing::{
-    mocks::{InMemoryEventBus, InMemoryEventStore},
+    mocks::InMemoryEventStore,
     ReducerTest,
 };
 use std::sync::Arc;
@@ -61,7 +60,6 @@ fn create_test_env() -> ReservationEnvironment {
     ReservationEnvironment::new(
         Arc::new(SystemClock),
         Arc::new(InMemoryEventStore::new()) as Arc<dyn EventStore>,
-        Arc::new(InMemoryEventBus::new()) as Arc<dyn EventBus>,
         StreamId::new("reservation-test"),
         Arc::new(MockReservationQuery),
         create_test_global_actions(),
@@ -420,10 +418,10 @@ fn test_saga_manual_cancellation() {
             assert_eq!(reservation.status, ReservationStatus::Cancelled);
         })
         .then_effects(|effects| {
-            // Should return 3 effects:
-            // 2 for ReservationCancelled (AppendEvents + PublishEvent)
-            // 1 for publishing ReleaseReservation to inventory (compensation)
-            assert_eq!(effects.len(), 3);
+            // Should return 2 effects (direct orchestration):
+            // 1. AppendEvents for ReservationCancelled
+            // 2. Send ReleaseReservation to inventory channel (compensation)
+            assert_eq!(effects.len(), 2);
         })
         .run();
 }

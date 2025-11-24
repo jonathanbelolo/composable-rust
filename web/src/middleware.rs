@@ -20,7 +20,7 @@
 //!
 //! 1. **Extract** correlation ID from `X-Correlation-ID` header (or generate new UUID)
 //! 2. **Store** in request extensions for handler access
-//! 3. **Create tracing span** with correlation_id field
+//! 3. **Create tracing span** with `correlation_id` field
 //! 4. **Inject** correlation ID into response `X-Correlation-ID` header
 //!
 //! # Benefits
@@ -47,7 +47,7 @@ pub const CORRELATION_ID_HEADER: &str = "X-Correlation-ID";
 /// This layer:
 /// - Extracts correlation ID from request header or generates new UUID
 /// - Stores correlation ID in request extensions
-/// - Creates tracing span with correlation_id field
+/// - Creates tracing span with `correlation_id` field
 /// - Injects correlation ID into response header
 ///
 /// # Example
@@ -61,7 +61,7 @@ pub const CORRELATION_ID_HEADER: &str = "X-Correlation-ID";
 ///     .layer(correlation_id_layer());
 /// ```
 #[must_use]
-pub fn correlation_id_layer() -> CorrelationIdLayer {
+pub const fn correlation_id_layer() -> CorrelationIdLayer {
     CorrelationIdLayer
 }
 
@@ -167,6 +167,11 @@ pub trait CorrelationIdExt {
 }
 
 impl CorrelationIdExt for Request {
+    /// # Panics
+    ///
+    /// Panics if the `CorrelationIdLayer` middleware is not installed.
+    /// This is a programming error - ensure middleware is added to the router.
+    #[allow(clippy::expect_used)] // Intentional panic for missing required middleware
     fn correlation_id(&self) -> Uuid {
         self.extensions()
             .get::<Uuid>()

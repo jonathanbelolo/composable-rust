@@ -21,17 +21,23 @@
 //! **Instance Model**: One saga instance per event creation request. The saga persists
 //! its state via events in its own event stream and completes when all steps are done.
 
-use crate::aggregates::{EventAction, InventoryAction};
+use crate::aggregates::{
+    EventAction, EventEnvironment, EventReducer, InventoryAction, InventoryEnvironment,
+    InventoryReducer,
+};
 use crate::projections::TicketingEvent;
-use crate::types::{Capacity, EventDate, EventId, PricingTier, ResponseChannel, Venue};
+use crate::types::{
+    Capacity, EventDate, EventId, EventState, InventoryState, PricingTier, ResponseChannel, Venue,
+};
 use chrono::{DateTime, Utc};
 use composable_rust_auth::state::UserId;
 use composable_rust_core::{
-    append_events, effect::Effect, environment::Clock, event_bus::EventBus,
-    event_store::EventStore, publish_event, reducer::Reducer, smallvec,
+    append_events, effect::Effect, environment::Clock,
+    event_store::EventStore, reducer::Reducer, smallvec,
     stream::{StreamId, Version},
     SmallVec,
 };
+use composable_rust_runtime::Store;
 use composable_rust_macros::Action;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -221,34 +227,56 @@ pub enum EventInventorySagaAction {
 
 /// Environment for Event-Inventory Saga
 ///
-/// Contains only side-effect dependencies. No child stores (saga publishes
-/// commands to EventBus topics, not direct store calls).
+/// Uses **direct orchestration** pattern: saga creates child aggregate stores
+/// and sends commands directly, replacing event bus choreography.
 #[derive(Clone)]
 pub struct EventInventorySagaEnvironment {
     /// Clock for timestamps
     pub clock: Arc<dyn Clock>,
     /// Event store for saga persistence
     pub event_store: Arc<dyn EventStore>,
-    /// Event bus for publishing to child aggregates
-    pub event_bus: Arc<dyn EventBus>,
     /// Stream ID for this saga instance
     pub stream_id: StreamId,
+
+    /// Factory function to create Event aggregate stores
+    pub create_event_store: Arc<
+        dyn Fn(EventId) -> Store<EventState, EventAction, EventEnvironment, EventReducer>
+            + Send
+            + Sync,
+    >,
+
+    /// Factory function to create Inventory aggregate stores
+    pub create_inventory_store: Arc<
+        dyn Fn(EventId) -> Store<InventoryState, InventoryAction, InventoryEnvironment, InventoryReducer>
+            + Send
+            + Sync,
+    >,
 }
 
 impl EventInventorySagaEnvironment {
-    /// Creates a new environment
+    /// Creates a new environment with factory functions for child aggregate stores
     #[must_use]
     pub fn new(
         clock: Arc<dyn Clock>,
         event_store: Arc<dyn EventStore>,
-        event_bus: Arc<dyn EventBus>,
         stream_id: StreamId,
+        create_event_store: Arc<
+            dyn Fn(EventId) -> Store<EventState, EventAction, EventEnvironment, EventReducer>
+                + Send
+                + Sync,
+        >,
+        create_inventory_store: Arc<
+            dyn Fn(EventId) -> Store<InventoryState, InventoryAction, InventoryEnvironment, InventoryReducer>
+                + Send
+                + Sync,
+        >,
     ) -> Self {
         Self {
             clock,
             event_store,
-            event_bus,
             stream_id,
+            create_event_store,
+            create_inventory_store,
         }
     }
 }
@@ -271,7 +299,10 @@ impl EventInventorySaga {
         Self
     }
 
-    /// Creates effects for persisting and publishing a saga event
+    /// Creates effects for persisting saga events
+    ///
+    /// Note: With direct orchestration, we only persist to event store.
+    /// No event bus publishing needed since projections rebuild from event store.
     fn create_effects(
         event: EventInventorySagaAction,
         expected_version: Version,
@@ -289,15 +320,6 @@ impl EventInventorySaga {
                 expected_version: Some(expected_version),
                 events: vec![serialized.clone()],
                 on_success: |version| Some(EventInventorySagaAction::VersionUpdated { version }),
-                on_error: |error| Some(EventInventorySagaAction::ValidationFailed {
-                    error: error.to_string()
-                })
-            },
-            publish_event! {
-                bus: env.event_bus,
-                topic: "event-inventory-saga",
-                event: serialized,
-                on_success: || None,
                 on_error: |error| Some(EventInventorySagaAction::ValidationFailed {
                     error: error.to_string()
                 })
@@ -455,219 +477,114 @@ impl Reducer for EventInventorySaga {
                 // Persist saga event
                 let mut effects = Self::create_effects(initiated, expected_version, env);
 
-                // Step 1: Publish CreateEvent command to Event aggregate
-                let create_event_cmd = EventAction::CreateEvent {
-                    id: event_id,
-                    name,
-                    owner_id,
-                    venue: venue.clone(),
-                    date,
-                    pricing_tiers,
-                    respond_to: ResponseChannel::none(),
-                };
+                // Direct orchestration: Create Event + Inventory stores and send commands
+                let create_event_store = env.create_event_store.clone();
+                let create_inventory_store = env.create_inventory_store.clone();
+                let venue_clone = venue.clone();
+                let now = env.clock.now();
 
-                let ticketing_event = TicketingEvent::Event(create_event_cmd);
-                match ticketing_event.serialize() {
-                    Ok(serialized) => {
-                        tracing::debug!(
-                            event_id = %event_id.as_uuid(),
-                            "Publishing CreateEvent command to events topic"
-                        );
+                effects.push(Effect::Future(Box::pin(async move {
+                    tracing::debug!(
+                        event_id = %event_id.as_uuid(),
+                        "Saga: Orchestrating Event creation"
+                    );
 
-                        // Clone timestamp for closure
-                        let now = env.clock.now();
+                    // Step 1: Create Event
+                    let event_store = create_event_store(event_id);
 
-                        effects.push(publish_event! {
-                            bus: env.event_bus,
-                            topic: "events",
-                            event: serialized,
-                            on_success: || None,
-                            on_error: |error| Some(EventInventorySagaAction::EventCreationFailed {
-                                event_id,
-                                error: error.to_string(),
-                                failed_at: now,
-                            })
-                        });
-                    }
-                    Err(e) => {
-                        let failed = EventInventorySagaAction::EventCreationFailed {
-                            event_id,
-                            error: format!("Failed to serialize CreateEvent: {e}"),
-                            failed_at: env.clock.now(),
-                        };
-                        let expected_version_2 = state.version;
-                        Self::apply_event(state, &failed);
-
-                        let mut effects = Self::create_effects(failed.clone(), expected_version_2, env);
-
-                        // Emit as observable action for send_and_wait_for
-                        let failed_clone = failed;
-                        effects.push(Effect::Future(Box::pin(async move {
-                            Some(failed_clone)
-                        })));
-
-                        return effects;
-                    }
-                }
-
-                // NOTE: We wait for EventCreated notification from Event aggregate
-                // (handled via EventBus subscription in bootstrap)
-
-                effects
-            }
-
-            // ========== Step 2: Event Created - Initialize Inventory ==========
-            EventInventorySagaAction::EventCreated {
-                event_id,
-                sections,
-                created_at,
-            } => {
-                tracing::info!(
-                    event_id = %event_id.as_uuid(),
-                    sections = sections.len(),
-                    "Saga: EventCreated received - initializing inventory for all sections"
-                );
-
-                // Clone sections before moving action
-                let sections_clone = sections.clone();
-
-                let expected_version = state.version;
-                let action_for_apply = EventInventorySagaAction::EventCreated {
-                    event_id,
-                    sections,
-                    created_at,
-                };
-                Self::apply_event(state, &action_for_apply);
-
-                let mut effects = Self::create_effects(action_for_apply, expected_version, env);
-
-                // For each section, publish InitializeInventory command
-                // We need to extract capacity from sections - but sections only have names here
-                // The venue info was in the original command, but we need it here
-                //
-                // SOLUTION: The EventCreated event should include venue sections with capacity
-                // For now, we'll work with what we have (section names)
-                // In production, EventCreated would include full section details
-
-                for section_name in &sections_clone {
-                    // Get capacity from saga state (populated during EventCreationInitiated)
-                    let capacity = state
-                        .section_capacities
-                        .get(section_name)
-                        .copied()
-                        .unwrap_or_else(|| {
-                            tracing::error!(
-                                section = %section_name,
-                                "Section capacity not found in saga state - using default"
-                            );
-                            Capacity::new(100) // Fallback
-                        });
-
-                    let init_inventory = InventoryAction::InitializeInventory {
-                        event_id,
-                        section: section_name.clone(),
-                        capacity,
-                        seat_numbers: None,
+                    let create_event_action = EventAction::CreateEvent {
+                        id: event_id,
+                        name,
+                        owner_id,
+                        venue: venue_clone.clone(),
+                        date,
+                        pricing_tiers,
                         respond_to: ResponseChannel::none(),
                     };
 
-                    let ticketing_event = TicketingEvent::Inventory(init_inventory);
-                    match ticketing_event.serialize() {
-                        Ok(serialized) => {
-                            tracing::debug!(
-                                event_id = %event_id.as_uuid(),
-                                section = %section_name,
-                                "Publishing InitializeInventory to inventory topic"
-                            );
+                    // Send CreateEvent command and wait for completion
+                    if let Err(e) = event_store.send(create_event_action).await {
+                        tracing::error!(
+                            event_id = %event_id.as_uuid(),
+                            error = %e,
+                            "Saga: Event creation failed"
+                        );
+                        return Some(EventInventorySagaAction::EventCreationFailed {
+                            event_id,
+                            error: e.to_string(),
+                            failed_at: now,
+                        });
+                    }
 
-                            // Clone values for closure - need Arc for Fn closure
-                            let section_for_error = Arc::new(section_name.clone());
-                            let now = env.clock.now();
+                    tracing::info!(
+                        event_id = %event_id.as_uuid(),
+                        "Saga: Event created successfully"
+                    );
 
-                            effects.push(publish_event! {
-                                bus: env.event_bus,
-                                topic: "inventory",
-                                event: serialized,
-                                on_success: || None,
-                                on_error: |error| {
-                                    let section_clone = (*section_for_error).clone();
-                                    Some(
-                                        EventInventorySagaAction::InventoryInitializationFailed {
-                                            event_id,
-                                            section: section_clone,
-                                            error: error.to_string(),
-                                            failed_at: now,
-                                        }
-                                    )
-                                }
-                            });
-                        }
-                        Err(e) => {
+                    // Step 2: Initialize Inventory for each section
+                    for section in &venue_clone.sections {
+                        tracing::debug!(
+                            event_id = %event_id.as_uuid(),
+                            section = %section.name,
+                            "Saga: Initializing inventory"
+                        );
+
+                        let inventory_store = create_inventory_store(event_id);
+
+                        let init_action = InventoryAction::InitializeInventory {
+                            event_id,
+                            section: section.name.clone(),
+                            capacity: section.capacity,
+                            seat_numbers: None,
+                            respond_to: ResponseChannel::none(),
+                        };
+
+                        if let Err(e) = inventory_store.send(init_action).await {
                             tracing::error!(
                                 event_id = %event_id.as_uuid(),
-                                section = %section_name,
+                                section = %section.name,
                                 error = %e,
-                                "Failed to serialize InitializeInventory"
+                                "Saga: Inventory initialization failed"
                             );
+                            return Some(EventInventorySagaAction::InventoryInitializationFailed {
+                                event_id,
+                                section: section.name.clone(),
+                                error: e.to_string(),
+                                failed_at: now,
+                            });
                         }
                     }
-                }
+
+                    // Saga completed successfully
+                    tracing::info!(
+                        event_id = %event_id.as_uuid(),
+                        sections = venue_clone.sections.len(),
+                        "Saga: Event creation with inventory completed successfully"
+                    );
+
+                    #[allow(clippy::cast_possible_truncation)]
+                    Some(EventInventorySagaAction::EventCreationCompleted {
+                        event_id,
+                        sections_initialized: venue_clone.sections.len() as u32,
+                        completed_at: now,
+                    })
+                })));
 
                 effects
             }
 
-            // ========== Step 3: Section Inventory Initialized ==========
-            EventInventorySagaAction::SectionInventoryInitialized {
-                event_id,
-                section,
-                initialized_at,
-            } => {
-                tracing::debug!(
-                    event_id = %event_id.as_uuid(),
-                    section = %section,
-                    "Saga: Section inventory initialized"
-                );
+            // ========== OBSOLETE: EventCreated (replaced by direct orchestration) ==========
+            EventInventorySagaAction::EventCreated { .. } => {
+                // This event is obsolete with direct orchestration.
+                // The CreateEventWithInventory handler orchestrates everything directly.
+                SmallVec::new()
+            }
 
-                let expected_version = state.version;
-                let action_for_apply = EventInventorySagaAction::SectionInventoryInitialized {
-                    event_id,
-                    section,
-                    initialized_at,
-                };
-                Self::apply_event(state, &action_for_apply);
-
-                let mut effects = Self::create_effects(action_for_apply, expected_version, env);
-
-                // Check if all sections are complete
-                if state.pending_sections.is_empty() && state.inventory_complete {
-                    // Count how many sections we initialized
-                    // Since we don't track the original count, we'll use 0 as placeholder
-                    // In production, we'd track this in state
-                    let now = env.clock.now();
-                    let completed = EventInventorySagaAction::EventCreationCompleted {
-                        event_id,
-                        sections_initialized: 0, // TODO: Track in state
-                        completed_at: now,
-                    };
-                    let expected_version_2 = state.version;
-                    Self::apply_event(state, &completed);
-
-                    // Persist and publish the completion event
-                    effects.extend(Self::create_effects(completed.clone(), expected_version_2, env));
-
-                    // Emit as observable action for send_and_wait_for
-                    let completed_clone = completed;
-                    effects.push(Effect::Future(Box::pin(async move {
-                        Some(completed_clone)
-                    })));
-
-                    tracing::info!(
-                        event_id = %event_id.as_uuid(),
-                        "Saga: Event creation completed - Event + all Inventory initialized"
-                    );
-                }
-
-                effects
+            // ========== OBSOLETE: SectionInventoryInitialized (replaced by direct orchestration) ==========
+            EventInventorySagaAction::SectionInventoryInitialized { .. } => {
+                // This event is obsolete with direct orchestration.
+                // The CreateEventWithInventory handler orchestrates everything directly.
+                SmallVec::new()
             }
 
             // ========== Other events ==========
@@ -683,21 +600,106 @@ impl Reducer for EventInventorySaga {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::types::{Money, SeatType, VenueSection};
+    use crate::aggregates::inventory::InventoryProjectionQuery;
+    use crate::types::{Money, SeatAssignment, SeatType, VenueSection};
     use chrono::Duration;
     use composable_rust_core::environment::SystemClock;
     use composable_rust_testing::{
         assertions,
-        mocks::{InMemoryEventBus, InMemoryEventStore},
+        mocks::InMemoryEventStore,
         ReducerTest,
     };
 
+    // Mock projection queries for tests
+    #[derive(Clone)]
+    struct MockEventQuery;
+
+    #[async_trait::async_trait]
+    impl crate::aggregates::event::EventProjectionQuery for MockEventQuery {
+        async fn load_event(&self, _event_id: &EventId) -> Result<Option<crate::types::Event>, String> {
+            Ok(None) // No cached state, use event sourcing
+        }
+
+        async fn load_events(&self, _status_filter: Option<crate::types::EventStatus>) -> Result<Vec<crate::types::Event>, String> {
+            Ok(vec![])
+        }
+    }
+
+    #[derive(Clone)]
+    struct MockInventoryQuery;
+
+    impl InventoryProjectionQuery for MockInventoryQuery {
+        fn load_inventory(
+            &self,
+            _event_id: &EventId,
+            _section: &str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<((u32, u32, u32, u32), Vec<SeatAssignment>)>, String>> + Send + '_>> {
+            Box::pin(async move { Ok(None) }) // No cached state, use event sourcing
+        }
+
+        fn get_all_sections(
+            &self,
+            _event_id: &EventId,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<crate::aggregates::inventory::SectionAvailabilityData>, String>> + Send + '_>> {
+            Box::pin(async move { Ok(vec![]) })
+        }
+
+        fn get_section_availability(
+            &self,
+            _event_id: &EventId,
+            _section: &str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<crate::aggregates::inventory::SectionAvailabilityData>, String>> + Send + '_>> {
+            Box::pin(async move { Ok(None) })
+        }
+
+        fn get_total_available(
+            &self,
+            _event_id: &EventId,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u32, String>> + Send + '_>> {
+            Box::pin(async move { Ok(0) })
+        }
+    }
+
     fn create_test_env() -> EventInventorySagaEnvironment {
+        // Placeholder factory functions for testing
+        let create_event_store = Arc::new(|_event_id: EventId| {
+            let event_env = EventEnvironment::new(
+                Arc::new(SystemClock),
+                Arc::new(InMemoryEventStore::new()),
+                StreamId::new("test-event"),
+                Arc::new(MockEventQuery),
+                crate::types::GlobalActionChannels {
+                    event_actions: tokio::sync::broadcast::channel(1000).0,
+                    inventory_actions: tokio::sync::broadcast::channel(1000).0,
+                    reservation_actions: tokio::sync::broadcast::channel(1000).0,
+                    payment_actions: tokio::sync::broadcast::channel(1000).0,
+                },
+            );
+            Store::new(EventState::new(), EventReducer::new(), event_env)
+        });
+
+        let create_inventory_store = Arc::new(|_event_id: EventId| {
+            let inventory_env = InventoryEnvironment::new(
+                Arc::new(SystemClock),
+                Arc::new(InMemoryEventStore::new()),
+                StreamId::new("test-inventory"),
+                Arc::new(MockInventoryQuery),
+                crate::types::GlobalActionChannels {
+                    event_actions: tokio::sync::broadcast::channel(1000).0,
+                    inventory_actions: tokio::sync::broadcast::channel(1000).0,
+                    reservation_actions: tokio::sync::broadcast::channel(1000).0,
+                    payment_actions: tokio::sync::broadcast::channel(1000).0,
+                },
+            );
+            Store::new(InventoryState::new(), InventoryReducer::new(), inventory_env)
+        });
+
         EventInventorySagaEnvironment::new(
             Arc::new(SystemClock),
             Arc::new(InMemoryEventStore::new()),
-            Arc::new(InMemoryEventBus::new()),
             StreamId::new("test-saga"),
+            create_event_store,
+            create_inventory_store,
         )
     }
 
@@ -754,109 +756,21 @@ mod tests {
             })
             .then_effects(|effects| {
                 // Should return:
-                // - 2 effects for EventCreationInitiated (AppendEvents + PublishEvent)
-                // - 1 effect for publishing CreateEvent command to events topic
-                assert_eq!(effects.len(), 3);
-            })
-            .run();
-    }
-
-    #[test]
-    fn test_event_created_triggers_inventory_initialization() {
-        let event_id = EventId::new();
-
-        ReducerTest::new(EventInventorySaga::new())
-            .with_env(create_test_env())
-            .given_state({
-                let mut state = EventInventorySagaState::new();
-                state.event_id = Some(event_id);
-                state
-            })
-            .when_action(EventInventorySagaAction::EventCreated {
-                event_id,
-                sections: vec!["VIP".to_string(), "General".to_string()],
-                created_at: Utc::now(),
-            })
-            .then_state(move |state| {
-                assert_eq!(state.event_id, Some(event_id));
-                assert!(state.event_created);
-                assert_eq!(state.pending_sections.len(), 2);
-                assert!(state.pending_sections.contains("VIP"));
-                assert!(state.pending_sections.contains("General"));
-            })
-            .then_effects(|effects| {
-                // Should return:
-                // - 2 effects for EventCreated (AppendEvents + PublishEvent)
-                // - 2 effects for publishing InitializeInventory commands (one per section)
-                assert_eq!(effects.len(), 4);
-            })
-            .run();
-    }
-
-    #[test]
-    fn test_section_initialized_removes_from_pending() {
-        let event_id = EventId::new();
-
-        ReducerTest::new(EventInventorySaga::new())
-            .with_env(create_test_env())
-            .given_state({
-                let mut state = EventInventorySagaState::new();
-                state.event_id = Some(event_id);
-                state.event_created = true;
-                state.pending_sections.insert("VIP".to_string());
-                state.pending_sections.insert("General".to_string());
-                state
-            })
-            .when_action(EventInventorySagaAction::SectionInventoryInitialized {
-                event_id,
-                section: "VIP".to_string(),
-                initialized_at: Utc::now(),
-            })
-            .then_state(move |state| {
-                assert_eq!(state.pending_sections.len(), 1);
-                assert!(state.pending_sections.contains("General"));
-                assert!(!state.pending_sections.contains("VIP"));
-                assert!(!state.completed); // Still have General pending
-            })
-            .then_effects(|effects| {
-                // Should return 2 effects for SectionInventoryInitialized
+                // - 1 effect for EventCreationInitiated (AppendEvents only, no PublishEvent with direct orchestration)
+                // - 1 effect for orchestrating Event + Inventory creation (Effect::Future)
                 assert_eq!(effects.len(), 2);
             })
             .run();
     }
 
-    #[test]
-    fn test_last_section_initialized_completes_saga() {
-        let event_id = EventId::new();
-
-        ReducerTest::new(EventInventorySaga::new())
-            .with_env(create_test_env())
-            .given_state({
-                let mut state = EventInventorySagaState::new();
-                state.event_id = Some(event_id);
-                state.event_created = true;
-                state.pending_sections.insert("VIP".to_string()); // Only one left
-                state
-            })
-            .when_action(EventInventorySagaAction::SectionInventoryInitialized {
-                event_id,
-                section: "VIP".to_string(),
-                initialized_at: Utc::now(),
-            })
-            .then_state(move |state| {
-                assert!(state.pending_sections.is_empty());
-                assert!(state.inventory_complete);
-                assert!(state.completed);
-            })
-            .then_effects(|effects| {
-                // Should return:
-                // - 2 effects for SectionInventoryInitialized (persist + publish)
-                // - 2 effects for EventCreationCompleted (persist + publish)
-                // - 1 effect for observable completion (Future for send_and_wait_for)
-                assert_eq!(effects.len(), 5);
-            })
-            .run();
-    }
+    // NOTE: The following tests were removed as they test obsolete choreography-based flows.
+    // With direct orchestration, EventCreated and SectionInventoryInitialized events are
+    // no longer emitted. The CreateEventWithInventory handler orchestrates everything directly.
+    //
+    // Removed tests:
+    // - test_event_created_triggers_inventory_initialization
+    // - test_section_initialized_removes_from_pending
+    // - test_last_section_initialized_completes_saga
 
     #[test]
     fn test_validation_fails_for_empty_name() {

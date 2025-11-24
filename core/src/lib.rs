@@ -62,6 +62,9 @@ pub use chrono::{DateTime, Utc};
 pub use serde::{Deserialize, Serialize};
 pub use smallvec::{smallvec, SmallVec};
 
+// Re-export effect types
+pub use effect::ResponseChannel;
+
 // Phase 2: Event sourcing modules
 pub mod event;
 pub mod event_store;
@@ -540,10 +543,171 @@ pub mod effect {
         /// });
         /// ```
         PublishEvent(EventBusOperation<Action>),
+
+        /// Publish action to broadcast channel and wait for response via oneshot channel.
+        ///
+        /// This effect enables the pattern where:
+        /// 1. An action is published to a global broadcast channel (e.g., for projections)
+        /// 2. The subscriber processes the action and signals completion via a oneshot channel
+        /// 3. The reducer waits for the completion signal before emitting a confirmation action
+        ///
+        /// This is commonly used for projection completion tracking in CQRS systems,
+        /// where a command needs to wait for read model updates before returning.
+        ///
+        /// # How It Works
+        ///
+        /// The Store infrastructure:
+        /// 1. Creates a `tokio::sync::oneshot` channel
+        /// 2. Calls `create_action` with the sender wrapped in a `ResponseChannel`
+        /// 3. Publishes the created action to the broadcast channel
+        /// 4. Waits for the projection to signal via the oneshot receiver
+        /// 5. Calls `on_success` or `on_error` based on the result
+        ///
+        /// # Type Parameters
+        ///
+        /// - `Action`: Must implement `Clone` for broadcasting
+        ///
+        /// # Examples
+        ///
+        /// ```ignore
+        /// use composable_rust_core::Effect;
+        ///
+        /// // In a payment reducer that needs projection confirmation
+        /// Effect::PublishWithResponse {
+        ///     channel: env.global_actions.payment_actions.clone(),
+        ///     create_action: Box::new(move |respond_to| PaymentAction::ProcessPayment {
+        ///         payment_id,
+        ///         reservation_id,
+        ///         customer_id,
+        ///         amount,
+        ///         payment_method,
+        ///         respond_to,  // Infrastructure injects the oneshot sender here
+        ///     }),
+        ///     on_success: Box::new(move || {
+        ///         Some(PaymentAction::PaymentConfirmed { payment_id })
+        ///     }),
+        ///     on_error: Box::new(move |error| {
+        ///         Some(PaymentAction::PaymentProjectionFailed {
+        ///             payment_id,
+        ///             reason: error,
+        ///         })
+        ///     }),
+        /// }
+        /// ```
+        ///
+        /// # Pattern: Projection Completion Tracking
+        ///
+        /// This effect separates infrastructure concerns (oneshot channel creation,
+        /// waiting for responses) from business logic. The reducer stays pure and
+        /// declarative - it just describes what should happen, not how the wiring works.
+        ///
+        /// The projection consumer receives the action with `respond_to` field populated,
+        /// processes the projection update, and signals completion:
+        ///
+        /// ```ignore
+        /// // In projection consumer
+        /// let result = projection.apply_event(&event).await;
+        /// if let Some(sender) = action.respond_to.take() {
+        ///     let _ = sender.send(result);
+        /// }
+        /// ```
+        PublishWithResponse {
+            /// Broadcast channel to publish to (e.g., `global_actions.payment_actions`)
+            channel: tokio::sync::broadcast::Sender<Action>,
+            /// Function that creates the action given a `ResponseChannel`
+            /// The infrastructure calls this with a oneshot sender for projection signaling
+            create_action: Box<dyn FnOnce(ResponseChannel) -> Action + Send>,
+            /// Callback invoked when projection signals success
+            /// Returns an action to emit (e.g., `PaymentConfirmed`)
+            on_success: Box<dyn Fn() -> Option<Action> + Send>,
+            /// Callback invoked when projection signals failure or channel closes
+            /// Returns an action to emit (e.g., `PaymentProjectionFailed`)
+            on_error: Box<dyn Fn(String) -> Option<Action> + Send>,
+        },
+
         // Additional effect variants will be added in future phases:
         // - Http { request, on_success, on_error }
         // - Cancellable { id, effect }
         // - DispatchCommand(Command) - for saga coordination
+    }
+
+    /// Wrapper for oneshot response channels used in projection completion tracking.
+    ///
+    /// This type wraps a `tokio::sync::oneshot::Sender` that projections use to
+    /// signal completion back to the aggregate. The sender is injected by
+    /// infrastructure when executing `Effect::PublishWithResponse`.
+    ///
+    /// # Pattern
+    ///
+    /// 1. Reducer returns `Effect::PublishWithResponse` with action creator
+    /// 2. Store creates `ResponseChannel` with oneshot sender
+    /// 3. Action is published with `ResponseChannel` in `respond_to` field
+    /// 4. Projection processes action and calls `sender.send(Ok(()))` or `sender.send(Err(...))`
+    /// 5. Store receives signal and emits confirmation action
+    ///
+    /// # Note on Clone
+    ///
+    /// This type implements `Clone` by cloning the `Arc`, so multiple references
+    /// to the same sender can exist. However, only the first call to `send()` will
+    /// succeed since `oneshot::Sender` is single-use. The `Arc<Mutex<Option<_>>>`
+    /// wrapper allows taking ownership of the sender to send a response.
+    ///
+    /// # Note on Serialization
+    ///
+    /// This type does not serialize the sender (it's a channel, not data).
+    /// Always mark `ResponseChannel` fields with `#[serde(skip)]` in your actions.
+    #[derive(Debug, Clone)]
+    pub struct ResponseChannel(
+        #[allow(clippy::type_complexity)] // Necessary for Arc<Mutex<Option<Sender>>> pattern
+        pub Option<Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<Result<(), String>>>>>>,
+    );
+
+    impl ResponseChannel {
+        /// Create a new response channel with a sender.
+        #[must_use]
+        pub fn new(sender: Option<tokio::sync::oneshot::Sender<Result<(), String>>>) -> Self {
+            Self(sender.map(|s| Arc::new(std::sync::Mutex::new(Some(s)))))
+        }
+
+        /// Create an empty response channel (no sender).
+        ///
+        /// Used when projection confirmation is not needed.
+        #[must_use]
+        pub const fn none() -> Self {
+            Self(None)
+        }
+
+        /// Take the sender out of the channel and send a response.
+        ///
+        /// Returns `Ok(())` if the response was sent successfully, or `Err(())`
+        /// if the sender was already taken or the receiver was dropped.
+        ///
+        /// # Errors
+        ///
+        /// Returns `Err(())` if:
+        /// - The sender was already used (taken)
+        /// - The mutex lock failed
+        /// - The receiver was dropped
+        #[allow(clippy::result_unit_err)] // Unit error is appropriate here - caller doesn't need details
+        pub fn send(
+            &self,
+            result: Result<(), String>,
+        ) -> Result<(), ()> {
+            if let Some(arc) = &self.0 {
+                if let Ok(mut guard) = arc.lock() {
+                    if let Some(sender) = guard.take() {
+                        return sender.send(result).map_err(|_| ());
+                    }
+                }
+            }
+            Err(())
+        }
+    }
+
+    impl Default for ResponseChannel {
+        fn default() -> Self {
+            Self::none()
+        }
     }
 
     // Manual Debug implementation since Future and EventStoreOperation don't implement Debug
@@ -618,6 +782,13 @@ pub mod effect {
                         .field("event_bus", &"<event_bus>")
                         .finish(),
                 },
+                Effect::PublishWithResponse { .. } => f
+                    .debug_struct("Effect::PublishWithResponse")
+                    .field("channel", &"<broadcast_channel>")
+                    .field("create_action", &"<fn>")
+                    .field("on_success", &"<fn>")
+                    .field("on_error", &"<fn>")
+                    .finish(),
             }
         }
     }
@@ -667,7 +838,7 @@ pub mod effect {
         pub fn map<B, F>(self, f: F) -> Effect<B>
         where
             F: Fn(Action) -> B + Send + Sync + 'static + Clone,
-            Action: 'static,
+            Action: Send + 'static,
             B: Send + 'static,
         {
             match self {
@@ -700,6 +871,29 @@ pub mod effect {
                 Effect::Stream(stream) => Effect::Stream(Box::pin(stream.map(f))),
                 Effect::EventStore(op) => Effect::EventStore(map_event_store_operation(op, f)),
                 Effect::PublishEvent(op) => Effect::PublishEvent(map_event_bus_operation(op, f)),
+                Effect::PublishWithResponse {
+                    channel,
+                    create_action,
+                    on_success,
+                    on_error,
+                } => {
+                    // Convert to Future for mapping since broadcast channel type can't change
+                    Effect::Future(Box::pin(async move {
+                        let (tx, rx) = tokio::sync::oneshot::channel();
+                        let response_channel = ResponseChannel::new(Some(tx));
+                        let action = create_action(response_channel);
+
+                        if channel.send(action).is_err() {
+                            return on_error("Failed to publish".to_string()).map(f);
+                        }
+
+                        match rx.await {
+                            Ok(Ok(())) => on_success().map(&f),
+                            Ok(Err(err)) => on_error(err).map(&f),
+                            Err(_) => on_error("Response channel closed".to_string()).map(&f),
+                        }
+                    }))
+                },
             }
         }
     }
@@ -708,7 +902,7 @@ pub mod effect {
     fn map_effect<A, B, F>(effect: Effect<A>, f: F) -> Effect<B>
     where
         F: Fn(A) -> B + Send + Sync + 'static + Clone,
-        A: 'static,
+        A: Send + 'static,
         B: Send + 'static,
     {
         match effect {
@@ -741,6 +935,33 @@ pub mod effect {
             Effect::Stream(stream) => Effect::Stream(Box::pin(stream.map(f))),
             Effect::EventStore(op) => Effect::EventStore(map_event_store_operation(op, f)),
             Effect::PublishEvent(op) => Effect::PublishEvent(map_event_bus_operation(op, f)),
+            Effect::PublishWithResponse {
+                channel,
+                create_action,
+                on_success,
+                on_error,
+            } => {
+                // PublishWithResponse cannot be directly mapped because the broadcast
+                // channel is already typed to A. Instead, we execute it as a Future
+                // that publishes type A and maps the result to type B.
+                Effect::Future(Box::pin(async move {
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    let response_channel = ResponseChannel::new(Some(tx));
+                    let action = create_action(response_channel);
+
+                    // Publish to channel
+                    if channel.send(action).is_err() {
+                        return on_error("Failed to publish".to_string()).map(f);
+                    }
+
+                    // Wait for response
+                    match rx.await {
+                        Ok(Ok(())) => on_success().map(&f),
+                        Ok(Err(err)) => on_error(err).map(&f),
+                        Err(_) => on_error("Response channel closed".to_string()).map(&f),
+                    }
+                }))
+            },
         }
     }
 

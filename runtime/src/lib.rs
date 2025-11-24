@@ -1813,6 +1813,9 @@ pub mod store {
         }
 
         /// Recursively inject metadata into all `AppendEvents` and `PublishEvent` effects in an effect tree
+        #[allow(clippy::cognitive_complexity, clippy::too_many_lines, clippy::needless_pass_by_value)]
+        // - Recursive metadata injection requires comprehensive matching
+        // - Pass by value avoids cloning when effect doesn't need metadata; clone only for recursive calls
         fn inject_metadata_into_effect(effect: Effect<A>, metadata: composable_rust_core::event::EventMetadata) -> Effect<A>
         where
             A: Clone + Send + 'static,
@@ -2784,6 +2787,80 @@ pub mod store {
                             let _ = store.send_with_metadata(action, metadata_clone).await;
                         } else {
                             tracing::trace!("PublishEvent operation completed with no action");
+                        }
+                    });
+                },
+                Effect::PublishWithResponse {
+                    channel,
+                    create_action,
+                    on_success,
+                    on_error,
+                } => {
+                    use composable_rust_core::ResponseChannel;
+
+                    tracing::trace!("Executing Effect::PublishWithResponse");
+                    metrics::counter!("store.effects.executed", "type" => "publish_with_response").increment(1);
+                    tracking.increment();
+                    let tracking_clone = tracking.clone();
+                    let store = self.clone();
+                    let metadata_clone = metadata.clone();
+
+                    // Track global pending effects for shutdown
+                    self.pending_effects.fetch_add(1, Ordering::SeqCst);
+                    let pending_guard = AtomicCounterGuard(Arc::clone(&self.pending_effects));
+
+                    tokio::spawn(async move {
+                        let _guard = DecrementGuard(tracking_clone.clone());
+                        let _pending_guard = pending_guard; // Decrement on drop
+
+                        // Create oneshot channel for projection response
+                        let (tx, rx) = tokio::sync::oneshot::channel();
+                        let response_channel = ResponseChannel::new(Some(tx));
+
+                        // Create the action with response channel
+                        let action_to_publish = create_action(response_channel);
+
+                        tracing::debug!("Publishing action with response channel");
+
+                        // Publish to broadcast channel
+                        if let Err(e) = channel.send(action_to_publish) {
+                            tracing::error!(error = %e, "Failed to publish action to broadcast channel");
+                            let error_action = on_error(format!("Failed to publish: {e}"));
+                            if let Some(action) = error_action {
+                                let _ = store.send_with_metadata(action, metadata_clone).await;
+                            }
+                            return;
+                        }
+
+                        tracing::debug!("Waiting for projection response");
+
+                        // Wait for projection to signal completion
+                        let result_action = match rx.await {
+                            Ok(Ok(())) => {
+                                tracing::debug!("Projection signaled success");
+                                on_success()
+                            }
+                            Ok(Err(error)) => {
+                                tracing::warn!(error = %error, "Projection signaled failure");
+                                on_error(error)
+                            }
+                            Err(_) => {
+                                tracing::warn!("Projection response channel closed without signaling");
+                                on_error("Projection did not signal completion".to_string())
+                            }
+                        };
+
+                        // Send result action back to store if callback produced one
+                        if let Some(action) = result_action {
+                            tracing::trace!(
+                                "PublishWithResponse completed, broadcasting result action"
+                            );
+                            // Broadcast the action so send_and_wait_for_with_metadata can receive it
+                            // Note: We broadcast instead of send because send_and_wait_for_with_metadata
+                            // only receives actions that are broadcast (produced by effects), not directly sent
+                            let _ = store.action_broadcast.send(action);
+                        } else {
+                            tracing::trace!("PublishWithResponse completed with no result action");
                         }
                     });
                 },

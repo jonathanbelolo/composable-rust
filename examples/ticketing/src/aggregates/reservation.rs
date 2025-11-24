@@ -17,8 +17,8 @@ use crate::types::{
 };
 use chrono::{DateTime, Duration, Utc};
 use composable_rust_core::{
-    append_events, delay, effect::Effect, environment::Clock, event_bus::EventBus,
-    event_store::EventStore, publish_event, reducer::Reducer, smallvec,
+    append_events, delay, effect::Effect, environment::Clock,
+    event_store::EventStore, reducer::Reducer, smallvec,
     stream::{StreamId, Version},
     SmallVec,
 };
@@ -273,6 +273,20 @@ pub enum ReservationAction {
         error: String,
     },
 
+    /// Projection update confirmed
+    ReservationProjectionConfirmed {
+        /// Reservation ID
+        reservation_id: ReservationId,
+    },
+
+    /// Projection update failed
+    ReservationProjectionFailed {
+        /// Reservation ID
+        reservation_id: ReservationId,
+        /// Failure reason
+        reason: String,
+    },
+
     /// Stream version was updated after successful event append
     #[event]
     VersionUpdated {
@@ -295,8 +309,6 @@ pub struct ReservationEnvironment {
     pub clock: Arc<dyn Clock>,
     /// Event store for persistence of reservation events
     pub event_store: Arc<dyn EventStore>,
-    /// Event bus for publishing reservation events
-    pub event_bus: Arc<dyn EventBus>,
     /// Stream ID for this aggregate instance
     pub stream_id: StreamId,
     /// Projection query for loading state on-demand
@@ -311,7 +323,6 @@ impl ReservationEnvironment {
     pub fn new(
         clock: Arc<dyn Clock>,
         event_store: Arc<dyn EventStore>,
-        event_bus: Arc<dyn EventBus>,
         stream_id: StreamId,
         projection: Arc<dyn ReservationProjectionQuery>,
         global_actions: GlobalActionChannels,
@@ -319,7 +330,6 @@ impl ReservationEnvironment {
         Self {
             clock,
             event_store,
-            event_bus,
             stream_id,
             projection,
             global_actions,
@@ -345,13 +355,16 @@ impl ReservationReducer {
         Self
     }
 
-    /// Creates effects for persisting and publishing an event
+    /// Creates effects for persisting events (PostgreSQL only, no Redpanda)
+    ///
+    /// With direct orchestration, we use local channels for coordination,
+    /// so Redpanda publishing is no longer needed.
     ///
     /// # Arguments
     ///
-    /// - `event`: The event to persist and publish
+    /// - `event`: The event to persist
     /// - `expected_version`: Expected version for optimistic concurrency control
-    /// - `env`: Environment for event store and bus
+    /// - `env`: Environment for event store
     /// - `correlation_id`: Optional correlation ID for request tracking
     fn create_effects(
         event: ReservationAction,
@@ -377,15 +390,6 @@ impl ReservationReducer {
                 expected_version: Some(expected_version),
                 events: vec![serialized.clone()],
                 on_success: |version| Some(ReservationAction::VersionUpdated { version }),
-                on_error: |error| Some(ReservationAction::ValidationFailed {
-                    error: error.to_string()
-                })
-            },
-            publish_event! {
-                bus: env.event_bus,
-                topic: "reservation",
-                event: serialized,
-                on_success: || None,
                 on_error: |error| Some(ReservationAction::ValidationFailed {
                     error: error.to_string()
                 })
@@ -536,6 +540,7 @@ impl ReservationReducer {
 
             // Commands and queries don't modify state
             // Response events also don't modify state (they're for API handlers)
+            // Projection confirmation actions are logged but don't modify aggregate state
             ReservationAction::InitiateReservation { .. }
             | ReservationAction::CompletePayment { .. }
             | ReservationAction::CancelReservation { .. }
@@ -543,7 +548,9 @@ impl ReservationReducer {
             | ReservationAction::GetReservation { .. }
             | ReservationAction::ListReservations { .. }
             | ReservationAction::ReservationQueried { .. }
-            | ReservationAction::ReservationsListed { .. } => {}
+            | ReservationAction::ReservationsListed { .. }
+            | ReservationAction::ReservationProjectionConfirmed { .. }
+            | ReservationAction::ReservationProjectionFailed { .. } => {}
         }
     }
 }
@@ -576,7 +583,7 @@ impl Reducer for ReservationReducer {
                 quantity,
                 specific_seats,
                 correlation_id,
-                respond_to,
+                respond_to: _,  // Explicitly ignore - infrastructure handles this
             } => {
                 let _span = tracing::info_span!(
                     "saga.reservation.initiate",
@@ -628,8 +635,7 @@ impl Reducer for ReservationReducer {
                 // Persist and publish our event with correlation_id
                 let mut effects = Self::create_effects(event, expected_version, env, correlation_id);
 
-                // TCA Pattern: Publish command to event bus for Inventory child aggregate
-                // The Inventory aggregate subscribes to its topic and will process this command
+                // Direct orchestration: Send command to Inventory via global channel
                 let reserve_seats_cmd = InventoryAction::ReserveSeats {
                     reservation_id,
                     event_id,
@@ -638,36 +644,13 @@ impl Reducer for ReservationReducer {
                     specific_seats,
                     expires_at,
                 };
-                let ticketing_event = crate::projections::TicketingEvent::Inventory(reserve_seats_cmd);
-                match ticketing_event.serialize() {
-                    Ok(mut serialized) => {
-                        // Propagate correlation_id to cross-aggregate event for projection tracking
-                        if let Some(cid) = correlation_id {
-                            let metadata = serialized.metadata.get_or_insert_with(composable_rust_core::event::EventMetadata::new);
-                            metadata.correlation_id = Some(cid.to_string());
-                        }
-
-                        effects.push(publish_event! {
-                            bus: env.event_bus,
-                            topic: "inventory",
-                            event: serialized,
-                            on_success: || None,
-                            on_error: |error| Some(ReservationAction::ValidationFailed {
-                                error: error.to_string()
-                            })
-                        });
+                let inventory_channel = env.global_actions.inventory_actions.clone();
+                effects.push(Effect::Future(Box::pin(async move {
+                    if let Err(e) = inventory_channel.send(reserve_seats_cmd) {
+                        tracing::error!(error = %e, "Failed to send ReserveSeats command to inventory channel");
                     }
-                    Err(e) => {
-                        tracing::error!(error = %e, "Failed to serialize ReserveSeats command");
-                        // Emit ValidationFailed event to indicate serialization failure
-                        let failed_event = ReservationAction::ValidationFailed {
-                            error: format!("Failed to serialize ReserveSeats command: {e}")
-                        };
-                        let expected_version = state.version;
-                        Self::apply_event(state, &failed_event);
-                        return Self::create_effects(failed_event, expected_version, env, correlation_id);
-                    }
-                }
+                    None
+                })));
 
                 // Schedule expiration timeout (5 minutes)
                 effects.push(delay! {
@@ -675,22 +658,35 @@ impl Reducer for ReservationReducer {
                     action: ReservationAction::ExpireReservation { reservation_id }
                 });
 
-                // Publish to global channel for projections
-                let action_to_publish = ReservationAction::InitiateReservation {
-                    reservation_id: reservation_id_clone,
-                    event_id: event_id_clone,
-                    customer_id: customer_id_clone,
-                    section: section_clone,
-                    quantity: quantity_clone,
-                    specific_seats: specific_seats_clone,
-                    correlation_id: correlation_id_clone,
-                    respond_to,
-                };
-                let global_channel = env.global_actions.reservation_actions.clone();
-                effects.push(Effect::Future(Box::pin(async move {
-                    let _ = global_channel.send(action_to_publish);
-                    None
-                })));
+                // Publish to global channel for projections and wait for completion
+                let reservation_id_for_success = reservation_id;
+                let reservation_id_for_error = reservation_id;
+                effects.push(Effect::PublishWithResponse {
+                    channel: env.global_actions.reservation_actions.clone(),
+                    create_action: Box::new(move |respond_to| {
+                        ReservationAction::InitiateReservation {
+                            reservation_id: reservation_id_clone,
+                            event_id: event_id_clone,
+                            customer_id: customer_id_clone,
+                            section: section_clone,
+                            quantity: quantity_clone,
+                            specific_seats: specific_seats_clone,
+                            correlation_id: correlation_id_clone,
+                            respond_to,
+                        }
+                    }),
+                    on_success: Box::new(move || {
+                        Some(ReservationAction::ReservationProjectionConfirmed {
+                            reservation_id: reservation_id_for_success,
+                        })
+                    }),
+                    on_error: Box::new(move |reason| {
+                        Some(ReservationAction::ReservationProjectionFailed {
+                            reservation_id: reservation_id_for_error,
+                            reason,
+                        })
+                    }),
+                });
 
                 tracing::info!(
                     reservation_id = %reservation_id.as_uuid(),
@@ -742,7 +738,7 @@ impl Reducer for ReservationReducer {
                     .map(|r| r.customer_id)
                     .unwrap_or_else(CustomerId::new);
 
-                // TCA Pattern: Publish command to event bus for Payment child aggregate
+                // Direct orchestration: Send command to Payment via global channel
                 let process_payment = PaymentAction::ProcessPayment {
                     payment_id,
                     reservation_id,
@@ -753,18 +749,13 @@ impl Reducer for ReservationReducer {
                     },
                     respond_to: ResponseChannel::none(),
                 };
-                let ticketing_event = crate::projections::TicketingEvent::Payment(process_payment);
-                if let Ok(serialized) = ticketing_event.serialize() {
-                    effects.push(publish_event! {
-                        bus: env.event_bus,
-                        topic: "payment",
-                        event: serialized,
-                        on_success: || None,
-                        on_error: |error| Some(ReservationAction::ValidationFailed {
-                            error: error.to_string()
-                        })
-                    });
-                }
+                let payment_channel = env.global_actions.payment_actions.clone();
+                effects.push(Effect::Future(Box::pin(async move {
+                    if let Err(e) = payment_channel.send(process_payment) {
+                        tracing::error!(error = %e, "Failed to send ProcessPayment command to payment channel");
+                    }
+                    None
+                })));
 
                 effects
             }
@@ -818,23 +809,18 @@ impl Reducer for ReservationReducer {
                     Some(completion_clone)
                 })));
 
-                // TCA Pattern: Publish confirm command to event bus for Inventory
+                // Direct orchestration: Send confirm command to Inventory via global channel
                 let confirm_seats = InventoryAction::ConfirmReservation {
                     reservation_id,
                     customer_id,
                 };
-                let ticketing_event = crate::projections::TicketingEvent::Inventory(confirm_seats);
-                if let Ok(serialized) = ticketing_event.serialize() {
-                    effects.push(publish_event! {
-                        bus: env.event_bus,
-                        topic: "inventory",
-                        event: serialized,
-                        on_success: || None,
-                        on_error: |error| Some(ReservationAction::ValidationFailed {
-                            error: error.to_string()
-                        })
-                    });
-                }
+                let inventory_channel = env.global_actions.inventory_actions.clone();
+                effects.push(Effect::Future(Box::pin(async move {
+                    if let Err(e) = inventory_channel.send(confirm_seats) {
+                        tracing::error!(error = %e, "Failed to send ConfirmReservation command to inventory channel");
+                    }
+                    None
+                })));
 
                 effects
             }
@@ -874,20 +860,15 @@ impl Reducer for ReservationReducer {
                 let mut effects = Self::create_effects(action, expected_version, env, None);
                 effects.extend(Self::create_effects(compensation, expected_version_2, env, None));
 
-                // TCA Pattern: Publish release command to event bus (compensation)
+                // Direct orchestration: Send release command to Inventory (compensation)
                 let release_seats = InventoryAction::ReleaseReservation { reservation_id };
-                let ticketing_event = crate::projections::TicketingEvent::Inventory(release_seats);
-                if let Ok(serialized) = ticketing_event.serialize() {
-                    effects.push(publish_event! {
-                        bus: env.event_bus,
-                        topic: "inventory",
-                        event: serialized,
-                        on_success: || None,
-                        on_error: |error| Some(ReservationAction::ValidationFailed {
-                            error: error.to_string()
-                        })
-                    });
-                }
+                let inventory_channel = env.global_actions.inventory_actions.clone();
+                effects.push(Effect::Future(Box::pin(async move {
+                    if let Err(e) = inventory_channel.send(release_seats) {
+                        tracing::error!(error = %e, "Failed to send ReleaseReservation command to inventory channel");
+                    }
+                    None
+                })));
 
                 effects
             }
@@ -912,21 +893,16 @@ impl Reducer for ReservationReducer {
                         // Persist and publish expiration event
                         let mut effects = Self::create_effects(expiration, expected_version, env, None);
 
-                        // TCA Pattern: Publish release command to event bus (compensation)
+                        // Direct orchestration: Send release command to Inventory (compensation)
                         let release_seats =
                             InventoryAction::ReleaseReservation { reservation_id };
-                        let ticketing_event = crate::projections::TicketingEvent::Inventory(release_seats);
-                        if let Ok(serialized) = ticketing_event.serialize() {
-                            effects.push(publish_event! {
-                                bus: env.event_bus,
-                                topic: "inventory",
-                                event: serialized,
-                                on_success: || None,
-                                on_error: |error| Some(ReservationAction::ValidationFailed {
-                                    error: error.to_string()
-                                })
-                            });
-                        }
+                        let inventory_channel = env.global_actions.inventory_actions.clone();
+                        effects.push(Effect::Future(Box::pin(async move {
+                            if let Err(e) = inventory_channel.send(release_seats) {
+                                tracing::error!(error = %e, "Failed to send ReleaseReservation command to inventory channel");
+                            }
+                            None
+                        })));
 
                         return effects;
                     }
@@ -952,21 +928,16 @@ impl Reducer for ReservationReducer {
                         // Persist and publish cancellation event
                         let mut effects = Self::create_effects(cancellation, expected_version, env, None);
 
-                        // TCA Pattern: Publish release command to event bus (compensation)
+                        // Direct orchestration: Send release command to Inventory (compensation)
                         let release_seats =
                             InventoryAction::ReleaseReservation { reservation_id };
-                        let ticketing_event = crate::projections::TicketingEvent::Inventory(release_seats);
-                        if let Ok(serialized) = ticketing_event.serialize() {
-                            effects.push(publish_event! {
-                                bus: env.event_bus,
-                                topic: "inventory",
-                                event: serialized,
-                                on_success: || None,
-                                on_error: |error| Some(ReservationAction::ValidationFailed {
-                                    error: error.to_string()
-                                })
-                            });
-                        }
+                        let inventory_channel = env.global_actions.inventory_actions.clone();
+                        effects.push(Effect::Future(Box::pin(async move {
+                            if let Err(e) = inventory_channel.send(release_seats) {
+                                tracing::error!(error = %e, "Failed to send ReleaseReservation command to inventory channel");
+                            }
+                            None
+                        })));
 
                         return effects;
                     }
@@ -1021,7 +992,7 @@ mod tests {
     use std::sync::Arc;
     use composable_rust_core::environment::SystemClock;
     use composable_rust_core::stream::StreamId;
-    use composable_rust_testing::{assertions, mocks::{InMemoryEventBus, InMemoryEventStore}, ReducerTest};
+    use composable_rust_testing::{assertions, mocks::InMemoryEventStore, ReducerTest};
     use crate::types::{CustomerId, EventId, Money, Reservation, ReservationExpiry, ReservationId};
 
     // Mock projection queries for tests
@@ -1066,7 +1037,6 @@ mod tests {
         let env = ReservationEnvironment::new(
             Arc::new(SystemClock),
             Arc::new(InMemoryEventStore::new()),
-            Arc::new(InMemoryEventBus::new()),
             StreamId::new("reservation-test"),
             Arc::new(MockReservationQuery),
             create_test_global_actions(),
@@ -1111,8 +1081,8 @@ mod tests {
             })
             .then_effects(|effects| {
                 // Should return 4 effects:
-                // 2 for ReservationInitiated (AppendEvents + PublishEvent)
-                // 1 for publishing ReserveSeats command to inventory topic
+                // 2 for ReservationInitiated (AppendEvents + Channel Send to reservation_actions, no Redpanda)
+                // 1 for sending ReserveSeats command to inventory_actions channel (direct orchestration)
                 // 1 for scheduling expiration timeout (Delay)
                 assert_eq!(effects.len(), 4);
             })
