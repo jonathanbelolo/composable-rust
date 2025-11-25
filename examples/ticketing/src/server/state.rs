@@ -250,6 +250,7 @@ impl AppState {
             self.event_store.clone(),
             stream_id,
             self.inventory_query.clone(),
+            self.events_projection.clone(),
             self.global_actions(),
         );
 

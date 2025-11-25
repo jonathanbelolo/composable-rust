@@ -103,6 +103,7 @@ impl Projection for PostgresEventsProjection {
                     date,
                     pricing_tiers,
                     created_at,
+                    ..
                 } => {
                     let domain_event = Event::new(
                         *id,
@@ -178,8 +179,91 @@ impl Projection for PostgresEventsProjection {
                         .map_err(|e| ProjectionError::Storage(e.to_string()))?;
                     }
                 }
+                EventAction::PricingTiersUpdated {
+                    event_id,
+                    pricing_tiers,
+                    ..
+                } => {
+                    // Get current event data, update pricing tiers, and save
+                    let current: Option<(sqlx::types::JsonValue,)> = sqlx::query_as(
+                        "SELECT data FROM events_projection WHERE id = $1"
+                    )
+                    .bind(event_id.as_uuid())
+                    .fetch_optional(&*self.pool)
+                    .await
+                    .map_err(|e| ProjectionError::Storage(e.to_string()))?;
+
+                    let Some((json,)) = current else {
+                        return Err(ProjectionError::Storage(format!(
+                            "Event {} not found in projection",
+                            event_id
+                        )));
+                    };
+
+                    let mut event: Event = serde_json::from_value(json)
+                        .map_err(|e| ProjectionError::Serialization(e.to_string()))?;
+
+                    event.pricing_tiers.clone_from(pricing_tiers);
+
+                    let updated_json = serde_json::to_value(&event)
+                        .map_err(|e| ProjectionError::Serialization(e.to_string()))?;
+
+                    sqlx::query(
+                        "UPDATE events_projection
+                         SET data = $2, updated_at = $3
+                         WHERE id = $1"
+                    )
+                    .bind(event_id.as_uuid())
+                    .bind(&updated_json)
+                    .bind(chrono::Utc::now())
+                    .execute(&*self.pool)
+                    .await
+                    .map_err(|e| ProjectionError::Storage(e.to_string()))?;
+                }
+                EventAction::VenueSectionsAdded {
+                    event_id,
+                    sections,
+                    ..
+                } => {
+                    // Get current event data, add sections, and update
+                    let current: Option<(sqlx::types::JsonValue,)> = sqlx::query_as(
+                        "SELECT data FROM events_projection WHERE id = $1"
+                    )
+                    .bind(event_id.as_uuid())
+                    .fetch_optional(&*self.pool)
+                    .await
+                    .map_err(|e| ProjectionError::Storage(e.to_string()))?;
+
+                    let Some((json,)) = current else {
+                        return Err(ProjectionError::Storage(format!(
+                            "Event {} not found in projection",
+                            event_id
+                        )));
+                    };
+
+                    let mut event: Event = serde_json::from_value(json)
+                        .map_err(|e| ProjectionError::Serialization(e.to_string()))?;
+
+                    event.venue.sections.extend(sections.clone());
+
+                    let updated_json = serde_json::to_value(&event)
+                        .map_err(|e| ProjectionError::Serialization(e.to_string()))?;
+
+                    sqlx::query(
+                        "UPDATE events_projection
+                         SET data = $2, updated_at = $3
+                         WHERE id = $1"
+                    )
+                    .bind(event_id.as_uuid())
+                    .bind(&updated_json)
+                    .bind(chrono::Utc::now())
+                    .execute(&*self.pool)
+                    .await
+                    .map_err(|e| ProjectionError::Storage(e.to_string()))?;
+                }
                 _ => {
-                    // Ignore commands and validation failures
+                    // Ignore commands and other actions (validation failures, query results, etc.)
+                    // Only EVENTS should update projection state
                 }
             }
         }

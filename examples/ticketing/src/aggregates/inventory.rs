@@ -293,6 +293,25 @@ pub enum InventoryAction {
         seat_assignments: Vec<SeatAssignment>,
     },
 
+    /// Pricing queried from Event aggregate
+    #[event]
+    PricingQueried {
+        /// Event ID
+        event_id: EventId,
+        /// Section
+        section: String,
+        /// Price per seat in cents (None if no pricing configured)
+        price_per_seat: Option<u64>,
+        /// Reservation ID this pricing is for
+        reservation_id: ReservationId,
+        /// Quantity
+        quantity: u32,
+        /// Specific seats requested (if any)
+        specific_seats: Option<Vec<SeatNumber>>,
+        /// Expiration time
+        expires_at: DateTime<Utc>,
+    },
+
     /// All sections were queried (query result)
     #[event]
     AllSectionsQueried {
@@ -343,8 +362,10 @@ pub struct InventoryEnvironment {
     pub event_store: Arc<dyn EventStore>,
     /// Stream ID for this aggregate instance
     pub stream_id: StreamId,
-    /// Projection query for loading state on-demand
-    pub projection: Arc<dyn InventoryProjectionQuery>,
+    /// Projection query for loading inventory state on-demand
+    pub inventory_projection: Arc<dyn InventoryProjectionQuery>,
+    /// Event projection for pricing queries
+    pub event_projection: Arc<dyn super::event::EventProjectionQuery>,
     /// Global action channels for cross-aggregate coordination
     pub global_actions: GlobalActionChannels,
 }
@@ -356,14 +377,16 @@ impl InventoryEnvironment {
         clock: Arc<dyn Clock>,
         event_store: Arc<dyn EventStore>,
         stream_id: StreamId,
-        projection: Arc<dyn InventoryProjectionQuery>,
+        inventory_projection: Arc<dyn InventoryProjectionQuery>,
+        event_projection: Arc<dyn super::event::EventProjectionQuery>,
         global_actions: GlobalActionChannels,
     ) -> Self {
         Self {
             clock,
             event_store,
             stream_id,
-            projection,
+            inventory_projection,
+            event_projection,
             global_actions,
         }
     }
@@ -387,11 +410,38 @@ impl InventoryReducer {
         Self
     }
 
-    /// Calculate price per seat based on section name.
+    /// Calculate price per seat from Event's pricing tiers.
     ///
-    /// This is a simplified pricing model for demonstration purposes.
-    /// In a production system, prices would be queried from the Event projection's
-    /// pricing tiers based on (event_id, section, tier_type).
+    /// Selects the appropriate pricing tier based on:
+    /// - Section match
+    /// - Current time (tier availability window)
+    ///
+    /// Pricing tiers have time-based availability (EarlyBird, Regular, LastMinute).
+    /// Returns the `base_price` from the first matching tier.
+    ///
+    /// # Returns
+    ///
+    /// Price in cents, or None if no matching tier found
+    fn calculate_price_from_tiers(
+        pricing_tiers: &[crate::types::PricingTier],
+        section: &str,
+        now: DateTime<Utc>,
+    ) -> Option<u64> {
+        // Find first tier that matches section and is currently available
+        pricing_tiers
+            .iter()
+            .find(|tier| {
+                tier.section == section
+                    && tier.available_from <= now
+                    && tier.available_until.map_or(true, |until| now <= until)
+            })
+            .map(|tier| tier.base_price.cents())
+    }
+
+    /// Fallback pricing for when Event has no configured pricing tiers.
+    ///
+    /// This is a simplified pricing model for backwards compatibility.
+    /// Used only when Event projection returns None or has empty pricing_tiers.
     ///
     /// # Pricing Logic
     ///
@@ -402,7 +452,7 @@ impl InventoryReducer {
     /// # Returns
     ///
     /// Price in cents
-    fn calculate_section_price(section: &str) -> u64 {
+    fn fallback_section_price(section: &str) -> u64 {
         let section_lower = section.to_lowercase();
 
         if section_lower.contains("vip") || section_lower.contains("premium") {
@@ -794,6 +844,32 @@ impl InventoryReducer {
                 state.version = *version;
             }
 
+            InventoryAction::PricingQueried {
+                event_id,
+                section,
+                price_per_seat,
+                ..
+            } => {
+                tracing::debug!(
+                    "PricingQueried: event_id={}, section={}, price_per_seat={:?}",
+                    event_id,
+                    section,
+                    price_per_seat
+                );
+
+                // Cache the pricing for this (event_id, section)
+                if let Some(price) = price_per_seat {
+                    state.pricing_cache.insert((*event_id, section.clone()), *price);
+                    tracing::debug!("Cached pricing: {} cents for section {}", price, section);
+                } else {
+                    tracing::warn!(
+                        "No pricing configured for event {} section {}. Will use fallback pricing.",
+                        event_id,
+                        section
+                    );
+                }
+            }
+
             // Commands and informational events don't modify state
             InventoryAction::InsufficientInventory { .. }
             | InventoryAction::InitializeInventory { .. }
@@ -930,7 +1006,7 @@ impl Reducer for InventoryReducer {
                 // Check if state has been loaded from projection
                 if !state.is_loaded(&event_id, &section) {
                     tracing::debug!(
-                        "State not loaded for event_id={}, section={}. Triggering load from projection.",
+                        "State not loaded for event_id={}, section={}. Triggering parallel load of inventory + pricing.",
                         event_id,
                         section
                     );
@@ -938,10 +1014,14 @@ impl Reducer for InventoryReducer {
                     // Mark as loading to prevent duplicate load requests
                     state.mark_loading(event_id, section.clone());
 
-                    // Create effect to load state from projection
-                    let projection = env.projection.clone();
+                    // Clone dependencies for async closures
+                    let inventory_projection = env.inventory_projection.clone();
+                    let event_projection = env.event_projection.clone();
+                    let clock = env.clock.clone();
                     let event_id_copy = event_id;
                     let section_copy = section.clone();
+                    let section_copy2 = section.clone();
+                    let specific_seats_copy = specific_seats.clone();
                     let original_command = InventoryAction::ReserveSeats {
                         reservation_id,
                         event_id,
@@ -951,31 +1031,62 @@ impl Reducer for InventoryReducer {
                         expires_at,
                     };
 
-                    // Use Sequential to: 1) load state, 2) retry original command
+                    // Use Sequential: 1) Parallel load (inventory + pricing), 2) retry original command
                     return smallvec![Effect::Sequential(vec![
-                        Effect::Future(Box::pin(async move {
-                            // Load inventory data from projection
-                            let result = projection
-                                .load_inventory(&event_id_copy, &section_copy)
-                                .await
-                                .ok()
-                                .flatten();
+                        // Load inventory state and pricing in parallel
+                        Effect::Parallel(vec![
+                            Effect::Future(Box::pin(async move {
+                                // Load inventory data from projection
+                                let result = inventory_projection
+                                    .load_inventory(&event_id_copy, &section_copy)
+                                    .await
+                                    .ok()
+                                    .flatten();
 
-                            // Destructure into counts and seat assignments
-                            let (inventory_data, seat_assignments) = match result {
-                                Some((counts, seats)) => (Some(counts), seats),
-                                None => (None, Vec::new()),
-                            };
+                                // Destructure into counts and seat assignments
+                                let (inventory_data, seat_assignments) = match result {
+                                    Some((counts, seats)) => (Some(counts), seats),
+                                    None => (None, Vec::new()),
+                                };
 
-                            // Return StateLoaded event with complete snapshot
-                            Some(InventoryAction::InventoryStateLoaded {
-                                event_id: event_id_copy,
-                                section: section_copy,
-                                inventory_data,
-                                seat_assignments,
-                            })
-                        })),
-                        // After state is loaded, retry the original command
+                                // Return StateLoaded event with complete snapshot
+                                Some(InventoryAction::InventoryStateLoaded {
+                                    event_id: event_id_copy,
+                                    section: section_copy,
+                                    inventory_data,
+                                    seat_assignments,
+                                })
+                            })),
+                            Effect::Future(Box::pin(async move {
+                                // Load Event to get pricing configuration
+                                let event_result = event_projection
+                                    .load_event(&event_id_copy)
+                                    .await
+                                    .ok()
+                                    .flatten();
+
+                                // Calculate price per seat based on Event's pricing tiers
+                                let price_per_seat = event_result.and_then(|event| {
+                                    Self::calculate_price_from_tiers(
+                                        &event.pricing_tiers,
+                                        &section_copy2,
+                                        clock.now(),
+                                    )
+                                });
+
+                                // Return pricing queried event
+                                Some(InventoryAction::PricingQueried {
+                                    event_id: event_id_copy,
+                                    section: section_copy2,
+                                    price_per_seat,
+                                    reservation_id,
+                                    quantity,
+                                    specific_seats: specific_seats_copy,
+                                    expires_at,
+                                })
+                            })),
+                        ]),
+                        // After both loads complete, retry the original command
                         Effect::Future(Box::pin(async move {
                             Some(original_command)
                         })),
@@ -1091,10 +1202,19 @@ impl Reducer for InventoryReducer {
                     std::time::Duration::from_secs(0)
                 };
 
-                // Calculate pricing based on section and quantity
-                // In a real system, this would query event pricing tiers from the event projection
-                // For now, using simple section-based pricing as a pragmatic solution
-                let price_per_seat = Self::calculate_section_price(&section);
+                // Calculate pricing: Use cached pricing from Event, fallback to simple logic
+                let price_per_seat = state
+                    .pricing_cache
+                    .get(&(event_id, section.clone()))
+                    .copied()
+                    .unwrap_or_else(|| {
+                        tracing::warn!(
+                            "No cached pricing for event {} section {}. Using fallback pricing.",
+                            event_id,
+                            section
+                        );
+                        Self::fallback_section_price(&section)
+                    });
                 let total_amount = Money::from_cents(price_per_seat * u64::from(quantity));
 
                 tracing::debug!(
@@ -1239,7 +1359,7 @@ impl Reducer for InventoryReducer {
 
             // ========== Query Actions ==========
             InventoryAction::GetAllSections { event_id } => {
-                let projection = env.projection.clone();
+                let projection = env.inventory_projection.clone();
                 let event_id_clone = event_id;
                 smallvec![Effect::Future(Box::pin(async move {
                     match projection.get_all_sections(&event_id_clone).await {
@@ -1255,7 +1375,7 @@ impl Reducer for InventoryReducer {
             }
 
             InventoryAction::GetSectionAvailability { event_id, section } => {
-                let projection = env.projection.clone();
+                let projection = env.inventory_projection.clone();
                 let event_id_clone = event_id;
                 let section_clone = section.clone();
                 smallvec![Effect::Future(Box::pin(async move {
@@ -1273,7 +1393,7 @@ impl Reducer for InventoryReducer {
             }
 
             InventoryAction::GetTotalAvailable { event_id } => {
-                let projection = env.projection.clone();
+                let projection = env.inventory_projection.clone();
                 let event_id_clone = event_id;
                 smallvec![Effect::Future(Box::pin(async move {
                     match projection.get_total_available(&event_id_clone).await {
@@ -1344,6 +1464,23 @@ mod tests {
         }
     }
 
+    // Mock event query for tests
+    #[derive(Clone)]
+    struct MockEventQuery;
+
+    #[async_trait::async_trait]
+    impl crate::aggregates::event::EventProjectionQuery for MockEventQuery {
+        async fn load_event(&self, _event_id: &EventId) -> Result<Option<crate::types::Event>, String> {
+            // Return None for tests - no pricing configured
+            Ok(None)
+        }
+
+        async fn load_events(&self, _status_filter: Option<crate::types::EventStatus>) -> Result<Vec<crate::types::Event>, String> {
+            // Return empty list for tests
+            Ok(vec![])
+        }
+    }
+
     fn create_test_global_channels() -> GlobalActionChannels {
         use tokio::sync::broadcast;
         // Note: With direct orchestration, we don't need cross-aggregate action imports in tests
@@ -1367,6 +1504,7 @@ mod tests {
             Arc::new(InMemoryEventStore::new()),
             StreamId::new("inventory-test"),
             Arc::new(MockInventoryQuery),
+            Arc::new(MockEventQuery),
             create_test_global_channels(),
         )
     }
@@ -1673,4 +1811,143 @@ mod tests {
         assert_eq!(inventory.sold, 0);
         assert!(state.last_error.is_some());
     }
+
+    // ==================== Pricing Calculation Tests ====================
+
+    #[test]
+    fn test_calculate_price_from_tiers_active_tier() {
+        let now = Utc::now();
+        let pricing_tiers = vec![
+            crate::types::PricingTier::new(
+                crate::types::TierType::EarlyBird,
+                "General".to_string(),
+                crate::types::Money::from_dollars(30),
+                now - chrono::Duration::days(1),
+                Some(now + chrono::Duration::days(7)),
+            ),
+            crate::types::PricingTier::new(
+                crate::types::TierType::Regular,
+                "General".to_string(),
+                crate::types::Money::from_dollars(50),
+                now + chrono::Duration::days(7),
+                None,
+            ),
+        ];
+
+        let price = InventoryReducer::calculate_price_from_tiers(&pricing_tiers, "General", now);
+        assert_eq!(price, Some(3000)); // EarlyBird price
+    }
+
+    #[test]
+    fn test_calculate_price_from_tiers_future_tier() {
+        let now = Utc::now();
+        let pricing_tiers = vec![
+            crate::types::PricingTier::new(
+                crate::types::TierType::EarlyBird,
+                "General".to_string(),
+                crate::types::Money::from_dollars(30),
+                now - chrono::Duration::days(10),
+                Some(now - chrono::Duration::days(1)),
+            ),
+            crate::types::PricingTier::new(
+                crate::types::TierType::Regular,
+                "General".to_string(),
+                crate::types::Money::from_dollars(50),
+                now,
+                None,
+            ),
+        ];
+
+        let price = InventoryReducer::calculate_price_from_tiers(&pricing_tiers, "General", now);
+        assert_eq!(price, Some(5000)); // Regular price (EarlyBird expired)
+    }
+
+    #[test]
+    fn test_calculate_price_from_tiers_expired_tier() {
+        let now = Utc::now();
+        let pricing_tiers = vec![
+            crate::types::PricingTier::new(
+                crate::types::TierType::EarlyBird,
+                "General".to_string(),
+                crate::types::Money::from_dollars(30),
+                now - chrono::Duration::days(10),
+                Some(now - chrono::Duration::days(1)),
+            ),
+        ];
+
+        let price = InventoryReducer::calculate_price_from_tiers(&pricing_tiers, "General", now);
+        assert_eq!(price, None); // All tiers expired
+    }
+
+    #[test]
+    fn test_calculate_price_from_tiers_wrong_section() {
+        let now = Utc::now();
+        let pricing_tiers = vec![
+            crate::types::PricingTier::new(
+                crate::types::TierType::Regular,
+                "VIP".to_string(),
+                crate::types::Money::from_dollars(100),
+                now,
+                None,
+            ),
+        ];
+
+        let price = InventoryReducer::calculate_price_from_tiers(&pricing_tiers, "General", now);
+        assert_eq!(price, None); // No pricing for requested section
+    }
+
+    #[test]
+    fn test_calculate_price_from_tiers_multiple_sections() {
+        let now = Utc::now();
+        let pricing_tiers = vec![
+            crate::types::PricingTier::new(
+                crate::types::TierType::Regular,
+                "VIP".to_string(),
+                crate::types::Money::from_dollars(100),
+                now,
+                None,
+            ),
+            crate::types::PricingTier::new(
+                crate::types::TierType::Regular,
+                "General".to_string(),
+                crate::types::Money::from_dollars(50),
+                now,
+                None,
+            ),
+        ];
+
+        let vip_price = InventoryReducer::calculate_price_from_tiers(&pricing_tiers, "VIP", now);
+        assert_eq!(vip_price, Some(10_000));
+
+        let general_price = InventoryReducer::calculate_price_from_tiers(&pricing_tiers, "General", now);
+        assert_eq!(general_price, Some(5000));
+    }
+
+    #[test]
+    fn test_fallback_section_price_vip() {
+        let price = InventoryReducer::fallback_section_price("VIP");
+        assert_eq!(price, 10_000); // $100
+    }
+
+    #[test]
+    fn test_fallback_section_price_premium() {
+        let price = InventoryReducer::fallback_section_price("Premium Seating");
+        assert_eq!(price, 10_000); // $100 (contains "premium")
+    }
+
+    #[test]
+    fn test_fallback_section_price_general() {
+        let price = InventoryReducer::fallback_section_price("General Admission");
+        assert_eq!(price, 3_000); // $30 (contains "general")
+    }
+
+    #[test]
+    fn test_fallback_section_price_default() {
+        let price = InventoryReducer::fallback_section_price("Balcony");
+        assert_eq!(price, 5_000); // $50 (default)
+    }
+
+    // Note: Pricing cache behavior is tested implicitly through integration tests
+    // that exercise the full ReserveSeats flow with pricing lookup. The unit tests
+    // above comprehensively test the pricing calculation functions themselves.
 }

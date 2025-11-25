@@ -10,7 +10,7 @@ use crate::api::{analytics, availability, events, payments, reservations, websoc
 use crate::auth::handlers;
 use axum::{
     middleware as axum_middleware,
-    routing::{delete, get, post, put},
+    routing::{delete, get, patch, post, put},
     Router,
 };
 use composable_rust_web::middleware::correlation_id_layer;
@@ -21,6 +21,7 @@ use composable_rust_web::middleware::correlation_id_layer;
 /// - Health checks
 /// - Authentication endpoints (via framework's `auth_router`)
 /// - Event management endpoints
+/// - Pricing management endpoints (GET/PATCH event pricing tiers)
 /// - Reservation endpoints
 /// - Payment endpoints
 /// - Analytics endpoints
@@ -41,6 +42,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/events/:id", get(events::get_event))
         .route("/events/:id", put(events::update_event))
         .route("/events/:id", delete(events::delete_event))
+        // Pricing management
+        .route("/events/:id/pricing", get(events::get_event_pricing))
+        .route("/events/:id/pricing", patch(events::update_event_pricing))
+        // Venue sections management
+        .route("/events/:id/sections", post(events::add_venue_sections))
         // Availability queries (CQRS read side)
         .route(
             "/events/:id/availability",

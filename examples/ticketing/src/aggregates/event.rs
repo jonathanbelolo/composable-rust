@@ -91,6 +91,32 @@ pub enum EventAction {
         name: Option<String>,
     },
 
+    /// Update pricing tiers for an event
+    #[command]
+    UpdatePricingTiers {
+        /// Event to update
+        event_id: EventId,
+        /// New pricing tiers (replaces all existing tiers)
+        pricing_tiers: Vec<PricingTier>,
+
+        /// Response channel for projection completion
+        #[serde(skip)]
+        respond_to: ResponseChannel,
+    },
+
+    /// Add venue sections to an event
+    #[command]
+    AddVenueSections {
+        /// Event to update
+        event_id: EventId,
+        /// Sections to add
+        sections: Vec<crate::types::VenueSection>,
+
+        /// Response channel for projection completion
+        #[serde(skip)]
+        respond_to: ResponseChannel,
+    },
+
     /// Query a single event by ID
     #[command]
     GetEvent {
@@ -123,6 +149,9 @@ pub enum EventAction {
         pricing_tiers: Vec<PricingTier>,
         /// When the event was created
         created_at: DateTime<Utc>,
+        /// Response channel for projection completion signaling
+        #[serde(skip)]
+        respond_to: ResponseChannel,
     },
 
     /// Event was published
@@ -174,6 +203,34 @@ pub enum EventAction {
         updated_at: DateTime<Utc>,
     },
 
+    /// Pricing tiers were updated
+    #[event]
+    PricingTiersUpdated {
+        /// Event ID
+        event_id: EventId,
+        /// New pricing tiers
+        pricing_tiers: Vec<PricingTier>,
+        /// When updated
+        updated_at: DateTime<Utc>,
+        /// Response channel for projection completion signaling
+        #[serde(skip)]
+        respond_to: ResponseChannel,
+    },
+
+    /// Venue sections were added
+    #[event]
+    VenueSectionsAdded {
+        /// Event ID
+        event_id: EventId,
+        /// Sections that were added
+        sections: Vec<crate::types::VenueSection>,
+        /// When updated
+        updated_at: DateTime<Utc>,
+        /// Response channel for projection completion signaling
+        #[serde(skip)]
+        respond_to: ResponseChannel,
+    },
+
     /// Command validation failed
     #[event]
     ValidationFailed {
@@ -204,6 +261,47 @@ pub enum EventAction {
     VersionUpdated {
         /// New version number
         version: Version,
+    },
+
+    /// Projection update confirmed
+    EventProjectionConfirmed {
+        /// Event ID
+        event_id: EventId,
+    },
+
+    /// Projection update failed
+    EventProjectionFailed {
+        /// Event ID
+        event_id: EventId,
+        /// Failure reason
+        reason: String,
+    },
+
+    // Internal actions (post-validation execution)
+    /// Execute add venue sections after validation (internal)
+    #[doc(hidden)]
+    ExecuteAddVenueSections {
+        /// Event to update
+        event_id: EventId,
+        /// Sections to add
+        sections: Vec<crate::types::VenueSection>,
+        /// Loaded event for state update
+        loaded_event: Event,
+        /// Current version from event store for optimistic concurrency
+        current_version: Version,
+    },
+
+    /// Execute update pricing tiers after validation (internal)
+    #[doc(hidden)]
+    ExecuteUpdatePricingTiers {
+        /// Event to update
+        event_id: EventId,
+        /// New pricing tiers
+        pricing_tiers: Vec<PricingTier>,
+        /// Loaded event for state update
+        loaded_event: Event,
+        /// Current version from event store for optimistic concurrency
+        current_version: Version,
     },
 }
 
@@ -320,6 +418,7 @@ impl EventReducer {
             }
         ]
     }
+
 
     /// Validates `CreateEvent` command
     fn validate_create_event(
@@ -460,6 +559,191 @@ impl EventReducer {
         Ok(())
     }
 
+    #[allow(dead_code)]
+    fn validate_update_pricing_tiers(
+        state: &EventState,
+        event_id: &EventId,
+        pricing_tiers: &[PricingTier],
+    ) -> Result<(), String> {
+        // Event must exist
+        let Some(event) = state.get(event_id) else {
+            return Err(format!("Event {event_id} not found"));
+        };
+
+        // Cannot update pricing for cancelled events
+        if event.status == EventStatus::Cancelled {
+            return Err("Cannot update pricing for cancelled event".to_string());
+        }
+
+        // Must provide at least one pricing tier
+        if pricing_tiers.is_empty() {
+            return Err("At least one pricing tier must be provided".to_string());
+        }
+
+        // Validate all sections exist in the event's venue
+        let valid_sections: std::collections::HashSet<&str> =
+            event.venue.sections.iter().map(|s| s.name.as_str()).collect();
+
+        for tier in pricing_tiers {
+            if !valid_sections.contains(tier.section.as_str()) {
+                return Err(format!(
+                    "Section '{}' does not exist in event venue",
+                    tier.section
+                ));
+            }
+        }
+
+        // Validate each section has at least one tier
+        let sections_with_tiers: std::collections::HashSet<&str> =
+            pricing_tiers.iter().map(|t| t.section.as_str()).collect();
+
+        for section in &event.venue.sections {
+            if !sections_with_tiers.contains(section.name.as_str()) {
+                return Err(format!(
+                    "Section '{}' must have at least one pricing tier",
+                    section.name
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Validates adding venue sections to an event
+    #[allow(dead_code)]
+    fn validate_add_venue_sections(
+        state: &EventState,
+        event_id: &EventId,
+        sections: &[crate::types::VenueSection],
+    ) -> Result<(), String> {
+        // Event must exist
+        let Some(event) = state.get(event_id) else {
+            return Err(format!("Event {event_id} not found"));
+        };
+
+        // Cannot add sections to cancelled events
+        if event.status == EventStatus::Cancelled {
+            return Err("Cannot add sections to cancelled event".to_string());
+        }
+
+        // Must provide at least one section
+        if sections.is_empty() {
+            return Err("At least one section must be provided".to_string());
+        }
+
+        // Validate sections don't duplicate existing sections
+        let existing_sections: std::collections::HashSet<&str> =
+            event.venue.sections.iter().map(|s| s.name.as_str()).collect();
+
+        for section in sections {
+            if existing_sections.contains(section.name.as_str()) {
+                return Err(format!(
+                    "Section '{}' already exists in event venue",
+                    section.name
+                ));
+            }
+        }
+
+        // Validate no duplicate section names within the new sections
+        let mut seen_names = std::collections::HashSet::new();
+        for section in sections {
+            if !seen_names.insert(section.name.as_str()) {
+                return Err(format!(
+                    "Duplicate section name '{}' in request",
+                    section.name
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Validates adding venue sections using a loaded event (for projection-based validation)
+    fn validate_add_venue_sections_with_event(
+        event: &Event,
+        sections: &[crate::types::VenueSection],
+    ) -> Result<(), String> {
+        // Cannot add sections to cancelled events
+        if event.status == EventStatus::Cancelled {
+            return Err("Cannot add sections to cancelled event".to_string());
+        }
+
+        // Must provide at least one section
+        if sections.is_empty() {
+            return Err("At least one section must be provided".to_string());
+        }
+
+        // Validate sections don't duplicate existing sections
+        let existing_sections: std::collections::HashSet<&str> =
+            event.venue.sections.iter().map(|s| s.name.as_str()).collect();
+
+        for section in sections {
+            if existing_sections.contains(section.name.as_str()) {
+                return Err(format!(
+                    "Section '{}' already exists in event venue",
+                    section.name
+                ));
+            }
+        }
+
+        // Validate no duplicate section names within the new sections
+        let mut seen_names = std::collections::HashSet::new();
+        for section in sections {
+            if !seen_names.insert(section.name.as_str()) {
+                return Err(format!(
+                    "Duplicate section name '{}' in request",
+                    section.name
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Validates updating pricing tiers using a loaded event (for projection-based validation)
+    fn validate_update_pricing_tiers_with_event(
+        event: &Event,
+        pricing_tiers: &[PricingTier],
+    ) -> Result<(), String> {
+        // Cannot update cancelled events
+        if event.status == EventStatus::Cancelled {
+            return Err("Cannot update pricing for cancelled event".to_string());
+        }
+
+        // Must provide at least one pricing tier
+        if pricing_tiers.is_empty() {
+            return Err("At least one pricing tier must be provided".to_string());
+        }
+
+        // All sections referenced in pricing tiers must exist
+        let section_names: std::collections::HashSet<&str> =
+            event.venue.sections.iter().map(|s| s.name.as_str()).collect();
+
+        for tier in pricing_tiers {
+            if !section_names.contains(tier.section.as_str()) {
+                return Err(format!(
+                    "Section '{}' does not exist in event venue",
+                    tier.section
+                ));
+            }
+        }
+
+        // All sections must have at least one pricing tier
+        let sections_with_tiers: std::collections::HashSet<&str> =
+            pricing_tiers.iter().map(|t| t.section.as_str()).collect();
+
+        for section in &event.venue.sections {
+            if !sections_with_tiers.contains(section.name.as_str()) {
+                return Err(format!(
+                    "Section '{}' must have at least one pricing tier",
+                    section.name
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Applies an event to state
     fn apply_event(state: &mut EventState, action: &EventAction) {
         match action {
@@ -471,6 +755,7 @@ impl EventReducer {
                 date,
                 pricing_tiers,
                 created_at,
+                ..
             } => {
                 let event = Event::new(
                     *id,
@@ -511,8 +796,28 @@ impl EventReducer {
             EventAction::EventUpdated { event_id, name, .. } => {
                 if let Some(event) = state.events.get_mut(event_id) {
                     if let Some(new_name) = name {
-                        event.name = new_name.clone();
+                        event.name.clone_from(new_name);
                     }
+                }
+                state.last_error = None;
+            }
+            EventAction::PricingTiersUpdated {
+                event_id,
+                pricing_tiers,
+                ..
+            } => {
+                if let Some(event) = state.events.get_mut(event_id) {
+                    event.pricing_tiers.clone_from(pricing_tiers);
+                }
+                state.last_error = None;
+            }
+            EventAction::VenueSectionsAdded {
+                event_id,
+                sections,
+                ..
+            } => {
+                if let Some(event) = state.events.get_mut(event_id) {
+                    event.venue.sections.extend(sections.clone());
                 }
                 state.last_error = None;
             }
@@ -523,16 +828,23 @@ impl EventReducer {
                 state.last_error = Some(error.clone());
             }
             // Commands and query results don't modify state
+            // Projection confirmation actions are logged but don't modify aggregate state
             EventAction::CreateEvent { .. }
             | EventAction::PublishEvent { .. }
             | EventAction::OpenSales { .. }
             | EventAction::CloseSales { .. }
             | EventAction::CancelEvent { .. }
             | EventAction::UpdateEvent { .. }
+            | EventAction::UpdatePricingTiers { .. }
+            | EventAction::AddVenueSections { .. }
             | EventAction::GetEvent { .. }
             | EventAction::ListEvents { .. }
             | EventAction::EventQueried { .. }
-            | EventAction::EventsListed { .. } => {}
+            | EventAction::EventsListed { .. }
+            | EventAction::EventProjectionConfirmed { .. }
+            | EventAction::EventProjectionFailed { .. }
+            | EventAction::ExecuteAddVenueSections { .. }
+            | EventAction::ExecuteUpdatePricingTiers { .. } => {}
         }
     }
 }
@@ -563,7 +875,7 @@ impl Reducer for EventReducer {
                 venue,
                 date,
                 pricing_tiers,
-                respond_to,
+                respond_to: _,  // Explicitly ignore - infrastructure handles this
             } => {
                 // Validate command
                 if let Err(error) =
@@ -573,37 +885,53 @@ impl Reducer for EventReducer {
                     return SmallVec::new();
                 }
 
-                // Create and apply event
-                let event = EventAction::EventCreated {
+                // Capture timestamp before creating closures
+                let created_at = env.clock.now();
+
+                // Create and apply event (with placeholder respond_to for local state)
+                let event_for_state = EventAction::EventCreated {
                     id,
                     name: name.clone(),
                     owner_id,
                     venue: venue.clone(),
                     date: date.clone(),
                     pricing_tiers: pricing_tiers.clone(),
-                    created_at: env.clock.now(),
+                    created_at,
+                    respond_to: ResponseChannel::none(),
                 };
                 let expected_version = state.version;
-                Self::apply_event(state, &event);
+                Self::apply_event(state, &event_for_state);
 
-                // Create base effects (append + publish to Redpanda)
-                let mut effects = Self::create_effects(event, expected_version, env);
+                // Create base effects (append to event store)
+                let mut effects = Self::create_effects(event_for_state, expected_version, env);
 
-                // Publish to global channel for projections
-                let action_to_publish = EventAction::CreateEvent {
-                    id,
-                    name,
-                    owner_id,
-                    venue,
-                    date,
-                    pricing_tiers,
-                    respond_to,
-                };
-                let global_channel = env.global_actions.event_actions.clone();
-                effects.push(Effect::Future(Box::pin(async move {
-                    let _ = global_channel.send(action_to_publish);
-                    None
-                })));
+                // Publish EVENT to global channel for projections and wait for completion
+                let id_for_success = id;
+                let id_for_error = id;
+                effects.push(Effect::PublishWithResponse {
+                    channel: env.global_actions.event_actions.clone(),
+                    create_action: Box::new(move |respond_to| EventAction::EventCreated {
+                        id,
+                        name,
+                        owner_id,
+                        venue,
+                        date,
+                        pricing_tiers,
+                        created_at,
+                        respond_to,
+                    }),
+                    on_success: Box::new(move || {
+                        Some(EventAction::EventProjectionConfirmed {
+                            event_id: id_for_success,
+                        })
+                    }),
+                    on_error: Box::new(move |reason| {
+                        Some(EventAction::EventProjectionFailed {
+                            event_id: id_for_error,
+                            reason,
+                        })
+                    }),
+                });
 
                 effects
             }
@@ -707,6 +1035,229 @@ impl Reducer for EventReducer {
                 Self::apply_event(state, &event);
 
                 Self::create_effects(event, expected_version, env)
+            }
+
+            EventAction::UpdatePricingTiers {
+                event_id,
+                pricing_tiers,
+                respond_to: _,  // Explicitly ignore - infrastructure handles this
+            } => {
+                // Load event from projection and version from event store in parallel
+                let projection = env.projection.clone();
+                let event_store = env.event_store.clone();
+                let stream_id = env.stream_id.clone();
+
+                smallvec![Effect::Future(Box::pin(async move {
+                    // Run both queries in parallel using tokio::join!
+                    let (projection_result, version_result) = tokio::join!(
+                        projection.load_event(&event_id),
+                        event_store.load_events(stream_id, None)
+                    );
+
+                    // Handle projection result
+                    let loaded_event = match projection_result {
+                        Ok(Some(event)) => event,
+                        Ok(None) => {
+                            return Some(EventAction::ValidationFailed {
+                                error: format!("Event {} not found", event_id),
+                            });
+                        }
+                        Err(e) => {
+                            return Some(EventAction::ValidationFailed {
+                                error: format!("Failed to load event from projection: {e}"),
+                            });
+                        }
+                    };
+
+                    // Handle version result
+                    let current_version = match version_result {
+                        Ok(events) => Version::new(events.len() as u64),
+                        Err(e) => {
+                            return Some(EventAction::ValidationFailed {
+                                error: format!("Failed to load version from event store: {e}"),
+                            });
+                        }
+                    };
+
+                    // Validate pricing tiers against loaded event
+                    if let Err(error) = Self::validate_update_pricing_tiers_with_event(&loaded_event, &pricing_tiers) {
+                        return Some(EventAction::ValidationFailed { error });
+                    }
+
+                    // Return execute action with loaded data
+                    Some(EventAction::ExecuteUpdatePricingTiers {
+                        event_id,
+                        pricing_tiers,
+                        loaded_event,
+                        current_version,
+                    })
+                }))]
+            }
+
+            EventAction::ExecuteUpdatePricingTiers {
+                event_id,
+                pricing_tiers,
+                loaded_event,
+                current_version,
+            } => {
+                // Insert loaded event into state for local tracking
+                state.events.insert(event_id, loaded_event);
+
+                // Capture timestamp before creating closures
+                let updated_at = env.clock.now();
+
+                // Create and apply event (with placeholder respond_to for local state)
+                let event_for_state = EventAction::PricingTiersUpdated {
+                    event_id,
+                    pricing_tiers: pricing_tiers.clone(),
+                    updated_at,
+                    respond_to: ResponseChannel::none(),
+                };
+                // Use version loaded from event store for optimistic concurrency
+                let expected_version = current_version;
+                Self::apply_event(state, &event_for_state);
+
+                // Persist event to event store
+                let mut effects = Self::create_effects(event_for_state, expected_version, env);
+
+                // Publish EVENT to global channel for projections and wait for completion
+                let event_id_for_success = event_id;
+                let event_id_for_error = event_id;
+                effects.push(Effect::PublishWithResponse {
+                    channel: env.global_actions.event_actions.clone(),
+                    create_action: Box::new(move |respond_to| {
+                        EventAction::PricingTiersUpdated {
+                            event_id,
+                            pricing_tiers,
+                            updated_at,
+                            respond_to,
+                        }
+                    }),
+                    on_success: Box::new(move || {
+                        Some(EventAction::EventProjectionConfirmed {
+                            event_id: event_id_for_success,
+                        })
+                    }),
+                    on_error: Box::new(move |reason| {
+                        Some(EventAction::EventProjectionFailed {
+                            event_id: event_id_for_error,
+                            reason,
+                        })
+                    }),
+                });
+
+                effects
+            }
+
+            EventAction::AddVenueSections {
+                event_id,
+                sections,
+                respond_to: _,  // Explicitly ignore - infrastructure handles this
+            } => {
+                // Load event from projection and version from event store in parallel
+                let projection = env.projection.clone();
+                let event_store = env.event_store.clone();
+                let stream_id = env.stream_id.clone();
+
+                smallvec![Effect::Future(Box::pin(async move {
+                    // Run both queries in parallel using tokio::join!
+                    let (projection_result, version_result) = tokio::join!(
+                        projection.load_event(&event_id),
+                        event_store.load_events(stream_id, None)
+                    );
+
+                    // Handle projection result
+                    let loaded_event = match projection_result {
+                        Ok(Some(event)) => event,
+                        Ok(None) => {
+                            return Some(EventAction::ValidationFailed {
+                                error: format!("Event {} not found", event_id),
+                            });
+                        }
+                        Err(e) => {
+                            return Some(EventAction::ValidationFailed {
+                                error: format!("Failed to load event from projection: {e}"),
+                            });
+                        }
+                    };
+
+                    // Handle version result
+                    let current_version = match version_result {
+                        Ok(events) => Version::new(events.len() as u64),
+                        Err(e) => {
+                            return Some(EventAction::ValidationFailed {
+                                error: format!("Failed to load version from event store: {e}"),
+                            });
+                        }
+                    };
+
+                    // Validate sections against loaded event
+                    if let Err(error) = Self::validate_add_venue_sections_with_event(&loaded_event, &sections) {
+                        return Some(EventAction::ValidationFailed { error });
+                    }
+
+                    // Return execute action with loaded data
+                    Some(EventAction::ExecuteAddVenueSections {
+                        event_id,
+                        sections,
+                        loaded_event,
+                        current_version,
+                    })
+                }))]
+            }
+
+            EventAction::ExecuteAddVenueSections {
+                event_id,
+                sections,
+                loaded_event,
+                current_version,
+            } => {
+                // Insert loaded event into state for local tracking
+                state.events.insert(event_id, loaded_event);
+
+                // Capture timestamp before creating closures
+                let updated_at = env.clock.now();
+
+                // Create and apply event (with placeholder respond_to for local state)
+                let event_for_state = EventAction::VenueSectionsAdded {
+                    event_id,
+                    sections: sections.clone(),
+                    updated_at,
+                    respond_to: ResponseChannel::none(),
+                };
+                Self::apply_event(state, &event_for_state);
+
+                // Use version loaded from event store for optimistic concurrency
+                let expected_version = current_version;
+                let mut effects = Self::create_effects(event_for_state, expected_version, env);
+
+                // Publish EVENT to global channel for projections and wait for completion
+                let event_id_for_success = event_id;
+                let event_id_for_error = event_id;
+                effects.push(Effect::PublishWithResponse {
+                    channel: env.global_actions.event_actions.clone(),
+                    create_action: Box::new(move |respond_to| {
+                        EventAction::VenueSectionsAdded {
+                            event_id,
+                            sections,
+                            updated_at,
+                            respond_to,
+                        }
+                    }),
+                    on_success: Box::new(move || {
+                        Some(EventAction::EventProjectionConfirmed {
+                            event_id: event_id_for_success,
+                        })
+                    }),
+                    on_error: Box::new(move |reason| {
+                        Some(EventAction::EventProjectionFailed {
+                            event_id: event_id_for_error,
+                            reason,
+                        })
+                    }),
+                });
+
+                effects
             }
 
             // ========== Query Commands ==========
@@ -1107,6 +1658,482 @@ mod tests {
                     .contains("No fields to update"));
             })
             .then_effects(assertions::assert_no_effects)
+            .run();
+    }
+
+    // Helper for creating a venue with multiple sections
+    fn create_test_venue_multi_section() -> Venue {
+        Venue::new(
+            "Test Arena".to_string(),
+            Capacity::new(2000),
+            vec![
+                VenueSection::new(
+                    "VIP".to_string(),
+                    Capacity::new(500),
+                    SeatType::GeneralAdmission,
+                ),
+                VenueSection::new(
+                    "General".to_string(),
+                    Capacity::new(1500),
+                    SeatType::GeneralAdmission,
+                ),
+            ],
+        )
+    }
+
+    // ==================== UpdatePricingTiers Tests ====================
+
+    #[test]
+    fn test_update_pricing_tiers_success() {
+        let id = EventId::new();
+        let owner_id = UserId::new();
+
+        // Create event with initial pricing
+        let initial_pricing = vec![PricingTier::new(
+            crate::types::TierType::Regular,
+            "VIP".to_string(),
+            Money::from_dollars(100),
+            Utc::now(),
+            None,
+        )];
+
+        // New pricing with multiple tiers
+        let new_pricing = vec![
+            PricingTier::new(
+                crate::types::TierType::EarlyBird,
+                "VIP".to_string(),
+                Money::from_dollars(80),
+                Utc::now(),
+                Some(Utc::now() + Duration::days(7)),
+            ),
+            PricingTier::new(
+                crate::types::TierType::Regular,
+                "VIP".to_string(),
+                Money::from_dollars(100),
+                Utc::now() + Duration::days(7),
+                None,
+            ),
+            PricingTier::new(
+                crate::types::TierType::Regular,
+                "General".to_string(),
+                Money::from_dollars(50),
+                Utc::now(),
+                None,
+            ),
+        ];
+
+        ReducerTest::new(EventReducer::new())
+            .with_env(create_test_env())
+            .given_state({
+                let mut state = EventState::new();
+                let event = Event::new(
+                    id,
+                    "Concert".to_string(),
+                    owner_id,
+                    create_test_venue_multi_section(),
+                    EventDate::new(Utc::now() + Duration::days(30)),
+                    initial_pricing,
+                    Utc::now(),
+                );
+                state.events.insert(id, event);
+                state
+            })
+            .when_action(EventAction::UpdatePricingTiers {
+                event_id: id,
+                pricing_tiers: new_pricing.clone(),
+                respond_to: ResponseChannel::none(),
+            })
+            .then_state(move |state| {
+                let event = state.get(&id).unwrap();
+                assert_eq!(event.pricing_tiers.len(), 3);
+                assert!(state.last_error.is_none());
+            })
+            .then_effects(|effects| {
+                assert!(!effects.is_empty());
+            })
+            .run();
+    }
+
+    #[test]
+    fn test_update_pricing_tiers_event_not_found() {
+        let non_existent_id = EventId::new();
+
+        ReducerTest::new(EventReducer::new())
+            .with_env(create_test_env())
+            .given_state(EventState::new())
+            .when_action(EventAction::UpdatePricingTiers {
+                event_id: non_existent_id,
+                pricing_tiers: create_test_pricing_tiers(),
+                respond_to: ResponseChannel::none(),
+            })
+            .then_state(move |state| {
+                assert!(state.last_error.is_some());
+                assert!(state
+                    .last_error
+                    .as_ref()
+                    .unwrap()
+                    .contains("not found"));
+            })
+            .then_effects(assertions::assert_no_effects)
+            .run();
+    }
+
+    #[test]
+    fn test_update_pricing_tiers_cancelled_event() {
+        let id = EventId::new();
+        let owner_id = UserId::new();
+
+        ReducerTest::new(EventReducer::new())
+            .with_env(create_test_env())
+            .given_state({
+                let mut state = EventState::new();
+                let mut event = Event::new(
+                    id,
+                    "Cancelled Concert".to_string(),
+                    owner_id,
+                    create_test_venue(),
+                    EventDate::new(Utc::now() + Duration::days(30)),
+                    create_test_pricing_tiers(),
+                    Utc::now(),
+                );
+                event.status = EventStatus::Cancelled;
+                state.events.insert(id, event);
+                state
+            })
+            .when_action(EventAction::UpdatePricingTiers {
+                event_id: id,
+                pricing_tiers: create_test_pricing_tiers(),
+                respond_to: ResponseChannel::none(),
+            })
+            .then_state(|state| {
+                assert!(state.last_error.is_some());
+                assert!(state
+                    .last_error
+                    .as_ref()
+                    .unwrap()
+                    .contains("cancelled"));
+            })
+            .then_effects(assertions::assert_no_effects)
+            .run();
+    }
+
+    #[test]
+    fn test_update_pricing_tiers_empty_tiers() {
+        let id = EventId::new();
+        let owner_id = UserId::new();
+
+        ReducerTest::new(EventReducer::new())
+            .with_env(create_test_env())
+            .given_state({
+                let mut state = EventState::new();
+                let event = Event::new(
+                    id,
+                    "Concert".to_string(),
+                    owner_id,
+                    create_test_venue(),
+                    EventDate::new(Utc::now() + Duration::days(30)),
+                    create_test_pricing_tiers(),
+                    Utc::now(),
+                );
+                state.events.insert(id, event);
+                state
+            })
+            .when_action(EventAction::UpdatePricingTiers {
+                event_id: id,
+                pricing_tiers: vec![], // Empty pricing tiers
+                respond_to: ResponseChannel::none(),
+            })
+            .then_state(|state| {
+                assert!(state.last_error.is_some());
+                assert!(state
+                    .last_error
+                    .as_ref()
+                    .unwrap()
+                    .contains("At least one pricing tier"));
+            })
+            .then_effects(assertions::assert_no_effects)
+            .run();
+    }
+
+    #[test]
+    fn test_update_pricing_tiers_invalid_section() {
+        let id = EventId::new();
+        let owner_id = UserId::new();
+
+        // Pricing tier for section that doesn't exist in venue
+        let invalid_pricing = vec![PricingTier::new(
+            crate::types::TierType::Regular,
+            "NonExistentSection".to_string(), // Invalid section
+            Money::from_dollars(50),
+            Utc::now(),
+            None,
+        )];
+
+        ReducerTest::new(EventReducer::new())
+            .with_env(create_test_env())
+            .given_state({
+                let mut state = EventState::new();
+                let event = Event::new(
+                    id,
+                    "Concert".to_string(),
+                    owner_id,
+                    create_test_venue(), // Has "General" section only
+                    EventDate::new(Utc::now() + Duration::days(30)),
+                    create_test_pricing_tiers(),
+                    Utc::now(),
+                );
+                state.events.insert(id, event);
+                state
+            })
+            .when_action(EventAction::UpdatePricingTiers {
+                event_id: id,
+                pricing_tiers: invalid_pricing,
+                respond_to: ResponseChannel::none(),
+            })
+            .then_state(|state| {
+                assert!(state.last_error.is_some());
+                assert!(state
+                    .last_error
+                    .as_ref()
+                    .unwrap()
+                    .contains("does not exist in event venue"));
+            })
+            .then_effects(assertions::assert_no_effects)
+            .run();
+    }
+
+    #[test]
+    fn test_update_pricing_tiers_missing_section_coverage() {
+        let id = EventId::new();
+        let owner_id = UserId::new();
+
+        // Only provide pricing for VIP, missing General section
+        let incomplete_pricing = vec![PricingTier::new(
+            crate::types::TierType::Regular,
+            "VIP".to_string(),
+            Money::from_dollars(100),
+            Utc::now(),
+            None,
+        )];
+
+        ReducerTest::new(EventReducer::new())
+            .with_env(create_test_env())
+            .given_state({
+                let mut state = EventState::new();
+                let event = Event::new(
+                    id,
+                    "Concert".to_string(),
+                    owner_id,
+                    create_test_venue_multi_section(), // Has VIP + General sections
+                    EventDate::new(Utc::now() + Duration::days(30)),
+                    vec![
+                        PricingTier::new(
+                            crate::types::TierType::Regular,
+                            "VIP".to_string(),
+                            Money::from_dollars(100),
+                            Utc::now(),
+                            None,
+                        ),
+                        PricingTier::new(
+                            crate::types::TierType::Regular,
+                            "General".to_string(),
+                            Money::from_dollars(50),
+                            Utc::now(),
+                            None,
+                        ),
+                    ],
+                    Utc::now(),
+                );
+                state.events.insert(id, event);
+                state
+            })
+            .when_action(EventAction::UpdatePricingTiers {
+                event_id: id,
+                pricing_tiers: incomplete_pricing,
+                respond_to: ResponseChannel::none(),
+            })
+            .then_state(|state| {
+                assert!(state.last_error.is_some());
+                assert!(state
+                    .last_error
+                    .as_ref()
+                    .unwrap()
+                    .contains("must have at least one pricing tier"));
+            })
+            .then_effects(assertions::assert_no_effects)
+            .run();
+    }
+
+    // ==================== Time-Based Pricing Tests ====================
+
+    #[test]
+    fn test_pricing_tiers_time_based_early_bird() {
+        let id = EventId::new();
+        let owner_id = UserId::new();
+        let now = Utc::now();
+
+        // Create pricing with time-based tiers
+        let pricing_tiers = vec![
+            // EarlyBird: available now until 7 days from now
+            PricingTier::new(
+                crate::types::TierType::EarlyBird,
+                "General".to_string(),
+                Money::from_dollars(30),
+                now,
+                Some(now + Duration::days(7)),
+            ),
+            // Regular: available after 7 days
+            PricingTier::new(
+                crate::types::TierType::Regular,
+                "General".to_string(),
+                Money::from_dollars(50),
+                now + Duration::days(7),
+                None,
+            ),
+        ];
+
+        ReducerTest::new(EventReducer::new())
+            .with_env(create_test_env())
+            .given_state({
+                let mut state = EventState::new();
+                let event = Event::new(
+                    id,
+                    "Concert".to_string(),
+                    owner_id,
+                    create_test_venue(),
+                    EventDate::new(now + Duration::days(30)),
+                    pricing_tiers,
+                    now,
+                );
+                state.events.insert(id, event);
+                state
+            })
+            .when_action(EventAction::GetEvent { event_id: id })
+            .then_state(move |state| {
+                let event = state.get(&id).unwrap();
+                // Verify early bird pricing is first
+                assert_eq!(event.pricing_tiers[0].tier_type, crate::types::TierType::EarlyBird);
+                assert_eq!(event.pricing_tiers[0].base_price.cents(), 3000);
+            })
+            .then_effects(|effects| {
+                assert!(!effects.is_empty());
+            })
+            .run();
+    }
+
+    #[test]
+    fn test_pricing_tiers_time_based_last_minute() {
+        let id = EventId::new();
+        let owner_id = UserId::new();
+        let now = Utc::now();
+
+        // Create pricing with last-minute tier
+        let pricing_tiers = vec![
+            PricingTier::new(
+                crate::types::TierType::Regular,
+                "General".to_string(),
+                Money::from_dollars(50),
+                now,
+                Some(now + Duration::days(25)),
+            ),
+            // LastMinute: available 25-30 days from now (5 days before event)
+            PricingTier::new(
+                crate::types::TierType::LastMinute,
+                "General".to_string(),
+                Money::from_dollars(70),
+                now + Duration::days(25),
+                None,
+            ),
+        ];
+
+        ReducerTest::new(EventReducer::new())
+            .with_env(create_test_env())
+            .given_state({
+                let mut state = EventState::new();
+                let event = Event::new(
+                    id,
+                    "Concert".to_string(),
+                    owner_id,
+                    create_test_venue(),
+                    EventDate::new(now + Duration::days(30)),
+                    pricing_tiers,
+                    now,
+                );
+                state.events.insert(id, event);
+                state
+            })
+            .when_action(EventAction::GetEvent { event_id: id })
+            .then_state(move |state| {
+                let event = state.get(&id).unwrap();
+                // Verify last-minute pricing exists
+                assert_eq!(event.pricing_tiers[1].tier_type, crate::types::TierType::LastMinute);
+                assert_eq!(event.pricing_tiers[1].base_price.cents(), 7000);
+            })
+            .then_effects(|effects| {
+                assert!(!effects.is_empty());
+            })
+            .run();
+    }
+
+    #[test]
+    fn test_pricing_tiers_multiple_tiers_per_section() {
+        let id = EventId::new();
+        let owner_id = UserId::new();
+        let now = Utc::now();
+
+        // Multiple pricing tiers for the same section
+        let pricing_tiers = vec![
+            PricingTier::new(
+                crate::types::TierType::EarlyBird,
+                "General".to_string(),
+                Money::from_dollars(30),
+                now,
+                Some(now + Duration::days(7)),
+            ),
+            PricingTier::new(
+                crate::types::TierType::Regular,
+                "General".to_string(),
+                Money::from_dollars(50),
+                now + Duration::days(7),
+                Some(now + Duration::days(25)),
+            ),
+            PricingTier::new(
+                crate::types::TierType::LastMinute,
+                "General".to_string(),
+                Money::from_dollars(70),
+                now + Duration::days(25),
+                None,
+            ),
+        ];
+
+        ReducerTest::new(EventReducer::new())
+            .with_env(create_test_env())
+            .given_state(EventState::new())
+            .when_action(EventAction::CreateEvent {
+                id,
+                name: "Concert with Dynamic Pricing".to_string(),
+                owner_id,
+                venue: create_test_venue(),
+                date: EventDate::new(now + Duration::days(30)),
+                pricing_tiers,
+                respond_to: ResponseChannel::none(),
+            })
+            .then_state(move |state| {
+                let event = state.get(&id).unwrap();
+                assert_eq!(event.pricing_tiers.len(), 3);
+                // Verify all three tier types exist
+                let tier_types: Vec<_> = event
+                    .pricing_tiers
+                    .iter()
+                    .map(|t| t.tier_type)
+                    .collect();
+                assert!(tier_types.contains(&crate::types::TierType::EarlyBird));
+                assert!(tier_types.contains(&crate::types::TierType::Regular));
+                assert!(tier_types.contains(&crate::types::TierType::LastMinute));
+            })
+            .then_effects(|effects| {
+                assert!(!effects.is_empty());
+            })
             .run();
     }
 }

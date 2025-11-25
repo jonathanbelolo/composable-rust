@@ -57,6 +57,23 @@ impl ticketing::aggregates::inventory::InventoryProjectionQuery for MockInventor
     }
 }
 
+// Mock event query for pricing tests
+#[derive(Clone)]
+struct MockEventQuery;
+
+#[async_trait::async_trait]
+impl ticketing::aggregates::event::EventProjectionQuery for MockEventQuery {
+    async fn load_event(&self, _event_id: &EventId) -> Result<Option<ticketing::types::Event>, String> {
+        // Return None for tests - no pricing configured
+        Ok(None)
+    }
+
+    async fn load_events(&self, _status_filter: Option<ticketing::types::EventStatus>) -> Result<Vec<ticketing::types::Event>, String> {
+        // Return empty list for tests
+        Ok(vec![])
+    }
+}
+
 fn create_test_global_channels() -> ticketing::types::GlobalActionChannels {
     use tokio::sync::broadcast;
 
@@ -79,6 +96,7 @@ fn create_test_env() -> InventoryEnvironment {
         Arc::new(InMemoryEventStore::new()),
         StreamId::new("inventory-test"),
         Arc::new(MockInventoryQuery),
+        Arc::new(MockEventQuery),
         create_test_global_channels(),
     )
 }

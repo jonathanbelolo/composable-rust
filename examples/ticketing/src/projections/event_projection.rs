@@ -164,6 +164,7 @@ impl EventProjection {
                 date,
                 pricing_tiers,
                 created_at,
+                ..
             } => {
                 let event = Event::new(
                     *id,
@@ -203,17 +204,41 @@ impl EventProjection {
                     }
                 }
             }
+            EventAction::PricingTiersUpdated {
+                event_id,
+                pricing_tiers,
+                ..
+            } => {
+                if let Some(event) = self.events.get_mut(event_id) {
+                    event.pricing_tiers.clone_from(pricing_tiers);
+                }
+            }
+            EventAction::VenueSectionsAdded {
+                event_id,
+                sections,
+                ..
+            } => {
+                if let Some(event) = self.events.get_mut(event_id) {
+                    event.venue.sections.extend(sections.clone());
+                }
+            }
 
             // Commands and query actions don't modify projection state
             EventAction::UpdateEvent { .. }
+            | EventAction::UpdatePricingTiers { .. }
+            | EventAction::AddVenueSections { .. }
             | EventAction::GetEvent { .. }
             | EventAction::ListEvents { .. } => {}
 
-            // Query results, version updates, and validation failures don't affect projection
+            // Query results, version updates, validation failures, and projection confirmations don't affect projection
             EventAction::EventQueried { .. }
             | EventAction::EventsListed { .. }
             | EventAction::ValidationFailed { .. }
-            | EventAction::VersionUpdated { .. } => {}
+            | EventAction::VersionUpdated { .. }
+            | EventAction::EventProjectionConfirmed { .. }
+            | EventAction::EventProjectionFailed { .. }
+            | EventAction::ExecuteAddVenueSections { .. }
+            | EventAction::ExecuteUpdatePricingTiers { .. } => {}
         }
     }
 

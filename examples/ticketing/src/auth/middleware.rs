@@ -107,9 +107,12 @@ impl FromRequestParts<Arc<TicketingAuthStore>> for SessionUser
 
         // Check for test token bypass (only if AUTH_TEST_TOKEN env var is set)
         if let Ok(test_token) = std::env::var("AUTH_TEST_TOKEN") {
+            // Support two test token patterns:
+            // 1. Exact match (legacy): "test-secret" → returns hardcoded user
+            // 2. Multi-user pattern: "test-user-{uuid}" → returns user with that UUID
+
             if bearer.0 == test_token {
-                // Return a test user session
-                // These UUIDs are hardcoded constants and will never fail to parse
+                // Legacy: exact match returns hardcoded test user
                 const TEST_USER_UUID: uuid::Uuid = uuid::Uuid::from_bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
                 const TEST_SESSION_UUID: uuid::Uuid = uuid::Uuid::from_bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
                 const TEST_DEVICE_UUID: uuid::Uuid = uuid::Uuid::from_bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]);
@@ -135,6 +138,42 @@ impl FromRequestParts<Arc<TicketingAuthStore>> for SessionUser
                     user_id: test_user_id,
                     session: test_session,
                 });
+            } else if let Some(uuid_str) = bearer.0.strip_prefix("test-user-") {
+                // Multi-user test pattern: extract UUID from "test-user-{uuid}"
+                if let Ok(user_uuid) = uuid::Uuid::parse_str(uuid_str) {
+                    let test_user_id = UserId(user_uuid);
+
+                    // Generate deterministic session and device UUIDs based on user UUID
+                    // This ensures the same test user always gets the same session/device IDs
+                    let mut session_bytes = user_uuid.as_bytes().to_owned();
+                    session_bytes[0] ^= 0x01; // XOR first byte for session UUID
+                    let test_session_uuid = uuid::Uuid::from_bytes(session_bytes);
+
+                    let mut device_bytes = user_uuid.as_bytes().to_owned();
+                    device_bytes[0] ^= 0x02; // XOR first byte for device UUID
+                    let test_device_uuid = uuid::Uuid::from_bytes(device_bytes);
+
+                    let test_device_id = composable_rust_auth::state::DeviceId(test_device_uuid);
+                    let test_session = Session {
+                        user_id: test_user_id,
+                        session_id: SessionId(test_session_uuid),
+                        device_id: test_device_id,
+                        email: format!("test-user-{}@example.com", user_uuid),
+                        created_at: chrono::Utc::now(),
+                        last_active: chrono::Utc::now(),
+                        expires_at: chrono::Utc::now() + chrono::Duration::days(1),
+                        ip_address: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                        user_agent: "Test Client".to_string(),
+                        oauth_provider: None,
+                        login_risk_score: 0.0,
+                        idle_timeout: chrono::Duration::hours(24),
+                        enable_sliding_refresh: false,
+                    };
+                    return Ok(Self {
+                        user_id: test_user_id,
+                        session: test_session,
+                    });
+                }
             }
         }
 

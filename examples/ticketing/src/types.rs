@@ -1059,6 +1059,8 @@ pub struct InventoryState {
     pub seat_assignments: HashMap<SeatId, SeatAssignment>,
     /// Loading state for each inventory key
     pub loading_states: HashMap<(EventId, String), LoadingState>,
+    /// Cached pricing per (event_id, section) in cents
+    pub pricing_cache: HashMap<(EventId, String), u64>,
     /// Last validation error
     pub last_error: Option<String>,
     /// Current version for optimistic concurrency control
@@ -1073,6 +1075,7 @@ impl InventoryState {
             inventories: HashMap::new(),
             seat_assignments: HashMap::new(),
             loading_states: HashMap::new(),
+            pricing_cache: HashMap::new(),
             last_error: None,
             version: Version::INITIAL,
         }

@@ -16,7 +16,7 @@
 
 use crate::config::Config;
 use crate::projections::{
-    PostgresAvailableSeatsProjection, PostgresPaymentsProjection,
+    PostgresAvailableSeatsProjection, PostgresEventsProjection, PostgresPaymentsProjection,
     PostgresReservationsProjection, TicketingEvent,
 };
 use crate::types::GlobalActionChannels;
@@ -28,6 +28,7 @@ use tokio::sync::watch;
 /// Setup function to create and configure all projection consumers.
 ///
 /// Creates projection streams for:
+/// - Events Projection (event data queries)
 /// - Available Seats Projection (seat availability queries)
 /// - Payments Projection (payment history queries)
 /// - Reservations Projection (reservation history queries)
@@ -51,6 +52,12 @@ pub async fn setup_projection_managers(
 
     // Note: Projection migrations are handled by main.rs before this is called
 
+    // Setup Events Projection
+    let events_projection = PostgresEventsProjection::new(Arc::new(projection_pool.clone()));
+
+    // Subscribe to event actions
+    let event_receiver = global_channels.event_actions.subscribe();
+
     // Setup Available Seats Projection
     let available_seats_projection =
         PostgresAvailableSeatsProjection::new(Arc::new(projection_pool.clone()));
@@ -73,11 +80,17 @@ pub async fn setup_projection_managers(
     let reservation_receiver = global_channels.reservation_actions.subscribe();
 
     // Create shutdown channel
-    let (shutdown_tx, shutdown_rx_seats) = watch::channel(false);
+    let (shutdown_tx, shutdown_rx_events) = watch::channel(false);
+    let shutdown_rx_seats = shutdown_tx.subscribe();
     let shutdown_rx_payments = shutdown_tx.subscribe();
     let shutdown_rx_reservations = shutdown_tx.subscribe();
 
     Ok(ProjectionManagers {
+        events: EventsProjectionRunner {
+            projection: events_projection,
+            receiver: event_receiver,
+            shutdown: shutdown_rx_events,
+        },
         available_seats: AvailableSeatsProjectionRunner {
             projection: available_seats_projection,
             receiver: inventory_receiver,
@@ -95,6 +108,82 @@ pub async fn setup_projection_managers(
         },
         shutdown: shutdown_tx,
     })
+}
+
+/// Runner for events projection with manual event loop.
+struct EventsProjectionRunner {
+    projection: PostgresEventsProjection,
+    receiver: tokio::sync::broadcast::Receiver<crate::aggregates::EventAction>,
+    shutdown: watch::Receiver<bool>,
+}
+
+impl EventsProjectionRunner {
+    /// Start the projection consumer loop.
+    ///
+    /// Continuously consumes events from the event channel,
+    /// converts to `TicketingEvent`, and applies to projection.
+    async fn run(mut self) {
+        let projection_name = self.projection.name();
+        tracing::info!(
+            projection = projection_name,
+            "Starting projection consumer"
+        );
+
+        loop {
+            tokio::select! {
+                // Process next event from channel
+                Ok(action) = self.receiver.recv() => {
+                    // Extract respond_to channel from EVENTS (not commands)
+                    // Events carry respond_to for projection completion signaling
+                    let respond_to = match &action {
+                        crate::aggregates::EventAction::EventCreated { respond_to, .. } => respond_to.clone(),
+                        crate::aggregates::EventAction::VenueSectionsAdded { respond_to, .. } => respond_to.clone(),
+                        crate::aggregates::EventAction::PricingTiersUpdated { respond_to, .. } => respond_to.clone(),
+                        _ => crate::types::ResponseChannel::none(),
+                    };
+
+                    // Convert to TicketingEvent
+                    let event = TicketingEvent::Event(action);
+
+                    // Apply to projection
+                    let result = self.projection.apply_event(&event).await;
+
+                    // Send completion notification using framework ResponseChannel
+                    let notification = result.as_ref().map(|()| ()).map_err(|e| {
+                        format!("{}: {}", projection_name, e)
+                    });
+                    let _ = respond_to.send(notification);
+
+                    // Log result
+                    match result {
+                        Ok(()) => {
+                            tracing::debug!(
+                                projection = projection_name,
+                                "Successfully applied event to projection"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                projection = projection_name,
+                                error = ?e,
+                                "Failed to apply event to projection"
+                            );
+                        }
+                    }
+                }
+
+                // Handle shutdown
+                _ = self.shutdown.changed() => {
+                    if *self.shutdown.borrow() {
+                        tracing::info!(projection = projection_name, "Shutdown signal received");
+                        break;
+                    }
+                }
+            }
+        }
+
+        tracing::info!(projection = projection_name, "Projection consumer stopped");
+    }
 }
 
 /// Runner for available seats projection with manual event loop.
@@ -300,6 +389,8 @@ impl ReservationsProjectionRunner {
 
 /// Container for all projection runners and shutdown sender.
 pub struct ProjectionManagers {
+    /// Events projection runner
+    events: EventsProjectionRunner,
     /// Available seats projection runner
     available_seats: AvailableSeatsProjectionRunner,
     /// Payments projection runner
@@ -319,6 +410,12 @@ impl ProjectionManagers {
     #[must_use]
     pub fn start_all(self) -> Vec<tokio::task::JoinHandle<()>> {
         let mut handles = Vec::new();
+
+        // Start events projection
+        let events = self.events;
+        handles.push(tokio::spawn(async move {
+            events.run().await;
+        }));
 
         // Start available seats projection
         let available_seats = self.available_seats;

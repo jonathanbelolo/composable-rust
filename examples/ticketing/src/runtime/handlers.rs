@@ -47,6 +47,7 @@ use tracing::{info, warn};
 
 use crate::{
     aggregates::{
+        event::EventProjectionQuery,
         inventory::{InventoryEnvironment, InventoryReducer},
         payment::{PaymentEnvironment, PaymentReducer},
         PaymentAction, ReservationAction,
@@ -135,6 +136,9 @@ pub struct InventoryHandler {
     /// Query adapter for loading inventory state on-demand
     pub query: Arc<PostgresInventoryQuery>,
 
+    /// Query adapter for loading event data (pricing, etc.) on-demand
+    pub event_query: Arc<dyn EventProjectionQuery>,
+
     /// Global action channels for cross-aggregate coordination
     pub global_actions: GlobalActionChannels,
 }
@@ -155,6 +159,7 @@ impl EventHandler for InventoryHandler {
                 self.event_store.clone(),
                 StreamId::new("inventory"),
                 self.query.clone(),
+                self.event_query.clone(),
                 self.global_actions.clone(),
             );
 

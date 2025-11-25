@@ -224,6 +224,7 @@ async fn create_event_with_inventory(
             inventory_store_for_factory.clone(),
             StreamId::new(&format!("inventory-{}-section", event_id.as_uuid())),
             Arc::new(MockInventoryQuery),
+            Arc::new(MockEventQuery),
             global_channels_for_inventory_factory.clone(),
         );
         Store::new(InventoryState::new(), InventoryReducer::new(), inventory_env)
@@ -348,6 +349,7 @@ async fn test_e2e_saga_happy_path_with_event_bus() {
         event_store.clone(),
         StreamId::new("inventory"),
         Arc::new(MockInventoryQuery),
+        Arc::new(MockEventQuery),
         global_channels.clone(),
     );
     let inventory = Arc::new(Store::new(
@@ -484,6 +486,7 @@ async fn test_e2e_saga_compensation_flow() {
         event_store.clone(),
         StreamId::new("inventory"),
         Arc::new(MockInventoryQuery),
+        Arc::new(MockEventQuery),
         global_channels.clone(),
     );
     let inventory = Arc::new(Store::new(
@@ -636,6 +639,7 @@ async fn test_e2e_manual_cancellation() {
         event_store.clone(),
         StreamId::new("inventory"),
         Arc::new(MockInventoryQuery),
+        Arc::new(MockEventQuery),
         global_channels.clone(),
     );
     let inventory = Arc::new(Store::new(

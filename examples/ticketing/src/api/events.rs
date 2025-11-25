@@ -212,19 +212,37 @@ pub async fn create_event(
         respond_to: ResponseChannel::none(),
     };
 
-    // Send action to store (Store executes effects automatically)
-    store
-        .send(action)
+    // Send action to store and wait for projection confirmation
+    match store
+        .send_and_wait_for_with_metadata(
+            action,
+            None, // No special metadata for this operation
+            |action| {
+                matches!(
+                    action,
+                    EventAction::EventProjectionConfirmed { .. }
+                        | EventAction::EventProjectionFailed { .. }
+                        | EventAction::ValidationFailed { .. }
+                )
+            },
+            std::time::Duration::from_secs(10),
+        )
         .await
-        .map_err(|e| AppError::internal(format!("Failed to create event: {e}")))?;
-
-    Ok((
-        StatusCode::CREATED,
-        Json(CreateEventResponse {
-            event_id: *event_id.as_uuid(),
-            message: "Event created successfully".to_string(),
-        }),
-    ))
+    {
+        Ok(EventAction::EventProjectionConfirmed { .. }) => Ok((
+            StatusCode::CREATED,
+            Json(CreateEventResponse {
+                event_id: *event_id.as_uuid(),
+                message: "Event created successfully".to_string(),
+            }),
+        )),
+        Ok(EventAction::EventProjectionFailed { reason, .. }) => {
+            Err(AppError::internal(format!("Projection failed: {reason}")))
+        }
+        Ok(EventAction::ValidationFailed { error }) => Err(AppError::bad_request(error)),
+        Ok(_) => Err(AppError::internal("Unexpected action received")),
+        Err(e) => Err(AppError::internal(format!("Failed to create event: {e}"))),
+    }
 }
 
 /// Get event details by ID.
@@ -559,4 +577,450 @@ pub async fn delete_event(
         .map_err(|e| AppError::internal(format!("Failed to cancel event: {e}")))?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ============================================================================
+// Pricing Management
+// ============================================================================
+
+/// Pricing tier for API representation.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PricingTierDto {
+    /// Tier type (Regular, EarlyBird, LastMinute)
+    pub tier_type: TierType,
+    /// Section name
+    pub section: String,
+    /// Base price in cents
+    pub price_cents: u64,
+    /// When this tier becomes available
+    pub available_from: DateTime<Utc>,
+    /// When this tier expires (None = no expiration)
+    pub available_until: Option<DateTime<Utc>>,
+}
+
+impl From<&PricingTier> for PricingTierDto {
+    fn from(tier: &PricingTier) -> Self {
+        Self {
+            tier_type: tier.tier_type,
+            section: tier.section.clone(),
+            price_cents: tier.base_price.cents(),
+            available_from: tier.available_from,
+            available_until: tier.available_until,
+        }
+    }
+}
+
+impl PricingTierDto {
+    fn to_domain(&self) -> PricingTier {
+        PricingTier::new(
+            self.tier_type,
+            self.section.clone(),
+            Money::from_cents(self.price_cents),
+            self.available_from,
+            self.available_until,
+        )
+    }
+}
+
+/// Response for getting event pricing.
+#[derive(Debug, Serialize)]
+pub struct GetPricingResponse {
+    /// Event ID
+    pub event_id: Uuid,
+    /// Pricing tiers for all sections
+    pub pricing_tiers: Vec<PricingTierDto>,
+}
+
+/// Request to update event pricing.
+#[derive(Debug, Deserialize)]
+pub struct UpdatePricingRequest {
+    /// Updated pricing tiers
+    pub pricing_tiers: Vec<PricingTierDto>,
+}
+
+/// Venue section DTO for API requests/responses.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct VenueSectionDto {
+    /// Section name (e.g., "VIP", "Balcony")
+    pub name: String,
+    /// Section capacity
+    pub capacity: u32,
+    /// Type of seating ("numbered" or "general_admission")
+    pub seat_type: String,
+}
+
+impl VenueSectionDto {
+    /// Convert DTO to domain type
+    fn to_domain(&self) -> Result<VenueSection, String> {
+        let seat_type = match self.seat_type.as_str() {
+            "general_admission" => SeatType::GeneralAdmission,
+            "numbered" => {
+                return Err(
+                    "Numbered seating not yet supported in this endpoint".to_string()
+                )
+            }
+            _ => {
+                return Err(format!(
+                    "Invalid seat_type '{}'. Must be 'general_admission' or 'numbered'",
+                    self.seat_type
+                ))
+            }
+        };
+
+        Ok(VenueSection::new(
+            self.name.clone(),
+            Capacity::new(self.capacity),
+            seat_type,
+        ))
+    }
+}
+
+/// Add venue sections request.
+#[derive(Debug, Deserialize)]
+pub struct AddVenueSectionsRequest {
+    /// Sections to add
+    pub sections: Vec<VenueSectionDto>,
+}
+
+/// Add venue sections response.
+#[derive(Debug, Serialize)]
+pub struct AddVenueSectionsResponse {
+    /// Event ID
+    pub event_id: Uuid,
+    /// Sections that were added
+    pub sections: Vec<VenueSectionDto>,
+}
+
+/// Get event pricing tiers.
+///
+/// Public endpoint - no authentication required.
+///
+/// # Example
+///
+/// ```bash
+/// curl http://localhost:8080/api/events/550e8400-e29b-41d4-a716-446655440000/pricing
+/// ```
+pub async fn get_event_pricing(
+    Path(event_id): Path<Uuid>,
+    State(state): State<AppState>,
+) -> Result<Json<GetPricingResponse>, AppError> {
+    let event_id_typed = crate::types::EventId::from_uuid(event_id);
+
+    // Create event store for this request
+    let store = state.create_event_store(event_id_typed);
+
+    // Query event via store action
+    let event = match store
+        .send_and_wait_for(
+            EventAction::GetEvent {
+                event_id: event_id_typed,
+            },
+            |action| {
+                matches!(
+                    action,
+                    EventAction::EventQueried { .. } | EventAction::ValidationFailed { .. }
+                )
+            },
+            std::time::Duration::from_secs(5),
+        )
+        .await
+    {
+        Ok(EventAction::EventQueried { event, .. }) => {
+            event.ok_or_else(|| AppError::not_found("Event", event_id))?
+        }
+        Ok(EventAction::ValidationFailed { error }) => {
+            return Err(AppError::internal(format!("Query failed: {error}")))
+        }
+        Ok(_) => return Err(AppError::internal("Unexpected action received")),
+        Err(e) => return Err(AppError::internal(format!("Failed to query event: {e}"))),
+    };
+
+    // Convert pricing tiers to DTOs
+    let pricing_tiers: Vec<PricingTierDto> = event
+        .pricing_tiers
+        .iter()
+        .map(PricingTierDto::from)
+        .collect();
+
+    Ok(Json(GetPricingResponse {
+        event_id,
+        pricing_tiers,
+    }))
+}
+
+/// Update event pricing tiers.
+///
+/// Requires authentication and event ownership.
+///
+/// # Example
+///
+/// ```bash
+/// curl -X PATCH http://localhost:8080/api/events/550e8400-e29b-41d4-a716-446655440000/pricing \
+///   -H "Authorization: Bearer <session_token>" \
+///   -H "Content-Type: application/json" \
+///   -d '{
+///     "pricing_tiers": [
+///       {
+///         "tier_type": "EarlyBird",
+///         "section": "General Admission",
+///         "price_cents": 2500,
+///         "available_from": "2024-01-01T00:00:00Z",
+///         "available_until": "2024-02-01T00:00:00Z"
+///       },
+///       {
+///         "tier_type": "Regular",
+///         "section": "General Admission",
+///         "price_cents": 3500,
+///         "available_from": "2024-02-01T00:00:00Z",
+///         "available_until": null
+///       }
+///     ]
+///   }'
+/// ```
+pub async fn update_event_pricing(
+    session: SessionUser,
+    Path(event_id): Path<Uuid>,
+    State(state): State<AppState>,
+    Json(request): Json<UpdatePricingRequest>,
+) -> Result<Json<GetPricingResponse>, AppError> {
+    let event_id_typed = crate::types::EventId::from_uuid(event_id);
+
+    // Create event store for this request
+    let store = state.create_event_store(event_id_typed);
+
+    // Check if event exists and get it via query action
+    let event = match store
+        .send_and_wait_for(
+            EventAction::GetEvent {
+                event_id: event_id_typed,
+            },
+            |action| {
+                matches!(
+                    action,
+                    EventAction::EventQueried { .. } | EventAction::ValidationFailed { .. }
+                )
+            },
+            std::time::Duration::from_secs(5),
+        )
+        .await
+    {
+        Ok(EventAction::EventQueried { event, .. }) => {
+            event.ok_or_else(|| AppError::not_found("Event", event_id))?
+        }
+        Ok(EventAction::ValidationFailed { error }) => {
+            return Err(AppError::internal(format!("Query failed: {error}")))
+        }
+        Ok(_) => return Err(AppError::internal("Unexpected action received")),
+        Err(e) => return Err(AppError::internal(format!("Failed to query event: {e}"))),
+    };
+
+    // Verify ownership: only the event owner can update pricing
+    if event.owner_id != session.user_id {
+        return Err(AppError::forbidden(
+            "You do not have permission to update pricing for this event. Only the event owner can update it.",
+        ));
+    }
+
+    // Convert DTOs to domain types
+    let pricing_tiers: Vec<PricingTier> = request
+        .pricing_tiers
+        .iter()
+        .map(PricingTierDto::to_domain)
+        .collect();
+
+    // Validate that at least one tier is provided
+    if pricing_tiers.is_empty() {
+        return Err(AppError::bad_request(
+            "At least one pricing tier must be provided",
+        ));
+    }
+
+    // Send UpdatePricingTiers action and wait for all projections to complete
+    let action = EventAction::UpdatePricingTiers {
+        event_id: event_id_typed,
+        pricing_tiers: pricing_tiers.clone(),
+        respond_to: ResponseChannel::none(),
+    };
+
+    // Wait for either success (EventProjectionConfirmed) or validation failure
+    // The async flow is: UpdatePricingTiers -> Effect::Future -> ExecuteUpdatePricingTiers -> EventProjectionConfirmed
+    match store
+        .send_and_wait_for_with_metadata(
+            action,
+            None, // No special metadata for this operation
+            |action| {
+                matches!(
+                    action,
+                    EventAction::EventProjectionConfirmed { .. }
+                        | EventAction::EventProjectionFailed { .. }
+                        | EventAction::ValidationFailed { .. }
+                )
+            },
+            std::time::Duration::from_secs(5),
+        )
+        .await
+    {
+        Ok(EventAction::EventProjectionConfirmed { .. }) => {
+            // Return the pricing tiers from the request (they were successfully applied)
+            let pricing_tier_dtos: Vec<PricingTierDto> =
+                pricing_tiers.iter().map(PricingTierDto::from).collect();
+
+            Ok(Json(GetPricingResponse {
+                event_id,
+                pricing_tiers: pricing_tier_dtos,
+            }))
+        }
+        Ok(EventAction::EventProjectionFailed { reason, .. }) => {
+            Err(AppError::internal(format!(
+                "Failed to update pricing: projection failed - {reason}"
+            )))
+        }
+        Ok(EventAction::ValidationFailed { error }) => {
+            Err(AppError::bad_request(format!(
+                "Failed to update pricing: {error}"
+            )))
+        }
+        Ok(_) => Err(AppError::internal("Unexpected action received")),
+        Err(e) => Err(AppError::internal(format!(
+            "Failed to update pricing: {e}"
+        ))),
+    }
+}
+
+/// Add venue sections to an event.
+///
+/// Requires authentication and event ownership.
+///
+/// # Example
+///
+/// ```bash
+/// curl -X POST http://localhost:8080/api/events/550e8400-e29b-41d4-a716-446655440000/sections \
+///   -H "Authorization: Bearer <session_token>" \
+///   -H "Content-Type: application/json" \
+///   -d '{
+///     "sections": [
+///       {
+///         "name": "VIP",
+///         "capacity": 100,
+///         "seat_type": "general_admission"
+///       },
+///       {
+///         "name": "Balcony",
+///         "capacity": 200,
+///         "seat_type": "general_admission"
+///       }
+///     ]
+///   }'
+/// ```
+pub async fn add_venue_sections(
+    session: SessionUser,
+    Path(event_id): Path<Uuid>,
+    State(state): State<AppState>,
+    Json(request): Json<AddVenueSectionsRequest>,
+) -> Result<Json<AddVenueSectionsResponse>, AppError> {
+    let event_id_typed = crate::types::EventId::from_uuid(event_id);
+
+    // Create event store for this request
+    let store = state.create_event_store(event_id_typed);
+
+    // Check if event exists and get it via query action
+    let event = match store
+        .send_and_wait_for(
+            EventAction::GetEvent {
+                event_id: event_id_typed,
+            },
+            |action| {
+                matches!(
+                    action,
+                    EventAction::EventQueried { .. } | EventAction::ValidationFailed { .. }
+                )
+            },
+            std::time::Duration::from_secs(5),
+        )
+        .await
+    {
+        Ok(EventAction::EventQueried { event, .. }) => {
+            event.ok_or_else(|| AppError::not_found("Event", event_id))?
+        }
+        Ok(EventAction::ValidationFailed { error }) => {
+            return Err(AppError::internal(format!("Query failed: {error}")))
+        }
+        Ok(_) => return Err(AppError::internal("Unexpected action received")),
+        Err(e) => return Err(AppError::internal(format!("Failed to query event: {e}"))),
+    };
+
+    // Verify ownership: only the event owner can add sections
+    if event.owner_id != session.user_id {
+        return Err(AppError::forbidden(
+            "You do not have permission to add sections to this event. Only the event owner can modify it.",
+        ));
+    }
+
+    // Convert DTOs to domain types
+    let sections: Result<Vec<VenueSection>, String> = request
+        .sections
+        .iter()
+        .map(VenueSectionDto::to_domain)
+        .collect();
+
+    let sections = sections.map_err(|e| AppError::bad_request(e))?;
+
+    // Validate that at least one section is provided
+    if sections.is_empty() {
+        return Err(AppError::bad_request(
+            "At least one section must be provided",
+        ));
+    }
+
+    // Send AddVenueSections action and wait for all projections to complete
+    let action = EventAction::AddVenueSections {
+        event_id: event_id_typed,
+        sections: sections.clone(),
+        respond_to: ResponseChannel::none(),
+    };
+
+    // Wait for either projection confirmation or validation failure
+    match store
+        .send_and_wait_for_with_metadata(
+            action,
+            None, // No special metadata for this operation
+            |action| {
+                matches!(
+                    action,
+                    EventAction::EventProjectionConfirmed { .. }
+                        | EventAction::EventProjectionFailed { .. }
+                        | EventAction::ValidationFailed { .. }
+                )
+            },
+            std::time::Duration::from_secs(10),
+        )
+        .await
+    {
+        Ok(EventAction::EventProjectionConfirmed { .. }) => {
+            // Return the requested sections (they were successfully added)
+            let section_dtos: Vec<VenueSectionDto> = sections
+                .iter()
+                .map(|s| VenueSectionDto {
+                    name: s.name.clone(),
+                    capacity: s.capacity.value(),
+                    seat_type: "general_admission".to_string(),
+                })
+                .collect();
+
+            Ok(Json(AddVenueSectionsResponse {
+                event_id,
+                sections: section_dtos,
+            }))
+        }
+        Ok(EventAction::EventProjectionFailed { reason, .. }) => {
+            Err(AppError::projection_failed("Event", "AddVenueSections", reason))
+        }
+        Ok(EventAction::ValidationFailed { error }) => Err(AppError::bad_request(format!(
+            "Failed to add sections: {error}"
+        ))),
+        Ok(_) => Err(AppError::internal("Unexpected action received")),
+        Err(e) => Err(AppError::internal(format!(
+            "Failed to add sections: {e}"
+        ))),
+    }
 }

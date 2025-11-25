@@ -684,6 +684,7 @@ mod tests {
                 Arc::new(InMemoryEventStore::new()),
                 StreamId::new("test-inventory"),
                 Arc::new(MockInventoryQuery),
+                Arc::new(MockEventQuery),
                 crate::types::GlobalActionChannels {
                     event_actions: tokio::sync::broadcast::channel(1000).0,
                     inventory_actions: tokio::sync::broadcast::channel(1000).0,
