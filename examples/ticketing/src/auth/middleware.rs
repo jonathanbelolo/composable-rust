@@ -432,18 +432,18 @@ impl ResourceId for crate::types::ReservationId {
         user_id: &UserId,
         state: &crate::server::state::AppState,
     ) -> Result<(), AppError> {
-        // Query reservation ownership from in-memory index
-        let reservation_ownership = state.reservation_ownership.read()
-            .map_err(|e| AppError::internal(format!("Failed to read reservation ownership index: {e}")))?;
-
-        // Check if reservation exists in ownership index
-        let customer_id = reservation_ownership
-            .get(self)
+        // Query reservation ownership from PostgreSQL projection
+        // This is restart-safe and has no race condition because we query
+        // the same projection that sent the completion confirmation
+        let customer_id = state.reservations_projection
+            .get_owner(self)
+            .await
+            .map_err(|e| AppError::internal(format!("Failed to query reservation owner: {e}")))?
             .ok_or_else(|| AppError::not_found("Reservation", self.as_uuid()))?;
 
         // Verify ownership
         let expected_customer_id = crate::types::CustomerId::from_uuid(user_id.0);
-        if *customer_id != expected_customer_id {
+        if customer_id != expected_customer_id {
             return Err(AppError::forbidden("You do not own this reservation"));
         }
 
@@ -486,27 +486,18 @@ impl ResourceId for crate::types::PaymentId {
         user_id: &UserId,
         state: &crate::server::state::AppState,
     ) -> Result<(), AppError> {
-        // Query payment ownership from in-memory indices
-        // payment_ownership maps PaymentId → ReservationId
-        let payment_ownership = state.payment_ownership.read()
-            .map_err(|e| AppError::internal(format!("Failed to read payment ownership index: {e}")))?;
-
-        // Get reservation ID for this payment
-        let reservation_id = payment_ownership
-            .get(self)
+        // Query payment ownership from PostgreSQL projection
+        // This is restart-safe and has no race condition because we query
+        // the same projection that sent the completion confirmation
+        let customer_id = state.payments_projection
+            .get_owner(self)
+            .await
+            .map_err(|e| AppError::internal(format!("Failed to query payment owner: {e}")))?
             .ok_or_else(|| AppError::not_found("Payment", self.as_uuid()))?;
-
-        // Now look up the customer who owns this reservation
-        let reservation_ownership = state.reservation_ownership.read()
-            .map_err(|e| AppError::internal(format!("Failed to read reservation ownership index: {e}")))?;
-
-        let customer_id = reservation_ownership
-            .get(reservation_id)
-            .ok_or_else(|| AppError::internal("Payment exists but reservation not found in ownership index"))?;
 
         // Verify ownership
         let expected_customer_id = crate::types::CustomerId::from_uuid(user_id.0);
-        if *customer_id != expected_customer_id {
+        if customer_id != expected_customer_id {
             return Err(AppError::forbidden("You do not own this payment"));
         }
 

@@ -310,6 +310,26 @@ impl PostgresPaymentsProjection {
             PaymentStatus::Refunded { amount } => format!("Refunded:{}", amount.cents()),
         }
     }
+
+    /// Get the owner (customer_id) of a payment.
+    ///
+    /// This is used for ownership verification in authorization middleware.
+    /// Returns `None` if the payment doesn't exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database query fails.
+    pub async fn get_owner(&self, payment_id: &PaymentId) -> Result<Option<CustomerId>> {
+        let result: Option<(uuid::Uuid,)> = sqlx::query_as(
+            "SELECT customer_id FROM payments_projection WHERE payment_id = $1"
+        )
+        .bind(payment_id.as_uuid())
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| ProjectionError::Storage(format!("Failed to query payment owner: {e}")))?;
+
+        Ok(result.map(|(uuid,)| CustomerId::from_uuid(uuid)))
+    }
 }
 
 impl Projection for PostgresPaymentsProjection {

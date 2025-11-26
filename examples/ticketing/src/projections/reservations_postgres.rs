@@ -95,6 +95,26 @@ impl PostgresReservationsProjection {
 
         reservations.map_err(|e| ProjectionError::Storage(format!("Failed to deserialize reservations: {e}")))
     }
+
+    /// Get the owner (customer_id) of a reservation.
+    ///
+    /// This is used for ownership verification in authorization middleware.
+    /// Returns `None` if the reservation doesn't exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database query fails.
+    pub async fn get_owner(&self, reservation_id: &ReservationId) -> Result<Option<CustomerId>> {
+        let result: Option<(uuid::Uuid,)> = sqlx::query_as(
+            "SELECT customer_id FROM reservations_projection WHERE id = $1"
+        )
+        .bind(reservation_id.as_uuid())
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| ProjectionError::Storage(format!("Failed to query reservation owner: {e}")))?;
+
+        Ok(result.map(|(uuid,)| CustomerId::from_uuid(uuid)))
+    }
 }
 
 impl Projection for PostgresReservationsProjection {
@@ -108,6 +128,16 @@ impl Projection for PostgresReservationsProjection {
     async fn apply_event(&self, event: &Self::Event) -> Result<()> {
         if let TicketingEvent::Reservation(reservation_action) = event {
             match reservation_action {
+                // Handle InitiateReservation command (published via Effect::PublishWithResponse)
+                ReservationAction::InitiateReservation {
+                    reservation_id,
+                    event_id,
+                    customer_id,
+                    section,
+                    quantity,
+                    ..
+                } |
+                // Handle ReservationInitiated event (for other consumers)
                 ReservationAction::ReservationInitiated {
                     reservation_id,
                     event_id,

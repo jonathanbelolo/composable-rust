@@ -31,7 +31,7 @@ use ticketing::{
     },
     types::{
         Capacity, CustomerId, EventDate, EventId, EventStatus, Money, PricingTier, ReservationId,
-        SeatId, TicketId, TierType, Venue, VenueSection,
+        ResponseChannel, SeatId, TicketId, TierType, Venue, VenueSection,
     },
 };
 
@@ -720,6 +720,7 @@ async fn test_events_projection_event_created() {
         date: EventDate::new(chrono::Utc::now() + chrono::Duration::days(30)),
         pricing_tiers: pricing_tiers.clone(),
         created_at,
+        respond_to: ResponseChannel::none(),
     });
 
     // Apply event
@@ -764,6 +765,7 @@ async fn test_events_projection_event_published() {
         date: EventDate::new(chrono::Utc::now() + chrono::Duration::days(30)),
         pricing_tiers: create_test_pricing_tiers(),
         created_at: chrono::Utc::now(),
+        respond_to: ResponseChannel::none(),
     });
     projection.apply_event(&create_event).await.unwrap();
 
@@ -799,6 +801,7 @@ async fn test_events_projection_sales_opened() {
             date: EventDate::new(chrono::Utc::now() + chrono::Duration::days(30)),
             pricing_tiers: create_test_pricing_tiers(),
             created_at: chrono::Utc::now(),
+            respond_to: ResponseChannel::none(),
         }))
         .await
         .unwrap();
@@ -837,6 +840,7 @@ async fn test_events_projection_sales_closed() {
             date: EventDate::new(chrono::Utc::now() + chrono::Duration::days(30)),
             pricing_tiers: create_test_pricing_tiers(),
             created_at: chrono::Utc::now(),
+            respond_to: ResponseChannel::none(),
         }))
         .await
         .unwrap();
@@ -875,6 +879,7 @@ async fn test_events_projection_event_cancelled() {
             date: EventDate::new(chrono::Utc::now() + chrono::Duration::days(30)),
             pricing_tiers: create_test_pricing_tiers(),
             created_at: chrono::Utc::now(),
+            respond_to: ResponseChannel::none(),
         }))
         .await
         .unwrap();
@@ -924,6 +929,7 @@ async fn test_events_projection_list_with_filter() {
             date: EventDate::new(chrono::Utc::now() + chrono::Duration::days(30)),
             pricing_tiers: create_test_pricing_tiers(),
             created_at: chrono::Utc::now(),
+            respond_to: ResponseChannel::none(),
         }))
         .await
         .unwrap();
@@ -938,6 +944,7 @@ async fn test_events_projection_list_with_filter() {
             date: EventDate::new(chrono::Utc::now() + chrono::Duration::days(30)),
             pricing_tiers: create_test_pricing_tiers(),
             created_at: chrono::Utc::now(),
+            respond_to: ResponseChannel::none(),
         }))
         .await
         .unwrap();
@@ -959,6 +966,7 @@ async fn test_events_projection_list_with_filter() {
             date: EventDate::new(chrono::Utc::now() + chrono::Duration::days(30)),
             pricing_tiers: create_test_pricing_tiers(),
             created_at: chrono::Utc::now(),
+            respond_to: ResponseChannel::none(),
         }))
         .await
         .unwrap();

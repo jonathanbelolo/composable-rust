@@ -106,7 +106,7 @@ fn create_test_env() -> InventoryEnvironment {
     )
 }
 
-/// Test: 100 concurrent reservation attempts for 1 seat.
+/// Reusable async test logic for 100 concurrent reservation attempts for 1 seat.
 ///
 /// Verifies that:
 /// - Exactly 1 reservation succeeds
@@ -114,8 +114,7 @@ fn create_test_env() -> InventoryEnvironment {
 /// - No double-booking occurs
 ///
 /// This test proves the system correctly handles race conditions under heavy load.
-#[tokio::test]
-async fn test_last_seat_concurrency_100_requests() {
+async fn run_last_seat_concurrency_100_requests() {
     println!("🧪 Concurrency Stress Test: 100 concurrent requests for 1 seat");
 
     let event_id = EventId::new();
@@ -241,6 +240,12 @@ async fn test_last_seat_concurrency_100_requests() {
     println!("  ✅ Concurrency test passed: No double-booking detected!");
     println!("  ✅ Exactly 1 winner for the last seat");
     println!("  ✅ All {} failures were due to insufficient inventory", failures.len());
+}
+
+/// Test: 100 concurrent reservation attempts for 1 seat.
+#[tokio::test]
+async fn test_last_seat_concurrency_100_requests() {
+    run_last_seat_concurrency_100_requests().await;
 }
 
 /// Test: Stress test with 3 seats and 50 concurrent requests.
@@ -388,9 +393,7 @@ async fn test_last_seat_concurrency_consistency() {
         println!("\n  🔄 Run {}/10", run);
 
         // Run the same test logic as above
-        // Note: We can't call the test function directly because #[tokio::test]
-        // wraps it. Instead, call it without await since it's not actually async.
-        test_last_seat_concurrency_100_requests();
+        run_last_seat_concurrency_100_requests().await;
 
         println!("  ✅ Run {} passed", run);
     }

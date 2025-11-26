@@ -197,7 +197,9 @@ impl EventProjection {
                     event.status = EventStatus::Cancelled;
                 }
             }
-            EventAction::EventUpdated { event_id, name, .. } => {
+            EventAction::EventUpdated {
+                event_id, name, ..
+            } => {
                 if let Some(event) = self.events.get_mut(event_id) {
                     if let Some(new_name) = name {
                         event.name = new_name.clone();
@@ -238,7 +240,8 @@ impl EventProjection {
             | EventAction::EventProjectionConfirmed { .. }
             | EventAction::EventProjectionFailed { .. }
             | EventAction::ExecuteAddVenueSections { .. }
-            | EventAction::ExecuteUpdatePricingTiers { .. } => {}
+            | EventAction::ExecuteUpdatePricingTiers { .. }
+            | EventAction::ExecuteUpdateEvent { .. } => {}
         }
     }
 
@@ -252,7 +255,7 @@ impl EventProjection {
 #[allow(clippy::unwrap_used)] // Test code can use unwrap
 mod tests {
     use super::*;
-    use crate::types::{Capacity, EventDate, Money, PricingTier, TierType, Venue, VenueSection, SeatType};
+    use crate::types::{Capacity, EventDate, Money, PricingTier, ResponseChannel, TierType, Venue, VenueSection, SeatType};
     use chrono::Utc;
     use composable_rust_auth::state::UserId;
 
@@ -291,6 +294,7 @@ mod tests {
             date: EventDate::new(Utc::now()),
             pricing_tiers: create_test_pricing(),
             created_at: Utc::now(),
+            respond_to: ResponseChannel::none(),
         };
 
         projection.apply_event_action(&action);
@@ -315,6 +319,7 @@ mod tests {
             date: EventDate::new(Utc::now()),
             pricing_tiers: create_test_pricing(),
             created_at: Utc::now(),
+            respond_to: ResponseChannel::none(),
         });
 
         assert_eq!(projection.get(&event_id).unwrap().status, EventStatus::Draft);
@@ -355,6 +360,7 @@ mod tests {
             date: EventDate::new(Utc::now()),
             pricing_tiers: create_test_pricing(),
             created_at: Utc::now(),
+            respond_to: ResponseChannel::none(),
         });
 
         // Create published event
@@ -367,6 +373,7 @@ mod tests {
             date: EventDate::new(Utc::now()),
             pricing_tiers: create_test_pricing(),
             created_at: Utc::now(),
+            respond_to: ResponseChannel::none(),
         });
         projection.apply_event_action(&EventAction::EventPublished {
             event_id: published_id,
@@ -403,6 +410,7 @@ mod tests {
                 date: EventDate::new(Utc::now()),
                 pricing_tiers: create_test_pricing(),
                 created_at: Utc::now(),
+                respond_to: ResponseChannel::none(),
             });
         }
 

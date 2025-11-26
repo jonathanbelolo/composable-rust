@@ -137,6 +137,7 @@ impl EventsProjectionRunner {
                     // Events carry respond_to for projection completion signaling
                     let respond_to = match &action {
                         crate::aggregates::EventAction::EventCreated { respond_to, .. } => respond_to.clone(),
+                        crate::aggregates::EventAction::EventUpdated { respond_to, .. } => respond_to.clone(),
                         crate::aggregates::EventAction::VenueSectionsAdded { respond_to, .. } => respond_to.clone(),
                         crate::aggregates::EventAction::PricingTiersUpdated { respond_to, .. } => respond_to.clone(),
                         _ => crate::types::ResponseChannel::none(),

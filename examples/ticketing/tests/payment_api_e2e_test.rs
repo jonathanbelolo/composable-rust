@@ -34,7 +34,9 @@ fn create_test_event_payload(name: &str) -> serde_json::Value {
         "start_time": "2025-12-31T20:00:00Z",
         "end_time": "2025-12-31T23:00:00Z",
         "venue_name": "Payment Test Arena",
-        "venue_address": "456 Payment Street, API City, AP 54321"
+        "venue_address": "456 Payment Street, API City, AP 54321",
+        "capacity": 1000,
+        "price": 50
     })
 }
 

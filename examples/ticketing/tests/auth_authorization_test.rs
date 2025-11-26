@@ -37,7 +37,9 @@ fn create_test_event_payload(name: &str) -> serde_json::Value {
         "start_time": "2025-12-31T20:00:00Z",
         "end_time": "2025-12-31T23:00:00Z",
         "venue_name": "Auth Test Arena",
-        "venue_address": "123 Security Street, Auth City, AU 12345"
+        "venue_address": "123 Security Street, Auth City, AU 12345",
+        "capacity": 1000,
+        "price": 50
     })
 }
 
@@ -168,7 +170,8 @@ async fn test_user_cannot_cancel_other_users_reservation() {
         .expect("Failed to parse error response");
 
     // Verify error message mentions ownership
-    let error_message = error_response["error"]
+    // Note: AppError returns {"code": "...", "message": "..."} - use "message" field
+    let error_message = error_response["message"]
         .as_str()
         .unwrap_or("")
         .to_lowercase();
@@ -505,7 +508,8 @@ async fn test_user_cannot_update_other_users_event() {
         .await
         .expect("Failed to parse error response");
 
-    let error_message = error_response["error"]
+    // Note: AppError returns {"code": "...", "message": "..."} - use "message" field
+    let error_message = error_response["message"]
         .as_str()
         .unwrap_or("")
         .to_lowercase();
@@ -631,7 +635,8 @@ async fn test_user_cannot_delete_other_users_event() {
         .await
         .expect("Failed to parse error response");
 
-    let error_message = error_response["error"]
+    // Note: AppError returns {"code": "...", "message": "..."} - use "message" field
+    let error_message = error_response["message"]
         .as_str()
         .unwrap_or("")
         .to_lowercase();

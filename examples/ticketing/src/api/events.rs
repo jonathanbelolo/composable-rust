@@ -454,60 +454,51 @@ pub async fn update_event(
         ));
     }
 
-    // Send UpdateEvent action
+    // Send UpdateEvent action and wait for projection confirmation
+    let new_name = name.clone();
     let action = EventAction::UpdateEvent {
         event_id: event_id_typed,
         name,
     };
 
-    store
-        .send(action)
-        .await
-        .map_err(|e| AppError::internal(format!("Failed to update event: {e}")))?;
-
-    // Query the updated event from projection via query action
-    let updated_event = match store
-        .send_and_wait_for(
-            EventAction::GetEvent {
-                event_id: event_id_typed,
-            },
+    // Wait for either success (EventProjectionConfirmed) or failure
+    match store
+        .send_and_wait_for_with_metadata(
+            action,
+            None, // No special metadata for this operation
             |action| {
                 matches!(
                     action,
-                    EventAction::EventQueried { .. } | EventAction::ValidationFailed { .. }
+                    EventAction::EventProjectionConfirmed { .. }
+                        | EventAction::EventProjectionFailed { .. }
+                        | EventAction::ValidationFailed { .. }
                 )
             },
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(10),
         )
         .await
     {
-        Ok(EventAction::EventQueried { event, .. }) => {
-            event.ok_or_else(|| AppError::not_found("Event", event_id))?
+        Ok(EventAction::EventProjectionConfirmed { .. }) => {
+            // Return response with the updated values
+            let response = EventResponse {
+                id: *event.id.as_uuid(),
+                title: new_name.unwrap_or_else(|| event.name.clone()),
+                description: String::from("Event description not yet available"), // TODO: Add description field to Event domain model
+                start_time: event.date.inner(),
+                end_time: event.date.inner(), // TODO: Add separate end_time to Event domain model
+                venue_name: event.venue.name.clone(),
+                status: event.status,
+                created_at: event.created_at,
+            };
+            Ok(Json(response))
         }
-        Ok(EventAction::ValidationFailed { error }) => {
-            return Err(AppError::internal(format!("Query failed: {error}")))
+        Ok(EventAction::EventProjectionFailed { reason, .. }) => {
+            Err(AppError::internal(format!("Projection failed: {reason}")))
         }
-        Ok(_) => return Err(AppError::internal("Unexpected action received")),
-        Err(e) => {
-            return Err(AppError::internal(format!(
-                "Failed to query updated event: {e}"
-            )))
-        }
-    };
-
-    // Convert to EventResponse
-    let response = EventResponse {
-        id: *updated_event.id.as_uuid(),
-        title: updated_event.name,
-        description: String::from("Event description not yet available"), // TODO: Add description field to Event domain model
-        start_time: updated_event.date.inner(),
-        end_time: updated_event.date.inner(), // TODO: Add separate end_time to Event domain model
-        venue_name: updated_event.venue.name,
-        status: updated_event.status,
-        created_at: updated_event.created_at,
-    };
-
-    Ok(Json(response))
+        Ok(EventAction::ValidationFailed { error }) => Err(AppError::bad_request(error)),
+        Ok(_) => Err(AppError::internal("Unexpected action received")),
+        Err(e) => Err(AppError::internal(format!("Failed to update event: {e}"))),
+    }
 }
 
 /// Delete an event.
