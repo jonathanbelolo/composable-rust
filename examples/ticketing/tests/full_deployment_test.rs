@@ -274,7 +274,7 @@ async fn test_reservation_flow() {
     // Create a reservation
     let reservation_payload = json!({
         "event_id": event_id,
-        "section": "General",
+        "section": "General Admission",
         "quantity": 2
     });
 
@@ -417,7 +417,7 @@ async fn test_payment_processing() {
     // Create reservation - saga completes synchronously, should be in PaymentPending when this returns
     let reservation_payload = json!({
         "event_id": event_id,
-        "section": "General",
+        "section": "General Admission",
         "quantity": 1
     });
 

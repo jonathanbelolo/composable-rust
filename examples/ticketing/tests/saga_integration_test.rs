@@ -16,8 +16,12 @@ use composable_rust_testing::{
 };
 use std::sync::Arc;
 use ticketing::{
-    aggregates::reservation::{ReservationAction, ReservationEnvironment, ReservationReducer, ReservationProjectionQuery},
-    types::{CustomerId, EventId, Money, PaymentId, Reservation, ReservationId, ReservationState, ReservationStatus, SeatId},
+    aggregates::{
+        event::EventProjectionQuery,
+        inventory::{InventoryProjectionQuery, SectionAvailabilityData},
+        reservation::{ReservationAction, ReservationEnvironment, ReservationReducer, ReservationProjectionQuery},
+    },
+    types::{CustomerId, Event, EventId, EventStatus, Money, PaymentId, Reservation, ReservationId, ReservationState, ReservationStatus, SeatAssignment, SeatId},
 };
 
 /// Mock reservation query for tests
@@ -37,6 +41,57 @@ impl ReservationProjectionQuery for MockReservationQuery {
         _customer_id: &CustomerId,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Reservation>, String>> + Send + '_>> {
         Box::pin(async move { Ok(Vec::new()) })
+    }
+}
+
+/// Mock inventory query for tests
+#[derive(Clone)]
+struct MockInventoryQuery;
+
+impl InventoryProjectionQuery for MockInventoryQuery {
+    fn load_inventory(
+        &self,
+        _event_id: &EventId,
+        _section: &str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<((u32, u32, u32, u32), Vec<SeatAssignment>)>, String>> + Send + '_>> {
+        Box::pin(async move { Ok(None) })
+    }
+
+    fn get_all_sections(
+        &self,
+        _event_id: &EventId,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<SectionAvailabilityData>, String>> + Send + '_>> {
+        Box::pin(async move { Ok(Vec::new()) })
+    }
+
+    fn get_section_availability(
+        &self,
+        _event_id: &EventId,
+        _section: &str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<SectionAvailabilityData>, String>> + Send + '_>> {
+        Box::pin(async move { Ok(None) })
+    }
+
+    fn get_total_available(
+        &self,
+        _event_id: &EventId,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u32, String>> + Send + '_>> {
+        Box::pin(async move { Ok(0) })
+    }
+}
+
+/// Mock event query for tests
+#[derive(Clone)]
+struct MockEventQuery;
+
+#[async_trait::async_trait]
+impl EventProjectionQuery for MockEventQuery {
+    async fn load_event(&self, _event_id: &EventId) -> Result<Option<Event>, String> {
+        Ok(None)
+    }
+
+    async fn load_events(&self, _status_filter: Option<EventStatus>) -> Result<Vec<Event>, String> {
+        Ok(Vec::new())
     }
 }
 
@@ -63,6 +118,8 @@ fn create_test_env() -> ReservationEnvironment {
         StreamId::new("reservation-test"),
         Arc::new(MockReservationQuery),
         create_test_global_actions(),
+        Arc::new(MockInventoryQuery),
+        Arc::new(MockEventQuery),
     )
 }
 

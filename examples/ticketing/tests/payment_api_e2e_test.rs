@@ -251,7 +251,7 @@ async fn test_list_user_payments() {
         // Create reservation
         let reservation_request = json!({
             "event_id": event_id,
-            "section": "General",
+            "section": "General Admission",
             "quantity": 1,
             "specific_seats": null
         });
@@ -523,7 +523,7 @@ async fn test_refund_payment_ownership_enforcement() {
 
     let reservation_request = json!({
         "event_id": event_id,
-        "section": "General",
+        "section": "General Admission",
         "quantity": 1,
         "specific_seats": null
     });

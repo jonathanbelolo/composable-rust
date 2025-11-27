@@ -379,6 +379,8 @@ async fn test_e2e_saga_happy_path_with_event_bus() {
         StreamId::new("reservation"),
         Arc::new(MockReservationQuery),
         global_channels.clone(),
+        Arc::new(MockInventoryQuery),
+        Arc::new(MockEventQuery),
     );
     let reservation = Arc::new(Store::new(
         ReservationState::new(),
@@ -514,6 +516,8 @@ async fn test_e2e_saga_compensation_flow() {
         StreamId::new("reservation"),
         Arc::new(MockReservationQuery),
         global_channels.clone(),
+        Arc::new(MockInventoryQuery),
+        Arc::new(MockEventQuery),
     );
     let reservation = Arc::new(Store::new(
         ReservationState::new(),
@@ -667,6 +671,8 @@ async fn test_e2e_manual_cancellation() {
         StreamId::new("reservation"),
         Arc::new(MockReservationQuery),
         global_channels.clone(),
+        Arc::new(MockInventoryQuery),
+        Arc::new(MockEventQuery),
     );
     let reservation = Arc::new(Store::new(
         ReservationState::new(),

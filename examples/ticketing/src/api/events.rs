@@ -10,11 +10,12 @@
 #![allow(clippy::missing_errors_doc)] // Example code - errors are standard AppError
 
 use crate::aggregates::event::EventAction;
+use crate::aggregates::inventory::InventoryAction;
 use crate::auth::middleware::SessionUser;
 use crate::server::state::AppState;
 use crate::types::{
-    Capacity, EventDate, EventId, EventStatus, Money, PricingTier, ResponseChannel, SeatType,
-    TierType, Venue, VenueSection,
+    Capacity, EventDate, EventId, EventStatus, Money, PricingTier, ResponseChannel, SeatNumber,
+    SeatType, TierType, Venue, VenueSection,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -198,6 +199,9 @@ pub async fn create_event(
     // Map API request to domain types
     let (venue, date, pricing_tiers) = request.to_domain_types();
 
+    // Clone venue sections for inventory initialization (before venue is moved)
+    let sections_for_inventory = venue.sections.clone();
+
     // Create Event store for this request (per-instance stream)
     let store = state.create_event_store(event_id);
 
@@ -229,13 +233,63 @@ pub async fn create_event(
         )
         .await
     {
-        Ok(EventAction::EventProjectionConfirmed { .. }) => Ok((
-            StatusCode::CREATED,
-            Json(CreateEventResponse {
-                event_id: *event_id.as_uuid(),
-                message: "Event created successfully".to_string(),
-            }),
-        )),
+        Ok(EventAction::EventProjectionConfirmed { .. }) => {
+            // Event created successfully - now initialize inventory for each venue section
+            for section in sections_for_inventory {
+                let seat_numbers = match &section.seat_type {
+                    SeatType::Numbered { seats } => Some(seats.clone()),
+                    SeatType::GeneralAdmission => {
+                        // Generate seat numbers for general admission
+                        Some(
+                            (1..=section.capacity.value())
+                                .map(|n| SeatNumber::new(format!("{}-{}", section.name, n)))
+                                .collect(),
+                        )
+                    }
+                };
+
+                // Create inventory store for this event
+                let inventory_store = state.create_inventory_store(event_id);
+                let init_action = InventoryAction::InitializeInventory {
+                    event_id,
+                    section: section.name.clone(),
+                    capacity: Capacity::new(section.capacity.value()),
+                    seat_numbers,
+                    respond_to: ResponseChannel::none(),
+                };
+
+                // Initialize inventory and wait for the domain event confirmation
+                if let Err(e) = inventory_store
+                    .send_and_wait_for(
+                        init_action,
+                        |action| {
+                            matches!(
+                                action,
+                                InventoryAction::InventoryInitialized { .. }
+                                    | InventoryAction::ValidationFailed { .. }
+                            )
+                        },
+                        std::time::Duration::from_secs(5),
+                    )
+                    .await
+                {
+                    // Log error but don't fail event creation
+                    tracing::warn!(
+                        "Failed to initialize inventory for section {}: {:?}",
+                        section.name,
+                        e
+                    );
+                }
+            }
+
+            Ok((
+                StatusCode::CREATED,
+                Json(CreateEventResponse {
+                    event_id: *event_id.as_uuid(),
+                    message: "Event created successfully".to_string(),
+                }),
+            ))
+        }
         Ok(EventAction::EventProjectionFailed { reason, .. }) => {
             Err(AppError::internal(format!("Projection failed: {reason}")))
         }

@@ -519,7 +519,7 @@ async fn test_update_event_pricing_forbidden() {
             },
             {
                 "tier_type": "Regular",
-                "section": "General",
+                "section": "General Admission",
                 "price_cents": 1,
                 "available_from": "2025-01-01T00:00:00Z",
                 "available_until": null

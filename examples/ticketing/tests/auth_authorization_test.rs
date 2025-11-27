@@ -229,7 +229,7 @@ async fn test_user_can_access_own_reservation() {
 
     let reservation_request = json!({
         "event_id": event_id,
-        "section": "General",
+        "section": "General Admission",
         "quantity": 1,
         "specific_seats": null
     });

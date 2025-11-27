@@ -2717,6 +2717,11 @@ pub mod store {
                             tracing::trace!(
                                 "EventStore operation produced an action, sending to store with metadata"
                             );
+
+                            // Broadcast to observers (HTTP handlers, WebSockets, send_and_wait_for)
+                            let _ = store.action_broadcast.send(action.clone());
+
+                            // Send action back to store with metadata (preserves correlation context)
                             let _ = store.send_with_metadata(action, metadata_clone).await;
                         } else {
                             tracing::trace!("EventStore operation completed with no action");
@@ -2784,6 +2789,11 @@ pub mod store {
                             tracing::trace!(
                                 "PublishEvent operation produced an action, sending to store with metadata"
                             );
+
+                            // Broadcast to observers (HTTP handlers, WebSockets, send_and_wait_for)
+                            let _ = store.action_broadcast.send(action.clone());
+
+                            // Send action back to store with metadata (preserves correlation context)
                             let _ = store.send_with_metadata(action, metadata_clone).await;
                         } else {
                             tracing::trace!("PublishEvent operation completed with no action");

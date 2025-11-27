@@ -26,7 +26,8 @@ use composable_rust_macros::Action;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use super::inventory::InventoryAction;
+use super::event::EventProjectionQuery;
+use super::inventory::{InventoryAction, InventoryProjectionQuery};
 use super::payment::PaymentAction;
 use crate::types::PaymentId;
 
@@ -315,17 +316,25 @@ pub struct ReservationEnvironment {
     pub projection: Arc<dyn ReservationProjectionQuery>,
     /// Global action channels for cross-aggregate coordination
     pub global_actions: GlobalActionChannels,
+    // ===== Dependencies for Saga Orchestration =====
+    /// Inventory projection query for creating inventory stores in saga
+    pub inventory_query: Arc<dyn InventoryProjectionQuery>,
+    /// Event projection query for pricing lookup in inventory stores
+    pub event_query: Arc<dyn EventProjectionQuery>,
 }
 
 impl ReservationEnvironment {
     /// Creates a new `ReservationEnvironment`
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         clock: Arc<dyn Clock>,
         event_store: Arc<dyn EventStore>,
         stream_id: StreamId,
         projection: Arc<dyn ReservationProjectionQuery>,
         global_actions: GlobalActionChannels,
+        inventory_query: Arc<dyn InventoryProjectionQuery>,
+        event_query: Arc<dyn EventProjectionQuery>,
     ) -> Self {
         Self {
             clock,
@@ -333,6 +342,8 @@ impl ReservationEnvironment {
             stream_id,
             projection,
             global_actions,
+            inventory_query,
+            event_query,
         }
     }
 }
@@ -635,21 +646,110 @@ impl Reducer for ReservationReducer {
                 // Persist and publish our event with correlation_id
                 let mut effects = Self::create_effects(event, expected_version, env, correlation_id);
 
-                // Direct orchestration: Send command to Inventory via global channel
-                let reserve_seats_cmd = InventoryAction::ReserveSeats {
-                    reservation_id,
-                    event_id,
-                    section,
-                    quantity,
-                    specific_seats,
-                    expires_at,
-                };
-                let inventory_channel = env.global_actions.inventory_actions.clone();
+                // Direct orchestration: Create inventory store and dispatch ReserveSeats
+                // Then return SeatsAllocated action for saga feedback loop
+                let clock_clone = env.clock.clone();
+                let event_store_clone = env.event_store.clone();
+                let inventory_query_clone = env.inventory_query.clone();
+                let event_query_clone = env.event_query.clone();
+                let global_actions_clone = env.global_actions.clone();
+                let section_for_inventory = section.clone();
+
                 effects.push(Effect::Future(Box::pin(async move {
-                    if let Err(e) = inventory_channel.send(reserve_seats_cmd) {
-                        tracing::error!(error = %e, "Failed to send ReserveSeats command to inventory channel");
+                    use crate::aggregates::inventory::{InventoryEnvironment, InventoryReducer};
+                    use crate::types::InventoryState;
+                    use composable_rust_core::stream::StreamId;
+                    use composable_rust_runtime::Store;
+                    use std::time::Duration;
+
+                    // Create inventory store for this event
+                    let stream_id = StreamId::new(&format!("inventory-{}", event_id.as_uuid()));
+                    let inv_env = InventoryEnvironment::new(
+                        clock_clone,
+                        event_store_clone,
+                        stream_id,
+                        inventory_query_clone,
+                        event_query_clone,
+                        global_actions_clone.clone(),
+                    );
+                    let inventory_store = Store::new(
+                        InventoryState::new(),
+                        InventoryReducer::new(),
+                        inv_env,
+                    );
+
+                    // Send ReserveSeats action to inventory
+                    let reserve_action = InventoryAction::ReserveSeats {
+                        reservation_id,
+                        event_id,
+                        section: section_for_inventory.clone(),
+                        quantity,
+                        specific_seats,
+                        expires_at,
+                    };
+
+                    // Use send_and_wait_for to wait for SeatsReserved or ValidationFailed
+                    let result = inventory_store.send_and_wait_for(
+                        reserve_action,
+                        |action| {
+                            matches!(
+                                action,
+                                InventoryAction::SeatsReserved { reservation_id: rid, .. } if *rid == reservation_id
+                            ) || matches!(action, InventoryAction::ValidationFailed { .. })
+                        },
+                        Duration::from_secs(30),
+                    ).await;
+
+                    match result {
+                        Ok(InventoryAction::SeatsReserved { seats, .. }) => {
+                            // Calculate total amount (simplified - $50 per seat)
+                            #[allow(clippy::cast_possible_truncation)]
+                            let total_amount = Money::from_dollars(50).multiply(quantity);
+
+                            tracing::info!(
+                                reservation_id = %reservation_id.as_uuid(),
+                                seat_count = seats.len(),
+                                total_amount_cents = total_amount.cents(),
+                                "Inventory reservation succeeded, returning SeatsAllocated"
+                            );
+
+                            Some(ReservationAction::SeatsAllocated {
+                                reservation_id,
+                                seats,
+                                total_amount,
+                            })
+                        }
+                        Ok(InventoryAction::ValidationFailed { error }) => {
+                            tracing::warn!(
+                                reservation_id = %reservation_id.as_uuid(),
+                                error = %error,
+                                "Inventory reservation failed"
+                            );
+                            Some(ReservationAction::ValidationFailed {
+                                error: format!("Inventory: {error}"),
+                            })
+                        }
+                        Ok(other) => {
+                            tracing::error!(
+                                reservation_id = %reservation_id.as_uuid(),
+                                action = ?other,
+                                "Unexpected action received from inventory store"
+                            );
+                            Some(ReservationAction::ValidationFailed {
+                                error: "Unexpected inventory response".to_string(),
+                            })
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                reservation_id = %reservation_id.as_uuid(),
+                                error = %e,
+                                "Inventory store error"
+                            );
+                            Some(ReservationAction::ValidationFailed {
+                                error: format!("Inventory store error: {e}"),
+                            })
+                        }
                     }
-                    None
                 })));
 
                 // Schedule expiration timeout (5 minutes)
@@ -755,6 +855,21 @@ impl Reducer for ReservationReducer {
                         tracing::error!(error = %e, "Failed to send ProcessPayment command to payment channel");
                     }
                     None
+                })));
+
+                // Broadcast PaymentRequested to reservation_actions channel for projection
+                let reservation_channel = env.global_actions.reservation_actions.clone();
+                let payment_requested_for_projection = ReservationAction::PaymentRequested {
+                    reservation_id,
+                    payment_id,
+                    amount: total,
+                };
+                effects.push(Effect::Future(Box::pin(async move {
+                    if let Err(e) = reservation_channel.send(payment_requested_for_projection.clone()) {
+                        tracing::error!(error = %e, "Failed to broadcast PaymentRequested to reservation channel");
+                    }
+                    // Also return the action for the saga to observe
+                    Some(payment_requested_for_projection)
                 })));
 
                 effects
@@ -1015,6 +1130,57 @@ mod tests {
         }
     }
 
+    // Mock inventory query for tests
+    #[derive(Clone)]
+    struct MockInventoryQuery;
+
+    impl InventoryProjectionQuery for MockInventoryQuery {
+        fn load_inventory(
+            &self,
+            _event_id: &EventId,
+            _section: &str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<((u32, u32, u32, u32), Vec<crate::types::SeatAssignment>)>, String>> + Send + '_>> {
+            Box::pin(async move { Ok(None) })
+        }
+
+        fn get_all_sections(
+            &self,
+            _event_id: &EventId,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<crate::aggregates::inventory::SectionAvailabilityData>, String>> + Send + '_>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn get_section_availability(
+            &self,
+            _event_id: &EventId,
+            _section: &str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<crate::aggregates::inventory::SectionAvailabilityData>, String>> + Send + '_>> {
+            Box::pin(async move { Ok(None) })
+        }
+
+        fn get_total_available(
+            &self,
+            _event_id: &EventId,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u32, String>> + Send + '_>> {
+            Box::pin(async move { Ok(0) })
+        }
+    }
+
+    // Mock event query for tests
+    #[derive(Clone)]
+    struct MockEventQuery;
+
+    #[async_trait::async_trait]
+    impl EventProjectionQuery for MockEventQuery {
+        async fn load_event(&self, _event_id: &EventId) -> Result<Option<crate::types::Event>, String> {
+            Ok(None)
+        }
+
+        async fn load_events(&self, _status_filter: Option<crate::types::EventStatus>) -> Result<Vec<crate::types::Event>, String> {
+            Ok(Vec::new())
+        }
+    }
+
     fn create_test_global_actions() -> GlobalActionChannels {
         use tokio::sync::broadcast;
         let (event_tx, _) = broadcast::channel(10);
@@ -1040,6 +1206,8 @@ mod tests {
             StreamId::new("reservation-test"),
             Arc::new(MockReservationQuery),
             create_test_global_actions(),
+            Arc::new(MockInventoryQuery),
+            Arc::new(MockEventQuery),
         );
 
         let state = ReservationState::new();

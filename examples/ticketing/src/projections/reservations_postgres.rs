@@ -190,7 +190,7 @@ impl Projection for PostgresReservationsProjection {
                         "UPDATE reservations_projection
                          SET data = jsonb_set(
                              jsonb_set(data, '{seats}', $2::jsonb),
-                             '{status}', '\"SeatsAllocated\"'::jsonb
+                             '{status}', '\"SeatsReserved\"'::jsonb
                          )
                          WHERE id = $1"
                     )

@@ -330,6 +330,8 @@ impl AppState {
             stream_id,
             self.reservation_query.clone(),
             self.global_actions(),
+            self.inventory_query.clone(),
+            self.events_projection.clone(),
         );
 
         Store::new(ReservationState::new(), ReservationReducer::new(), env)

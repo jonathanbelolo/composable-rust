@@ -291,6 +291,8 @@ pub enum InventoryAction {
         inventory_data: Option<(u32, u32, u32, u32)>,
         /// Loaded seat assignments from projection (complete snapshot)
         seat_assignments: Vec<SeatAssignment>,
+        /// Current stream version from event store (for optimistic concurrency)
+        stream_version: Version,
     },
 
     /// Pricing queried from Event aggregate
@@ -701,23 +703,25 @@ impl InventoryReducer {
                 expires_at,
                 ..
             } => {
-                // Update inventory reserved count
-                let key = (*event_id, section.clone());
-                if let Some(inventory) = state.inventories.get_mut(&key) {
-                    #[allow(clippy::cast_possible_truncation)]
-                    {
-                        inventory.reserved += seats.len() as u32;
+                // Idempotent: Count only seats not already reserved by this reservation
+                let mut newly_reserved_count = 0u32;
+                for seat_id in seats {
+                    if let Some(seat) = state.seat_assignments.get_mut(seat_id) {
+                        // Only count and mark if not already reserved by this reservation
+                        if seat.reserved_by != Some(*reservation_id) {
+                            newly_reserved_count += 1;
+                            seat.status = SeatStatus::Reserved {
+                                expires_at: *expires_at,
+                            };
+                            seat.reserved_by = Some(*reservation_id);
+                        }
                     }
                 }
 
-                // Mark seats as reserved
-                for seat_id in seats {
-                    if let Some(seat) = state.seat_assignments.get_mut(seat_id) {
-                        seat.status = SeatStatus::Reserved {
-                            expires_at: *expires_at,
-                        };
-                        seat.reserved_by = Some(*reservation_id);
-                    }
+                // Update inventory reserved count only for newly reserved seats
+                let key = (*event_id, section.clone());
+                if let Some(inventory) = state.inventories.get_mut(&key) {
+                    inventory.reserved += newly_reserved_count;
                 }
 
                 state.last_error = None;
@@ -788,17 +792,23 @@ impl InventoryReducer {
                 section,
                 inventory_data,
                 seat_assignments,
+                stream_version,
             } => {
                 tracing::debug!(
-                    "InventoryStateLoaded: event_id={}, section={}, data={:?}, seats={}",
+                    "InventoryStateLoaded: event_id={}, section={}, data={:?}, seats={}, stream_version={:?}",
                     event_id,
                     section,
                     inventory_data,
-                    seat_assignments.len()
+                    seat_assignments.len(),
+                    stream_version
                 );
 
                 // Mark as loaded
                 state.mark_loaded(*event_id, section.clone());
+
+                // **Critical**: Set the stream version for optimistic concurrency
+                // This ensures subsequent append operations use the correct expected version
+                state.version = *stream_version;
 
                 // If data was found in projection, reconstruct the inventory
                 // Note: projection returns (total_capacity, reserved, sold, available) + seat assignments
@@ -825,9 +835,10 @@ impl InventoryReducer {
                     }
 
                     tracing::debug!(
-                        "Inventory loaded from projection snapshot. State now has {} inventories and {} seat assignments",
+                        "Inventory loaded from projection snapshot. State now has {} inventories and {} seat assignments, version={}",
                         state.inventories.len(),
-                        state.seat_assignments.len()
+                        state.seat_assignments.len(),
+                        u64::from(state.version)
                     );
                 } else {
                     tracing::warn!(
@@ -916,8 +927,8 @@ impl Reducer for InventoryReducer {
                 event_id,
                 section,
                 capacity,
-                seat_numbers,
-                respond_to,
+                seat_numbers: _,
+                respond_to: _,
             } => {
                 // Validate
                 if let Err(error) =
@@ -931,9 +942,6 @@ impl Reducer for InventoryReducer {
                 let seat_count = capacity.value();
                 let seats: Vec<SeatId> = (0..seat_count).map(|_| SeatId::new()).collect();
 
-                // In a real system, we'd use specific seat numbers if provided
-                let seat_numbers_clone = seat_numbers.clone();
-
                 // Create and apply event
                 let event = InventoryAction::InventoryInitialized {
                     event_id,
@@ -944,6 +952,11 @@ impl Reducer for InventoryReducer {
                 };
                 let expected_version = state.version;
                 Self::apply_event(state, &event);
+
+                // Clone event for feedback - this is the domain event we'll return on success
+                let event_for_feedback = event.clone();
+                // Clone for the global channel (needs to happen before event_for_feedback is moved into closure)
+                let event_for_channel = event_for_feedback.clone();
 
                 // Serialize event
                 let ticketing_event = TicketingEvent::Inventory(event);
@@ -956,30 +969,25 @@ impl Reducer for InventoryReducer {
                 };
 
                 // Create base effects for persistence (no Redpanda)
+                // On success, return the domain event (InventoryInitialized) not a technical action
                 let mut effects = smallvec![
                     append_events! {
                         store: env.event_store,
                         stream: env.stream_id.as_str(),
                         expected_version: Some(expected_version),
                         events: vec![serialized.clone()],
-                        on_success: |version| Some(InventoryAction::VersionUpdated { version }),
+                        on_success: |_version| Some(event_for_feedback.clone()),
                         on_error: |error| Some(InventoryAction::ValidationFailed {
                             error: error.to_string()
                         })
                     }
                 ];
 
-                // Publish to global channel for projections
-                let action_to_publish = InventoryAction::InitializeInventory {
-                    event_id,
-                    section,
-                    capacity,
-                    seat_numbers: seat_numbers_clone,
-                    respond_to,
-                };
+                // Publish the domain EVENT (not command) to global channel for projections
+                // event_for_channel was cloned earlier before event_for_feedback was moved into closure
                 let global_channel = env.global_actions.inventory_actions.clone();
                 effects.push(Effect::Future(Box::pin(async move {
-                    let _ = global_channel.send(action_to_publish);
+                    let _ = global_channel.send(event_for_channel);
                     None
                 })));
 
@@ -1017,11 +1025,14 @@ impl Reducer for InventoryReducer {
                     // Clone dependencies for async closures
                     let inventory_projection = env.inventory_projection.clone();
                     let event_projection = env.event_projection.clone();
+                    let event_store = env.event_store.clone();
                     let clock = env.clock.clone();
                     let event_id_copy = event_id;
                     let section_copy = section.clone();
                     let section_copy2 = section.clone();
                     let specific_seats_copy = specific_seats.clone();
+                    // Build stream_id for querying event store version
+                    let stream_id = StreamId::new(&format!("inventory-{}", event_id.as_uuid()));
                     let original_command = InventoryAction::ReserveSeats {
                         reservation_id,
                         event_id,
@@ -1049,12 +1060,26 @@ impl Reducer for InventoryReducer {
                                     None => (None, Vec::new()),
                                 };
 
+                                // Query event store for current stream version
+                                // This is critical for optimistic concurrency control
+                                let stream_version = match event_store.load_events(stream_id, None).await {
+                                    Ok(events) => Version::new(events.len() as u64),
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "Failed to load events for stream version: {}. Using version 0.",
+                                            e
+                                        );
+                                        Version::new(0)
+                                    }
+                                };
+
                                 // Return StateLoaded event with complete snapshot
                                 Some(InventoryAction::InventoryStateLoaded {
                                     event_id: event_id_copy,
                                     section: section_copy,
                                     inventory_data,
                                     seat_assignments,
+                                    stream_version,
                                 })
                             })),
                             Effect::Future(Box::pin(async move {
@@ -1182,6 +1207,10 @@ impl Reducer for InventoryReducer {
                 let expected_version = state.version;
                 Self::apply_event(state, &event);
 
+                // Clone event for feedback - this is the domain event we'll return on success
+                // so that send_and_wait_for can observe SeatsReserved
+                let event_for_feedback = event.clone();
+
                 // Serialize event
                 let ticketing_event = TicketingEvent::Inventory(event);
                 let serialized = match ticketing_event.serialize() {
@@ -1240,7 +1269,7 @@ impl Reducer for InventoryReducer {
                         stream: env.stream_id.as_str(),
                         expected_version: Some(expected_version),
                         events: vec![serialized.clone()],
-                        on_success: |version| Some(InventoryAction::VersionUpdated { version }),
+                        on_success: |_version| Some(event_for_feedback.clone()),
                         on_error: |error| Some(InventoryAction::ValidationFailed {
                             error: error.to_string()
                         })

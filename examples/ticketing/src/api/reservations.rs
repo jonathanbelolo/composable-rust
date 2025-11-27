@@ -197,38 +197,45 @@ pub async fn create_reservation(
     // The store starts with empty state and loads only what it needs from event store
     let reservation_store = state.create_reservation_store(reservation_id);
 
-    // Send command with metadata and wait for projection confirmation
+    // Send command with metadata and wait for saga to reach PaymentRequested state
     // The Store will:
-    // 1. Call the reducer
-    // 2. Use Effect::PublishWithResponse to wait for projection updates
-    // 3. Execute effects (persist with metadata, publish, send to child stores)
-    // 4. Handle the saga coordination
-    // 5. Return ReservationProjectionConfirmed or ReservationProjectionFailed
+    // 1. Call the reducer for InitiateReservation
+    // 2. Execute effects (persist, reserve inventory, schedule expiration)
+    // 3. Inventory effect returns SeatsAllocated, feeds back to reducer
+    // 4. SeatsAllocated handler creates PaymentRequested, publishes to channel
+    // 5. After projection confirms, PaymentRequested action is emitted
+    // 6. Return PaymentRequested (saga ready) or error
     let result_action = reservation_store
         .send_and_wait_for_with_metadata(
             command,
             Some(metadata),
             |action| matches!(
                 action,
-                ReservationAction::ReservationProjectionConfirmed { .. }
+                ReservationAction::PaymentRequested { .. }
                 | ReservationAction::ReservationProjectionFailed { .. }
                 | ReservationAction::ValidationFailed { .. }
             ),
-            std::time::Duration::from_secs(10),
+            std::time::Duration::from_secs(30), // Longer timeout for saga completion
         )
         .await
         .map_err(|e| AppError::internal(format!("Failed to create reservation: {e}")))?;
 
-    // Check if projection failed
-    match result_action {
-        ReservationAction::ReservationProjectionFailed { reservation_id: _, reason } => {
-            return Err(AppError::projection_failed("Reservation", "InitiateReservation", reason));
+    // Check result and determine status
+    let status = match &result_action {
+        ReservationAction::PaymentRequested { .. } => {
+            // Saga successfully reached PaymentPending state
+            ReservationStatus::PaymentPending
+        }
+        ReservationAction::ReservationProjectionFailed { reason, .. } => {
+            return Err(AppError::projection_failed("Reservation", "PaymentRequested", reason.clone()));
         }
         ReservationAction::ValidationFailed { error, .. } => {
-            return Err(AppError::bad_request(error));
+            return Err(AppError::bad_request(error.clone()));
         }
-        _ => {} // ReservationProjectionConfirmed - continue
-    }
+        _ => {
+            return Err(AppError::internal("Unexpected response from reservation saga"));
+        }
+    };
 
     // Store dropped here - memory freed
 
@@ -237,16 +244,17 @@ pub async fn create_reservation(
 
     tracing::info!(
         reservation_id = %reservation_id.as_uuid(),
-        "Reservation created and projection confirmed"
+        status = ?status,
+        "Reservation created and saga reached PaymentPending"
     );
 
     Ok((
         StatusCode::CREATED,
         Json(CreateReservationResponse {
             reservation_id: *reservation_id.as_uuid(),
-            status: ReservationStatus::Initiated,
+            status,
             expires_at,
-            message: "Reservation created. Complete payment within 5 minutes.".to_string(),
+            message: "Reservation confirmed. Complete payment within 5 minutes.".to_string(),
         }),
     ))
 }

@@ -3,10 +3,11 @@
 //! Manages event lifecycle: creation, publishing, sales management, and cancellation.
 //! Demonstrates validation, state transitions, and business rules enforcement.
 
+use crate::aggregates::inventory::InventoryAction;
 use crate::projections::TicketingEvent;
 use crate::types::{
-    Event, EventDate, EventId, EventState, EventStatus, GlobalActionChannels, PricingTier,
-    ResponseChannel, Venue,
+    Capacity, Event, EventDate, EventId, EventState, EventStatus, GlobalActionChannels,
+    PricingTier, ResponseChannel, SeatNumber, SeatType, Venue,
 };
 use chrono::{DateTime, Duration, Utc};
 use composable_rust_auth::state::UserId;
@@ -893,6 +894,10 @@ impl Reducer for EventReducer {
                 // Capture timestamp before creating closures
                 let created_at = env.clock.now();
 
+                // Clone venue for inventory initialization (before it's moved into closures)
+                let venue_for_inventory = venue.clone();
+                let inventory_channel = env.global_actions.inventory_actions.clone();
+
                 // Create and apply event (with placeholder respond_to for local state)
                 let event_for_state = EventAction::EventCreated {
                     id,
@@ -937,6 +942,39 @@ impl Reducer for EventReducer {
                         })
                     }),
                 });
+
+                // Auto-initialize inventory for each venue section
+                // This ensures inventory exists before any reservations can be made
+                for section in venue_for_inventory.sections {
+                    let section_name = section.name.clone();
+                    let capacity = section.capacity;
+                    let seat_numbers = match &section.seat_type {
+                        SeatType::Numbered { seats } => {
+                            // Use existing seat numbers from the section
+                            Some(seats.clone())
+                        }
+                        SeatType::GeneralAdmission => {
+                            // Generate seat numbers for general admission
+                            Some(
+                                (1..=capacity.value())
+                                    .map(|n| SeatNumber::new(format!("{}-{}", section_name, n)))
+                                    .collect(),
+                            )
+                        }
+                    };
+                    let init_action = InventoryAction::InitializeInventory {
+                        event_id: id_for_success,
+                        section: section_name,
+                        capacity: Capacity::new(capacity.value()),
+                        seat_numbers,
+                        respond_to: ResponseChannel::none(),
+                    };
+                    let channel = inventory_channel.clone();
+                    effects.push(Effect::Future(Box::pin(async move {
+                        let _ = channel.send(init_action);
+                        None // No feedback needed
+                    })));
+                }
 
                 effects
             }
@@ -1024,35 +1062,40 @@ impl Reducer for EventReducer {
                     return SmallVec::new();
                 }
 
-                // Load current version from event store for optimistic concurrency
-                // (per-request stores start at version 0 but stream may have existing events)
-                let event_store = env.event_store.clone();
-                let stream_id = env.stream_id.clone();
+                // Load event from projection to validate (async path for per-request stores)
+                let projection = env.projection.clone();
                 let clock = env.clock.clone();
 
                 smallvec![Effect::Future(Box::pin(async move {
-                    // Load current version from event store
-                    let current_version = match event_store.load_events(stream_id, None).await {
-                        Ok(events) => Version::new(events.len() as u64),
+                    // Load event from projection
+                    let loaded_event = match projection.load_event(&event_id).await {
+                        Ok(Some(event)) => event,
+                        Ok(None) => {
+                            return Some(EventAction::ValidationFailed {
+                                error: format!("Event {} not found", event_id),
+                            });
+                        }
                         Err(e) => {
                             return Some(EventAction::ValidationFailed {
-                                error: format!("Failed to load version from event store: {e}"),
+                                error: format!("Failed to load event from projection: {e}"),
                             });
                         }
                     };
 
-                    // If no events exist, the event doesn't exist
-                    if current_version.value() == 0 {
+                    // Cannot update cancelled events
+                    if loaded_event.status == EventStatus::Cancelled {
                         return Some(EventAction::ValidationFailed {
-                            error: format!("Event {event_id} not found"),
+                            error: "Cannot update cancelled event".to_string(),
                         });
                     }
 
-                    // Return execute action with loaded version
+                    // Return execute action
+                    // Note: Version is handled by the store - we use Version::new(0) as placeholder
+                    // since we're not doing optimistic concurrency on per-request stores
                     Some(EventAction::ExecuteUpdateEvent {
                         event_id,
                         name,
-                        current_version,
+                        current_version: Version::new(0),
                         updated_at: clock.now(),
                     })
                 }))]
@@ -1460,8 +1503,8 @@ mod tests {
                 assert_eq!(event.status, EventStatus::Draft);
             })
             .then_effects(|effects| {
-                // Should return 2 effects: AppendEvents + Channel Send (no Redpanda)
-                assert_eq!(effects.len(), 2);
+                // Should return 3 effects: AppendEvents + PublishWithResponse + Inventory Init
+                assert_eq!(effects.len(), 3);
             })
             .run();
     }
