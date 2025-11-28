@@ -23,7 +23,7 @@ use crate::aggregates::{
     analytics::AnalyticsReducer,
     inventory::InventoryReducer,
     payment::PaymentReducer,
-    reservation::ReservationReducer,
+    reservation_saga::ReservationReducer,
 };
 use crate::auth::setup::TicketingAuthStore;
 use crate::bootstrap::resources::ResourceManager;
@@ -315,23 +315,72 @@ impl AppState {
     ) -> composable_rust_runtime::Store<
         crate::types::ReservationState,
         crate::aggregates::ReservationAction,
-        crate::aggregates::reservation::ReservationEnvironment,
+        crate::aggregates::reservation_saga::ReservationEnvironment,
         ReservationReducer,
     > {
-        use crate::aggregates::reservation::ReservationEnvironment;
-        use crate::types::ReservationState;
+        use crate::aggregates::inventory::{InventoryEnvironment, InventoryReducer};
+        use crate::aggregates::payment::{PaymentEnvironment, PaymentReducer};
+        use crate::aggregates::reservation_saga::ReservationEnvironment;
+        use crate::types::{InventoryState, PaymentState, ReservationState};
         use composable_rust_core::stream::StreamId;
         use composable_rust_runtime::Store;
 
         let stream_id = StreamId::new(&format!("reservation-{}", reservation_id.as_uuid()));
+
+        // Create factory functions for child aggregate stores
+        // These capture the shared dependencies and create fresh stores on demand
+        let clock_for_inventory = self.clock.clone();
+        let event_store_for_inventory = self.event_store.clone();
+        let inventory_query_for_inventory = self.inventory_query.clone();
+        let events_projection_for_inventory = self.events_projection.clone();
+        let global_actions_for_inventory = self.global_actions();
+
+        let create_inventory_store: std::sync::Arc<
+            dyn Fn(EventId) -> Store<InventoryState, crate::aggregates::InventoryAction, InventoryEnvironment, InventoryReducer>
+                + Send
+                + Sync,
+        > = std::sync::Arc::new(move |event_id| {
+            let stream_id = StreamId::new(&format!("inventory-{}", event_id.as_uuid()));
+            let env = InventoryEnvironment::new(
+                clock_for_inventory.clone(),
+                event_store_for_inventory.clone(),
+                stream_id,
+                inventory_query_for_inventory.clone(),
+                events_projection_for_inventory.clone(),
+                global_actions_for_inventory.clone(),
+            );
+            Store::new(InventoryState::new(), InventoryReducer::new(), env)
+        });
+
+        let clock_for_payment = self.clock.clone();
+        let event_store_for_payment = self.event_store.clone();
+        let payment_query_for_payment = self.payment_query.clone();
+        let global_actions_for_payment = self.global_actions();
+
+        let create_payment_store: std::sync::Arc<
+            dyn Fn(PaymentId) -> Store<PaymentState, crate::aggregates::PaymentAction, PaymentEnvironment, PaymentReducer>
+                + Send
+                + Sync,
+        > = std::sync::Arc::new(move |payment_id| {
+            let stream_id = StreamId::new(&format!("payment-{}", payment_id.as_uuid()));
+            let env = PaymentEnvironment::new(
+                clock_for_payment.clone(),
+                event_store_for_payment.clone(),
+                stream_id,
+                payment_query_for_payment.clone(),
+                global_actions_for_payment.clone(),
+            );
+            Store::new(PaymentState::new(), PaymentReducer::new(), env)
+        });
+
         let env = ReservationEnvironment::new(
             self.clock.clone(),
             self.event_store.clone(),
             stream_id,
             self.reservation_query.clone(),
             self.global_actions(),
-            self.inventory_query.clone(),
-            self.events_projection.clone(),
+            create_inventory_store,
+            create_payment_store,
         );
 
         Store::new(ReservationState::new(), ReservationReducer::new(), env)

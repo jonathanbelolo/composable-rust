@@ -32,7 +32,7 @@ use ticketing::{
         event_inventory_saga::{EventInventorySaga, EventInventorySagaAction, EventInventorySagaEnvironment, EventInventorySagaState},
         inventory::{InventoryEnvironment, InventoryReducer, InventoryProjectionQuery},
         payment::{PaymentEnvironment, PaymentReducer, PaymentProjectionQuery},
-        reservation::{ReservationAction, ReservationEnvironment, ReservationReducer, ReservationProjectionQuery},
+        reservation_saga::{ReservationAction, ReservationEnvironment, ReservationReducer, ReservationProjectionQuery},
         InventoryAction, PaymentAction,
     },
     types::{
@@ -373,14 +373,54 @@ async fn test_e2e_saga_happy_path_with_event_bus() {
     ));
 
     // Initialize reservation aggregate (saga coordinator)
+    // Create factory functions for child aggregate stores
+    let clock_for_inv = clock.clone();
+    let event_store_for_inv = event_store.clone();
+    let global_channels_for_inv = global_channels.clone();
+    let create_inventory_store: Arc<
+        dyn Fn(EventId) -> Store<InventoryState, InventoryAction, InventoryEnvironment, InventoryReducer>
+            + Send
+            + Sync,
+    > = Arc::new(move |event_id| {
+        let stream_id = StreamId::new(format!("inventory-{}", event_id.as_uuid()));
+        let inv_env = InventoryEnvironment::new(
+            clock_for_inv.clone(),
+            event_store_for_inv.clone(),
+            stream_id,
+            Arc::new(MockInventoryQuery),
+            Arc::new(MockEventQuery),
+            global_channels_for_inv.clone(),
+        );
+        Store::new(InventoryState::new(), InventoryReducer::new(), inv_env)
+    });
+
+    let clock_for_pay = clock.clone();
+    let event_store_for_pay = event_store.clone();
+    let global_channels_for_pay = global_channels.clone();
+    let create_payment_store: Arc<
+        dyn Fn(PaymentId) -> Store<PaymentState, PaymentAction, PaymentEnvironment, PaymentReducer>
+            + Send
+            + Sync,
+    > = Arc::new(move |payment_id| {
+        let stream_id = StreamId::new(format!("payment-{}", payment_id.as_uuid()));
+        let pay_env = PaymentEnvironment::new(
+            clock_for_pay.clone(),
+            event_store_for_pay.clone(),
+            stream_id,
+            Arc::new(MockPaymentQuery),
+            global_channels_for_pay.clone(),
+        );
+        Store::new(PaymentState::new(), PaymentReducer::new(), pay_env)
+    });
+
     let reservation_env = ReservationEnvironment::new(
         clock.clone(),
         event_store.clone(),
         StreamId::new("reservation"),
         Arc::new(MockReservationQuery),
         global_channels.clone(),
-        Arc::new(MockInventoryQuery),
-        Arc::new(MockEventQuery),
+        create_inventory_store,
+        create_payment_store,
     );
     let reservation = Arc::new(Store::new(
         ReservationState::new(),
@@ -510,14 +550,54 @@ async fn test_e2e_saga_compensation_flow() {
         payment_env,
     ));
 
+    // Create factory functions for child aggregate stores
+    let clock_for_inv = clock.clone();
+    let event_store_for_inv = event_store.clone();
+    let global_channels_for_inv = global_channels.clone();
+    let create_inventory_store: Arc<
+        dyn Fn(EventId) -> Store<InventoryState, InventoryAction, InventoryEnvironment, InventoryReducer>
+            + Send
+            + Sync,
+    > = Arc::new(move |event_id| {
+        let stream_id = StreamId::new(format!("inventory-{}", event_id.as_uuid()));
+        let inv_env = InventoryEnvironment::new(
+            clock_for_inv.clone(),
+            event_store_for_inv.clone(),
+            stream_id,
+            Arc::new(MockInventoryQuery),
+            Arc::new(MockEventQuery),
+            global_channels_for_inv.clone(),
+        );
+        Store::new(InventoryState::new(), InventoryReducer::new(), inv_env)
+    });
+
+    let clock_for_pay = clock.clone();
+    let event_store_for_pay = event_store.clone();
+    let global_channels_for_pay = global_channels.clone();
+    let create_payment_store: Arc<
+        dyn Fn(PaymentId) -> Store<PaymentState, PaymentAction, PaymentEnvironment, PaymentReducer>
+            + Send
+            + Sync,
+    > = Arc::new(move |payment_id| {
+        let stream_id = StreamId::new(format!("payment-{}", payment_id.as_uuid()));
+        let pay_env = PaymentEnvironment::new(
+            clock_for_pay.clone(),
+            event_store_for_pay.clone(),
+            stream_id,
+            Arc::new(MockPaymentQuery),
+            global_channels_for_pay.clone(),
+        );
+        Store::new(PaymentState::new(), PaymentReducer::new(), pay_env)
+    });
+
     let reservation_env = ReservationEnvironment::new(
         clock.clone(),
         event_store.clone(),
         StreamId::new("reservation"),
         Arc::new(MockReservationQuery),
         global_channels.clone(),
-        Arc::new(MockInventoryQuery),
-        Arc::new(MockEventQuery),
+        create_inventory_store,
+        create_payment_store,
     );
     let reservation = Arc::new(Store::new(
         ReservationState::new(),
@@ -665,14 +745,54 @@ async fn test_e2e_manual_cancellation() {
         payment_env,
     ));
 
+    // Create factory functions for child aggregate stores
+    let clock_for_inv = clock.clone();
+    let event_store_for_inv = event_store.clone();
+    let global_channels_for_inv = global_channels.clone();
+    let create_inventory_store: Arc<
+        dyn Fn(EventId) -> Store<InventoryState, InventoryAction, InventoryEnvironment, InventoryReducer>
+            + Send
+            + Sync,
+    > = Arc::new(move |event_id| {
+        let stream_id = StreamId::new(format!("inventory-{}", event_id.as_uuid()));
+        let inv_env = InventoryEnvironment::new(
+            clock_for_inv.clone(),
+            event_store_for_inv.clone(),
+            stream_id,
+            Arc::new(MockInventoryQuery),
+            Arc::new(MockEventQuery),
+            global_channels_for_inv.clone(),
+        );
+        Store::new(InventoryState::new(), InventoryReducer::new(), inv_env)
+    });
+
+    let clock_for_pay = clock.clone();
+    let event_store_for_pay = event_store.clone();
+    let global_channels_for_pay = global_channels.clone();
+    let create_payment_store: Arc<
+        dyn Fn(PaymentId) -> Store<PaymentState, PaymentAction, PaymentEnvironment, PaymentReducer>
+            + Send
+            + Sync,
+    > = Arc::new(move |payment_id| {
+        let stream_id = StreamId::new(format!("payment-{}", payment_id.as_uuid()));
+        let pay_env = PaymentEnvironment::new(
+            clock_for_pay.clone(),
+            event_store_for_pay.clone(),
+            stream_id,
+            Arc::new(MockPaymentQuery),
+            global_channels_for_pay.clone(),
+        );
+        Store::new(PaymentState::new(), PaymentReducer::new(), pay_env)
+    });
+
     let reservation_env = ReservationEnvironment::new(
         clock.clone(),
         event_store.clone(),
         StreamId::new("reservation"),
         Arc::new(MockReservationQuery),
         global_channels.clone(),
-        Arc::new(MockInventoryQuery),
-        Arc::new(MockEventQuery),
+        create_inventory_store,
+        create_payment_store,
     );
     let reservation = Arc::new(Store::new(
         ReservationState::new(),

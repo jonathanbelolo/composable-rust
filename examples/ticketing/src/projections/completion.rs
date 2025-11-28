@@ -517,8 +517,8 @@ mod tests {
             .expect("Channel closed");
 
         match result {
-            ProjectionResult::Completed(completions) => {
-                assert_eq!(completions.len(), 2);
+            ProjectionResult::Completed(completed_projections) => {
+                assert_eq!(completed_projections.len(), 2);
             }
             ProjectionResult::Failed(_) => panic!("Expected completion, got failure"),
         }

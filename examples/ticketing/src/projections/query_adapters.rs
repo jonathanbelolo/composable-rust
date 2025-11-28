@@ -15,7 +15,7 @@
 
 use crate::aggregates::{
     analytics::AnalyticsProjectionQuery, inventory::InventoryProjectionQuery,
-    payment::PaymentProjectionQuery, reservation::ReservationProjectionQuery,
+    payment::PaymentProjectionQuery, reservation_saga::ReservationProjectionQuery,
 };
 use crate::projections::{
     CustomerHistoryProjection, CustomerProfile, PostgresAvailableSeatsProjection,

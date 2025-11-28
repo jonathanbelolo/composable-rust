@@ -507,7 +507,7 @@ impl InventoryReducer {
         expected_version: Version,
         env: &InventoryEnvironment,
     ) -> SmallVec<[Effect<InventoryAction>; 4]> {
-        let ticketing_event = TicketingEvent::Inventory(event);
+        let ticketing_event = TicketingEvent::Inventory(event.clone());
         let serialized = match ticketing_event.serialize() {
             Ok(s) => s,
             Err(e) => {
@@ -529,7 +529,12 @@ impl InventoryReducer {
                 on_error: |error| Some(InventoryAction::ValidationFailed {
                     error: error.to_string()
                 })
-            }
+            },
+            // Echo the event back as an action so it broadcasts to action_broadcast channel
+            // This allows send_and_wait_for to receive it (e.g., SeatsConfirmed, SeatsReleased)
+            Effect::Future(Box::pin(async move {
+                Some(event)
+            }))
         ]
     }
 
@@ -1751,8 +1756,8 @@ mod tests {
                 assert_eq!(inventory.available(), 98);
             })
             .then_effects(|effects| {
-                // Should return 1 effect: AppendEvents (no Redpanda)
-                assert_eq!(effects.len(), 1);
+                // Should return 2 effects: AppendEvents + Echo (no Redpanda)
+                assert_eq!(effects.len(), 2);
             })
             .run();
     }
@@ -1805,8 +1810,8 @@ mod tests {
                 assert_eq!(inventory.available(), 100);
             })
             .then_effects(|effects| {
-                // Should return 1 effect: AppendEvents (no Redpanda)
-                assert_eq!(effects.len(), 1);
+                // Should return 2 effects: AppendEvents + Echo (no Redpanda)
+                assert_eq!(effects.len(), 2);
             })
             .run();
     }

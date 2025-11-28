@@ -16,7 +16,7 @@ This document defines the standard patterns for implementing aggregates in the t
 6. [Two-Phase Async Pattern](#6-two-phase-async-pattern)
 7. [Effect Patterns](#7-effect-patterns)
 8. [State Management](#8-state-management)
-9. [Testing Patterns](#9-testing-patterns)
+9. [Testing Strategy and Discipline](#9-testing-strategy-and-discipline)
 10. [Checklist](#10-checklist)
 11. [Code Quality Patterns](#11-code-quality-patterns)
 
@@ -744,75 +744,143 @@ impl {Aggregate}State {
 
 ---
 
-## 9. Testing Patterns
+## 9. Testing Strategy and Discipline
 
-### 9.1 Test Module Setup
+This section defines the testing philosophy for aggregates using the two-phase async pattern.
+
+### 9.1 Testing Philosophy
+
+For the two-phase async pattern, we have two distinct layers of behavior:
+
+| Layer | What Happens | Testing Tool |
+|-------|--------------|--------------|
+| **Sync Validation** | Command received → immediate validation → reject or proceed to async | `ReducerTest` |
+| **Full Async Flow** | Command → Effect::Future → Execute action → Terminal event → State updated | `TestStore` |
+
+**Key Principle**: Never test internal `Execute*` actions directly—they are implementation details of the two-phase pattern.
+
+### 9.2 Why This Matters
+
+**❌ Testing Execute actions is problematic:**
+```rust
+// This tests implementation details!
+.when_action({Aggregate}Action::ExecuteUpdateEntity {
+    entity_id: id,
+    current_version: Version::new(1),  // ← Internal detail
+    loaded_entity,                      // ← Internal detail
+    updated_at,                         // ← Internal detail
+})
+```
+
+Problems:
+- Exposes internal implementation details
+- Tests break if we refactor the two-phase pattern
+- Requires manufacturing internal state (`current_version`, `loaded_entity`)
+- Duplicates what async TestStore tests already cover
+
+**✅ Test at the right abstraction level:**
+- **ReducerTest**: Test COMMAND actions for sync validation
+- **TestStore**: Test full flows from command to terminal event
+
+### 9.3 Test Structure
+
+Organize tests into clear sections:
 
 ```rust
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::test_utils::{create_test_global_channels, Mock{Aggregate}Query};
-    use crate::types::{...};
     use composable_rust_core::environment::SystemClock;
-    use composable_rust_testing::{assertions, mocks::InMemoryEventStore, ReducerTest};
+    use composable_rust_testing::{assertions, mocks::InMemoryEventStore, ReducerTest, TestStore};
+    use std::time::Duration;
 
-    fn create_test_env() -> {Aggregate}Environment {
-        {Aggregate}Environment::new(
-            Arc::new(SystemClock),
-            Arc::new(InMemoryEventStore::new()),
-            StreamId::new("test-stream"),
-            Arc::new(Mock{Aggregate}Query),
-            create_test_global_channels(),
-        )
+    // =========================================================================
+    // Test Infrastructure
+    // =========================================================================
+
+    fn create_test_env() -> {Aggregate}Environment { ... }
+    fn create_test_env_with_projection(projection: Arc<dyn Query>) -> {Aggregate}Environment { ... }
+
+    // Configurable mock for different test scenarios
+    #[derive(Clone, Default)]
+    struct ConfigurableMockQuery {
+        entities: Arc<RwLock<HashMap<EntityId, Entity>>>,
+        load_error: Arc<RwLock<Option<String>>>,
     }
 
-    // Local test fixtures (specific to this aggregate's tests)
-    fn create_test_entity() -> Entity { ... }
+    impl ConfigurableMockQuery {
+        fn new() -> Self { Self::default() }
+        fn with_entity(self, entity: Entity) -> Self { ... }
+        fn with_error(self, error: &str) -> Self { ... }
+    }
+
+    // =========================================================================
+    // Sync Validation Tests (ReducerTest)
+    // =========================================================================
+    //
+    // Fast, pure tests that verify commands with invalid inputs are rejected
+    // immediately without triggering async effects. These test the COMMAND
+    // actions, NOT the internal Execute actions.
+
+    #[test]
+    fn test_create_entity_empty_name_rejected() { ... }
+
+    #[test]
+    fn test_create_entity_duplicate_rejected() { ... }
+
+    // =========================================================================
+    // Full Flow Tests (TestStore)
+    // =========================================================================
+    //
+    // Test complete async behavior from command to terminal event.
+    // These test the REAL behavior without knowing about internal Execute actions.
+
+    // -------------------------------------------------------------------------
+    // Happy Paths
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_create_entity_success() { ... }
+
+    #[tokio::test]
+    async fn test_update_entity_success() { ... }
+
+    // -------------------------------------------------------------------------
+    // Async Validation Failures
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_update_entity_not_found() { ... }
+
+    #[tokio::test]
+    async fn test_update_cancelled_entity_rejected() { ... }
+
+    // -------------------------------------------------------------------------
+    // Query Operations
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_get_entity() { ... }
+
+    #[tokio::test]
+    async fn test_list_entities() { ... }
 }
 ```
 
-### 9.2 ReducerTest Builder Pattern
+### 9.4 ReducerTest for Sync Validation
+
+Use `ReducerTest` to verify that commands with invalid inputs fail immediately:
 
 ```rust
 #[test]
-fn test_create_entity_success() {
-    let id = EntityId::new();
-
-    ReducerTest::new({Aggregate}Reducer::new())
-        .with_env(create_test_env())
-        .given_state({Aggregate}State::new())
-        .when_action({Aggregate}Action::CreateEntity {
-            id,
-            name: "Test Entity".to_string(),
-            respond_to: ResponseChannel::none(),
-        })
-        .then_state(move |state| {
-            assert_eq!(state.count(), 1);
-            assert!(state.exists(&id));
-            let entity = state.get(&id).unwrap();
-            assert_eq!(entity.name, "Test Entity");
-        })
-        .then_effects(|effects| {
-            // Expect: AppendEvents + PublishWithResponse
-            assert_eq!(effects.len(), 2);
-        })
-        .run();
-}
-```
-
-### 9.3 Testing Validation Failures
-
-```rust
-#[test]
-fn test_create_entity_empty_name() {
+fn test_create_entity_empty_name_rejected() {
     ReducerTest::new({Aggregate}Reducer::new())
         .with_env(create_test_env())
         .given_state({Aggregate}State::new())
         .when_action({Aggregate}Action::CreateEntity {
             id: EntityId::new(),
-            name: String::new(),
+            name: String::new(),  // Invalid!
             respond_to: ResponseChannel::none(),
         })
         .then_state(|state| {
@@ -823,63 +891,324 @@ fn test_create_entity_empty_name() {
         .then_effects(assertions::assert_no_effects)
         .run();
 }
-```
 
-### 9.4 Testing Two-Phase Actions
-
-For async commands, test the sync `Execute*` action directly:
-
-```rust
 #[test]
-fn test_update_entity_success() {
+fn test_create_entity_duplicate_rejected() {
     let id = EntityId::new();
-    let loaded_entity = create_test_entity();
 
-    // For tests, use a fixed timestamp (simulating what Phase 1 would produce)
-    // In production, this comes from env.clock.now() in the async block
-    let test_clock = FixedClock::new(Utc.with_ymd_and_hms(2024, 1, 15, 10, 0, 0).unwrap());
-    let updated_at = test_clock.now();
-
-    // Test ExecuteUpdateEntity (the sync internal action)
     ReducerTest::new({Aggregate}Reducer::new())
         .with_env(create_test_env())
-        .given_state({Aggregate}State::new())
-        .when_action({Aggregate}Action::ExecuteUpdateEntity {
-            entity_id: id,
-            new_data: NewData { ... },
-            loaded_entity,
-            current_version: Version::new(1),
-            updated_at,
+        .given_state({
+            let mut state = {Aggregate}State::new();
+            state.entities.insert(id, Entity::new(id, "Existing".to_string()));
+            state
+        })
+        .when_action({Aggregate}Action::CreateEntity {
+            id,  // Duplicate!
+            name: "New Entity".to_string(),
+            respond_to: ResponseChannel::none(),
         })
         .then_state(move |state| {
+            // Original entity unchanged
             let entity = state.get(&id).unwrap();
-            assert_eq!(entity.data, expected_data);
+            assert_eq!(entity.name, "Existing");
+            // Error recorded
+            assert!(state.last_error.as_ref().unwrap().contains("already exists"));
         })
-        .then_effects(|effects| {
-            assert!(!effects.is_empty());
-        })
+        .then_effects(assertions::assert_no_effects)
         .run();
 }
 ```
 
-**Note**: The `Execute*` action should mirror what Phase 1's async block would produce. In tests, use `FixedClock` for deterministic timestamps rather than `Utc::now()`.
+### 9.5 TestStore for Full Async Flows
 
-### 9.5 Testing Validation Functions Directly
+Use `TestStore` to test complete behavior from command to terminal event:
 
 ```rust
-#[test]
-fn test_validate_update_cancelled_entity() {
-    let mut entity = create_test_entity();
-    entity.status = Status::Cancelled;
+#[tokio::test]
+async fn test_update_entity_success() {
+    let entity_id = EntityId::new();
 
-    let result = {Aggregate}Reducer::validate_update_with_loaded_entity(
-        &entity,
-        &NewData { ... },
+    // Configure mock projection with existing entity
+    let existing = Entity::new(entity_id, "Original Name".to_string());
+    let mock = ConfigurableMockQuery::new().with_entity(existing);
+    let env = create_test_env_with_projection(Arc::new(mock));
+    let store = TestStore::new({Aggregate}Reducer::new(), env, {Aggregate}State::new());
+
+    // Send command and wait for TERMINAL action (EntityUpdated)
+    // NOT the intermediate Execute action!
+    let result = store
+        .send_and_wait_for(
+            {Aggregate}Action::UpdateEntity {
+                entity_id,
+                new_name: "Updated Name".to_string(),
+            },
+            |action| {
+                matches!(
+                    action,
+                    {Aggregate}Action::EntityUpdated { .. }
+                        | {Aggregate}Action::ValidationFailed { .. }
+                )
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+
+    assert!(result.is_ok(), "Should receive EntityUpdated");
+    let action = result.unwrap();
+    assert!(
+        matches!(action, {Aggregate}Action::EntityUpdated { .. }),
+        "Expected EntityUpdated, got {action:?}"
     );
 
-    assert!(result.is_err());
-    assert!(result.unwrap_err().contains("cancelled"));
+    // No sleep needed - when terminal action is broadcast, state is already updated
+    let state = store.state(|s| s.clone()).await;
+    let entity = state.get(&entity_id).unwrap();
+    assert_eq!(entity.name, "Updated Name");
+
+    store.clear_queue();
 }
+```
+
+### 9.6 Testing Async Validation Failures
+
+Test that async validation (in Phase 1's Effect::Future) correctly returns `ValidationFailed`:
+
+```rust
+#[tokio::test]
+async fn test_update_entity_not_found() {
+    // Empty projection - entity doesn't exist
+    let env = create_test_env_with_projection(Arc::new(ConfigurableMockQuery::new()));
+    let store = TestStore::new({Aggregate}Reducer::new(), env, {Aggregate}State::new());
+
+    let result = store
+        .send_and_wait_for(
+            {Aggregate}Action::UpdateEntity {
+                entity_id: EntityId::new(),
+                new_name: "Whatever".to_string(),
+            },
+            |action| {
+                matches!(
+                    action,
+                    {Aggregate}Action::EntityUpdated { .. }
+                        | {Aggregate}Action::ValidationFailed { .. }
+                )
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+
+    assert!(result.is_ok(), "Should receive ValidationFailed");
+    match result.unwrap() {
+        {Aggregate}Action::ValidationFailed { error } => {
+            assert!(error.contains("not found"), "Error should mention 'not found': {error}");
+        }
+        other => panic!("Expected ValidationFailed, got {other:?}"),
+    }
+
+    store.clear_queue();
+}
+
+#[tokio::test]
+async fn test_update_cancelled_entity_rejected() {
+    let entity_id = EntityId::new();
+
+    // Entity exists but is cancelled
+    let mut cancelled = Entity::new(entity_id, "Cancelled Entity".to_string());
+    cancelled.status = Status::Cancelled;
+    let mock = ConfigurableMockQuery::new().with_entity(cancelled);
+    let env = create_test_env_with_projection(Arc::new(mock));
+    let store = TestStore::new({Aggregate}Reducer::new(), env, {Aggregate}State::new());
+
+    let result = store
+        .send_and_wait_for(
+            {Aggregate}Action::UpdateEntity {
+                entity_id,
+                new_name: "New Name".to_string(),
+            },
+            |action| {
+                matches!(
+                    action,
+                    {Aggregate}Action::EntityUpdated { .. }
+                        | {Aggregate}Action::ValidationFailed { .. }
+                )
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+
+    match result.unwrap() {
+        {Aggregate}Action::ValidationFailed { error } => {
+            assert!(error.contains("cancelled"), "Error should mention 'cancelled': {error}");
+        }
+        other => panic!("Expected ValidationFailed, got {other:?}"),
+    }
+
+    store.clear_queue();
+}
+```
+
+### 9.7 Testing Query Operations
+
+Don't forget to test query actions:
+
+```rust
+#[tokio::test]
+async fn test_get_entity() {
+    let entity_id = EntityId::new();
+    let entity = Entity::new(entity_id, "Test Entity".to_string());
+    let mock = ConfigurableMockQuery::new().with_entity(entity.clone());
+    let env = create_test_env_with_projection(Arc::new(mock));
+    let store = TestStore::new({Aggregate}Reducer::new(), env, {Aggregate}State::new());
+
+    let result = store
+        .send_and_wait_for(
+            {Aggregate}Action::GetEntity { entity_id },
+            |action| matches!(action, {Aggregate}Action::EntityQueried { .. } | {Aggregate}Action::ValidationFailed { .. }),
+            Duration::from_secs(5),
+        )
+        .await;
+
+    match result.unwrap() {
+        {Aggregate}Action::EntityQueried { entity_id: id, entity: Some(e) } => {
+            assert_eq!(id, entity_id);
+            assert_eq!(e.name, "Test Entity");
+        }
+        other => panic!("Expected EntityQueried with entity, got {other:?}"),
+    }
+
+    store.clear_queue();
+}
+
+#[tokio::test]
+async fn test_get_entity_not_found() {
+    let env = create_test_env_with_projection(Arc::new(ConfigurableMockQuery::new()));
+    let store = TestStore::new({Aggregate}Reducer::new(), env, {Aggregate}State::new());
+
+    let result = store
+        .send_and_wait_for(
+            {Aggregate}Action::GetEntity { entity_id: EntityId::new() },
+            |action| matches!(action, {Aggregate}Action::EntityQueried { .. } | {Aggregate}Action::ValidationFailed { .. }),
+            Duration::from_secs(5),
+        )
+        .await;
+
+    match result.unwrap() {
+        {Aggregate}Action::EntityQueried { entity: None, .. } => {
+            // Expected - entity not found returns None
+        }
+        other => panic!("Expected EntityQueried with None, got {other:?}"),
+    }
+
+    store.clear_queue();
+}
+```
+
+### 9.8 Configurable Mock Pattern
+
+Create a configurable mock that supports different test scenarios:
+
+```rust
+#[derive(Clone, Default)]
+struct ConfigurableMockQuery {
+    entities: Arc<RwLock<HashMap<EntityId, Entity>>>,
+    load_error: Arc<RwLock<Option<String>>>,
+}
+
+impl ConfigurableMockQuery {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add an entity to be returned by load queries
+    fn with_entity(self, entity: Entity) -> Self {
+        self.entities.write().unwrap().insert(entity.id, entity);
+        self
+    }
+
+    /// Configure load queries to return an error
+    #[allow(dead_code)]
+    fn with_error(self, error: &str) -> Self {
+        *self.load_error.write().unwrap() = Some(error.to_string());
+        self
+    }
+}
+
+#[async_trait::async_trait]
+impl {Aggregate}ProjectionQuery for ConfigurableMockQuery {
+    async fn load_entity(&self, id: &EntityId) -> Result<Option<Entity>, String> {
+        if let Some(ref error) = *self.load_error.read().unwrap() {
+            return Err(error.clone());
+        }
+        Ok(self.entities.read().unwrap().get(id).cloned())
+    }
+
+    async fn load_entities(&self, filter: Option<Status>) -> Result<Vec<Entity>, String> {
+        if let Some(ref error) = *self.load_error.read().unwrap() {
+            return Err(error.clone());
+        }
+        let entities: Vec<Entity> = self.entities.read().unwrap()
+            .values()
+            .filter(|e| filter.map_or(true, |f| e.status == f))
+            .cloned()
+            .collect();
+        Ok(entities)
+    }
+}
+```
+
+### 9.9 Terminal vs Intermediate Actions
+
+**Critical**: When using `send_and_wait_for`, wait for **terminal** actions, not **intermediate** actions:
+
+| Action Type | Examples | Wait For? |
+|-------------|----------|-----------|
+| **Command** | `CreateEntity`, `UpdateEntity` | Send this |
+| **Intermediate** | `ExecuteCreateEntity`, `ExecuteUpdateEntity` | ❌ No |
+| **Terminal** | `EntityCreated`, `EntityUpdated`, `ValidationFailed` | ✅ Yes |
+
+**Why this matters:**
+
+The broadcast happens after the action is processed. When you wait for the terminal action (`EntityUpdated`), the state is already updated. If you wait for the intermediate action (`ExecuteUpdateEntity`), the state is still being processed.
+
+```rust
+// ❌ WRONG: Waiting for intermediate action requires sleep
+let result = store.send_and_wait_for(
+    command,
+    |a| matches!(a, ExecuteUpdateEntity { .. }),  // Intermediate!
+    timeout,
+).await;
+tokio::time::sleep(Duration::from_millis(100)).await;  // Hack needed!
+
+// ✅ CORRECT: Waiting for terminal action - no sleep needed
+let result = store.send_and_wait_for(
+    command,
+    |a| matches!(a, EntityUpdated { .. } | ValidationFailed { .. }),  // Terminal!
+    timeout,
+).await;
+// State is already updated when terminal action is received
+```
+
+### 9.10 Test Coverage Summary
+
+For each aggregate, ensure coverage of:
+
+| Category | Testing Tool | What to Test |
+|----------|--------------|--------------|
+| **Sync Validation** | `ReducerTest` | Zero values, empty strings, duplicates, invalid state |
+| **Happy Paths** | `TestStore` | Each command's success flow → terminal event |
+| **Async Validation** | `TestStore` | Entity not found, wrong status, business rule violations |
+| **Query Operations** | `TestStore` | Get single, list with filters, not found cases |
+
+**Example test count for a typical aggregate:**
+
+```
+Sync Validation (ReducerTest):     4 tests
+Happy Paths (TestStore):           3 tests
+Async Validation (TestStore):      3 tests
+Query Operations (TestStore):      3 tests
+─────────────────────────────────────────
+Total:                            13 tests
 ```
 
 ---
@@ -935,15 +1264,16 @@ Use this checklist when reviewing or creating aggregates:
 - [ ] `version` updated via `VersionUpdated` action
 - [ ] Commands and queries don't modify state in `apply_event`
 
-### Tests
+### Tests (See Section 9 for detailed guidance)
 - [ ] Test module has `#[allow(clippy::unwrap_used)]`
-- [ ] `create_test_env()` helper function
-- [ ] Local test fixtures for aggregate-specific data
-- [ ] Use shared `test_utils` for common mocks
-- [ ] Test happy path for each command
-- [ ] Test validation failures
-- [ ] Test two-phase Execute* actions directly
-- [ ] Test validation functions directly for edge cases
+- [ ] `create_test_env()` and `create_test_env_with_projection()` helpers
+- [ ] `ConfigurableMockQuery` for flexible test scenarios
+- [ ] **Never test Execute* actions directly** (implementation details)
+- [ ] **Sync validation** tested with `ReducerTest` (COMMAND actions)
+- [ ] **Full async flows** tested with `TestStore` (command → terminal event)
+- [ ] Wait for **terminal** actions (`EntityUpdated`), not intermediate (`ExecuteUpdate`)
+- [ ] Query operations tested (get, list, not found cases)
+- [ ] No `tokio::time::sleep` hacks in tests
 
 ### Code Quality
 - [ ] No `std::collections::HashSet` (import and use `HashSet`)

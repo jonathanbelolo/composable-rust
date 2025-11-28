@@ -29,7 +29,7 @@ use std::sync::Arc;
 ///
 /// Demonstrates command/event separation using Section 3 derive macros.
 /// Commands express intent, events record what happened.
-#[derive(Action, Clone, Debug, Serialize, Deserialize)]
+#[derive(Action, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum EventAction {
     // Commands
     /// Create a new event
@@ -399,7 +399,7 @@ impl EventReducer {
         expected_version: Version,
         env: &EventEnvironment,
     ) -> SmallVec<[Effect<EventAction>; 4]> {
-        let ticketing_event = TicketingEvent::Event(event);
+        let ticketing_event = TicketingEvent::Event(event.clone());
         let serialized = match ticketing_event.serialize() {
             Ok(s) => s,
             Err(e) => {
@@ -422,7 +422,12 @@ impl EventReducer {
                 on_error: |error| Some(EventAction::ValidationFailed {
                     error: error.to_string()
                 })
-            }
+            },
+            // Echo the event back as an action so it broadcasts to action_broadcast channel
+            // This allows send_and_wait_for to receive it (e.g., EventUpdated, PricingTiersUpdated)
+            Effect::Future(Box::pin(async move {
+                Some(event)
+            }))
         ]
     }
 
@@ -1320,19 +1325,92 @@ impl Reducer for EventReducer {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::test_utils::{create_test_global_channels, MockEventProjectionQuery};
+    use crate::test_utils::create_test_global_channels;
     use crate::types::{Capacity, Money, SeatType, TierType};
     use composable_rust_core::environment::SystemClock;
-    use composable_rust_testing::{assertions, mocks::InMemoryEventStore, ReducerTest};
+    use composable_rust_testing::{assertions, mocks::InMemoryEventStore, ReducerTest, TestStore};
+    use std::collections::HashMap;
+    use std::sync::RwLock;
+    use std::time::Duration as StdDuration;
+
+    // =========================================================================
+    // Test Infrastructure
+    // =========================================================================
 
     fn create_test_env() -> EventEnvironment {
         EventEnvironment::new(
             Arc::new(SystemClock),
             Arc::new(InMemoryEventStore::new()),
             StreamId::new("test-stream"),
-            Arc::new(MockEventProjectionQuery),
+            Arc::new(ConfigurableMockEventQuery::new()),
             create_test_global_channels(),
         )
+    }
+
+    fn create_test_env_with_projection(
+        projection: Arc<dyn EventProjectionQuery>,
+    ) -> EventEnvironment {
+        EventEnvironment::new(
+            Arc::new(SystemClock),
+            Arc::new(InMemoryEventStore::new()),
+            StreamId::new("test-stream"),
+            projection,
+            create_test_global_channels(),
+        )
+    }
+
+    /// Configurable mock for different test scenarios
+    #[derive(Clone, Default)]
+    struct ConfigurableMockEventQuery {
+        events: Arc<RwLock<HashMap<EventId, Event>>>,
+        load_error: Arc<RwLock<Option<String>>>,
+    }
+
+    impl ConfigurableMockEventQuery {
+        fn new() -> Self {
+            Self::default()
+        }
+
+        /// Add an event to be returned by load queries
+        fn with_event(self, event: Event) -> Self {
+            self.events.write().unwrap().insert(event.id, event);
+            self
+        }
+
+        /// Configure load queries to return an error
+        #[allow(dead_code)]
+        fn with_error(self, error: &str) -> Self {
+            *self.load_error.write().unwrap() = Some(error.to_string());
+            self
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl EventProjectionQuery for ConfigurableMockEventQuery {
+        async fn load_event(&self, event_id: &EventId) -> Result<Option<Event>, String> {
+            if let Some(ref error) = *self.load_error.read().unwrap() {
+                return Err(error.clone());
+            }
+            Ok(self.events.read().unwrap().get(event_id).cloned())
+        }
+
+        async fn load_events(
+            &self,
+            status_filter: Option<EventStatus>,
+        ) -> Result<Vec<Event>, String> {
+            if let Some(ref error) = *self.load_error.read().unwrap() {
+                return Err(error.clone());
+            }
+            let events: Vec<Event> = self
+                .events
+                .read()
+                .unwrap()
+                .values()
+                .filter(|e| status_filter.is_none_or(|s| e.status == s))
+                .cloned()
+                .collect();
+            Ok(events)
+        }
     }
 
     // Local test venue with single section (for simpler tests)
@@ -1348,6 +1426,26 @@ mod tests {
         )
     }
 
+    // Helper for creating a venue with multiple sections
+    fn create_test_venue_multi_section() -> Venue {
+        Venue::new(
+            "Test Arena".to_string(),
+            Capacity::new(2000),
+            vec![
+                VenueSection::new(
+                    "VIP".to_string(),
+                    Capacity::new(500),
+                    SeatType::GeneralAdmission,
+                ),
+                VenueSection::new(
+                    "General".to_string(),
+                    Capacity::new(1500),
+                    SeatType::GeneralAdmission,
+                ),
+            ],
+        )
+    }
+
     // Local test pricing matching the single-section venue
     fn create_test_pricing_tiers() -> Vec<PricingTier> {
         vec![PricingTier::new(
@@ -1359,37 +1457,13 @@ mod tests {
         )]
     }
 
-    #[test]
-    fn test_create_event_success() {
-        let id = EventId::new();
-        let event_date = EventDate::new(Utc::now() + Duration::days(30));
-
-        ReducerTest::new(EventReducer::new())
-            .with_env(create_test_env())
-            .given_state(EventState::new())
-            .when_action(EventAction::CreateEvent {
-                id,
-                name: "Taylor Swift Concert".to_string(),
-                owner_id: UserId::new(),
-                venue: create_test_venue(),
-                date: event_date,
-                pricing_tiers: create_test_pricing_tiers(),
-                respond_to: ResponseChannel::none(),
-            })
-            .then_state(move |state| {
-                assert_eq!(state.count(), 1);
-                assert!(state.exists(&id));
-                let event = state.get(&id).unwrap();
-                assert_eq!(event.name, "Taylor Swift Concert");
-                assert_eq!(event.status, EventStatus::Draft);
-            })
-            .then_effects(|effects| {
-                // Should return 2 effects: AppendEvents + PublishWithResponse
-                // (Inventory initialization is now handled by EventInventorySaga)
-                assert_eq!(effects.len(), 2);
-            })
-            .run();
-    }
+    // =========================================================================
+    // Sync Validation Tests (ReducerTest)
+    // =========================================================================
+    //
+    // Fast, pure tests that verify commands with invalid inputs are rejected
+    // immediately without triggering async effects. These test the COMMAND
+    // actions, NOT the internal Execute actions.
 
     #[test]
     fn test_create_event_empty_name() {
@@ -1451,6 +1525,80 @@ mod tests {
     }
 
     #[test]
+    fn test_update_event_no_fields() {
+        let id = EventId::new();
+        let owner_id = UserId::new();
+
+        ReducerTest::new(EventReducer::new())
+            .with_env(create_test_env())
+            .given_state({
+                let mut state = EventState::new();
+                let event = Event::new(
+                    id,
+                    "Original Name".to_string(),
+                    owner_id,
+                    create_test_venue(),
+                    EventDate::new(Utc::now() + Duration::days(30)),
+                    create_test_pricing_tiers(),
+                    Utc::now(),
+                );
+                state.events.insert(id, event);
+                state
+            })
+            .when_action(EventAction::UpdateEvent {
+                event_id: id,
+                name: None,
+            })
+            .then_state(|state| {
+                assert!(state
+                    .last_error
+                    .as_ref()
+                    .unwrap()
+                    .contains("No fields to update"));
+            })
+            .then_effects(assertions::assert_no_effects)
+            .run();
+    }
+
+    // =========================================================================
+    // Sync Command Tests (ReducerTest)
+    // =========================================================================
+    //
+    // These commands don't use the two-phase async pattern, so they can be
+    // tested directly with ReducerTest.
+
+    #[test]
+    fn test_create_event_success() {
+        let id = EventId::new();
+        let event_date = EventDate::new(Utc::now() + Duration::days(30));
+
+        ReducerTest::new(EventReducer::new())
+            .with_env(create_test_env())
+            .given_state(EventState::new())
+            .when_action(EventAction::CreateEvent {
+                id,
+                name: "Taylor Swift Concert".to_string(),
+                owner_id: UserId::new(),
+                venue: create_test_venue(),
+                date: event_date,
+                pricing_tiers: create_test_pricing_tiers(),
+                respond_to: ResponseChannel::none(),
+            })
+            .then_state(move |state| {
+                assert_eq!(state.count(), 1);
+                assert!(state.exists(&id));
+                let event = state.get(&id).unwrap();
+                assert_eq!(event.name, "Taylor Swift Concert");
+                assert_eq!(event.status, EventStatus::Draft);
+            })
+            .then_effects(|effects| {
+                // Should return 3 effects: AppendEvents + Echo + PublishWithResponse
+                assert_eq!(effects.len(), 3);
+            })
+            .run();
+    }
+
+    #[test]
     fn test_publish_event() {
         let id = EventId::new();
 
@@ -1476,8 +1624,8 @@ mod tests {
                 assert_eq!(event.status, EventStatus::Published);
             })
             .then_effects(|effects| {
-                // Should return 1 effect: AppendEvents (no Redpanda)
-                assert_eq!(effects.len(), 1);
+                // Should return 2 effects: AppendEvents + Echo
+                assert_eq!(effects.len(), 2);
             })
             .run();
     }
@@ -1518,498 +1666,6 @@ mod tests {
         // 4. Close sales
         reducer.reduce(&mut state, EventAction::CloseSales { event_id: id }, &env);
         assert_eq!(state.get(&id).unwrap().status, EventStatus::SalesClosed);
-    }
-
-    #[test]
-    fn test_update_event_success() {
-        let id = EventId::new();
-        let owner_id = UserId::new();
-
-        // Use ExecuteUpdateEvent (the sync internal action)
-        // since UpdateEvent uses async load pattern with Effect::Future
-        ReducerTest::new(EventReducer::new())
-            .with_env(create_test_env())
-            .given_state({
-                let mut state = EventState::new();
-                let event = Event::new(
-                    id,
-                    "Original Name".to_string(),
-                    owner_id,
-                    create_test_venue(),
-                    EventDate::new(Utc::now() + Duration::days(30)),
-                    create_test_pricing_tiers(),
-                    Utc::now(),
-                );
-                state.events.insert(id, event);
-                state
-            })
-            .when_action(EventAction::ExecuteUpdateEvent {
-                event_id: id,
-                name: Some("Updated Name".to_string()),
-                current_version: Version::new(1),
-                updated_at: Utc::now(),
-            })
-            .then_state(move |state| {
-                let event = state.get(&id).unwrap();
-                assert_eq!(event.name, "Updated Name");
-                assert!(state.last_error.is_none());
-            })
-            .then_effects(|effects| {
-                // Effects include AppendEvents and PublishWithResponse
-                assert!(!effects.is_empty());
-            })
-            .run();
-    }
-
-    #[test]
-    fn test_update_event_not_found() {
-        // "Not found" error happens in the async Future, not in validation
-        // The async path checks event_store.load_events() which returns empty for non-existent events
-        // This is tested in E2E tests (auth_authorization_test.rs), not unit tests
-        //
-        // For unit testing, we verify that ExecuteUpdateEvent still works correctly
-        // even if called with a non-existent event (it would insert into local state)
-        let non_existent_id = EventId::new();
-
-        ReducerTest::new(EventReducer::new())
-            .with_env(create_test_env())
-            .given_state(EventState::new())
-            .when_action(EventAction::ExecuteUpdateEvent {
-                event_id: non_existent_id,
-                name: Some("New Name".to_string()),
-                current_version: Version::new(1),
-                updated_at: Utc::now(),
-            })
-            .then_state(|state| {
-                // ExecuteUpdateEvent applies EventUpdated which updates existing events
-                // Since there's no event with this ID, it doesn't create one
-                assert_eq!(state.count(), 0);
-            })
-            .then_effects(|effects| {
-                // Still produces effects (append + publish) even if event doesn't exist locally
-                // Real validation happens in the async Future before ExecuteUpdateEvent is called
-                assert!(!effects.is_empty());
-            })
-            .run();
-    }
-
-    #[test]
-    fn test_update_cancelled_event_fails() {
-        // Validation for cancelled events happens in the async Future path
-        // For unit testing, we verify that ValidationFailed is applied correctly
-        ReducerTest::new(EventReducer::new())
-            .with_env(create_test_env())
-            .given_state(EventState::new())
-            .when_action(EventAction::ValidationFailed {
-                error: "Cannot update cancelled event".to_string(),
-            })
-            .then_state(|state| {
-                assert!(state
-                    .last_error
-                    .as_ref()
-                    .unwrap()
-                    .contains("cancelled"));
-            })
-            .then_effects(assertions::assert_no_effects)
-            .run();
-    }
-
-    #[test]
-    fn test_update_event_no_fields() {
-        let id = EventId::new();
-        let owner_id = UserId::new();
-
-        ReducerTest::new(EventReducer::new())
-            .with_env(create_test_env())
-            .given_state({
-                let mut state = EventState::new();
-                let event = Event::new(
-                    id,
-                    "Original Name".to_string(),
-                    owner_id,
-                    create_test_venue(),
-                    EventDate::new(Utc::now() + Duration::days(30)),
-                    create_test_pricing_tiers(),
-                    Utc::now(),
-                );
-                state.events.insert(id, event);
-                state
-            })
-            .when_action(EventAction::UpdateEvent {
-                event_id: id,
-                name: None,
-            })
-            .then_state(|state| {
-                assert!(state
-                    .last_error
-                    .as_ref()
-                    .unwrap()
-                    .contains("No fields to update"));
-            })
-            .then_effects(assertions::assert_no_effects)
-            .run();
-    }
-
-    // Helper for creating a venue with multiple sections
-    fn create_test_venue_multi_section() -> Venue {
-        Venue::new(
-            "Test Arena".to_string(),
-            Capacity::new(2000),
-            vec![
-                VenueSection::new(
-                    "VIP".to_string(),
-                    Capacity::new(500),
-                    SeatType::GeneralAdmission,
-                ),
-                VenueSection::new(
-                    "General".to_string(),
-                    Capacity::new(1500),
-                    SeatType::GeneralAdmission,
-                ),
-            ],
-        )
-    }
-
-    // ==================== UpdatePricingTiers Tests ====================
-    //
-    // NOTE: UpdatePricingTiers is async (loads from projection + event store).
-    // These tests use ExecuteUpdatePricingTiers (the sync internal action) and
-    // validate_update_pricing_tiers_with_event directly.
-
-    #[test]
-    fn test_update_pricing_tiers_success() {
-        let id = EventId::new();
-        let owner_id = UserId::new();
-
-        // Create event with initial pricing for both sections
-        let initial_pricing = vec![
-            PricingTier::new(
-                TierType::Regular,
-                "VIP".to_string(),
-                Money::from_dollars(100),
-                Utc::now(),
-                None,
-            ),
-            PricingTier::new(
-                TierType::Regular,
-                "General".to_string(),
-                Money::from_dollars(50),
-                Utc::now(),
-                None,
-            ),
-        ];
-
-        // New pricing with multiple tiers (covers both sections)
-        let new_pricing = vec![
-            PricingTier::new(
-                TierType::EarlyBird,
-                "VIP".to_string(),
-                Money::from_dollars(80),
-                Utc::now(),
-                Some(Utc::now() + Duration::days(7)),
-            ),
-            PricingTier::new(
-                TierType::Regular,
-                "VIP".to_string(),
-                Money::from_dollars(100),
-                Utc::now() + Duration::days(7),
-                None,
-            ),
-            PricingTier::new(
-                TierType::Regular,
-                "General".to_string(),
-                Money::from_dollars(50),
-                Utc::now(),
-                None,
-            ),
-        ];
-
-        // Create the loaded event (simulating what the async load would return)
-        let loaded_event = Event::new(
-            id,
-            "Concert".to_string(),
-            owner_id,
-            create_test_venue_multi_section(),
-            EventDate::new(Utc::now() + Duration::days(30)),
-            initial_pricing,
-            Utc::now(),
-        );
-
-        // Use ExecuteUpdatePricingTiers (the sync internal action)
-        ReducerTest::new(EventReducer::new())
-            .with_env(create_test_env())
-            .given_state(EventState::new()) // Empty state - loaded_event provided in action
-            .when_action(EventAction::ExecuteUpdatePricingTiers {
-                event_id: id,
-                pricing_tiers: new_pricing.clone(),
-                loaded_event,
-                current_version: Version::new(1),
-            })
-            .then_state(move |state| {
-                let event = state.get(&id).unwrap();
-                assert_eq!(event.pricing_tiers.len(), 3);
-                assert!(state.last_error.is_none());
-            })
-            .then_effects(|effects| {
-                assert!(!effects.is_empty());
-            })
-            .run();
-    }
-
-    #[test]
-    fn test_update_pricing_tiers_event_not_found() {
-        // Test validation function directly (async path returns ValidationFailed)
-        let result = EventReducer::validate_update_pricing_tiers_with_event(
-            &Event::new(
-                EventId::new(),
-                "Test".to_string(),
-                UserId::new(),
-                create_test_venue(),
-                EventDate::new(Utc::now() + Duration::days(30)),
-                create_test_pricing_tiers(),
-                Utc::now(),
-            ),
-            &create_test_pricing_tiers(),
-        );
-        // This should pass validation since event exists
-        assert!(result.is_ok());
-
-        // "Not found" error happens in the async Future, not in validation
-        // The async path checks projection.load_event() which returns None for non-existent events
-        // This is tested in E2E tests, not unit tests
-    }
-
-    #[test]
-    fn test_update_pricing_tiers_cancelled_event() {
-        // Test validation function directly for cancelled event
-        let mut event = Event::new(
-            EventId::new(),
-            "Cancelled Concert".to_string(),
-            UserId::new(),
-            create_test_venue(),
-            EventDate::new(Utc::now() + Duration::days(30)),
-            create_test_pricing_tiers(),
-            Utc::now(),
-        );
-        event.status = EventStatus::Cancelled;
-
-        let result = EventReducer::validate_update_pricing_tiers_with_event(
-            &event,
-            &create_test_pricing_tiers(),
-        );
-
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("cancelled"));
-    }
-
-    #[test]
-    fn test_update_pricing_tiers_empty_tiers() {
-        // Test validation function directly for empty pricing tiers
-        let event = Event::new(
-            EventId::new(),
-            "Concert".to_string(),
-            UserId::new(),
-            create_test_venue(),
-            EventDate::new(Utc::now() + Duration::days(30)),
-            create_test_pricing_tiers(),
-            Utc::now(),
-        );
-
-        let result = EventReducer::validate_update_pricing_tiers_with_event(
-            &event,
-            &[], // Empty pricing tiers - use slice literal, no heap allocation
-        );
-
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("At least one pricing tier"));
-    }
-
-    #[test]
-    fn test_update_pricing_tiers_invalid_section() {
-        // Test validation function directly for invalid section
-        let event = Event::new(
-            EventId::new(),
-            "Concert".to_string(),
-            UserId::new(),
-            create_test_venue(), // Has "General" section only
-            EventDate::new(Utc::now() + Duration::days(30)),
-            create_test_pricing_tiers(),
-            Utc::now(),
-        );
-
-        // Pricing tier for section that doesn't exist in venue
-        let invalid_pricing = vec![PricingTier::new(
-            TierType::Regular,
-            "NonExistentSection".to_string(), // Invalid section
-            Money::from_dollars(50),
-            Utc::now(),
-            None,
-        )];
-
-        let result = EventReducer::validate_update_pricing_tiers_with_event(
-            &event,
-            &invalid_pricing,
-        );
-
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("does not exist in event venue"));
-    }
-
-    #[test]
-    fn test_update_pricing_tiers_missing_section_coverage() {
-        // Test validation function directly for missing section coverage
-        let event = Event::new(
-            EventId::new(),
-            "Concert".to_string(),
-            UserId::new(),
-            create_test_venue_multi_section(), // Has VIP + General sections
-            EventDate::new(Utc::now() + Duration::days(30)),
-            vec![
-                PricingTier::new(
-                    TierType::Regular,
-                    "VIP".to_string(),
-                    Money::from_dollars(100),
-                    Utc::now(),
-                    None,
-                ),
-                PricingTier::new(
-                    TierType::Regular,
-                    "General".to_string(),
-                    Money::from_dollars(50),
-                    Utc::now(),
-                    None,
-                ),
-            ],
-            Utc::now(),
-        );
-
-        // Only provide pricing for VIP, missing General section
-        let incomplete_pricing = vec![PricingTier::new(
-            TierType::Regular,
-            "VIP".to_string(),
-            Money::from_dollars(100),
-            Utc::now(),
-            None,
-        )];
-
-        let result = EventReducer::validate_update_pricing_tiers_with_event(
-            &event,
-            &incomplete_pricing,
-        );
-
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("must have at least one pricing tier"));
-    }
-
-    // ==================== Time-Based Pricing Tests ====================
-
-    #[test]
-    fn test_pricing_tiers_time_based_early_bird() {
-        let id = EventId::new();
-        let owner_id = UserId::new();
-        let now = Utc::now();
-
-        // Create pricing with time-based tiers
-        let pricing_tiers = vec![
-            // EarlyBird: available now until 7 days from now
-            PricingTier::new(
-                TierType::EarlyBird,
-                "General".to_string(),
-                Money::from_dollars(30),
-                now,
-                Some(now + Duration::days(7)),
-            ),
-            // Regular: available after 7 days
-            PricingTier::new(
-                TierType::Regular,
-                "General".to_string(),
-                Money::from_dollars(50),
-                now + Duration::days(7),
-                None,
-            ),
-        ];
-
-        ReducerTest::new(EventReducer::new())
-            .with_env(create_test_env())
-            .given_state({
-                let mut state = EventState::new();
-                let event = Event::new(
-                    id,
-                    "Concert".to_string(),
-                    owner_id,
-                    create_test_venue(),
-                    EventDate::new(now + Duration::days(30)),
-                    pricing_tiers,
-                    now,
-                );
-                state.events.insert(id, event);
-                state
-            })
-            .when_action(EventAction::GetEvent { event_id: id })
-            .then_state(move |state| {
-                let event = state.get(&id).unwrap();
-                // Verify early bird pricing is first
-                assert_eq!(event.pricing_tiers[0].tier_type, TierType::EarlyBird);
-                assert_eq!(event.pricing_tiers[0].base_price.cents(), 3000);
-            })
-            .then_effects(|effects| {
-                assert!(!effects.is_empty());
-            })
-            .run();
-    }
-
-    #[test]
-    fn test_pricing_tiers_time_based_last_minute() {
-        let id = EventId::new();
-        let owner_id = UserId::new();
-        let now = Utc::now();
-
-        // Create pricing with last-minute tier
-        let pricing_tiers = vec![
-            PricingTier::new(
-                TierType::Regular,
-                "General".to_string(),
-                Money::from_dollars(50),
-                now,
-                Some(now + Duration::days(25)),
-            ),
-            // LastMinute: available 25-30 days from now (5 days before event)
-            PricingTier::new(
-                TierType::LastMinute,
-                "General".to_string(),
-                Money::from_dollars(70),
-                now + Duration::days(25),
-                None,
-            ),
-        ];
-
-        ReducerTest::new(EventReducer::new())
-            .with_env(create_test_env())
-            .given_state({
-                let mut state = EventState::new();
-                let event = Event::new(
-                    id,
-                    "Concert".to_string(),
-                    owner_id,
-                    create_test_venue(),
-                    EventDate::new(now + Duration::days(30)),
-                    pricing_tiers,
-                    now,
-                );
-                state.events.insert(id, event);
-                state
-            })
-            .when_action(EventAction::GetEvent { event_id: id })
-            .then_state(move |state| {
-                let event = state.get(&id).unwrap();
-                // Verify last-minute pricing exists
-                assert_eq!(event.pricing_tiers[1].tier_type, TierType::LastMinute);
-                assert_eq!(event.pricing_tiers[1].base_price.cents(), 7000);
-            })
-            .then_effects(|effects| {
-                assert!(!effects.is_empty());
-            })
-            .run();
     }
 
     #[test]
@@ -2072,5 +1728,586 @@ mod tests {
                 assert!(!effects.is_empty());
             })
             .run();
+    }
+
+    // =========================================================================
+    // Validation Function Tests
+    // =========================================================================
+    //
+    // Direct tests for validation functions. These test edge cases that are
+    // easier to verify by calling the validation function directly.
+
+    #[test]
+    fn test_validate_pricing_tiers_cancelled_event() {
+        let mut event = Event::new(
+            EventId::new(),
+            "Cancelled Concert".to_string(),
+            UserId::new(),
+            create_test_venue(),
+            EventDate::new(Utc::now() + Duration::days(30)),
+            create_test_pricing_tiers(),
+            Utc::now(),
+        );
+        event.status = EventStatus::Cancelled;
+
+        let result = EventReducer::validate_update_pricing_tiers_with_event(
+            &event,
+            &create_test_pricing_tiers(),
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("cancelled"));
+    }
+
+    #[test]
+    fn test_validate_pricing_tiers_empty_tiers() {
+        let event = Event::new(
+            EventId::new(),
+            "Concert".to_string(),
+            UserId::new(),
+            create_test_venue(),
+            EventDate::new(Utc::now() + Duration::days(30)),
+            create_test_pricing_tiers(),
+            Utc::now(),
+        );
+
+        let result = EventReducer::validate_update_pricing_tiers_with_event(&event, &[]);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("At least one pricing tier"));
+    }
+
+    #[test]
+    fn test_validate_pricing_tiers_invalid_section() {
+        let event = Event::new(
+            EventId::new(),
+            "Concert".to_string(),
+            UserId::new(),
+            create_test_venue(), // Has "General" section only
+            EventDate::new(Utc::now() + Duration::days(30)),
+            create_test_pricing_tiers(),
+            Utc::now(),
+        );
+
+        let invalid_pricing = vec![PricingTier::new(
+            TierType::Regular,
+            "NonExistentSection".to_string(),
+            Money::from_dollars(50),
+            Utc::now(),
+            None,
+        )];
+
+        let result =
+            EventReducer::validate_update_pricing_tiers_with_event(&event, &invalid_pricing);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("does not exist in event venue"));
+    }
+
+    #[test]
+    fn test_validate_pricing_tiers_missing_section_coverage() {
+        let event = Event::new(
+            EventId::new(),
+            "Concert".to_string(),
+            UserId::new(),
+            create_test_venue_multi_section(), // Has VIP + General sections
+            EventDate::new(Utc::now() + Duration::days(30)),
+            vec![
+                PricingTier::new(
+                    TierType::Regular,
+                    "VIP".to_string(),
+                    Money::from_dollars(100),
+                    Utc::now(),
+                    None,
+                ),
+                PricingTier::new(
+                    TierType::Regular,
+                    "General".to_string(),
+                    Money::from_dollars(50),
+                    Utc::now(),
+                    None,
+                ),
+            ],
+            Utc::now(),
+        );
+
+        // Only provide pricing for VIP, missing General section
+        let incomplete_pricing = vec![PricingTier::new(
+            TierType::Regular,
+            "VIP".to_string(),
+            Money::from_dollars(100),
+            Utc::now(),
+            None,
+        )];
+
+        let result =
+            EventReducer::validate_update_pricing_tiers_with_event(&event, &incomplete_pricing);
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("must have at least one pricing tier"));
+    }
+
+    // =========================================================================
+    // Full Flow Tests (TestStore)
+    // =========================================================================
+    //
+    // Test complete async behavior from command to terminal event.
+    // These test the REAL behavior without knowing about internal Execute actions.
+
+    // -------------------------------------------------------------------------
+    // Happy Paths
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_update_event_success() {
+        let event_id = EventId::new();
+        let owner_id = UserId::new();
+
+        // Create an existing event
+        let existing = Event::new(
+            event_id,
+            "Original Name".to_string(),
+            owner_id,
+            create_test_venue(),
+            EventDate::new(Utc::now() + Duration::days(30)),
+            create_test_pricing_tiers(),
+            Utc::now(),
+        );
+
+        // Pre-populate both projection (for async load) and state (for apply_event)
+        let mock = ConfigurableMockEventQuery::new().with_event(existing.clone());
+        let env = create_test_env_with_projection(Arc::new(mock));
+        let mut initial_state = EventState::new();
+        initial_state.events.insert(event_id, existing);
+        let store = TestStore::new(EventReducer::new(), env, initial_state);
+
+        // Send UpdateEvent and wait for TERMINAL action (EventUpdated)
+        let result = store
+            .send_and_wait_for(
+                EventAction::UpdateEvent {
+                    event_id,
+                    name: Some("Updated Name".to_string()),
+                },
+                |action| {
+                    matches!(
+                        action,
+                        EventAction::EventUpdated { .. } | EventAction::ValidationFailed { .. }
+                    )
+                },
+                StdDuration::from_secs(5),
+            )
+            .await;
+
+        assert!(result.is_ok(), "Should receive EventUpdated");
+        let action = result.unwrap();
+        assert!(
+            matches!(action, EventAction::EventUpdated { .. }),
+            "Expected EventUpdated, got {action:?}"
+        );
+
+        // State is updated when terminal action is broadcast
+        let state = store.state(|s| s.clone()).await;
+        let event = state.get(&event_id).unwrap();
+        assert_eq!(event.name, "Updated Name");
+
+        store.clear_queue();
+    }
+
+    #[tokio::test]
+    async fn test_update_pricing_tiers_success() {
+        let event_id = EventId::new();
+        let owner_id = UserId::new();
+
+        // Create an existing event with initial pricing
+        let existing = Event::new(
+            event_id,
+            "Concert".to_string(),
+            owner_id,
+            create_test_venue(),
+            EventDate::new(Utc::now() + Duration::days(30)),
+            create_test_pricing_tiers(),
+            Utc::now(),
+        );
+
+        // Pre-populate both projection (for async load) and state (for apply_event)
+        let mock = ConfigurableMockEventQuery::new().with_event(existing.clone());
+        let env = create_test_env_with_projection(Arc::new(mock));
+        let mut initial_state = EventState::new();
+        initial_state.events.insert(event_id, existing);
+        let store = TestStore::new(EventReducer::new(), env, initial_state);
+
+        // New pricing tiers
+        let new_pricing = vec![
+            PricingTier::new(
+                TierType::EarlyBird,
+                "General".to_string(),
+                Money::from_dollars(40),
+                Utc::now(),
+                Some(Utc::now() + Duration::days(7)),
+            ),
+            PricingTier::new(
+                TierType::Regular,
+                "General".to_string(),
+                Money::from_dollars(60),
+                Utc::now() + Duration::days(7),
+                None,
+            ),
+        ];
+
+        // Send UpdatePricingTiers and wait for TERMINAL action
+        let result = store
+            .send_and_wait_for(
+                EventAction::UpdatePricingTiers {
+                    event_id,
+                    pricing_tiers: new_pricing,
+                    respond_to: ResponseChannel::none(),
+                },
+                |action| {
+                    matches!(
+                        action,
+                        EventAction::PricingTiersUpdated { .. }
+                            | EventAction::ValidationFailed { .. }
+                    )
+                },
+                StdDuration::from_secs(5),
+            )
+            .await;
+
+        assert!(result.is_ok(), "Should receive PricingTiersUpdated");
+        let action = result.unwrap();
+        assert!(
+            matches!(action, EventAction::PricingTiersUpdated { .. }),
+            "Expected PricingTiersUpdated, got {action:?}"
+        );
+
+        // State is updated when terminal action is broadcast
+        let state = store.state(|s| s.clone()).await;
+        let event = state.get(&event_id).unwrap();
+        assert_eq!(event.pricing_tiers.len(), 2);
+
+        store.clear_queue();
+    }
+
+    // -------------------------------------------------------------------------
+    // Async Validation Failures
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_update_event_not_found() {
+        // Empty projection - no events exist
+        let env = create_test_env_with_projection(Arc::new(ConfigurableMockEventQuery::new()));
+        let store = TestStore::new(EventReducer::new(), env, EventState::new());
+
+        let result = store
+            .send_and_wait_for(
+                EventAction::UpdateEvent {
+                    event_id: EventId::new(),
+                    name: Some("New Name".to_string()),
+                },
+                |action| {
+                    matches!(
+                        action,
+                        EventAction::EventUpdated { .. } | EventAction::ValidationFailed { .. }
+                    )
+                },
+                StdDuration::from_secs(5),
+            )
+            .await;
+
+        assert!(result.is_ok(), "Should receive ValidationFailed");
+        match result.unwrap() {
+            EventAction::ValidationFailed { error } => {
+                assert!(
+                    error.contains("not found"),
+                    "Error should mention 'not found': {error}"
+                );
+            }
+            other => panic!("Expected ValidationFailed, got {other:?}"),
+        }
+
+        store.clear_queue();
+    }
+
+    #[tokio::test]
+    async fn test_update_event_cancelled_rejected() {
+        let event_id = EventId::new();
+
+        // Create a cancelled event in the projection
+        let mut cancelled = Event::new(
+            event_id,
+            "Cancelled Concert".to_string(),
+            UserId::new(),
+            create_test_venue(),
+            EventDate::new(Utc::now() + Duration::days(30)),
+            create_test_pricing_tiers(),
+            Utc::now(),
+        );
+        cancelled.status = EventStatus::Cancelled;
+
+        let mock = ConfigurableMockEventQuery::new().with_event(cancelled);
+        let env = create_test_env_with_projection(Arc::new(mock));
+        let store = TestStore::new(EventReducer::new(), env, EventState::new());
+
+        let result = store
+            .send_and_wait_for(
+                EventAction::UpdateEvent {
+                    event_id,
+                    name: Some("New Name".to_string()),
+                },
+                |action| {
+                    matches!(
+                        action,
+                        EventAction::EventUpdated { .. } | EventAction::ValidationFailed { .. }
+                    )
+                },
+                StdDuration::from_secs(5),
+            )
+            .await;
+
+        assert!(result.is_ok(), "Should receive ValidationFailed");
+        match result.unwrap() {
+            EventAction::ValidationFailed { error } => {
+                assert!(
+                    error.contains("cancelled"),
+                    "Error should mention 'cancelled': {error}"
+                );
+            }
+            other => panic!("Expected ValidationFailed, got {other:?}"),
+        }
+
+        store.clear_queue();
+    }
+
+    #[tokio::test]
+    async fn test_update_pricing_tiers_event_not_found() {
+        // Empty projection - no events exist
+        let env = create_test_env_with_projection(Arc::new(ConfigurableMockEventQuery::new()));
+        let store = TestStore::new(EventReducer::new(), env, EventState::new());
+
+        let result = store
+            .send_and_wait_for(
+                EventAction::UpdatePricingTiers {
+                    event_id: EventId::new(),
+                    pricing_tiers: create_test_pricing_tiers(),
+                    respond_to: ResponseChannel::none(),
+                },
+                |action| {
+                    matches!(
+                        action,
+                        EventAction::PricingTiersUpdated { .. }
+                            | EventAction::ValidationFailed { .. }
+                    )
+                },
+                StdDuration::from_secs(5),
+            )
+            .await;
+
+        assert!(result.is_ok(), "Should receive ValidationFailed");
+        match result.unwrap() {
+            EventAction::ValidationFailed { error } => {
+                assert!(
+                    error.contains("not found"),
+                    "Error should mention 'not found': {error}"
+                );
+            }
+            other => panic!("Expected ValidationFailed, got {other:?}"),
+        }
+
+        store.clear_queue();
+    }
+
+    // -------------------------------------------------------------------------
+    // Query Operations
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_get_event() {
+        let event_id = EventId::new();
+        let event = Event::new(
+            event_id,
+            "Test Concert".to_string(),
+            UserId::new(),
+            create_test_venue(),
+            EventDate::new(Utc::now() + Duration::days(30)),
+            create_test_pricing_tiers(),
+            Utc::now(),
+        );
+
+        let mock = ConfigurableMockEventQuery::new().with_event(event);
+        let env = create_test_env_with_projection(Arc::new(mock));
+        let store = TestStore::new(EventReducer::new(), env, EventState::new());
+
+        let result = store
+            .send_and_wait_for(
+                EventAction::GetEvent { event_id },
+                |action| {
+                    matches!(
+                        action,
+                        EventAction::EventQueried { .. } | EventAction::ValidationFailed { .. }
+                    )
+                },
+                StdDuration::from_secs(5),
+            )
+            .await;
+
+        assert!(result.is_ok(), "Should receive EventQueried");
+        match result.unwrap() {
+            EventAction::EventQueried {
+                event_id: id,
+                event: Some(e),
+            } => {
+                assert_eq!(id, event_id);
+                assert_eq!(e.name, "Test Concert");
+            }
+            other => panic!("Expected EventQueried with event, got {other:?}"),
+        }
+
+        store.clear_queue();
+    }
+
+    #[tokio::test]
+    async fn test_get_event_not_found() {
+        // Empty projection - no events exist
+        let env = create_test_env_with_projection(Arc::new(ConfigurableMockEventQuery::new()));
+        let store = TestStore::new(EventReducer::new(), env, EventState::new());
+
+        let result = store
+            .send_and_wait_for(
+                EventAction::GetEvent {
+                    event_id: EventId::new(),
+                },
+                |action| {
+                    matches!(
+                        action,
+                        EventAction::EventQueried { .. } | EventAction::ValidationFailed { .. }
+                    )
+                },
+                StdDuration::from_secs(5),
+            )
+            .await;
+
+        assert!(result.is_ok(), "Should receive EventQueried");
+        match result.unwrap() {
+            EventAction::EventQueried { event: None, .. } => {
+                // Expected - event not found returns None
+            }
+            other => panic!("Expected EventQueried with None, got {other:?}"),
+        }
+
+        store.clear_queue();
+    }
+
+    #[tokio::test]
+    async fn test_list_events() {
+        let event1 = Event::new(
+            EventId::new(),
+            "Concert 1".to_string(),
+            UserId::new(),
+            create_test_venue(),
+            EventDate::new(Utc::now() + Duration::days(30)),
+            create_test_pricing_tiers(),
+            Utc::now(),
+        );
+        let mut event2 = Event::new(
+            EventId::new(),
+            "Concert 2".to_string(),
+            UserId::new(),
+            create_test_venue(),
+            EventDate::new(Utc::now() + Duration::days(60)),
+            create_test_pricing_tiers(),
+            Utc::now(),
+        );
+        event2.status = EventStatus::Published;
+
+        let mock = ConfigurableMockEventQuery::new()
+            .with_event(event1)
+            .with_event(event2);
+        let env = create_test_env_with_projection(Arc::new(mock));
+        let store = TestStore::new(EventReducer::new(), env, EventState::new());
+
+        let result = store
+            .send_and_wait_for(
+                EventAction::ListEvents {
+                    status_filter: None,
+                },
+                |action| {
+                    matches!(
+                        action,
+                        EventAction::EventsListed { .. } | EventAction::ValidationFailed { .. }
+                    )
+                },
+                StdDuration::from_secs(5),
+            )
+            .await;
+
+        assert!(result.is_ok(), "Should receive EventsListed");
+        match result.unwrap() {
+            EventAction::EventsListed { events, .. } => {
+                assert_eq!(events.len(), 2, "Should have 2 events");
+            }
+            other => panic!("Expected EventsListed, got {other:?}"),
+        }
+
+        store.clear_queue();
+    }
+
+    #[tokio::test]
+    async fn test_list_events_with_filter() {
+        let mut draft_event = Event::new(
+            EventId::new(),
+            "Draft Concert".to_string(),
+            UserId::new(),
+            create_test_venue(),
+            EventDate::new(Utc::now() + Duration::days(30)),
+            create_test_pricing_tiers(),
+            Utc::now(),
+        );
+        draft_event.status = EventStatus::Draft;
+
+        let mut published_event = Event::new(
+            EventId::new(),
+            "Published Concert".to_string(),
+            UserId::new(),
+            create_test_venue(),
+            EventDate::new(Utc::now() + Duration::days(60)),
+            create_test_pricing_tiers(),
+            Utc::now(),
+        );
+        published_event.status = EventStatus::Published;
+
+        let mock = ConfigurableMockEventQuery::new()
+            .with_event(draft_event)
+            .with_event(published_event);
+        let env = create_test_env_with_projection(Arc::new(mock));
+        let store = TestStore::new(EventReducer::new(), env, EventState::new());
+
+        // Filter to only Published events
+        let result = store
+            .send_and_wait_for(
+                EventAction::ListEvents {
+                    status_filter: Some(EventStatus::Published),
+                },
+                |action| {
+                    matches!(
+                        action,
+                        EventAction::EventsListed { .. } | EventAction::ValidationFailed { .. }
+                    )
+                },
+                StdDuration::from_secs(5),
+            )
+            .await;
+
+        assert!(result.is_ok(), "Should receive EventsListed");
+        match result.unwrap() {
+            EventAction::EventsListed { events, .. } => {
+                assert_eq!(events.len(), 1, "Should have 1 published event");
+                assert_eq!(events[0].status, EventStatus::Published);
+            }
+            other => panic!("Expected EventsListed, got {other:?}"),
+        }
+
+        store.clear_queue();
     }
 }

@@ -1032,11 +1032,42 @@ pub mod test_store {
         ///
         /// # Returns
         ///
-        /// A new TestStore instance
-        #[must_use]
+        /// A new `TestStore` instance that captures all actions produced by effects.
+        ///
+        /// # Panics
+        ///
+        /// Panics if called outside of a tokio runtime. This function must be called
+        /// within a `#[tokio::test]` function or an active tokio runtime context.
         pub fn new(reducer: R, environment: E, initial_state: S) -> Self {
             let store = Store::new(initial_state, reducer, environment);
             let effect_queue = Arc::new(Mutex::new(VecDeque::new()));
+
+            // Subscribe to action broadcast and spawn background task to capture actions
+            let mut rx = store.subscribe_actions();
+            let queue_clone = effect_queue.clone();
+
+            tokio::spawn(async move {
+                loop {
+                    match rx.recv().await {
+                        Ok(action) => {
+                            // Queue the action for test assertions
+                            if let Ok(mut queue) = queue_clone.lock() {
+                                queue.push_back(action);
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            // Log but continue - test might still work
+                            eprintln!(
+                                "TestStore: Action queue lagged, {skipped} actions skipped"
+                            );
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            // Store was dropped, exit the loop
+                            break;
+                        }
+                    }
+                }
+            });
 
             Self {
                 store,
@@ -1044,9 +1075,11 @@ pub mod test_store {
             }
         }
 
-        /// Send an action to the store with Direct tracking
+        /// Send an action to the store
         ///
-        /// Actions produced by effects are queued instead of auto-fed back.
+        /// The action is processed by the reducer and any effects are executed.
+        /// Actions produced by effects are automatically captured in the queue
+        /// for later assertion via `receive()`.
         ///
         /// # Arguments
         ///
@@ -1060,9 +1093,59 @@ pub mod test_store {
         ///
         /// Returns [`StoreError::ShutdownInProgress`] if the store is shutting down.
         pub async fn send(&self, action: A) -> Result<EffectHandle, StoreError> {
-            // TODO: Use queued feedback destination
-            // For now, just use normal store send
             self.store.send(action).await
+        }
+
+        /// Send an action and wait for a matching result action
+        ///
+        /// This is the primary method for testing async flows. It:
+        /// 1. Sends the initial action
+        /// 2. Executes all effects (including `Effect::Future`)
+        /// 3. Waits for a matching action to be produced
+        /// 4. Returns that action for assertions
+        ///
+        /// # Arguments
+        ///
+        /// - `action`: The initial action to send
+        /// - `predicate`: Function to test if an action is the expected result
+        /// - `timeout`: Maximum time to wait for matching action
+        ///
+        /// # Returns
+        ///
+        /// The first action matching the predicate, or timeout error.
+        ///
+        /// # Example
+        ///
+        /// ```ignore
+        /// let result = store.send_and_wait_for(
+        ///     PaymentAction::ProcessPayment { ... },
+        ///     |action| matches!(action,
+        ///         PaymentAction::ExecuteProcessPayment { .. } |
+        ///         PaymentAction::ValidationFailed { .. }
+        ///     ),
+        ///     Duration::from_secs(5)
+        /// ).await.unwrap();
+        ///
+        /// assert!(matches!(result, PaymentAction::ExecuteProcessPayment { .. }));
+        /// ```
+        ///
+        /// # Errors
+        ///
+        /// - [`StoreError::Timeout`]: Timeout expired before matching action received
+        /// - [`StoreError::ChannelClosed`]: Action broadcast channel closed
+        /// - [`StoreError::ShutdownInProgress`]: Store is shutting down
+        pub async fn send_and_wait_for<F>(
+            &self,
+            action: A,
+            predicate: F,
+            timeout: Duration,
+        ) -> Result<A, StoreError>
+        where
+            R: Clone,
+            E: Clone,
+            F: Fn(&A) -> bool,
+        {
+            self.store.send_and_wait_for(action, predicate, timeout).await
         }
 
         /// Read current state via a closure
@@ -1225,6 +1308,16 @@ pub mod test_store {
         pub fn peek_next(&self) -> Option<A> {
             let queue = self.effect_queue.lock().unwrap();
             queue.front().cloned()
+        }
+
+        /// Clear all pending actions from the queue
+        ///
+        /// Use this to clean up after tests that don't need to assert on all produced actions.
+        /// This prevents the drop panic that occurs when actions remain in the queue.
+        #[allow(clippy::unwrap_used)] // Test infrastructure, mutex poison is unrecoverable
+        pub fn clear_queue(&self) {
+            let mut queue = self.effect_queue.lock().unwrap();
+            queue.clear();
         }
     }
 
@@ -1832,5 +1925,103 @@ mod tests {
             results[0],
             Err(EventStoreError::DatabaseError(_))
         ));
+    }
+
+    // ========== TestStore Effect Queuing Tests ==========
+
+    #[tokio::test]
+    async fn test_teststore_effect_produces_action_in_queue() {
+        use std::time::Duration as StdDuration;
+
+        let store = TestStore::new(TestReducer, TestEnv, TestState { value: 0 });
+
+        // Send an action that produces another action via Effect::Future
+        let mut handle = store
+            .send(TestAction::ProduceAction(Box::new(TestAction::Action1)))
+            .await
+            .unwrap();
+
+        // Wait for the effect to complete
+        handle.wait_with_timeout(StdDuration::from_secs(5)).await.ok();
+
+        // Give the background task time to capture the action
+        tokio::time::sleep(StdDuration::from_millis(50)).await;
+
+        // The produced action should be in the queue
+        let result = store.receive(TestAction::Action1).await;
+        assert!(result.is_ok(), "Action1 should be in the queue from effect");
+
+        // The action was also fed back to the store, so state should be updated
+        let value = store.state(|s| s.value).await;
+        assert_eq!(value, 1, "Action1 should have been processed, incrementing value");
+
+        store.assert_no_pending_actions();
+    }
+
+    #[tokio::test]
+    async fn test_teststore_send_and_wait_for_async_effect() {
+        use std::time::Duration as StdDuration;
+
+        let store = TestStore::new(TestReducer, TestEnv, TestState { value: 0 });
+
+        // Use send_and_wait_for to wait for the produced action
+        let result = store
+            .send_and_wait_for(
+                TestAction::ProduceAction(Box::new(TestAction::Action2)),
+                |action| matches!(action, TestAction::Action2),
+                StdDuration::from_secs(5),
+            )
+            .await;
+
+        assert!(result.is_ok(), "Should receive Action2 from effect");
+        assert_eq!(result.unwrap(), TestAction::Action2);
+
+        // The action was processed, so state should be updated
+        let value = store.state(|s| s.value).await;
+        assert_eq!(value, 2, "Action2 should have been processed, incrementing value by 2");
+
+        // Give the background task time to capture the action, then clean up
+        tokio::time::sleep(StdDuration::from_millis(50)).await;
+        {
+            let mut queue = store.effect_queue.lock().unwrap();
+            queue.clear();
+        }
+    }
+
+    #[tokio::test]
+    async fn test_teststore_parallel_effects_produce_multiple_actions() {
+        use std::time::Duration as StdDuration;
+
+        let store = TestStore::new(TestReducer, TestEnv, TestState { value: 0 });
+
+        // Send an action that produces multiple actions in parallel
+        let mut handle = store
+            .send(TestAction::ProduceMultiple(vec![
+                TestAction::Action1,
+                TestAction::Action2,
+            ]))
+            .await
+            .unwrap();
+
+        // Wait for effects to complete
+        handle.wait_with_timeout(StdDuration::from_secs(5)).await.ok();
+
+        // Give background task time to capture actions
+        tokio::time::sleep(StdDuration::from_millis(100)).await;
+
+        // Both actions should be in the queue (order may vary due to parallel execution)
+        let result = store
+            .receive_unordered(vec![TestAction::Action1, TestAction::Action2])
+            .await;
+        assert!(
+            result.is_ok(),
+            "Both Action1 and Action2 should be in the queue"
+        );
+
+        // State should reflect both actions being processed (1 + 2 = 3)
+        let value = store.state(|s| s.value).await;
+        assert_eq!(value, 3, "Both actions should have been processed");
+
+        store.assert_no_pending_actions();
     }
 }

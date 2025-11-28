@@ -151,6 +151,7 @@ pub enum AnalyticsAction {
 ///
 /// This trait abstracts away the underlying projection implementations,
 /// enabling dependency injection and testability.
+#[allow(clippy::type_complexity)] // Complex future types required for dyn-compatibility
 pub trait AnalyticsProjectionQuery: Send + Sync {
     /// Get sales metrics for an event.
     fn get_event_sales(

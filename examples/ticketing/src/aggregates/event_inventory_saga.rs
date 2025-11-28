@@ -332,33 +332,40 @@ impl EventInventorySaga {
     }
 
     /// Creates effects for persisting saga events
-    fn create_persist_effect(
+    fn create_persist_effects(
         event: EventInventorySagaAction,
         expected_version: Version,
         env: &EventInventorySagaEnvironment,
-    ) -> Effect<EventInventorySagaAction> {
-        let ticketing_event = TicketingEvent::EventInventorySaga(event);
+    ) -> SmallVec<[Effect<EventInventorySagaAction>; 2]> {
+        let ticketing_event = TicketingEvent::EventInventorySaga(event.clone());
         let serialized = match ticketing_event.serialize() {
             Ok(s) => s,
             Err(e) => {
-                return Effect::Future(Box::pin(async move {
+                return smallvec![Effect::Future(Box::pin(async move {
                     Some(EventInventorySagaAction::SerializationFailed {
                         error: format!("Failed to serialize saga event: {e}"),
                     })
-                }));
+                }))];
             }
         };
 
-        append_events! {
-            store: env.event_store,
-            stream: env.stream_id.as_str(),
-            expected_version: Some(expected_version),
-            events: vec![serialized],
-            on_success: |version| Some(EventInventorySagaAction::VersionUpdated { version }),
-            on_error: |error| Some(EventInventorySagaAction::ValidationFailed {
-                error: error.to_string()
-            })
-        }
+        smallvec![
+            append_events! {
+                store: env.event_store,
+                stream: env.stream_id.as_str(),
+                expected_version: Some(expected_version),
+                events: vec![serialized],
+                on_success: |version| Some(EventInventorySagaAction::VersionUpdated { version }),
+                on_error: |error| Some(EventInventorySagaAction::ValidationFailed {
+                    error: error.to_string()
+                })
+            },
+            // Echo the event back as an action so it broadcasts to action_broadcast channel
+            // This allows send_and_wait_for to receive it (e.g., EventCreationCompleted)
+            Effect::Future(Box::pin(async move {
+                Some(event)
+            }))
+        ]
     }
 
     /// Validates create event command
@@ -528,7 +535,7 @@ impl Reducer for EventInventorySaga {
                 Self::apply_event(state, &initiated);
 
                 // Persist saga event
-                let mut effects = smallvec![Self::create_persist_effect(initiated, expected_version, env)];
+                let mut effects: SmallVec<[Effect<Self::Action>; 4]> = Self::create_persist_effects(initiated, expected_version, env).into_iter().collect();
 
                 // Create effect to call Event aggregate
                 // On completion, this returns EventCreated which feeds back to reducer
@@ -635,7 +642,7 @@ impl Reducer for EventInventorySaga {
                 Self::apply_event(state, &event);
 
                 // Persist the EventCreated event
-                let mut effects = smallvec![Self::create_persist_effect(event, expected_version, env)];
+                let mut effects: SmallVec<[Effect<Self::Action>; 4]> = Self::create_persist_effects(event, expected_version, env).into_iter().collect();
 
                 // Create one effect per section to initialize inventory (in parallel)
                 let create_inventory_store = env.create_inventory_store.clone();
@@ -741,7 +748,7 @@ impl Reducer for EventInventorySaga {
                 Self::apply_event(state, &event);
 
                 // Persist the event
-                let mut effects = smallvec![Self::create_persist_effect(event, expected_version, env)];
+                let mut effects: SmallVec<[Effect<Self::Action>; 4]> = Self::create_persist_effects(event, expected_version, env).into_iter().collect();
 
                 // Check if ALL sections are done
                 if state.pending_sections.is_empty() && state.event_created && !state.failed {
@@ -793,7 +800,7 @@ impl Reducer for EventInventorySaga {
                 Self::apply_event(state, &event);
 
                 // Persist and done - no more effects needed
-                smallvec![Self::create_persist_effect(event, expected_version, env)]
+                Self::create_persist_effects(event, expected_version, env).into_iter().collect()
             }
 
             // ================================================================
@@ -819,7 +826,7 @@ impl Reducer for EventInventorySaga {
                 };
                 Self::apply_event(state, &event);
 
-                smallvec![Self::create_persist_effect(event, expected_version, env)]
+                Self::create_persist_effects(event, expected_version, env).into_iter().collect()
             }
 
             // ================================================================
@@ -848,7 +855,7 @@ impl Reducer for EventInventorySaga {
                 };
                 Self::apply_event(state, &event);
 
-                smallvec![Self::create_persist_effect(event, expected_version, env)]
+                Self::create_persist_effects(event, expected_version, env).into_iter().collect()
             }
 
             // ================================================================
@@ -865,7 +872,7 @@ impl Reducer for EventInventorySaga {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::test_utils::{
@@ -978,9 +985,9 @@ mod tests {
             })
             .then_effects(|effects| {
                 // Should have:
-                // - 1 persist effect for EventCreationInitiated
+                // - 2 persist effects for EventCreationInitiated (AppendEvents + Echo)
                 // - 1 future effect to call Event aggregate
-                assert_eq!(effects.len(), 2);
+                assert_eq!(effects.len(), 3);
             })
             .run();
     }
@@ -1016,9 +1023,9 @@ mod tests {
             })
             .then_effects(|effects| {
                 // Should have:
-                // - 1 persist effect for EventCreated
+                // - 2 persist effects for EventCreated (AppendEvents + Echo)
                 // - 2 future effects (one per section) for inventory initialization
-                assert_eq!(effects.len(), 3);
+                assert_eq!(effects.len(), 4);
             })
             .run();
     }
@@ -1057,8 +1064,8 @@ mod tests {
                 assert!(!state.inventory_complete);
             })
             .then_effects(|effects| {
-                // Only persist effect - no completion yet
-                assert_eq!(effects.len(), 1);
+                // Persist effects (AppendEvents + Echo) - no completion yet
+                assert_eq!(effects.len(), 2);
             })
             .run();
     }
@@ -1090,9 +1097,9 @@ mod tests {
             })
             .then_effects(|effects| {
                 // Should have:
-                // - 1 persist effect
+                // - 2 persist effects (AppendEvents + Echo)
                 // - 1 future effect that returns EventCreationCompleted
-                assert_eq!(effects.len(), 2);
+                assert_eq!(effects.len(), 3);
             })
             .run();
     }
@@ -1124,8 +1131,8 @@ mod tests {
                 assert!(state.is_complete());
             })
             .then_effects(|effects| {
-                // Just the persist effect
-                assert_eq!(effects.len(), 1);
+                // Persist effects (AppendEvents + Echo)
+                assert_eq!(effects.len(), 2);
             })
             .run();
     }

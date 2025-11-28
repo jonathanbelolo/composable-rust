@@ -158,7 +158,7 @@ impl FromRequestParts<Arc<TicketingAuthStore>> for SessionUser
                         user_id: test_user_id,
                         session_id: SessionId(test_session_uuid),
                         device_id: test_device_id,
-                        email: format!("test-user-{}@example.com", user_uuid),
+                        email: format!("test-user-{user_uuid}@example.com"),
                         created_at: chrono::Utc::now(),
                         last_active: chrono::Utc::now(),
                         expires_at: chrono::Utc::now() + chrono::Duration::days(1),

@@ -656,11 +656,27 @@ pub mod effect {
     ///
     /// This type does not serialize the sender (it's a channel, not data).
     /// Always mark `ResponseChannel` fields with `#[serde(skip)]` in your actions.
+    ///
+    /// # Note on Equality
+    ///
+    /// `ResponseChannel` implements `PartialEq` but considers all instances equal.
+    /// This is because response channels are ephemeral communication mechanisms,
+    /// not data that should affect equality comparison of actions.
     #[derive(Debug, Clone)]
     pub struct ResponseChannel(
         #[allow(clippy::type_complexity)] // Necessary for Arc<Mutex<Option<Sender>>> pattern
         pub Option<Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<Result<(), String>>>>>>,
     );
+
+    impl PartialEq for ResponseChannel {
+        fn eq(&self, _other: &Self) -> bool {
+            // Response channels are ephemeral and not meaningful for equality comparison.
+            // All response channels are considered equal for the purpose of action comparison.
+            true
+        }
+    }
+
+    impl Eq for ResponseChannel {}
 
     impl ResponseChannel {
         /// Create a new response channel with a sender.

@@ -219,11 +219,12 @@ async fn test_zero_quantity_rejected() {
         })
         .then_state(move |state| {
             assert!(state.last_error.is_some());
+            // Early sync validation returns "Cannot reserve 0 seats"
             assert!(state
                 .last_error
                 .as_ref()
                 .unwrap()
-                .contains("greater than zero"));
+                .contains("0 seats"));
         })
         .then_effects(|_effects| {})
         .run();

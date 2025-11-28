@@ -12,8 +12,9 @@
 
 use crate::projections::{CorrelationId, TicketingEvent};
 use crate::types::{
-    CustomerId, EventId, GlobalActionChannels, Money, Reservation, ReservationExpiry, ReservationId, ReservationState,
-    ReservationStatus, ResponseChannel, SeatId, SeatNumber, TicketId,
+    CustomerId, EventId, GlobalActionChannels, InventoryState, Money, PaymentState, Reservation,
+    ReservationExpiry, ReservationId, ReservationState, ReservationStatus, ResponseChannel, SeatId,
+    SeatNumber, TicketId,
 };
 use chrono::{DateTime, Duration, Utc};
 use composable_rust_core::{
@@ -23,12 +24,12 @@ use composable_rust_core::{
     SmallVec,
 };
 use composable_rust_macros::Action;
+use composable_rust_runtime::Store;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::projections::EventProjectionQuery;
-use super::inventory::{InventoryAction, InventoryProjectionQuery};
-use super::payment::PaymentAction;
+use super::inventory::{InventoryAction, InventoryEnvironment, InventoryReducer};
+use super::payment::{PaymentAction, PaymentEnvironment, PaymentReducer};
 use crate::types::PaymentId;
 
 // ============================================================================
@@ -108,14 +109,8 @@ pub enum ReservationAction {
         respond_to: ResponseChannel,
     },
 
-    /// Complete payment for reservation
-    #[command]
-    CompletePayment {
-        /// Reservation ID
-        reservation_id: ReservationId,
-        /// Payment ID
-        payment_id: PaymentId,
-    },
+    // NOTE: CompletePayment was removed - payment is handled automatically via the saga
+    // when seats are allocated. The saga orchestrates payment internally.
 
     /// Cancel reservation
     #[command]
@@ -274,13 +269,22 @@ pub enum ReservationAction {
         error: String,
     },
 
+    /// Serialization failed
+    #[event]
+    SerializationFailed {
+        /// Error message
+        error: String,
+    },
+
     /// Projection update confirmed
+    #[event]
     ReservationProjectionConfirmed {
         /// Reservation ID
         reservation_id: ReservationId,
     },
 
     /// Projection update failed
+    #[event]
     ReservationProjectionFailed {
         /// Reservation ID
         reservation_id: ReservationId,
@@ -302,10 +306,12 @@ pub enum ReservationAction {
 
 /// Environment dependencies for the Reservation saga
 ///
-/// Contains ONLY side effect dependencies. Child stores are held in `ReservationState`.
+/// Uses **factory functions** for child aggregate stores, following the pattern
+/// established in `EventInventorySaga`. This enables proper dependency injection
+/// and testability.
 #[derive(Clone)]
 pub struct ReservationEnvironment {
-    // ===== Side Effect Dependencies ONLY =====
+    // ===== Core Dependencies =====
     /// Clock for timestamps and timeout calculation
     pub clock: Arc<dyn Clock>,
     /// Event store for persistence of reservation events
@@ -316,25 +322,41 @@ pub struct ReservationEnvironment {
     pub projection: Arc<dyn ReservationProjectionQuery>,
     /// Global action channels for cross-aggregate coordination
     pub global_actions: GlobalActionChannels,
-    // ===== Dependencies for Saga Orchestration =====
-    /// Inventory projection query for creating inventory stores in saga
-    pub inventory_query: Arc<dyn InventoryProjectionQuery>,
-    /// Event projection query for pricing lookup in inventory stores
-    pub event_query: Arc<dyn EventProjectionQuery>,
+
+    // ===== Factory Functions for Child Aggregate Stores =====
+    /// Factory function to create Inventory aggregate stores
+    pub create_inventory_store: Arc<
+        dyn Fn(EventId) -> Store<InventoryState, InventoryAction, InventoryEnvironment, InventoryReducer>
+            + Send
+            + Sync,
+    >,
+    /// Factory function to create Payment aggregate stores
+    pub create_payment_store: Arc<
+        dyn Fn(PaymentId) -> Store<PaymentState, PaymentAction, PaymentEnvironment, PaymentReducer>
+            + Send
+            + Sync,
+    >,
 }
 
 impl ReservationEnvironment {
-    /// Creates a new `ReservationEnvironment`
+    /// Creates a new `ReservationEnvironment` with factory functions for child stores
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         clock: Arc<dyn Clock>,
         event_store: Arc<dyn EventStore>,
         stream_id: StreamId,
         projection: Arc<dyn ReservationProjectionQuery>,
         global_actions: GlobalActionChannels,
-        inventory_query: Arc<dyn InventoryProjectionQuery>,
-        event_query: Arc<dyn EventProjectionQuery>,
+        create_inventory_store: Arc<
+            dyn Fn(EventId) -> Store<InventoryState, InventoryAction, InventoryEnvironment, InventoryReducer>
+                + Send
+                + Sync,
+        >,
+        create_payment_store: Arc<
+            dyn Fn(PaymentId) -> Store<PaymentState, PaymentAction, PaymentEnvironment, PaymentReducer>
+                + Send
+                + Sync,
+        >,
     ) -> Self {
         Self {
             clock,
@@ -342,8 +364,8 @@ impl ReservationEnvironment {
             stream_id,
             projection,
             global_actions,
-            inventory_query,
-            event_query,
+            create_inventory_store,
+            create_payment_store,
         }
     }
 }
@@ -366,7 +388,7 @@ impl ReservationReducer {
         Self
     }
 
-    /// Creates effects for persisting events (PostgreSQL only, no Redpanda)
+    /// Creates effects for persisting events (`PostgreSQL` only, no Redpanda)
     ///
     /// With direct orchestration, we use local channels for coordination,
     /// so Redpanda publishing is no longer needed.
@@ -383,9 +405,17 @@ impl ReservationReducer {
         env: &ReservationEnvironment,
         correlation_id: Option<CorrelationId>,
     ) -> SmallVec<[Effect<ReservationAction>; 4]> {
-        let ticketing_event = TicketingEvent::Reservation(event);
-        let Ok(mut serialized) = ticketing_event.serialize() else {
-            return SmallVec::new();
+        let ticketing_event = TicketingEvent::Reservation(event.clone());
+        let mut serialized = match ticketing_event.serialize() {
+            Ok(s) => s,
+            Err(e) => {
+                // Return error action instead of silent failure
+                return smallvec![Effect::Future(Box::pin(async move {
+                    Some(ReservationAction::SerializationFailed {
+                        error: format!("Failed to serialize saga event: {e}"),
+                    })
+                }))];
+            }
         };
 
         // Add correlation_id to metadata if present
@@ -399,13 +429,68 @@ impl ReservationReducer {
                 store: env.event_store,
                 stream: env.stream_id.as_str(),
                 expected_version: Some(expected_version),
-                events: vec![serialized.clone()],
+                events: vec![serialized],
+                on_success: |version| Some(ReservationAction::VersionUpdated { version }),
+                on_error: |error| Some(ReservationAction::ValidationFailed {
+                    error: error.to_string()
+                })
+            },
+            // Echo the event back as an action so it broadcasts to action_broadcast channel
+            // This allows send_and_wait_for to receive it (e.g., ReservationCompleted)
+            Effect::Future(Box::pin(async move {
+                Some(event)
+            }))
+        ]
+    }
+
+    /// Creates effects for persisting multiple events atomically in a single append.
+    ///
+    /// This prevents race conditions when multiple events need to be persisted
+    /// as part of the same state transition.
+    fn create_batch_effects(
+        events: Vec<ReservationAction>,
+        expected_version: Version,
+        env: &ReservationEnvironment,
+    ) -> SmallVec<[Effect<ReservationAction>; 4]> {
+        let mut serialized_events = Vec::with_capacity(events.len());
+        let events_for_echo = events.clone();
+
+        for event in events {
+            let ticketing_event = TicketingEvent::Reservation(event);
+            match ticketing_event.serialize() {
+                Ok(s) => serialized_events.push(s),
+                Err(e) => {
+                    return smallvec![Effect::Future(Box::pin(async move {
+                        Some(ReservationAction::SerializationFailed {
+                            error: format!("Failed to serialize saga event: {e}"),
+                        })
+                    }))];
+                }
+            }
+        }
+
+        let mut effects = smallvec![
+            append_events! {
+                store: env.event_store,
+                stream: env.stream_id.as_str(),
+                expected_version: Some(expected_version),
+                events: serialized_events,
                 on_success: |version| Some(ReservationAction::VersionUpdated { version }),
                 on_error: |error| Some(ReservationAction::ValidationFailed {
                     error: error.to_string()
                 })
             }
-        ]
+        ];
+
+        // Echo each event back as an action so it broadcasts to action_broadcast channel
+        // This allows send_and_wait_for to receive them (e.g., ReservationCompleted)
+        for event in events_for_echo {
+            effects.push(Effect::Future(Box::pin(async move {
+                Some(event)
+            })));
+        }
+
+        effects
     }
 
     /// Validates `InitiateReservation` command
@@ -545,7 +630,8 @@ impl ReservationReducer {
                 state.version = *version;
             }
 
-            ReservationAction::ValidationFailed { error } => {
+            ReservationAction::ValidationFailed { error }
+            | ReservationAction::SerializationFailed { error } => {
                 state.last_error = Some(error.clone());
             }
 
@@ -553,7 +639,6 @@ impl ReservationReducer {
             // Response events also don't modify state (they're for API handlers)
             // Projection confirmation actions are logged but don't modify aggregate state
             ReservationAction::InitiateReservation { .. }
-            | ReservationAction::CompletePayment { .. }
             | ReservationAction::CancelReservation { .. }
             | ReservationAction::ExpireReservation { .. }
             | ReservationAction::GetReservation { .. }
@@ -577,7 +662,7 @@ impl Reducer for ReservationReducer {
     type Action = ReservationAction;
     type Environment = ReservationEnvironment;
 
-    #[allow(clippy::too_many_lines)] // Complex saga orchestration required
+    #[allow(clippy::too_many_lines, clippy::cognitive_complexity)] // Complex saga orchestration required
     fn reduce(
         &self,
         state: &mut Self::State,
@@ -609,14 +694,9 @@ impl Reducer for ReservationReducer {
                     "Processing InitiateReservation command"
                 );
 
-                // Clone fields for publishing to global channel
-                let reservation_id_clone = reservation_id;
-                let event_id_clone = event_id;
-                let customer_id_clone = customer_id;
-                let section_clone = section.clone();
-                let quantity_clone = quantity;
-                let specific_seats_clone = specific_seats.clone();
-                let correlation_id_clone = correlation_id;
+                // Clone non-Copy fields for publishing to global channel
+                let section_for_channel = section.clone();
+                let specific_seats_for_channel = specific_seats.clone();
 
                 // Validate
                 if let Err(error) =
@@ -646,37 +726,16 @@ impl Reducer for ReservationReducer {
                 // Persist and publish our event with correlation_id
                 let mut effects = Self::create_effects(event, expected_version, env, correlation_id);
 
-                // Direct orchestration: Create inventory store and dispatch ReserveSeats
-                // Then return SeatsAllocated action for saga feedback loop
-                let clock_clone = env.clock.clone();
-                let event_store_clone = env.event_store.clone();
-                let inventory_query_clone = env.inventory_query.clone();
-                let event_query_clone = env.event_query.clone();
-                let global_actions_clone = env.global_actions.clone();
+                // Direct orchestration: Use factory to create inventory store
+                // Clone factory Arc to move into async block
+                let create_inventory_store = env.create_inventory_store.clone();
                 let section_for_inventory = section.clone();
 
                 effects.push(Effect::Future(Box::pin(async move {
-                    use crate::aggregates::inventory::{InventoryEnvironment, InventoryReducer};
-                    use crate::types::InventoryState;
-                    use composable_rust_core::stream::StreamId;
-                    use composable_rust_runtime::Store;
                     use std::time::Duration;
 
-                    // Create inventory store for this event
-                    let stream_id = StreamId::new(&format!("inventory-{}", event_id.as_uuid()));
-                    let inv_env = InventoryEnvironment::new(
-                        clock_clone,
-                        event_store_clone,
-                        stream_id,
-                        inventory_query_clone,
-                        event_query_clone,
-                        global_actions_clone.clone(),
-                    );
-                    let inventory_store = Store::new(
-                        InventoryState::new(),
-                        InventoryReducer::new(),
-                        inv_env,
-                    );
+                    // Create inventory store using factory function
+                    let inventory_store = create_inventory_store(event_id);
 
                     // Send ReserveSeats action to inventory
                     let reserve_action = InventoryAction::ReserveSeats {
@@ -759,30 +818,28 @@ impl Reducer for ReservationReducer {
                 });
 
                 // Publish to global channel for projections and wait for completion
-                let reservation_id_for_success = reservation_id;
-                let reservation_id_for_error = reservation_id;
                 effects.push(Effect::PublishWithResponse {
                     channel: env.global_actions.reservation_actions.clone(),
                     create_action: Box::new(move |respond_to| {
                         ReservationAction::InitiateReservation {
-                            reservation_id: reservation_id_clone,
-                            event_id: event_id_clone,
-                            customer_id: customer_id_clone,
-                            section: section_clone,
-                            quantity: quantity_clone,
-                            specific_seats: specific_seats_clone,
-                            correlation_id: correlation_id_clone,
+                            reservation_id,
+                            event_id,
+                            customer_id,
+                            section: section_for_channel,
+                            quantity,
+                            specific_seats: specific_seats_for_channel,
+                            correlation_id,
                             respond_to,
                         }
                     }),
                     on_success: Box::new(move || {
                         Some(ReservationAction::ReservationProjectionConfirmed {
-                            reservation_id: reservation_id_for_success,
+                            reservation_id,
                         })
                     }),
                     on_error: Box::new(move |reason| {
                         Some(ReservationAction::ReservationProjectionFailed {
-                            reservation_id: reservation_id_for_error,
+                            reservation_id,
                             reason,
                         })
                     }),
@@ -809,52 +866,146 @@ impl Reducer for ReservationReducer {
                     step = "2_seats_allocated"
                 ).entered();
 
-                // Apply event
+                // Validate: Reservation must exist and be in Initiated state
+                let Some(reservation) = state.reservations.get(&reservation_id) else {
+                    tracing::error!(
+                        reservation_id = %reservation_id.as_uuid(),
+                        "SeatsAllocated received for non-existent reservation"
+                    );
+                    state.last_error = Some(format!(
+                        "Reservation {} not found",
+                        reservation_id.as_uuid()
+                    ));
+                    return smallvec![Effect::Future(Box::pin(async move {
+                        Some(ReservationAction::ValidationFailed {
+                            error: format!("Reservation {} not found", reservation_id.as_uuid()),
+                        })
+                    }))];
+                };
+
+                if !matches!(reservation.status, ReservationStatus::Initiated) {
+                    tracing::warn!(
+                        reservation_id = %reservation_id.as_uuid(),
+                        current_status = ?reservation.status,
+                        "SeatsAllocated received for reservation not in Initiated state"
+                    );
+                    // Idempotency: if already past this state, ignore
+                    return SmallVec::new();
+                }
+
+                // Capture customer_id from the validated reservation before state changes
+                let customer_id = reservation.customer_id;
+
+                // Capture version BEFORE any state changes
                 let expected_version = state.version;
+
+                // Apply SeatsAllocated event
                 Self::apply_event(state, &action);
 
-                // Calculate price (simplified - in production would look up pricing tiers)
-                let price_per_ticket = Money::from_dollars(50);
-                #[allow(clippy::cast_possible_truncation)]
-                let total = price_per_ticket.multiply(seats.len() as u32);
-
-                // Create payment request event
+                // Create payment request event with total_amount from SeatsAllocated
+                // (calculated in the InitiateReservation async block based on seat count)
                 let payment_id = PaymentId::new();
                 let payment_requested = ReservationAction::PaymentRequested {
                     reservation_id,
                     payment_id,
-                    amount: total,
+                    amount: total_amount,
                 };
-                let expected_version_2 = state.version;
                 Self::apply_event(state, &payment_requested);
 
-                // Persist and publish our events
-                let mut effects = Self::create_effects(action, expected_version, env, None);
-                effects.extend(Self::create_effects(payment_requested, expected_version_2, env, None));
+                // Batch persist both events atomically to avoid race condition
+                let mut effects = Self::create_batch_effects(
+                    vec![action, payment_requested.clone()],
+                    expected_version,
+                    env,
+                );
 
-                // Get customer_id from the reservation state
-                let customer_id = state.reservations
-                    .get(&reservation_id)
-                    .map(|r| r.customer_id)
-                    .unwrap_or_else(CustomerId::new);
+                // Direct orchestration: Use factory to create payment store and wait for response
+                let create_payment_store = env.create_payment_store.clone();
 
-                // Direct orchestration: Send command to Payment via global channel
-                let process_payment = PaymentAction::ProcessPayment {
-                    payment_id,
-                    reservation_id,
-                    customer_id,
-                    amount: total_amount,
-                    payment_method: crate::types::PaymentMethod::CreditCard {
-                        last_four: "4242".to_string(),
-                    },
-                    respond_to: ResponseChannel::none(),
-                };
-                let payment_channel = env.global_actions.payment_actions.clone();
                 effects.push(Effect::Future(Box::pin(async move {
-                    if let Err(e) = payment_channel.send(process_payment) {
-                        tracing::error!(error = %e, "Failed to send ProcessPayment command to payment channel");
+                    use std::time::Duration;
+
+                    // Create payment store using factory function
+                    let payment_store = create_payment_store(payment_id);
+
+                    // Send ProcessPayment action to payment store
+                    let process_payment = PaymentAction::ProcessPayment {
+                        payment_id,
+                        reservation_id,
+                        customer_id,
+                        amount: total_amount,
+                        payment_method: crate::types::PaymentMethod::CreditCard {
+                            last_four: "4242".to_string(),
+                        },
+                        respond_to: ResponseChannel::none(),
+                    };
+
+                    // Use send_and_wait_for to wait for PaymentSucceeded or PaymentFailed
+                    let result = payment_store.send_and_wait_for(
+                        process_payment,
+                        |action| {
+                            matches!(
+                                action,
+                                PaymentAction::PaymentSucceeded { payment_id: pid, .. } if *pid == payment_id
+                            ) || matches!(
+                                action,
+                                PaymentAction::PaymentFailed { payment_id: pid, .. } if *pid == payment_id
+                            )
+                        },
+                        Duration::from_secs(30),
+                    ).await;
+
+                    match result {
+                        Ok(PaymentAction::PaymentSucceeded { .. }) => {
+                            tracing::info!(
+                                reservation_id = %reservation_id.as_uuid(),
+                                payment_id = %payment_id.as_uuid(),
+                                "Payment succeeded, returning PaymentSucceeded"
+                            );
+
+                            Some(ReservationAction::PaymentSucceeded {
+                                reservation_id,
+                                payment_id,
+                            })
+                        }
+                        Ok(PaymentAction::PaymentFailed { reason, .. }) => {
+                            tracing::warn!(
+                                reservation_id = %reservation_id.as_uuid(),
+                                payment_id = %payment_id.as_uuid(),
+                                reason = %reason,
+                                "Payment failed"
+                            );
+                            Some(ReservationAction::PaymentFailed {
+                                reservation_id,
+                                payment_id,
+                                reason,
+                            })
+                        }
+                        Ok(other) => {
+                            tracing::error!(
+                                reservation_id = %reservation_id.as_uuid(),
+                                action = ?other,
+                                "Unexpected action received from payment store"
+                            );
+                            Some(ReservationAction::PaymentFailed {
+                                reservation_id,
+                                payment_id,
+                                reason: "Unexpected payment response".to_string(),
+                            })
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                reservation_id = %reservation_id.as_uuid(),
+                                error = %e,
+                                "Payment store error"
+                            );
+                            Some(ReservationAction::PaymentFailed {
+                                reservation_id,
+                                payment_id,
+                                reason: format!("Payment store error: {e}"),
+                            })
+                        }
                     }
-                    None
                 })));
 
                 // Broadcast PaymentRequested to reservation_actions channel for projection
@@ -862,14 +1013,13 @@ impl Reducer for ReservationReducer {
                 let payment_requested_for_projection = ReservationAction::PaymentRequested {
                     reservation_id,
                     payment_id,
-                    amount: total,
+                    amount: total_amount,
                 };
                 effects.push(Effect::Future(Box::pin(async move {
                     if let Err(e) = reservation_channel.send(payment_requested_for_projection.clone()) {
                         tracing::error!(error = %e, "Failed to broadcast PaymentRequested to reservation channel");
                     }
-                    // Also return the action for the saga to observe
-                    Some(payment_requested_for_projection)
+                    None // Don't return action here - the payment store feedback loop handles it
                 })));
 
                 effects
@@ -886,21 +1036,55 @@ impl Reducer for ReservationReducer {
                     step = "3a_payment_succeeded"
                 ).entered();
 
-                // Apply event
+                // Validate: Reservation must exist and be in PaymentPending state
+                let Some(reservation) = state.reservations.get(&reservation_id) else {
+                    tracing::error!(
+                        reservation_id = %reservation_id.as_uuid(),
+                        "PaymentSucceeded received for non-existent reservation"
+                    );
+                    state.last_error = Some(format!(
+                        "Reservation {} not found",
+                        reservation_id.as_uuid()
+                    ));
+                    return smallvec![Effect::Future(Box::pin(async move {
+                        Some(ReservationAction::ValidationFailed {
+                            error: format!("Reservation {} not found", reservation_id.as_uuid()),
+                        })
+                    }))];
+                };
+
+                if !matches!(reservation.status, ReservationStatus::PaymentPending) {
+                    tracing::warn!(
+                        reservation_id = %reservation_id.as_uuid(),
+                        current_status = ?reservation.status,
+                        "PaymentSucceeded received for reservation not in PaymentPending state"
+                    );
+                    // Idempotency: if already completed, ignore
+                    if matches!(reservation.status, ReservationStatus::Completed | ReservationStatus::PaymentCompleted) {
+                        return SmallVec::new();
+                    }
+                    // Otherwise this is an error - wrong state transition
+                    state.last_error = Some(format!(
+                        "Invalid state transition: cannot complete payment for reservation in {:?} state",
+                        reservation.status
+                    ));
+                    return smallvec![Effect::Future(Box::pin(async move {
+                        Some(ReservationAction::ValidationFailed {
+                            error: "Invalid state: reservation not awaiting payment".to_string(),
+                        })
+                    }))];
+                }
+
+                // Capture data from reservation before applying events (which may mutate it)
+                let customer_id = reservation.customer_id;
+                let ticket_count = reservation.seats.len();
+                let event_id = reservation.event_id;
+
+                // Capture version BEFORE any state changes
                 let expected_version = state.version;
+
+                // Apply PaymentSucceeded event
                 Self::apply_event(state, &action);
-
-                // Get customer ID from reservation
-                let customer_id = state
-                    .reservations
-                    .get(&reservation_id)
-                    .map_or_else(CustomerId::new, |r| r.customer_id);
-
-                // Generate ticket IDs
-                let ticket_count = state
-                    .reservations
-                    .get(&reservation_id)
-                    .map_or(0, |r| r.seats.len());
 
                 let tickets: Vec<TicketId> =
                     (0..ticket_count).map(|_| TicketId::new()).collect();
@@ -911,30 +1095,77 @@ impl Reducer for ReservationReducer {
                     tickets_issued: tickets,
                     completed_at: env.clock.now(),
                 };
-                let expected_version_2 = state.version;
                 Self::apply_event(state, &completion);
 
-                // Persist and publish our events
-                let mut effects = Self::create_effects(action, expected_version, env, None);
-                effects.extend(Self::create_effects(completion.clone(), expected_version_2, env, None));
+                // Batch persist both events atomically to avoid race condition
+                let mut effects = Self::create_batch_effects(
+                    vec![action, completion.clone()],
+                    expected_version,
+                    env,
+                );
 
-                // Emit as observable action for send_and_wait_for
-                let completion_clone = completion;
+                // Emit completion as observable action for send_and_wait_for
                 effects.push(Effect::Future(Box::pin(async move {
-                    Some(completion_clone)
+                    Some(completion)
                 })));
 
-                // Direct orchestration: Send confirm command to Inventory via global channel
-                let confirm_seats = InventoryAction::ConfirmReservation {
-                    reservation_id,
-                    customer_id,
-                };
-                let inventory_channel = env.global_actions.inventory_actions.clone();
+                // Direct orchestration: Confirm reservation in Inventory using factory
+                // Use send_and_wait_for with short timeout - compensation is best-effort
+                // since saga is already in Completed state
+                let create_inventory_store = env.create_inventory_store.clone();
                 effects.push(Effect::Future(Box::pin(async move {
-                    if let Err(e) = inventory_channel.send(confirm_seats) {
-                        tracing::error!(error = %e, "Failed to send ConfirmReservation command to inventory channel");
+                    use std::time::Duration;
+
+                    let inventory_store = create_inventory_store(event_id);
+                    let confirm_action = InventoryAction::ConfirmReservation {
+                        reservation_id,
+                        customer_id,
+                    };
+
+                    // Short timeout (5s) - if inventory is slow, don't block
+                    // Saga is already complete, this is best-effort confirmation
+                    let result = inventory_store.send_and_wait_for(
+                        confirm_action,
+                        |action| {
+                            matches!(
+                                action,
+                                InventoryAction::SeatsConfirmed { reservation_id: rid, .. } if *rid == reservation_id
+                            ) || matches!(action, InventoryAction::ValidationFailed { .. })
+                        },
+                        Duration::from_secs(5),
+                    ).await;
+
+                    match result {
+                        Ok(InventoryAction::SeatsConfirmed { .. }) => {
+                            tracing::info!(
+                                reservation_id = %reservation_id.as_uuid(),
+                                "Inventory confirmation succeeded"
+                            );
+                        }
+                        Ok(InventoryAction::ValidationFailed { error }) => {
+                            tracing::warn!(
+                                reservation_id = %reservation_id.as_uuid(),
+                                error = %error,
+                                "Inventory confirmation failed (reservation already complete)"
+                            );
+                        }
+                        Ok(other) => {
+                            tracing::warn!(
+                                reservation_id = %reservation_id.as_uuid(),
+                                action = ?other,
+                                "Unexpected inventory response during confirmation"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                reservation_id = %reservation_id.as_uuid(),
+                                error = %e,
+                                "Inventory confirmation timed out or failed (reservation already complete)"
+                            );
+                        }
                     }
-                    None
+
+                    None // Don't return action - saga is already complete
                 })));
 
                 effects
@@ -953,14 +1184,58 @@ impl Reducer for ReservationReducer {
                     step = "3b_compensation"
                 ).entered();
 
+                // Validate: Reservation must exist and be in PaymentPending state
+                let Some(reservation) = state.reservations.get(&reservation_id) else {
+                    tracing::error!(
+                        reservation_id = %reservation_id.as_uuid(),
+                        "PaymentFailed received for non-existent reservation"
+                    );
+                    state.last_error = Some(format!(
+                        "Reservation {} not found",
+                        reservation_id.as_uuid()
+                    ));
+                    return smallvec![Effect::Future(Box::pin(async move {
+                        Some(ReservationAction::ValidationFailed {
+                            error: format!("Reservation {} not found", reservation_id.as_uuid()),
+                        })
+                    }))];
+                };
+
+                if !matches!(reservation.status, ReservationStatus::PaymentPending) {
+                    tracing::warn!(
+                        reservation_id = %reservation_id.as_uuid(),
+                        current_status = ?reservation.status,
+                        "PaymentFailed received for reservation not in PaymentPending state"
+                    );
+                    // Idempotency: if already compensated, ignore
+                    if matches!(reservation.status, ReservationStatus::Compensated | ReservationStatus::Cancelled | ReservationStatus::Expired) {
+                        return SmallVec::new();
+                    }
+                    // Otherwise this is an error - wrong state transition
+                    state.last_error = Some(format!(
+                        "Invalid state transition: cannot fail payment for reservation in {:?} state",
+                        reservation.status
+                    ));
+                    return smallvec![Effect::Future(Box::pin(async move {
+                        Some(ReservationAction::ValidationFailed {
+                            error: "Invalid state: reservation not awaiting payment".to_string(),
+                        })
+                    }))];
+                }
+
                 tracing::warn!(
                     reservation_id = %reservation_id.as_uuid(),
                     reason = %reason,
                     "Payment failed, triggering saga compensation"
                 );
 
-                // Apply event
+                // Capture event_id from validated reservation before state changes
+                let event_id = reservation.event_id;
+
+                // Capture version BEFORE any state changes
                 let expected_version = state.version;
+
+                // Apply PaymentFailed event
                 Self::apply_event(state, &action);
 
                 let compensation = ReservationAction::ReservationCompensated {
@@ -968,21 +1243,69 @@ impl Reducer for ReservationReducer {
                     reason: reason.clone(),
                     compensated_at: env.clock.now(),
                 };
-                let expected_version_2 = state.version;
                 Self::apply_event(state, &compensation);
 
-                // Persist and publish our events
-                let mut effects = Self::create_effects(action, expected_version, env, None);
-                effects.extend(Self::create_effects(compensation, expected_version_2, env, None));
+                // Batch persist both events atomically to avoid race condition
+                let mut effects = Self::create_batch_effects(
+                    vec![action, compensation],
+                    expected_version,
+                    env,
+                );
 
-                // Direct orchestration: Send release command to Inventory (compensation)
-                let release_seats = InventoryAction::ReleaseReservation { reservation_id };
-                let inventory_channel = env.global_actions.inventory_actions.clone();
+                // Direct orchestration: Release seats in Inventory using factory
+                // Use send_and_wait_for with short timeout - compensation is best-effort
+                // since saga is already in Compensated state
+                let create_inventory_store = env.create_inventory_store.clone();
                 effects.push(Effect::Future(Box::pin(async move {
-                    if let Err(e) = inventory_channel.send(release_seats) {
-                        tracing::error!(error = %e, "Failed to send ReleaseReservation command to inventory channel");
+                    use std::time::Duration;
+
+                    let inventory_store = create_inventory_store(event_id);
+                    let release_action = InventoryAction::ReleaseReservation { reservation_id };
+
+                    // Short timeout (5s) - if inventory is slow, don't block
+                    // Saga is already compensated, this is best-effort release
+                    let result = inventory_store.send_and_wait_for(
+                        release_action,
+                        |action| {
+                            matches!(
+                                action,
+                                InventoryAction::SeatsReleased { reservation_id: rid, .. } if *rid == reservation_id
+                            ) || matches!(action, InventoryAction::ValidationFailed { .. })
+                        },
+                        Duration::from_secs(5),
+                    ).await;
+
+                    match result {
+                        Ok(InventoryAction::SeatsReleased { .. }) => {
+                            tracing::info!(
+                                reservation_id = %reservation_id.as_uuid(),
+                                "Inventory release succeeded (payment failed compensation)"
+                            );
+                        }
+                        Ok(InventoryAction::ValidationFailed { error }) => {
+                            tracing::warn!(
+                                reservation_id = %reservation_id.as_uuid(),
+                                error = %error,
+                                "Inventory release failed (may already be released)"
+                            );
+                        }
+                        Ok(other) => {
+                            tracing::warn!(
+                                reservation_id = %reservation_id.as_uuid(),
+                                action = ?other,
+                                "Unexpected inventory response during release"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                reservation_id = %reservation_id.as_uuid(),
+                                error = %e,
+                                "Inventory release timed out or failed (compensation best-effort)"
+                            );
+                        }
                     }
-                    None
+
+                    None // Don't return action - saga is already compensated
                 })));
 
                 effects
@@ -990,13 +1313,28 @@ impl Reducer for ReservationReducer {
 
             // ========== Step 4: Timeout (COMPENSATION) ==========
             ReservationAction::ExpireReservation { reservation_id } => {
-                // Check if reservation still exists and is pending
+                // Check if reservation still exists and is in an expirable state
                 if let Some(reservation) = state.reservations.get(&reservation_id) {
-                    // Only expire if still in a pending state
+                    // Only expire if in SeatsReserved or PaymentPending state.
+                    //
+                    // NOTE: We intentionally do NOT expire reservations in Initiated state.
+                    // In Initiated state, the inventory `send_and_wait_for` is still pending.
+                    // If we expired here, we could have a race condition where:
+                    //   1. Expiration fires, we set status to Expired
+                    //   2. Inventory responds with SeatsAllocated
+                    //   3. SeatsAllocated handler finds wrong state
+                    //
+                    // By only expiring SeatsReserved/PaymentPending, we ensure:
+                    //   - If inventory is slow (>5 min), it will eventually fail or succeed
+                    //   - If it fails, ValidationFailed will handle cleanup
+                    //   - If it succeeds, a subsequent expiration check will handle it
                     if matches!(
                         reservation.status,
                         ReservationStatus::SeatsReserved | ReservationStatus::PaymentPending
                     ) {
+                        // Capture event_id before state changes
+                        let event_id = reservation.event_id;
+
                         // Apply expiration event
                         let expiration = ReservationAction::ReservationExpired {
                             reservation_id,
@@ -1008,15 +1346,60 @@ impl Reducer for ReservationReducer {
                         // Persist and publish expiration event
                         let mut effects = Self::create_effects(expiration, expected_version, env, None);
 
-                        // Direct orchestration: Send release command to Inventory (compensation)
-                        let release_seats =
-                            InventoryAction::ReleaseReservation { reservation_id };
-                        let inventory_channel = env.global_actions.inventory_actions.clone();
+                        // Direct orchestration: Release seats in Inventory using factory
+                        // Use send_and_wait_for with short timeout - compensation is best-effort
+                        // since saga is already in Expired state
+                        let create_inventory_store = env.create_inventory_store.clone();
                         effects.push(Effect::Future(Box::pin(async move {
-                            if let Err(e) = inventory_channel.send(release_seats) {
-                                tracing::error!(error = %e, "Failed to send ReleaseReservation command to inventory channel");
+                            use std::time::Duration;
+
+                            let inventory_store = create_inventory_store(event_id);
+                            let release_action = InventoryAction::ReleaseReservation { reservation_id };
+
+                            // Short timeout (5s) - if inventory is slow, don't block
+                            // Saga is already expired, this is best-effort release
+                            let result = inventory_store.send_and_wait_for(
+                                release_action,
+                                |action| {
+                                    matches!(
+                                        action,
+                                        InventoryAction::SeatsReleased { reservation_id: rid, .. } if *rid == reservation_id
+                                    ) || matches!(action, InventoryAction::ValidationFailed { .. })
+                                },
+                                Duration::from_secs(5),
+                            ).await;
+
+                            match result {
+                                Ok(InventoryAction::SeatsReleased { .. }) => {
+                                    tracing::info!(
+                                        reservation_id = %reservation_id.as_uuid(),
+                                        "Inventory release succeeded (expiration compensation)"
+                                    );
+                                }
+                                Ok(InventoryAction::ValidationFailed { error }) => {
+                                    tracing::warn!(
+                                        reservation_id = %reservation_id.as_uuid(),
+                                        error = %error,
+                                        "Inventory release failed (may already be released)"
+                                    );
+                                }
+                                Ok(other) => {
+                                    tracing::warn!(
+                                        reservation_id = %reservation_id.as_uuid(),
+                                        action = ?other,
+                                        "Unexpected inventory response during release"
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        reservation_id = %reservation_id.as_uuid(),
+                                        error = %e,
+                                        "Inventory release timed out or failed (compensation best-effort)"
+                                    );
+                                }
                             }
-                            None
+
+                            None // Don't return action - saga is already expired
                         })));
 
                         return effects;
@@ -1030,8 +1413,29 @@ impl Reducer for ReservationReducer {
             // ========== Cancel ==========
             ReservationAction::CancelReservation { reservation_id } => {
                 if let Some(reservation) = state.reservations.get(&reservation_id) {
-                    // Can only cancel if not yet completed
-                    if !matches!(reservation.status, ReservationStatus::Completed) {
+                    // Only cancel if in SeatsReserved or PaymentPending state.
+                    //
+                    // NOTE: We intentionally do NOT cancel reservations in Initiated state.
+                    // In Initiated state, the inventory `send_and_wait_for` is still pending.
+                    // If we cancelled here, we could have a race condition where:
+                    //   1. Cancellation fires, we set status to Cancelled, send release (no-op)
+                    //   2. Inventory responds with SeatsAllocated
+                    //   3. SeatsAllocated handler finds wrong state, ignores
+                    //   4. Seats are orphaned in inventory!
+                    //
+                    // By only cancelling SeatsReserved/PaymentPending, we ensure:
+                    //   - If inventory is slow, the user must wait for it to complete
+                    //   - Once seats are reserved, cancellation works correctly
+                    //
+                    // Also don't cancel if already in a terminal state (Completed, Cancelled,
+                    // Expired, Compensated) to avoid duplicate work.
+                    if matches!(
+                        reservation.status,
+                        ReservationStatus::SeatsReserved | ReservationStatus::PaymentPending
+                    ) {
+                        // Capture event_id before state changes
+                        let event_id = reservation.event_id;
+
                         let cancellation = ReservationAction::ReservationCancelled {
                             reservation_id,
                             reason: "Cancelled by customer".to_string(),
@@ -1043,15 +1447,60 @@ impl Reducer for ReservationReducer {
                         // Persist and publish cancellation event
                         let mut effects = Self::create_effects(cancellation, expected_version, env, None);
 
-                        // Direct orchestration: Send release command to Inventory (compensation)
-                        let release_seats =
-                            InventoryAction::ReleaseReservation { reservation_id };
-                        let inventory_channel = env.global_actions.inventory_actions.clone();
+                        // Direct orchestration: Release seats in Inventory using factory
+                        // Use send_and_wait_for with short timeout - compensation is best-effort
+                        // since saga is already in Cancelled state
+                        let create_inventory_store = env.create_inventory_store.clone();
                         effects.push(Effect::Future(Box::pin(async move {
-                            if let Err(e) = inventory_channel.send(release_seats) {
-                                tracing::error!(error = %e, "Failed to send ReleaseReservation command to inventory channel");
+                            use std::time::Duration;
+
+                            let inventory_store = create_inventory_store(event_id);
+                            let release_action = InventoryAction::ReleaseReservation { reservation_id };
+
+                            // Short timeout (5s) - if inventory is slow, don't block
+                            // Saga is already cancelled, this is best-effort release
+                            let result = inventory_store.send_and_wait_for(
+                                release_action,
+                                |action| {
+                                    matches!(
+                                        action,
+                                        InventoryAction::SeatsReleased { reservation_id: rid, .. } if *rid == reservation_id
+                                    ) || matches!(action, InventoryAction::ValidationFailed { .. })
+                                },
+                                Duration::from_secs(5),
+                            ).await;
+
+                            match result {
+                                Ok(InventoryAction::SeatsReleased { .. }) => {
+                                    tracing::info!(
+                                        reservation_id = %reservation_id.as_uuid(),
+                                        "Inventory release succeeded (cancellation compensation)"
+                                    );
+                                }
+                                Ok(InventoryAction::ValidationFailed { error }) => {
+                                    tracing::warn!(
+                                        reservation_id = %reservation_id.as_uuid(),
+                                        error = %error,
+                                        "Inventory release failed (may already be released)"
+                                    );
+                                }
+                                Ok(other) => {
+                                    tracing::warn!(
+                                        reservation_id = %reservation_id.as_uuid(),
+                                        action = ?other,
+                                        "Unexpected inventory response during release"
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        reservation_id = %reservation_id.as_uuid(),
+                                        error = %e,
+                                        "Inventory release timed out or failed (compensation best-effort)"
+                                    );
+                                }
                             }
-                            None
+
+                            None // Don't return action - saga is already cancelled
                         })));
 
                         return effects;
@@ -1101,14 +1550,17 @@ impl Reducer for ReservationReducer {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::*;  // Brings in ReservationEnvironment, ReservationState, etc.
+    use super::*;  // Brings in ReservationEnvironment, ReservationState, Store, etc.
     use std::sync::Arc;
     use composable_rust_core::environment::SystemClock;
     use composable_rust_core::stream::StreamId;
     use composable_rust_testing::{assertions, mocks::InMemoryEventStore, ReducerTest};
-    use crate::types::{CustomerId, EventId, Money, Reservation, ReservationExpiry, ReservationId};
+    use crate::aggregates::inventory::InventoryProjectionQuery;
+    use crate::aggregates::payment::PaymentProjectionQuery;
+    use crate::projections::EventProjectionQuery;
+    use crate::types::{CustomerId, EventId, Money, Payment, PaymentId, Reservation, ReservationExpiry, ReservationId};
 
     // Mock projection queries for tests
     #[derive(Clone)]
@@ -1181,6 +1633,26 @@ mod tests {
         }
     }
 
+    // Mock payment query for tests
+    #[derive(Clone)]
+    struct MockPaymentQuery;
+
+    #[async_trait::async_trait]
+    impl PaymentProjectionQuery for MockPaymentQuery {
+        async fn load_payment(&self, _payment_id: &PaymentId) -> Result<Option<Payment>, String> {
+            Ok(None)
+        }
+
+        async fn load_customer_payments(&self, _customer_id: &CustomerId, _limit: usize, _offset: usize) -> Result<Vec<Payment>, String> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// Returns a fixed test time for deterministic tests.
+    fn test_time() -> DateTime<Utc> {
+        DateTime::from_timestamp(1_700_000_000, 0).expect("valid timestamp")
+    }
+
     fn create_test_global_actions() -> GlobalActionChannels {
         use tokio::sync::broadcast;
         let (event_tx, _) = broadcast::channel(10);
@@ -1199,15 +1671,52 @@ mod tests {
         ReservationEnvironment,
         ReservationState,
     ) {
-        // TCA pattern: Parent state holds child STATE, not child stores
+        // Factory functions for child stores
+        let global_actions = create_test_global_actions();
+        let global_actions_for_inventory = global_actions.clone();
+        let global_actions_for_payment = global_actions.clone();
+
+        let create_inventory_store: Arc<
+            dyn Fn(EventId) -> Store<InventoryState, InventoryAction, InventoryEnvironment, InventoryReducer>
+                + Send
+                + Sync,
+        > = Arc::new(move |event_id| {
+            let stream_id = StreamId::new(format!("inventory-{}", event_id.as_uuid()));
+            let inv_env = InventoryEnvironment::new(
+                Arc::new(SystemClock),
+                Arc::new(InMemoryEventStore::new()),
+                stream_id,
+                Arc::new(MockInventoryQuery),
+                Arc::new(MockEventQuery),
+                global_actions_for_inventory.clone(),
+            );
+            Store::new(InventoryState::new(), InventoryReducer::new(), inv_env)
+        });
+
+        let create_payment_store: Arc<
+            dyn Fn(PaymentId) -> Store<PaymentState, PaymentAction, PaymentEnvironment, PaymentReducer>
+                + Send
+                + Sync,
+        > = Arc::new(move |payment_id| {
+            let stream_id = StreamId::new(format!("payment-{}", payment_id.as_uuid()));
+            let pay_env = PaymentEnvironment::new(
+                Arc::new(SystemClock),
+                Arc::new(InMemoryEventStore::new()),
+                stream_id,
+                Arc::new(MockPaymentQuery),
+                global_actions_for_payment.clone(),
+            );
+            Store::new(PaymentState::new(), PaymentReducer::new(), pay_env)
+        });
+
         let env = ReservationEnvironment::new(
             Arc::new(SystemClock),
             Arc::new(InMemoryEventStore::new()),
             StreamId::new("reservation-test"),
             Arc::new(MockReservationQuery),
-            create_test_global_actions(),
-            Arc::new(MockInventoryQuery),
-            Arc::new(MockEventQuery),
+            global_actions,
+            create_inventory_store,
+            create_payment_store,
         );
 
         let state = ReservationState::new();
@@ -1248,11 +1757,12 @@ mod tests {
                 assert_eq!(reservation.seats.len(), 0); // Not yet allocated
             })
             .then_effects(|effects| {
-                // Should return 4 effects:
-                // 2 for ReservationInitiated (AppendEvents + Channel Send to reservation_actions, no Redpanda)
+                // Should return 5 effects:
+                // 2 for ReservationInitiated (AppendEvents + Echo)
                 // 1 for sending ReserveSeats command to inventory_actions channel (direct orchestration)
                 // 1 for scheduling expiration timeout (Delay)
-                assert_eq!(effects.len(), 4);
+                // 1 for PublishWithResponse to reservation_actions channel
+                assert_eq!(effects.len(), 5);
             })
             .run();
     }
@@ -1274,8 +1784,8 @@ mod tests {
                     CustomerId::new(),
                     Vec::new(),
                     Money::from_cents(0),
-                    ReservationExpiry::new(Utc::now() + Duration::minutes(5)),
-                    Utc::now(),
+                    ReservationExpiry::new(test_time() + Duration::minutes(5)),
+                    test_time(),
                 );
                 state.reservations.insert(reservation_id, reservation);
                 state
@@ -1315,8 +1825,8 @@ mod tests {
                     CustomerId::new(),
                     vec![SeatId::new()],
                     Money::from_dollars(50),
-                    ReservationExpiry::new(Utc::now() + Duration::minutes(5)),
-                    Utc::now(),
+                    ReservationExpiry::new(test_time() + Duration::minutes(5)),
+                    test_time(),
                 );
                 reservation.status = ReservationStatus::PaymentPending;
                 state.reservations.insert(reservation_id, reservation);
@@ -1353,8 +1863,8 @@ mod tests {
                     CustomerId::new(),
                     vec![SeatId::new()],
                     Money::from_dollars(50),
-                    ReservationExpiry::new(Utc::now() + Duration::minutes(5)),
-                    Utc::now(),
+                    ReservationExpiry::new(test_time() + Duration::minutes(5)),
+                    test_time(),
                 );
                 reservation.status = ReservationStatus::PaymentPending;
                 state.reservations.insert(reservation_id, reservation);
@@ -1392,8 +1902,8 @@ mod tests {
                     CustomerId::new(),
                     vec![SeatId::new()],
                     Money::from_dollars(50),
-                    ReservationExpiry::new(Utc::now() + Duration::minutes(5)),
-                    Utc::now(),
+                    ReservationExpiry::new(test_time() + Duration::minutes(5)),
+                    test_time(),
                 );
                 reservation.status = ReservationStatus::SeatsReserved;
                 state.reservations.insert(reservation_id, reservation);
@@ -1427,8 +1937,8 @@ mod tests {
                     CustomerId::new(),
                     vec![SeatId::new()],
                     Money::from_dollars(50),
-                    ReservationExpiry::new(Utc::now() + Duration::minutes(5)),
-                    Utc::now(),
+                    ReservationExpiry::new(test_time() + Duration::minutes(5)),
+                    test_time(),
                 );
                 reservation.status = ReservationStatus::Completed; // Already completed
                 state.reservations.insert(reservation_id, reservation);

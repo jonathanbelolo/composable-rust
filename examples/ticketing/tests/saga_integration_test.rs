@@ -10,6 +10,7 @@ use composable_rust_core::{
     reducer::Reducer,
     stream::StreamId,
 };
+use composable_rust_runtime::Store;
 use composable_rust_testing::{
     mocks::InMemoryEventStore,
     ReducerTest,
@@ -17,11 +18,12 @@ use composable_rust_testing::{
 use std::sync::Arc;
 use ticketing::{
     aggregates::{
-        inventory::{InventoryProjectionQuery, SectionAvailabilityData},
-        reservation::{ReservationAction, ReservationEnvironment, ReservationReducer, ReservationProjectionQuery},
+        inventory::{InventoryAction, InventoryEnvironment, InventoryProjectionQuery, InventoryReducer, SectionAvailabilityData},
+        payment::{PaymentAction, PaymentEnvironment, PaymentProjectionQuery, PaymentReducer},
+        reservation_saga::{ReservationAction, ReservationEnvironment, ReservationReducer, ReservationProjectionQuery},
     },
     projections::EventProjectionQuery,
-    types::{CustomerId, Event, EventId, EventStatus, Money, PaymentId, Reservation, ReservationId, ReservationState, ReservationStatus, SeatAssignment, SeatId},
+    types::{CustomerId, Event, EventId, EventStatus, InventoryState, Money, Payment, PaymentId, PaymentState, Reservation, ReservationId, ReservationState, ReservationStatus, SeatAssignment, SeatId},
 };
 
 /// Mock reservation query for tests
@@ -95,6 +97,21 @@ impl EventProjectionQuery for MockEventQuery {
     }
 }
 
+/// Mock payment query for tests
+#[derive(Clone)]
+struct MockPaymentQuery;
+
+#[async_trait::async_trait]
+impl PaymentProjectionQuery for MockPaymentQuery {
+    async fn load_payment(&self, _payment_id: &PaymentId) -> Result<Option<Payment>, String> {
+        Ok(None)
+    }
+
+    async fn load_customer_payments(&self, _customer_id: &CustomerId, _limit: usize, _offset: usize) -> Result<Vec<Payment>, String> {
+        Ok(Vec::new())
+    }
+}
+
 /// Helper to create test global actions channels
 fn create_test_global_actions() -> ticketing::types::GlobalActionChannels {
     use tokio::sync::broadcast;
@@ -112,14 +129,51 @@ fn create_test_global_actions() -> ticketing::types::GlobalActionChannels {
 
 /// Helper to create test environment for reservation saga
 fn create_test_env() -> ReservationEnvironment {
+    let global_actions = create_test_global_actions();
+    let global_actions_for_inventory = global_actions.clone();
+    let global_actions_for_payment = global_actions.clone();
+
+    let create_inventory_store: Arc<
+        dyn Fn(EventId) -> Store<InventoryState, InventoryAction, InventoryEnvironment, InventoryReducer>
+            + Send
+            + Sync,
+    > = Arc::new(move |event_id| {
+        let stream_id = StreamId::new(format!("inventory-{}", event_id.as_uuid()));
+        let inv_env = InventoryEnvironment::new(
+            Arc::new(SystemClock),
+            Arc::new(InMemoryEventStore::new()) as Arc<dyn EventStore>,
+            stream_id,
+            Arc::new(MockInventoryQuery),
+            Arc::new(MockEventQuery),
+            global_actions_for_inventory.clone(),
+        );
+        Store::new(InventoryState::new(), InventoryReducer::new(), inv_env)
+    });
+
+    let create_payment_store: Arc<
+        dyn Fn(PaymentId) -> Store<PaymentState, PaymentAction, PaymentEnvironment, PaymentReducer>
+            + Send
+            + Sync,
+    > = Arc::new(move |payment_id| {
+        let stream_id = StreamId::new(format!("payment-{}", payment_id.as_uuid()));
+        let pay_env = PaymentEnvironment::new(
+            Arc::new(SystemClock),
+            Arc::new(InMemoryEventStore::new()) as Arc<dyn EventStore>,
+            stream_id,
+            Arc::new(MockPaymentQuery),
+            global_actions_for_payment.clone(),
+        );
+        Store::new(PaymentState::new(), PaymentReducer::new(), pay_env)
+    });
+
     ReservationEnvironment::new(
         Arc::new(SystemClock),
         Arc::new(InMemoryEventStore::new()) as Arc<dyn EventStore>,
         StreamId::new("reservation-test"),
         Arc::new(MockReservationQuery),
-        create_test_global_actions(),
-        Arc::new(MockInventoryQuery),
-        Arc::new(MockEventQuery),
+        global_actions,
+        create_inventory_store,
+        create_payment_store,
     )
 }
 
