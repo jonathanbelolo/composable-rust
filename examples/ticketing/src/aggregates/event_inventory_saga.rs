@@ -55,7 +55,7 @@ use composable_rust_core::{
 use composable_rust_runtime::Store;
 use composable_rust_macros::Action;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 // ============================================================================
@@ -67,13 +67,14 @@ use std::sync::Arc;
 /// Each saga instance handles ONE event creation. When the workflow completes,
 /// the saga is done. State is persisted via events in the saga's event stream.
 #[derive(Clone, Debug)]
+#[allow(clippy::struct_excessive_bools)] // Saga state machines need multiple status flags
 pub struct EventInventorySagaState {
     /// The event being created (None if not yet initiated)
     pub event_id: Option<EventId>,
     /// Sections that still need inventory initialized
     pub pending_sections: HashSet<String>,
-    /// Section capacities from the venue (section_name -> capacity)
-    pub section_capacities: std::collections::HashMap<String, Capacity>,
+    /// Section capacities from the venue (`section_name` -> capacity)
+    pub section_capacities: HashMap<String, Capacity>,
     /// Whether the Event aggregate has created the event
     pub event_created: bool,
     /// Whether all inventory has been initialized
@@ -95,7 +96,7 @@ impl EventInventorySagaState {
         Self {
             event_id: None,
             pending_sections: HashSet::new(),
-            section_capacities: std::collections::HashMap::new(),
+            section_capacities: HashMap::new(),
             event_created: false,
             inventory_complete: false,
             completed: false,
@@ -164,8 +165,8 @@ pub enum EventInventorySagaAction {
         name: String,
         /// Number of sections that need inventory
         section_count: u32,
-        /// Section capacities from the venue (section_name -> capacity)
-        section_capacities: std::collections::HashMap<String, Capacity>,
+        /// Section capacities from the venue (`section_name` -> capacity)
+        section_capacities: HashMap<String, Capacity>,
         /// When initiated
         initiated_at: DateTime<Utc>,
     },
@@ -230,6 +231,13 @@ pub enum EventInventorySagaAction {
     /// Validation failed
     #[event]
     ValidationFailed {
+        /// Error message
+        error: String,
+    },
+
+    /// Serialization failed
+    #[event]
+    SerializationFailed {
         /// Error message
         error: String,
     },
@@ -330,8 +338,15 @@ impl EventInventorySaga {
         env: &EventInventorySagaEnvironment,
     ) -> Effect<EventInventorySagaAction> {
         let ticketing_event = TicketingEvent::EventInventorySaga(event);
-        let Ok(serialized) = ticketing_event.serialize() else {
-            return Effect::None;
+        let serialized = match ticketing_event.serialize() {
+            Ok(s) => s,
+            Err(e) => {
+                return Effect::Future(Box::pin(async move {
+                    Some(EventInventorySagaAction::SerializationFailed {
+                        error: format!("Failed to serialize saga event: {e}"),
+                    })
+                }));
+            }
         };
 
         append_events! {
@@ -388,7 +403,7 @@ impl EventInventorySaga {
                 ..
             } => {
                 state.event_id = Some(*event_id);
-                state.section_capacities = section_capacities.clone();
+                state.section_capacities.clone_from(section_capacities);
                 state.last_error = None;
             }
 
@@ -429,7 +444,8 @@ impl EventInventorySaga {
                 state.last_error = Some(error.clone());
             }
 
-            EventInventorySagaAction::ValidationFailed { error } => {
+            EventInventorySagaAction::ValidationFailed { error }
+            | EventInventorySagaAction::SerializationFailed { error } => {
                 state.last_error = Some(error.clone());
             }
 
@@ -454,6 +470,7 @@ impl Reducer for EventInventorySaga {
     type Action = EventInventorySagaAction;
     type Environment = EventInventorySagaEnvironment;
 
+    #[allow(clippy::cognitive_complexity, clippy::too_many_lines)] // Saga state machine has inherently complex branching
     fn reduce(
         &self,
         state: &mut Self::State,
@@ -485,25 +502,24 @@ impl Reducer for EventInventorySaga {
 
                 // Validate
                 if let Err(error) = Self::validate_create_event(state, &name, &venue) {
-                    Self::apply_event(state, &EventInventorySagaAction::ValidationFailed {
-                        error: error.clone()
-                    });
+                    Self::apply_event(state, &EventInventorySagaAction::ValidationFailed { error });
                     return SmallVec::new();
                 }
 
                 // Build section capacities for state
-                #[allow(clippy::cast_possible_truncation)]
-                let section_capacities: std::collections::HashMap<String, Capacity> = venue
+                let section_capacities: HashMap<String, Capacity> = venue
                     .sections
                     .iter()
                     .map(|s| (s.name.clone(), s.capacity))
                     .collect();
 
                 // Create saga initiation event
+                #[allow(clippy::cast_possible_truncation)] // sections.len() won't exceed u32::MAX
+                let section_count = venue.sections.len() as u32;
                 let initiated = EventInventorySagaAction::EventCreationInitiated {
                     event_id,
                     name: name.clone(),
-                    section_count: venue.sections.len() as u32,
+                    section_count,
                     section_capacities,
                     initiated_at: env.clock.now(),
                 };
@@ -576,26 +592,14 @@ impl Reducer for EventInventorySaga {
             // to state during Step 1, so during replay we just apply it again.
             // No effects needed since it's already been persisted.
             // ================================================================
-            EventInventorySagaAction::EventCreationInitiated {
-                event_id,
-                name: _,
-                section_count: _,
-                section_capacities,
-                initiated_at: _,
-            } => {
+            ref action @ EventInventorySagaAction::EventCreationInitiated { ref event_id, .. } => {
                 tracing::debug!(
                     event_id = %event_id.as_uuid(),
                     "Saga: EventCreationInitiated replayed (recovery)"
                 );
 
-                // Apply event to state (idempotent)
-                Self::apply_event(state, &EventInventorySagaAction::EventCreationInitiated {
-                    event_id,
-                    name: String::new(), // Doesn't matter for apply_event
-                    section_count: 0,
-                    section_capacities,
-                    initiated_at: chrono::Utc::now(),
-                });
+                // Apply original event to state (idempotent)
+                Self::apply_event(state, action);
 
                 // No effects - this event has already been persisted
                 SmallVec::new()
@@ -848,18 +852,12 @@ impl Reducer for EventInventorySaga {
             }
 
             // ================================================================
-            // UTILITY: Version Updated (Internal bookkeeping)
+            // UTILITY: Internal bookkeeping events (no effects needed)
             // ================================================================
-            EventInventorySagaAction::VersionUpdated { version } => {
-                Self::apply_event(state, &EventInventorySagaAction::VersionUpdated { version });
-                SmallVec::new()
-            }
-
-            // ================================================================
-            // UTILITY: Validation Failed
-            // ================================================================
-            EventInventorySagaAction::ValidationFailed { error } => {
-                Self::apply_event(state, &EventInventorySagaAction::ValidationFailed { error });
+            ref action @ (EventInventorySagaAction::VersionUpdated { .. }
+            | EventInventorySagaAction::ValidationFailed { .. }
+            | EventInventorySagaAction::SerializationFailed { .. }) => {
+                Self::apply_event(state, action);
                 SmallVec::new()
             }
         }
@@ -870,8 +868,10 @@ impl Reducer for EventInventorySaga {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::aggregates::inventory::InventoryProjectionQuery;
-    use crate::types::{Money, SeatAssignment, SeatType, VenueSection};
+    use crate::test_utils::{
+        create_test_global_channels, MockEventProjectionQuery, MockInventoryQuery,
+    };
+    use crate::types::{Money, SeatType, TierType, VenueSection};
     use chrono::Duration;
     use composable_rust_core::environment::SystemClock;
     use composable_rust_testing::{
@@ -880,70 +880,15 @@ mod tests {
         ReducerTest,
     };
 
-    // Mock projection queries for tests
-    #[derive(Clone)]
-    struct MockEventQuery;
-
-    #[async_trait::async_trait]
-    impl crate::projections::EventProjectionQuery for MockEventQuery {
-        async fn load_event(&self, _event_id: &EventId) -> Result<Option<crate::types::Event>, String> {
-            Ok(None) // No cached state, use event sourcing
-        }
-
-        async fn load_events(&self, _status_filter: Option<crate::types::EventStatus>) -> Result<Vec<crate::types::Event>, String> {
-            Ok(vec![])
-        }
-    }
-
-    #[derive(Clone)]
-    struct MockInventoryQuery;
-
-    impl InventoryProjectionQuery for MockInventoryQuery {
-        fn load_inventory(
-            &self,
-            _event_id: &EventId,
-            _section: &str,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<((u32, u32, u32, u32), Vec<SeatAssignment>)>, String>> + Send + '_>> {
-            Box::pin(async move { Ok(None) }) // No cached state, use event sourcing
-        }
-
-        fn get_all_sections(
-            &self,
-            _event_id: &EventId,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<crate::aggregates::inventory::SectionAvailabilityData>, String>> + Send + '_>> {
-            Box::pin(async move { Ok(vec![]) })
-        }
-
-        fn get_section_availability(
-            &self,
-            _event_id: &EventId,
-            _section: &str,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<crate::aggregates::inventory::SectionAvailabilityData>, String>> + Send + '_>> {
-            Box::pin(async move { Ok(None) })
-        }
-
-        fn get_total_available(
-            &self,
-            _event_id: &EventId,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u32, String>> + Send + '_>> {
-            Box::pin(async move { Ok(0) })
-        }
-    }
-
     fn create_test_env() -> EventInventorySagaEnvironment {
-        // Placeholder factory functions for testing
+        // Factory functions for creating child aggregate stores
         let create_event_store = Arc::new(|_event_id: EventId| {
             let event_env = EventEnvironment::new(
                 Arc::new(SystemClock),
                 Arc::new(InMemoryEventStore::new()),
                 StreamId::new("test-event"),
-                Arc::new(MockEventQuery),
-                crate::types::GlobalActionChannels {
-                    event_actions: tokio::sync::broadcast::channel(1000).0,
-                    inventory_actions: tokio::sync::broadcast::channel(1000).0,
-                    reservation_actions: tokio::sync::broadcast::channel(1000).0,
-                    payment_actions: tokio::sync::broadcast::channel(1000).0,
-                },
+                Arc::new(MockEventProjectionQuery),
+                create_test_global_channels(),
             );
             Store::new(EventState::new(), EventReducer::new(), event_env)
         });
@@ -954,13 +899,8 @@ mod tests {
                 Arc::new(InMemoryEventStore::new()),
                 StreamId::new("test-inventory"),
                 Arc::new(MockInventoryQuery),
-                Arc::new(MockEventQuery),
-                crate::types::GlobalActionChannels {
-                    event_actions: tokio::sync::broadcast::channel(1000).0,
-                    inventory_actions: tokio::sync::broadcast::channel(1000).0,
-                    reservation_actions: tokio::sync::broadcast::channel(1000).0,
-                    payment_actions: tokio::sync::broadcast::channel(1000).0,
-                },
+                Arc::new(MockEventProjectionQuery),
+                create_test_global_channels(),
             );
             Store::new(InventoryState::new(), InventoryReducer::new(), inventory_env)
         });
@@ -993,12 +933,17 @@ mod tests {
         )
     }
 
+    /// Returns a fixed test time for deterministic tests
+    fn test_time() -> DateTime<Utc> {
+        DateTime::from_timestamp(1_700_000_000, 0).expect("valid timestamp")
+    }
+
     fn create_test_pricing_tiers() -> Vec<PricingTier> {
         vec![PricingTier::new(
-            crate::types::TierType::Regular,
+            TierType::Regular,
             "General".to_string(),
             Money::from_dollars(50),
-            Utc::now(),
+            test_time(),
             None,
         )]
     }
@@ -1020,7 +965,7 @@ mod tests {
                 name: "Test Event".to_string(),
                 owner_id: UserId::new(),
                 venue: venue.clone(),
-                date: crate::types::EventDate::new(Utc::now() + Duration::days(30)),
+                date: crate::types::EventDate::new(test_time() + Duration::days(30)),
                 pricing_tiers: create_test_pricing_tiers(),
             })
             .then_state(move |state| {
@@ -1060,7 +1005,7 @@ mod tests {
             .when_action(EventInventorySagaAction::EventCreated {
                 event_id,
                 sections: vec!["VIP".to_string(), "General".to_string()],
-                created_at: Utc::now(),
+                created_at: test_time(),
             })
             .then_state(move |state| {
                 assert!(state.event_created);
@@ -1101,7 +1046,7 @@ mod tests {
             .when_action(EventInventorySagaAction::SectionInventoryInitialized {
                 event_id,
                 section: "VIP".to_string(),
-                initialized_at: Utc::now(),
+                initialized_at: test_time(),
             })
             .then_state(|state| {
                 // VIP removed, General still pending
@@ -1136,7 +1081,7 @@ mod tests {
             .when_action(EventInventorySagaAction::SectionInventoryInitialized {
                 event_id,
                 section: "General".to_string(),
-                initialized_at: Utc::now(),
+                initialized_at: test_time(),
             })
             .then_state(|state| {
                 assert!(state.pending_sections.is_empty());
@@ -1172,7 +1117,7 @@ mod tests {
             .when_action(EventInventorySagaAction::EventCreationCompleted {
                 event_id,
                 sections_initialized: 2,
-                completed_at: Utc::now(),
+                completed_at: test_time(),
             })
             .then_state(|state| {
                 assert!(state.completed);
@@ -1202,7 +1147,7 @@ mod tests {
             .when_action(EventInventorySagaAction::EventCreationFailed {
                 event_id,
                 error: "Database error".to_string(),
-                failed_at: Utc::now(),
+                failed_at: test_time(),
             })
             .then_state(|state| {
                 assert!(state.failed);
@@ -1230,7 +1175,7 @@ mod tests {
                 event_id,
                 section: "VIP".to_string(),
                 error: "Capacity exceeded".to_string(),
-                failed_at: Utc::now(),
+                failed_at: test_time(),
             })
             .then_state(|state| {
                 assert!(state.failed);
@@ -1258,7 +1203,7 @@ mod tests {
                 name: String::new(), // Empty name
                 owner_id: UserId::new(),
                 venue: create_test_venue(),
-                date: crate::types::EventDate::new(Utc::now() + Duration::days(30)),
+                date: crate::types::EventDate::new(test_time() + Duration::days(30)),
                 pricing_tiers: create_test_pricing_tiers(),
             })
             .then_state(|state| {
@@ -1288,7 +1233,7 @@ mod tests {
                 name: "Test Event".to_string(),
                 owner_id: UserId::new(),
                 venue,
-                date: crate::types::EventDate::new(Utc::now() + Duration::days(30)),
+                date: crate::types::EventDate::new(test_time() + Duration::days(30)),
                 pricing_tiers: create_test_pricing_tiers(),
             })
             .then_state(|state| {
@@ -1319,7 +1264,7 @@ mod tests {
                 name: "Test Event".to_string(),
                 owner_id: UserId::new(),
                 venue: create_test_venue(),
-                date: crate::types::EventDate::new(Utc::now() + Duration::days(30)),
+                date: crate::types::EventDate::new(test_time() + Duration::days(30)),
                 pricing_tiers: create_test_pricing_tiers(),
             })
             .then_state(|state| {
@@ -1354,7 +1299,7 @@ mod tests {
             .when_action(EventInventorySagaAction::SectionInventoryInitialized {
                 event_id,
                 section: "VIP".to_string(), // Already processed!
-                initialized_at: Utc::now(),
+                initialized_at: test_time(),
             })
             .then_state(|state| {
                 // State unchanged - VIP was already not in pending
