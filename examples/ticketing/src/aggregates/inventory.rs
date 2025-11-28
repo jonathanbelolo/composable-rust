@@ -8,8 +8,8 @@
 
 use crate::projections::{EventProjectionQuery, TicketingEvent};
 use crate::types::{
-    Capacity, CustomerId, EventId, GlobalActionChannels, Inventory, InventoryState, Money, ReservationId, ResponseChannel,
-    SeatAssignment, SeatId, SeatNumber, SeatStatus,
+    Capacity, CustomerId, EventId, GlobalActionChannels, Inventory, InventoryState, Money, PricingTier,
+    ReservationId, ResponseChannel, SeatAssignment, SeatId, SeatNumber, SeatStatus,
 };
 use chrono::{DateTime, Utc};
 use composable_rust_core::{
@@ -57,10 +57,11 @@ pub struct SectionAvailabilityData {
 /// the reducer to trigger state loading effects.
 ///
 /// Note: Returns `BoxFuture` instead of async fn to be dyn-compatible (object-safe).
+#[allow(clippy::type_complexity)] // Complex future types required for dyn-compatibility
 pub trait InventoryProjectionQuery: Send + Sync {
     /// Load inventory data for a specific event and section.
     ///
-    /// Returns (counts, seat_assignments) where counts is (`total_capacity`, reserved, sold, available).
+    /// Returns (counts, `seat_assignments`) where counts is (`total_capacity`, reserved, sold, available).
     /// The seat assignments provide the complete denormalized snapshot of individual seats.
     ///
     /// # Errors
@@ -284,6 +285,13 @@ pub enum InventoryAction {
         error: String,
     },
 
+    /// Serialization failed
+    #[event]
+    SerializationFailed {
+        /// Error message
+        error: String,
+    },
+
     /// Inventory state loaded from projection
     #[event]
     InventoryStateLoaded {
@@ -355,6 +363,7 @@ pub enum InventoryAction {
     },
 
     /// Projection update confirmed
+    #[event]
     InventoryProjectionConfirmed {
         /// Event ID
         event_id: EventId,
@@ -363,6 +372,7 @@ pub enum InventoryAction {
     },
 
     /// Projection update failed
+    #[event]
     InventoryProjectionFailed {
         /// Event ID
         event_id: EventId,
@@ -440,14 +450,14 @@ impl InventoryReducer {
     /// - Section match
     /// - Current time (tier availability window)
     ///
-    /// Pricing tiers have time-based availability (EarlyBird, Regular, LastMinute).
+    /// Pricing tiers have time-based availability (`EarlyBird`, `Regular`, `LastMinute`).
     /// Returns the `base_price` from the first matching tier.
     ///
     /// # Returns
     ///
     /// Price in cents, or None if no matching tier found
     fn calculate_price_from_tiers(
-        pricing_tiers: &[crate::types::PricingTier],
+        pricing_tiers: &[PricingTier],
         section: &str,
         now: DateTime<Utc>,
     ) -> Option<u64> {
@@ -457,7 +467,7 @@ impl InventoryReducer {
             .find(|tier| {
                 tier.section == section
                     && tier.available_from <= now
-                    && tier.available_until.map_or(true, |until| now <= until)
+                    && tier.available_until.is_none_or(|until| now <= until)
             })
             .map(|tier| tier.base_price.cents())
     }
@@ -465,7 +475,7 @@ impl InventoryReducer {
     /// Fallback pricing for when Event has no configured pricing tiers.
     ///
     /// This is a simplified pricing model for backwards compatibility.
-    /// Used only when Event projection returns None or has empty pricing_tiers.
+    /// Used only when Event projection returns None or has empty `pricing_tiers`.
     ///
     /// # Pricing Logic
     ///
@@ -488,7 +498,7 @@ impl InventoryReducer {
         }
     }
 
-    /// Creates effects for persisting events (PostgreSQL only, no Redpanda)
+    /// Creates effects for persisting events (`PostgreSQL` only, no Redpanda)
     ///
     /// With direct orchestration, we use local channels for coordination,
     /// so Redpanda publishing is no longer needed.
@@ -498,8 +508,15 @@ impl InventoryReducer {
         env: &InventoryEnvironment,
     ) -> SmallVec<[Effect<InventoryAction>; 4]> {
         let ticketing_event = TicketingEvent::Inventory(event);
-        let Ok(serialized) = ticketing_event.serialize() else {
-            return SmallVec::new();
+        let serialized = match ticketing_event.serialize() {
+            Ok(s) => s,
+            Err(e) => {
+                return smallvec![Effect::Future(Box::pin(async move {
+                    Some(InventoryAction::SerializationFailed {
+                        error: format!("Failed to serialize event: {e}"),
+                    })
+                }))];
+            }
         };
 
         smallvec![
@@ -507,7 +524,7 @@ impl InventoryReducer {
                 store: env.event_store,
                 stream: env.stream_id.as_str(),
                 expected_version: Some(expected_version),
-                events: vec![serialized.clone()],
+                events: vec![serialized],
                 on_success: |version| Some(InventoryAction::VersionUpdated { version }),
                 on_error: |error| Some(InventoryAction::ValidationFailed {
                     error: error.to_string()
@@ -686,8 +703,46 @@ impl InventoryReducer {
             .map(|seat| (seat.event_id, seat.section.clone()))
     }
 
+    /// Handles releasing seats back to the available pool.
+    ///
+    /// Used by both `ReleaseReservation` (manual release) and `ExpireReservation` (timeout).
+    /// Returns empty effects if reservation not found (idempotent behavior).
+    fn handle_release_seats(
+        state: &mut InventoryState,
+        reservation_id: ReservationId,
+        env: &InventoryEnvironment,
+    ) -> SmallVec<[Effect<InventoryAction>; 4]> {
+        // Find seats for this reservation
+        let seats = Self::find_seats_by_reservation(state, &reservation_id);
+
+        if seats.is_empty() {
+            // Silently ignore - reservation might have already been released
+            return SmallVec::new();
+        }
+
+        // Find event_id and section for this reservation
+        let Some((event_id, section)) = Self::find_reservation_location(state, &reservation_id)
+        else {
+            // Silently ignore - reservation might have already been released
+            return SmallVec::new();
+        };
+
+        // Create and apply event
+        let event = InventoryAction::SeatsReleased {
+            reservation_id,
+            event_id,
+            section,
+            seats,
+            released_at: env.clock.now(),
+        };
+        let expected_version = state.version;
+        Self::apply_event(state, &event);
+
+        Self::create_effects(event, expected_version, env)
+    }
+
     /// Applies an event to state
-    #[allow(clippy::too_many_lines)] // Complex state management required
+    #[allow(clippy::too_many_lines, clippy::cognitive_complexity)] // Complex state management required
     fn apply_event(state: &mut InventoryState, action: &InventoryAction) {
         match action {
             InventoryAction::InventoryInitialized {
@@ -805,7 +860,8 @@ impl InventoryReducer {
                 state.last_error = None;
             }
 
-            InventoryAction::ValidationFailed { error } => {
+            InventoryAction::ValidationFailed { error }
+            | InventoryAction::SerializationFailed { error } => {
                 state.last_error = Some(error.clone());
             }
 
@@ -843,8 +899,7 @@ impl InventoryReducer {
                         seat_assignments.len()
                     );
 
-                    let inventory = Inventory::new(*event_id, section.clone(), Capacity::new(*total));
-                    let mut inventory = inventory;
+                    let mut inventory = Inventory::new(*event_id, section.clone(), Capacity::new(*total));
                     // Note: 'available' is derived (total - reserved - sold), not stored
                     inventory.reserved = *reserved;
                     inventory.sold = *sold;
@@ -939,7 +994,7 @@ impl Reducer for InventoryReducer {
     type Action = InventoryAction;
     type Environment = InventoryEnvironment;
 
-    #[allow(clippy::too_many_lines)] // Complex business logic required
+    #[allow(clippy::too_many_lines, clippy::cognitive_complexity)] // Complex business logic required
     fn reduce(
         &self,
         state: &mut Self::State,
@@ -967,13 +1022,25 @@ impl Reducer for InventoryReducer {
                 let seat_count = capacity.value();
                 let seats: Vec<SeatId> = (0..seat_count).map(|_| SeatId::new()).collect();
 
+                // Capture values for closures BEFORE creating the event
+                let initialized_at = env.clock.now();
+                let seats_for_channel = seats.clone();
+                let event_id_for_channel = event_id;
+                let section_for_channel = section.clone();
+                let capacity_for_channel = capacity;
+                let initialized_at_for_channel = initialized_at;
+                let event_id_for_success = event_id;
+                let section_for_success = section.clone();
+                let event_id_for_error = event_id;
+                let section_for_error = section.clone();
+
                 // Create and apply event
                 let event = InventoryAction::InventoryInitialized {
                     event_id,
                     section: section.clone(),
                     capacity,
                     seats,
-                    initialized_at: env.clock.now(),
+                    initialized_at,
                     respond_to: crate::types::ResponseChannel::none(),
                 };
                 let expected_version = state.version;
@@ -982,29 +1049,17 @@ impl Reducer for InventoryReducer {
                 // Clone event for feedback - this is the domain event we'll return on success
                 let event_for_feedback = event.clone();
 
-                // Create copies for PublishWithResponse closures
-                let event_id_for_channel = event_id;
-                let section_for_channel = section.clone();
-                let capacity_for_channel = capacity;
-                let seats_for_channel = match &event {
-                    InventoryAction::InventoryInitialized { seats, .. } => seats.clone(),
-                    _ => vec![],
-                };
-                let initialized_at_for_channel = match &event {
-                    InventoryAction::InventoryInitialized { initialized_at, .. } => *initialized_at,
-                    _ => env.clock.now(),
-                };
-                let event_id_for_success = event_id;
-                let section_for_success = section.clone();
-                let event_id_for_error = event_id;
-                let section_for_error = section.clone();
-
                 // Serialize event
                 let ticketing_event = TicketingEvent::Inventory(event);
                 let serialized = match ticketing_event.serialize() {
                     Ok(s) => s,
                     Err(e) => {
-                        Self::apply_event(state, &InventoryAction::ValidationFailed { error: e });
+                        Self::apply_event(
+                            state,
+                            &InventoryAction::SerializationFailed {
+                                error: format!("Failed to serialize event: {e}"),
+                            },
+                        );
                         return SmallVec::new();
                     }
                 };
@@ -1016,7 +1071,7 @@ impl Reducer for InventoryReducer {
                         store: env.event_store,
                         stream: env.stream_id.as_str(),
                         expected_version: Some(expected_version),
-                        events: vec![serialized.clone()],
+                        events: vec![serialized],
                         on_success: |_version| Some(event_for_feedback.clone()),
                         on_error: |error| Some(InventoryAction::ValidationFailed {
                             error: error.to_string()
@@ -1071,6 +1126,43 @@ impl Reducer for InventoryReducer {
                     state.inventories.len()
                 );
 
+                // ===== EARLY SYNC VALIDATION (fail fast before async load) =====
+                // These checks don't require state to be loaded
+
+                // Validate quantity is positive
+                if quantity == 0 {
+                    let error = "Cannot reserve 0 seats".to_string();
+                    tracing::warn!("Early validation failed: {}", error);
+                    Self::apply_event(
+                        state,
+                        &InventoryAction::ValidationFailed { error: error.clone() },
+                    );
+                    return smallvec![Effect::Future(Box::pin(async move {
+                        Some(InventoryAction::ValidationFailed { error })
+                    }))];
+                }
+
+                // Validate specific_seats length matches quantity (if provided)
+                if let Some(ref seat_numbers) = specific_seats {
+                    if seat_numbers.len() != quantity as usize {
+                        let error = format!(
+                            "Quantity mismatch: requested {} seats but provided {} specific seat numbers",
+                            quantity,
+                            seat_numbers.len()
+                        );
+                        tracing::warn!("Early validation failed: {}", error);
+                        Self::apply_event(
+                            state,
+                            &InventoryAction::ValidationFailed { error: error.clone() },
+                        );
+                        return smallvec![Effect::Future(Box::pin(async move {
+                            Some(InventoryAction::ValidationFailed { error })
+                        }))];
+                    }
+                }
+
+                // ===== END EARLY SYNC VALIDATION =====
+
                 // Check if state has been loaded from projection
                 if !state.is_loaded(&event_id, &section) {
                     tracing::debug!(
@@ -1092,7 +1184,7 @@ impl Reducer for InventoryReducer {
                     let section_copy2 = section.clone();
                     let specific_seats_copy = specific_seats.clone();
                     // Build stream_id for querying event store version
-                    let stream_id = StreamId::new(&format!("inventory-{}", event_id.as_uuid()));
+                    let stream_id = StreamId::new(format!("inventory-{}", event_id.as_uuid()));
                     let original_command = InventoryAction::ReserveSeats {
                         reservation_id,
                         event_id,
@@ -1122,11 +1214,11 @@ impl Reducer for InventoryReducer {
 
                                 // Query event store for current stream version
                                 // This is critical for optimistic concurrency control
-                                let stream_version = match event_store.load_events(stream_id, None).await {
-                                    Ok(events) => Version::new(events.len() as u64),
+                                let stream_version = match event_store.get_stream_version(stream_id).await {
+                                    Ok(version) => version,
                                     Err(e) => {
                                         tracing::warn!(
-                                            "Failed to load events for stream version: {}. Using version 0.",
+                                            "Failed to get stream version: {}. Using version 0.",
                                             e
                                         );
                                         Version::new(0)
@@ -1183,21 +1275,8 @@ impl Reducer for InventoryReducer {
                     state.get_inventory(&event_id, &section).is_some()
                 );
 
-                // Validate specific_seats matches quantity
-                if let Some(ref seat_numbers) = specific_seats {
-                    if seat_numbers.len() != quantity as usize {
-                        let error = format!(
-                            "Quantity mismatch: requested {} seats but provided {} specific seat numbers",
-                            quantity,
-                            seat_numbers.len()
-                        );
-                        tracing::warn!("Validation failed: {}", error);
-                        Self::apply_event(state, &InventoryAction::ValidationFailed {
-                            error: error.clone(),
-                        });
-                        return SmallVec::new();
-                    }
-                }
+                // Note: specific_seats length validation moved to early sync validation phase
+                // (before async load) to fail fast
 
                 // Validate
                 if let Err(error) =
@@ -1284,7 +1363,12 @@ impl Reducer for InventoryReducer {
                 let serialized = match ticketing_event.serialize() {
                     Ok(s) => s,
                     Err(e) => {
-                        Self::apply_event(state, &InventoryAction::ValidationFailed { error: e });
+                        Self::apply_event(
+                            state,
+                            &InventoryAction::SerializationFailed {
+                                error: format!("Failed to serialize event: {e}"),
+                            },
+                        );
                         return SmallVec::new();
                     }
                 };
@@ -1336,7 +1420,7 @@ impl Reducer for InventoryReducer {
                         store: env.event_store,
                         stream: env.stream_id.as_str(),
                         expected_version: Some(expected_version),
-                        events: vec![serialized.clone()],
+                        events: vec![serialized],
                         on_success: |_version| Some(event_for_feedback.clone()),
                         on_error: |error| Some(InventoryAction::ValidationFailed {
                             error: error.to_string()
@@ -1399,59 +1483,13 @@ impl Reducer for InventoryReducer {
             }
 
             InventoryAction::ReleaseReservation { reservation_id } => {
-                // Find seats for this reservation
-                let seats = Self::find_seats_by_reservation(state, &reservation_id);
-
-                if seats.is_empty() {
-                    // Silently ignore - reservation might have already been released
-                    return SmallVec::new();
-                }
-
-                // Find event_id and section for this reservation
-                let Some((event_id, section)) = Self::find_reservation_location(state, &reservation_id) else {
-                    // Silently ignore - reservation might have already been released
-                    return SmallVec::new();
-                };
-
-                // Create and apply event
-                let event = InventoryAction::SeatsReleased {
-                    reservation_id,
-                    event_id,
-                    section,
-                    seats,
-                    released_at: env.clock.now(),
-                };
-                let expected_version = state.version;
-                Self::apply_event(state, &event);
-
-                Self::create_effects(event, expected_version, env)
+                Self::handle_release_seats(state, reservation_id, env)
             }
 
             InventoryAction::ExpireReservation { reservation_id } => {
-                // Same as release for now
-                // In production, might have different analytics/metrics
-                let seats = Self::find_seats_by_reservation(state, &reservation_id);
-
-                if seats.is_empty() {
-                    return SmallVec::new();
-                }
-
-                // Find event_id and section for this reservation
-                let Some((event_id, section)) = Self::find_reservation_location(state, &reservation_id) else {
-                    return SmallVec::new();
-                };
-
-                let event = InventoryAction::SeatsReleased {
-                    reservation_id,
-                    event_id,
-                    section,
-                    seats,
-                    released_at: env.clock.now(),
-                };
-                let expected_version = state.version;
-                Self::apply_event(state, &event);
-
-                Self::create_effects(event, expected_version, env)
+                // Uses same logic as ReleaseReservation
+                // In production, might add different analytics/metrics here
+                Self::handle_release_seats(state, reservation_id, env)
             }
 
             // ========== Query Actions ==========
@@ -1518,82 +1556,12 @@ impl Reducer for InventoryReducer {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::test_utils::{
+        create_test_global_channels, MockEventProjectionQuery, MockInventoryQuery,
+    };
+    use crate::types::TierType;
     use composable_rust_core::environment::SystemClock;
     use composable_rust_testing::{mocks::InMemoryEventStore, ReducerTest};
-
-    // Mock projection query for tests
-    #[derive(Clone)]
-    struct MockInventoryQuery;
-
-    impl InventoryProjectionQuery for MockInventoryQuery {
-        fn load_inventory(
-            &self,
-            _event_id: &EventId,
-            _section: &str,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<((u32, u32, u32, u32), Vec<SeatAssignment>)>, String>> + Send + '_>> {
-            // Return None for tests - state will be built from events
-            Box::pin(async move { Ok(None) })
-        }
-
-        fn get_all_sections(
-            &self,
-            _event_id: &EventId,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<SectionAvailabilityData>, String>> + Send + '_>> {
-            // Return empty list for tests
-            Box::pin(async move { Ok(Vec::new()) })
-        }
-
-        fn get_section_availability(
-            &self,
-            _event_id: &EventId,
-            _section: &str,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<SectionAvailabilityData>, String>> + Send + '_>> {
-            // Return None for tests
-            Box::pin(async move { Ok(None) })
-        }
-
-        fn get_total_available(
-            &self,
-            _event_id: &EventId,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u32, String>> + Send + '_>> {
-            // Return 0 for tests
-            Box::pin(async move { Ok(0) })
-        }
-    }
-
-    // Mock event query for tests
-    #[derive(Clone)]
-    struct MockEventQuery;
-
-    #[async_trait::async_trait]
-    impl crate::projections::EventProjectionQuery for MockEventQuery {
-        async fn load_event(&self, _event_id: &EventId) -> Result<Option<crate::types::Event>, String> {
-            // Return None for tests - no pricing configured
-            Ok(None)
-        }
-
-        async fn load_events(&self, _status_filter: Option<crate::types::EventStatus>) -> Result<Vec<crate::types::Event>, String> {
-            // Return empty list for tests
-            Ok(vec![])
-        }
-    }
-
-    fn create_test_global_channels() -> GlobalActionChannels {
-        use tokio::sync::broadcast;
-        // Note: With direct orchestration, we don't need cross-aggregate action imports in tests
-
-        let (event_actions, _) = broadcast::channel(1000);
-        let (inventory_actions, _) = broadcast::channel(1000);
-        let (reservation_actions, _) = broadcast::channel(1000);
-        let (payment_actions, _) = broadcast::channel(1000);
-
-        GlobalActionChannels {
-            event_actions,
-            inventory_actions,
-            reservation_actions,
-            payment_actions,
-        }
-    }
 
     fn create_test_env() -> InventoryEnvironment {
         InventoryEnvironment::new(
@@ -1601,7 +1569,7 @@ mod tests {
             Arc::new(InMemoryEventStore::new()),
             StreamId::new("inventory-test"),
             Arc::new(MockInventoryQuery),
-            Arc::new(MockEventQuery),
+            Arc::new(MockEventProjectionQuery),
             create_test_global_channels(),
         )
     }
@@ -1915,17 +1883,17 @@ mod tests {
     fn test_calculate_price_from_tiers_active_tier() {
         let now = Utc::now();
         let pricing_tiers = vec![
-            crate::types::PricingTier::new(
-                crate::types::TierType::EarlyBird,
+            PricingTier::new(
+                TierType::EarlyBird,
                 "General".to_string(),
-                crate::types::Money::from_dollars(30),
+                Money::from_dollars(30),
                 now - chrono::Duration::days(1),
                 Some(now + chrono::Duration::days(7)),
             ),
-            crate::types::PricingTier::new(
-                crate::types::TierType::Regular,
+            PricingTier::new(
+                TierType::Regular,
                 "General".to_string(),
-                crate::types::Money::from_dollars(50),
+                Money::from_dollars(50),
                 now + chrono::Duration::days(7),
                 None,
             ),
@@ -1939,17 +1907,17 @@ mod tests {
     fn test_calculate_price_from_tiers_future_tier() {
         let now = Utc::now();
         let pricing_tiers = vec![
-            crate::types::PricingTier::new(
-                crate::types::TierType::EarlyBird,
+            PricingTier::new(
+                TierType::EarlyBird,
                 "General".to_string(),
-                crate::types::Money::from_dollars(30),
+                Money::from_dollars(30),
                 now - chrono::Duration::days(10),
                 Some(now - chrono::Duration::days(1)),
             ),
-            crate::types::PricingTier::new(
-                crate::types::TierType::Regular,
+            PricingTier::new(
+                TierType::Regular,
                 "General".to_string(),
-                crate::types::Money::from_dollars(50),
+                Money::from_dollars(50),
                 now,
                 None,
             ),
@@ -1963,10 +1931,10 @@ mod tests {
     fn test_calculate_price_from_tiers_expired_tier() {
         let now = Utc::now();
         let pricing_tiers = vec![
-            crate::types::PricingTier::new(
-                crate::types::TierType::EarlyBird,
+            PricingTier::new(
+                TierType::EarlyBird,
                 "General".to_string(),
-                crate::types::Money::from_dollars(30),
+                Money::from_dollars(30),
                 now - chrono::Duration::days(10),
                 Some(now - chrono::Duration::days(1)),
             ),
@@ -1980,10 +1948,10 @@ mod tests {
     fn test_calculate_price_from_tiers_wrong_section() {
         let now = Utc::now();
         let pricing_tiers = vec![
-            crate::types::PricingTier::new(
-                crate::types::TierType::Regular,
+            PricingTier::new(
+                TierType::Regular,
                 "VIP".to_string(),
-                crate::types::Money::from_dollars(100),
+                Money::from_dollars(100),
                 now,
                 None,
             ),
@@ -1997,17 +1965,17 @@ mod tests {
     fn test_calculate_price_from_tiers_multiple_sections() {
         let now = Utc::now();
         let pricing_tiers = vec![
-            crate::types::PricingTier::new(
-                crate::types::TierType::Regular,
+            PricingTier::new(
+                TierType::Regular,
                 "VIP".to_string(),
-                crate::types::Money::from_dollars(100),
+                Money::from_dollars(100),
                 now,
                 None,
             ),
-            crate::types::PricingTier::new(
-                crate::types::TierType::Regular,
+            PricingTier::new(
+                TierType::Regular,
                 "General".to_string(),
-                crate::types::Money::from_dollars(50),
+                Money::from_dollars(50),
                 now,
                 None,
             ),

@@ -18,6 +18,7 @@ This document defines the standard patterns for implementing aggregates in the t
 8. [State Management](#8-state-management)
 9. [Testing Patterns](#9-testing-patterns)
 10. [Checklist](#10-checklist)
+11. [Code Quality Patterns](#11-code-quality-patterns)
 
 ---
 
@@ -949,7 +950,179 @@ Use this checklist when reviewing or creating aggregates:
 - [ ] No `crate::types::Type::Variant` in tests (use imported types)
 - [ ] No unused imports
 - [ ] Comments explain "why", not "what"
-- [ ] `#[allow(clippy::too_many_lines)]` with justification if needed
+- [ ] `#[allow(clippy::too_many_lines, clippy::cognitive_complexity)]` with justification if needed
+- [ ] `#[allow(clippy::type_complexity)]` on traits with complex future return types
+- [ ] Doc comments use backticks for identifiers (clippy `doc_markdown`)
+- [ ] Extract helper functions for duplicate logic across handlers
+- [ ] Capture values BEFORE creating events (avoid redundant match extraction)
+- [ ] Use `is_none_or` instead of `map_or(true, ...)`
+- [ ] No redundant variable rebinding (`let x = ...; let mut x = x;`)
+- [ ] No needless borrows (`&format!(...)` when owned String accepted)
+
+---
+
+## 11. Code Quality Patterns
+
+### 11.1 Extract Helper Functions for Duplicate Logic
+
+When multiple action handlers share similar logic, extract a helper function:
+
+```rust
+// ❌ BAD: Duplicate logic in ReleaseReservation and ExpireReservation
+InventoryAction::ReleaseReservation { reservation_id } => {
+    let seats = Self::find_seats_by_reservation(state, &reservation_id);
+    if seats.is_empty() { return SmallVec::new(); }
+    let Some((event_id, section)) = Self::find_reservation_location(state, &reservation_id) else {
+        return SmallVec::new();
+    };
+    let event = InventoryAction::SeatsReleased { ... };
+    Self::apply_event(state, &event);
+    Self::create_effects(event, state.version, env)
+}
+
+InventoryAction::ExpireReservation { reservation_id } => {
+    // Same logic repeated...
+}
+
+// ✅ GOOD: Extract helper function
+fn handle_release_seats(
+    state: &mut InventoryState,
+    reservation_id: ReservationId,
+    env: &InventoryEnvironment,
+) -> SmallVec<[Effect<InventoryAction>; 4]> {
+    let seats = Self::find_seats_by_reservation(state, &reservation_id);
+    if seats.is_empty() { return SmallVec::new(); }
+    // ... common logic
+}
+
+InventoryAction::ReleaseReservation { reservation_id } => {
+    Self::handle_release_seats(state, reservation_id, env)
+}
+
+InventoryAction::ExpireReservation { reservation_id } => {
+    // In production, might add different analytics/metrics here
+    Self::handle_release_seats(state, reservation_id, env)
+}
+```
+
+### 11.2 Capture Values Before Creating Events
+
+When you need values from an event for closures, capture them BEFORE creating the event:
+
+```rust
+// ❌ BAD: Creating event then extracting values with match
+let event = InventoryAction::InventoryInitialized {
+    seats: seats.clone(),
+    initialized_at: env.clock.now(),
+    ...
+};
+
+// Redundant - we just created this event!
+let seats_for_channel = match &event {
+    InventoryAction::InventoryInitialized { seats, .. } => seats.clone(),
+    _ => vec![],
+};
+let initialized_at_for_channel = match &event {
+    InventoryAction::InventoryInitialized { initialized_at, .. } => *initialized_at,
+    _ => env.clock.now(),
+};
+
+// ✅ GOOD: Capture values before creating the event
+let initialized_at = env.clock.now();
+let seats_for_channel = seats.clone();
+let initialized_at_for_channel = initialized_at;
+
+let event = InventoryAction::InventoryInitialized {
+    seats,
+    initialized_at,
+    ...
+};
+```
+
+### 11.3 Idiomatic Rust Patterns
+
+**Use `is_none_or` instead of `map_or(true, ...)`**:
+
+```rust
+// ❌ Less idiomatic
+tier.available_until.map_or(true, |until| now <= until)
+
+// ✅ More idiomatic (Rust 1.82+)
+tier.available_until.is_none_or(|until| now <= until)
+```
+
+**Avoid redundant variable rebinding**:
+
+```rust
+// ❌ BAD: Redundant rebinding
+let inventory = Inventory::new(event_id, section, capacity);
+let mut inventory = inventory;
+
+// ✅ GOOD: Direct mutable binding
+let mut inventory = Inventory::new(event_id, section, capacity);
+```
+
+**Avoid needless borrows**:
+
+```rust
+// ❌ BAD: Unnecessary borrow for functions taking impl AsRef<str>
+let stream_id = StreamId::new(&format!("inventory-{}", event_id));
+
+// ✅ GOOD: Pass owned String directly
+let stream_id = StreamId::new(format!("inventory-{}", event_id));
+```
+
+### 11.4 Clippy Allow Attributes
+
+For complex aggregate code, use appropriate allow attributes with justification comments:
+
+```rust
+// Trait with complex future return types (dyn-compatibility requirement)
+#[allow(clippy::type_complexity)] // Complex future types required for dyn-compatibility
+pub trait InventoryProjectionQuery: Send + Sync {
+    fn load_inventory(...) -> Pin<Box<dyn Future<Output = Result<...>> + Send + '_>>;
+}
+
+// Complex state management functions
+#[allow(clippy::too_many_lines, clippy::cognitive_complexity)] // Complex state management required
+fn apply_event(state: &mut InventoryState, action: &InventoryAction) {
+    match action {
+        // Many variants...
+    }
+}
+
+// Complex business logic in reducer
+#[allow(clippy::too_many_lines, clippy::cognitive_complexity)] // Complex business logic required
+fn reduce(&self, state: &mut Self::State, action: Self::Action, env: &Self::Environment)
+    -> SmallVec<[Effect<Self::Action>; 4]>
+{
+    // Many action handlers...
+}
+```
+
+### 11.5 Documentation Standards
+
+**Use backticks for identifiers in doc comments** (clippy `doc_markdown` lint):
+
+```rust
+// ❌ Triggers clippy warning
+/// Returns (counts, seat_assignments) where counts is (total_capacity, reserved, sold, available).
+/// Pricing tiers have time-based availability (EarlyBird, Regular, LastMinute).
+
+// ✅ Correct - identifiers in backticks
+/// Returns (counts, `seat_assignments`) where counts is (`total_capacity`, reserved, sold, available).
+/// Pricing tiers have time-based availability (`EarlyBird`, `Regular`, `LastMinute`).
+```
+
+**Product names may also need backticks** if they look like CamelCase:
+
+```rust
+// May trigger warning
+/// Creates effects for persisting events (PostgreSQL only, no Redpanda)
+
+// Safe from warning
+/// Creates effects for persisting events (`PostgreSQL` only, no Redpanda)
+```
 
 ---
 
