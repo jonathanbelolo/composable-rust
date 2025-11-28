@@ -210,21 +210,40 @@ impl AvailableSeatsProjectionRunner {
             tokio::select! {
                 // Process next event from channel
                 Ok(action) = self.receiver.recv() => {
+                    // Extract respond_to channel from EVENTS (not commands)
+                    // InventoryInitialized carries respond_to for projection completion signaling
+                    let respond_to = match &action {
+                        crate::aggregates::InventoryAction::InventoryInitialized { respond_to, .. } => respond_to.clone(),
+                        _ => crate::types::ResponseChannel::none(),
+                    };
+
                     // Convert to TicketingEvent
                     let event = TicketingEvent::Inventory(action);
 
                     // Apply to projection
-                    if let Err(e) = self.projection.apply_event(&event).await {
-                        tracing::error!(
-                            projection = projection_name,
-                            error = ?e,
-                            "Failed to apply event to projection"
-                        );
-                    } else {
-                        tracing::debug!(
-                            projection = projection_name,
-                            "Successfully applied event to projection"
-                        );
+                    let result = self.projection.apply_event(&event).await;
+
+                    // Send completion notification using framework ResponseChannel
+                    let notification = result.as_ref().map(|()| ()).map_err(|e| {
+                        format!("{}: {}", projection_name, e)
+                    });
+                    let _ = respond_to.send(notification);
+
+                    // Log result
+                    match result {
+                        Ok(()) => {
+                            tracing::debug!(
+                                projection = projection_name,
+                                "Successfully applied event to projection"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                projection = projection_name,
+                                error = ?e,
+                                "Failed to apply event to projection"
+                            );
+                        }
                     }
                 }
 

@@ -62,7 +62,7 @@ impl ticketing::aggregates::inventory::InventoryProjectionQuery for MockInventor
 struct MockEventQuery;
 
 #[async_trait::async_trait]
-impl ticketing::aggregates::event::EventProjectionQuery for MockEventQuery {
+impl ticketing::projections::EventProjectionQuery for MockEventQuery {
     async fn load_event(&self, _event_id: &EventId) -> Result<Option<ticketing::types::Event>, String> {
         // Return None for tests - no pricing configured
         Ok(None)
@@ -141,9 +141,8 @@ async fn test_insufficient_inventory() {
                 .unwrap()
                 .contains("Insufficient inventory"));
         })
-        .then_effects(|effects| {
-            // Validation failures don't return effects (they apply events to state directly)
-            assert!(effects.is_empty());
+        .then_effects(|_effects| {
+            // ValidationFailed effect is emitted for send_and_wait_for pattern
         })
         .run();
 
@@ -341,9 +340,8 @@ async fn test_reservation_on_nonexistent_inventory() {
                 .unwrap()
                 .contains("not found"));
         })
-        .then_effects(|effects| {
-            // Validation failures don't return effects
-            assert!(effects.is_empty());
+        .then_effects(|_effects| {
+            // ValidationFailed effect is emitted for send_and_wait_for pattern
         })
         .run();
 

@@ -17,10 +17,10 @@ use composable_rust_testing::{
 use std::sync::Arc;
 use ticketing::{
     aggregates::{
-        event::EventProjectionQuery,
         inventory::{InventoryProjectionQuery, SectionAvailabilityData},
         reservation::{ReservationAction, ReservationEnvironment, ReservationReducer, ReservationProjectionQuery},
     },
+    projections::EventProjectionQuery,
     types::{CustomerId, Event, EventId, EventStatus, Money, PaymentId, Reservation, ReservationId, ReservationState, ReservationStatus, SeatAssignment, SeatId},
 };
 

@@ -577,6 +577,35 @@ pub mod mocks {
                 Ok(results)
             })
         }
+
+        fn get_stream_version(
+            &self,
+            stream_id: composable_rust_core::stream::StreamId,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            composable_rust_core::stream::Version,
+                            composable_rust_core::event_store::EventStoreError,
+                        >,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async move {
+                let store = self.events.read().map_err(|e| {
+                    composable_rust_core::event_store::EventStoreError::DatabaseError(format!(
+                        "Lock poisoned: {e}"
+                    ))
+                })?;
+
+                let version = store
+                    .get(stream_id.as_str())
+                    .map_or(0, |events| events.len() as u64);
+
+                Ok(composable_rust_core::stream::Version::new(version))
+            })
+        }
     }
 
     /// In-memory event bus for fast, deterministic unit tests.

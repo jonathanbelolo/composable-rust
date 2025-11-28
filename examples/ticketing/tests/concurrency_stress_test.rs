@@ -67,7 +67,7 @@ impl InventoryProjectionQuery for MockInventoryQuery {
 struct MockEventQuery;
 
 #[async_trait::async_trait]
-impl ticketing::aggregates::event::EventProjectionQuery for MockEventQuery {
+impl ticketing::projections::EventProjectionQuery for MockEventQuery {
     async fn load_event(&self, _event_id: &EventId) -> Result<Option<ticketing::types::Event>, String> {
         // Return None for tests - no pricing configured
         Ok(None)

@@ -459,6 +459,54 @@ pub trait EventStore: Send + Sync {
         &self,
         batch: Vec<BatchAppend>,
     ) -> Pin<Box<dyn Future<Output = Result<BatchAppendResults, EventStoreError>> + Send + '_>>;
+
+    /// Get the current version of a stream without loading all events.
+    ///
+    /// This is an efficient way to get the stream's version for optimistic concurrency
+    /// control without the overhead of loading and deserializing all events.
+    ///
+    /// # Parameters
+    ///
+    /// - `stream_id`: The stream to get the version for
+    ///
+    /// # Returns
+    ///
+    /// Returns the current version of the stream:
+    /// - `Version(0)` if the stream doesn't exist (no events appended yet)
+    /// - `Version(n)` where n is the number of events in the stream
+    ///
+    /// # Performance
+    ///
+    /// This method should use `COUNT(*)` or equivalent instead of loading events,
+    /// making it O(1) for indexed streams vs O(n) for `load_events().len()`.
+    ///
+    /// # Errors
+    ///
+    /// - `DatabaseError`: Database connection or query failed
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use composable_rust_core::event_store::EventStore;
+    /// use composable_rust_core::stream::{StreamId, Version};
+    ///
+    /// async fn version_example<E: EventStore>(store: &E) -> Result<(), Box<dyn std::error::Error>> {
+    ///     let stream_id = StreamId::new("order-123");
+    ///
+    ///     // Get current version efficiently
+    ///     let version = store.get_stream_version(stream_id.clone()).await?;
+    ///
+    ///     // Use for optimistic concurrency
+    ///     let events = vec![/* new events */];
+    ///     store.append_events(stream_id, Some(version), events).await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    fn get_stream_version(
+        &self,
+        stream_id: StreamId,
+    ) -> Pin<Box<dyn Future<Output = Result<Version, EventStoreError>> + Send + '_>>;
 }
 
 #[cfg(test)]

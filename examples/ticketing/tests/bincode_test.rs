@@ -2,7 +2,7 @@
 
 use ticketing::aggregates::InventoryAction;
 use ticketing::projections::TicketingEvent;
-use ticketing::types::{Capacity, EventId, SeatId};
+use ticketing::types::{Capacity, EventId, ResponseChannel, SeatId};
 use chrono::Utc;
 
 #[test]
@@ -14,6 +14,7 @@ fn test_bincode_roundtrip() {
         capacity: Capacity(100),
         seats: vec![SeatId::new()],
         initialized_at: Utc::now(),
+        respond_to: ResponseChannel::none(),
     };
 
     // Wrap it in TicketingEvent (same as services.rs line 380)

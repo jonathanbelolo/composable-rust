@@ -258,18 +258,20 @@ pub async fn create_event(
                     respond_to: ResponseChannel::none(),
                 };
 
-                // Initialize inventory and wait for the domain event confirmation
+                // Initialize inventory and wait for projection confirmation
+                // The reducer uses Effect::PublishWithResponse to wait for projection completion
                 if let Err(e) = inventory_store
                     .send_and_wait_for(
                         init_action,
                         |action| {
                             matches!(
                                 action,
-                                InventoryAction::InventoryInitialized { .. }
+                                InventoryAction::InventoryProjectionConfirmed { .. }
+                                    | InventoryAction::InventoryProjectionFailed { .. }
                                     | InventoryAction::ValidationFailed { .. }
                             )
                         },
-                        std::time::Duration::from_secs(5),
+                        std::time::Duration::from_secs(10),
                     )
                     .await
                 {

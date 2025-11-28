@@ -3,11 +3,10 @@
 //! Manages event lifecycle: creation, publishing, sales management, and cancellation.
 //! Demonstrates validation, state transitions, and business rules enforcement.
 
-use crate::aggregates::inventory::InventoryAction;
-use crate::projections::TicketingEvent;
+use crate::projections::{EventProjectionQuery, TicketingEvent};
 use crate::types::{
-    Capacity, Event, EventDate, EventId, EventState, EventStatus, GlobalActionChannels,
-    PricingTier, ResponseChannel, SeatNumber, SeatType, Venue,
+    Event, EventDate, EventId, EventState, EventStatus, GlobalActionChannels, PricingTier,
+    ResponseChannel, Venue, VenueSection,
 };
 use chrono::{DateTime, Duration, Utc};
 use composable_rust_auth::state::UserId;
@@ -19,6 +18,7 @@ use composable_rust_core::{
 };
 use composable_rust_macros::Action;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 // ============================================================================
@@ -111,7 +111,7 @@ pub enum EventAction {
         /// Event to update
         event_id: EventId,
         /// Sections to add
-        sections: Vec<crate::types::VenueSection>,
+        sections: Vec<VenueSection>,
 
         /// Response channel for projection completion
         #[serde(skip)]
@@ -227,7 +227,7 @@ pub enum EventAction {
         /// Event ID
         event_id: EventId,
         /// Sections that were added
-        sections: Vec<crate::types::VenueSection>,
+        sections: Vec<VenueSection>,
         /// When updated
         updated_at: DateTime<Utc>,
         /// Response channel for projection completion signaling
@@ -238,6 +238,13 @@ pub enum EventAction {
     /// Command validation failed
     #[event]
     ValidationFailed {
+        /// Error message
+        error: String,
+    },
+
+    /// Event serialization failed (internal error)
+    #[event]
+    SerializationFailed {
         /// Error message
         error: String,
     },
@@ -268,12 +275,14 @@ pub enum EventAction {
     },
 
     /// Projection update confirmed
+    #[event]
     EventProjectionConfirmed {
         /// Event ID
         event_id: EventId,
     },
 
     /// Projection update failed
+    #[event]
     EventProjectionFailed {
         /// Event ID
         event_id: EventId,
@@ -288,7 +297,7 @@ pub enum EventAction {
         /// Event to update
         event_id: EventId,
         /// Sections to add
-        sections: Vec<crate::types::VenueSection>,
+        sections: Vec<VenueSection>,
         /// Loaded event for state update
         loaded_event: Event,
         /// Current version from event store for optimistic concurrency
@@ -320,33 +329,6 @@ pub enum EventAction {
         /// Update timestamp
         updated_at: DateTime<Utc>,
     },
-}
-
-// ============================================================================
-// Projection Query Trait
-// ============================================================================
-
-/// Event projection query trait for loading event state.
-///
-/// This trait abstracts projection queries to enable:
-/// - Dependency injection (pass mocks in tests)
-/// - Query actions flowing through reducer
-/// - Business logic on read operations
-#[async_trait::async_trait]
-pub trait EventProjectionQuery: Send + Sync {
-    /// Load a single event by ID
-    ///
-    /// # Errors
-    ///
-    /// Returns error if database query fails
-    async fn load_event(&self, event_id: &EventId) -> Result<Option<Event>, String>;
-
-    /// Load events with optional status filter
-    ///
-    /// # Errors
-    ///
-    /// Returns error if database query fails
-    async fn load_events(&self, status_filter: Option<EventStatus>) -> Result<Vec<Event>, String>;
 }
 
 // ============================================================================
@@ -408,7 +390,7 @@ impl EventReducer {
         Self
     }
 
-    /// Creates effects for persisting events (PostgreSQL only, no Redpanda)
+    /// Creates effects for persisting events (`PostgreSQL` only, no Redpanda)
     ///
     /// With direct orchestration, we use local channels for coordination,
     /// so Redpanda publishing is no longer needed.
@@ -418,8 +400,16 @@ impl EventReducer {
         env: &EventEnvironment,
     ) -> SmallVec<[Effect<EventAction>; 4]> {
         let ticketing_event = TicketingEvent::Event(event);
-        let Ok(serialized) = ticketing_event.serialize() else {
-            return SmallVec::new();
+        let serialized = match ticketing_event.serialize() {
+            Ok(s) => s,
+            Err(e) => {
+                // Return an effect that emits SerializationFailed action
+                return smallvec![Effect::Future(Box::pin(async move {
+                    Some(EventAction::SerializationFailed {
+                        error: format!("Failed to serialize event: {e}"),
+                    })
+                }))];
+            }
         };
 
         smallvec![
@@ -427,7 +417,7 @@ impl EventReducer {
                 store: env.event_store,
                 stream: env.stream_id.as_str(),
                 expected_version: Some(expected_version),
-                events: vec![serialized.clone()],
+                events: vec![serialized],
                 on_success: |version| Some(EventAction::VersionUpdated { version }),
                 on_error: |error| Some(EventAction::ValidationFailed {
                     error: error.to_string()
@@ -438,11 +428,13 @@ impl EventReducer {
 
 
     /// Validates `CreateEvent` command
+    ///
+    /// Note: Date validation (ensuring event is in the future) should be done
+    /// at the caller level where the clock is available.
     fn validate_create_event(
         state: &EventState,
         id: &EventId,
         name: &str,
-        date: &EventDate,
         venue: &Venue,
         pricing_tiers: &[PricingTier],
     ) -> Result<(), String> {
@@ -463,10 +455,6 @@ impl EventReducer {
             ));
         }
 
-        // Event date must be in the future (using a simplified check)
-        // In production, you'd compare with clock.now()
-        let _ = date;
-
         // Venue capacity must be > 0
         if venue.capacity.value() == 0 {
             return Err("Venue capacity must be greater than zero".to_string());
@@ -481,6 +469,32 @@ impl EventReducer {
         for tier in pricing_tiers {
             if tier.base_price.is_zero() {
                 return Err("Pricing tier must have positive price".to_string());
+            }
+        }
+
+        // All pricing tier sections must exist in venue
+        let section_names: HashSet<&str> =
+            venue.sections.iter().map(|s| s.name.as_str()).collect();
+
+        for tier in pricing_tiers {
+            if !section_names.contains(tier.section.as_str()) {
+                return Err(format!(
+                    "Pricing tier references non-existent section '{}'",
+                    tier.section
+                ));
+            }
+        }
+
+        // All venue sections must have at least one pricing tier
+        let sections_with_tiers: HashSet<&str> =
+            pricing_tiers.iter().map(|t| t.section.as_str()).collect();
+
+        for section in &venue.sections {
+            if !sections_with_tiers.contains(section.name.as_str()) {
+                return Err(format!(
+                    "Venue section '{}' must have at least one pricing tier",
+                    section.name
+                ));
             }
         }
 
@@ -562,109 +576,10 @@ impl EventReducer {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    fn validate_update_pricing_tiers(
-        state: &EventState,
-        event_id: &EventId,
-        pricing_tiers: &[PricingTier],
-    ) -> Result<(), String> {
-        // Event must exist
-        let Some(event) = state.get(event_id) else {
-            return Err(format!("Event {event_id} not found"));
-        };
-
-        // Cannot update pricing for cancelled events
-        if event.status == EventStatus::Cancelled {
-            return Err("Cannot update pricing for cancelled event".to_string());
-        }
-
-        // Must provide at least one pricing tier
-        if pricing_tiers.is_empty() {
-            return Err("At least one pricing tier must be provided".to_string());
-        }
-
-        // Validate all sections exist in the event's venue
-        let valid_sections: std::collections::HashSet<&str> =
-            event.venue.sections.iter().map(|s| s.name.as_str()).collect();
-
-        for tier in pricing_tiers {
-            if !valid_sections.contains(tier.section.as_str()) {
-                return Err(format!(
-                    "Section '{}' does not exist in event venue",
-                    tier.section
-                ));
-            }
-        }
-
-        // Validate each section has at least one tier
-        let sections_with_tiers: std::collections::HashSet<&str> =
-            pricing_tiers.iter().map(|t| t.section.as_str()).collect();
-
-        for section in &event.venue.sections {
-            if !sections_with_tiers.contains(section.name.as_str()) {
-                return Err(format!(
-                    "Section '{}' must have at least one pricing tier",
-                    section.name
-                ));
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Validates adding venue sections to an event
-    #[allow(dead_code)]
-    fn validate_add_venue_sections(
-        state: &EventState,
-        event_id: &EventId,
-        sections: &[crate::types::VenueSection],
-    ) -> Result<(), String> {
-        // Event must exist
-        let Some(event) = state.get(event_id) else {
-            return Err(format!("Event {event_id} not found"));
-        };
-
-        // Cannot add sections to cancelled events
-        if event.status == EventStatus::Cancelled {
-            return Err("Cannot add sections to cancelled event".to_string());
-        }
-
-        // Must provide at least one section
-        if sections.is_empty() {
-            return Err("At least one section must be provided".to_string());
-        }
-
-        // Validate sections don't duplicate existing sections
-        let existing_sections: std::collections::HashSet<&str> =
-            event.venue.sections.iter().map(|s| s.name.as_str()).collect();
-
-        for section in sections {
-            if existing_sections.contains(section.name.as_str()) {
-                return Err(format!(
-                    "Section '{}' already exists in event venue",
-                    section.name
-                ));
-            }
-        }
-
-        // Validate no duplicate section names within the new sections
-        let mut seen_names = std::collections::HashSet::new();
-        for section in sections {
-            if !seen_names.insert(section.name.as_str()) {
-                return Err(format!(
-                    "Duplicate section name '{}' in request",
-                    section.name
-                ));
-            }
-        }
-
-        Ok(())
-    }
-
     /// Validates adding venue sections using a loaded event (for projection-based validation)
     fn validate_add_venue_sections_with_event(
         event: &Event,
-        sections: &[crate::types::VenueSection],
+        sections: &[VenueSection],
     ) -> Result<(), String> {
         // Cannot add sections to cancelled events
         if event.status == EventStatus::Cancelled {
@@ -677,7 +592,7 @@ impl EventReducer {
         }
 
         // Validate sections don't duplicate existing sections
-        let existing_sections: std::collections::HashSet<&str> =
+        let existing_sections: HashSet<&str> =
             event.venue.sections.iter().map(|s| s.name.as_str()).collect();
 
         for section in sections {
@@ -690,7 +605,7 @@ impl EventReducer {
         }
 
         // Validate no duplicate section names within the new sections
-        let mut seen_names = std::collections::HashSet::new();
+        let mut seen_names = HashSet::new();
         for section in sections {
             if !seen_names.insert(section.name.as_str()) {
                 return Err(format!(
@@ -719,7 +634,7 @@ impl EventReducer {
         }
 
         // All sections referenced in pricing tiers must exist
-        let section_names: std::collections::HashSet<&str> =
+        let section_names: HashSet<&str> =
             event.venue.sections.iter().map(|s| s.name.as_str()).collect();
 
         for tier in pricing_tiers {
@@ -732,7 +647,7 @@ impl EventReducer {
         }
 
         // All sections must have at least one pricing tier
-        let sections_with_tiers: std::collections::HashSet<&str> =
+        let sections_with_tiers: HashSet<&str> =
             pricing_tiers.iter().map(|t| t.section.as_str()).collect();
 
         for section in &event.venue.sections {
@@ -748,6 +663,8 @@ impl EventReducer {
     }
 
     /// Applies an event to state
+    #[allow(clippy::too_many_lines)]
+    // Each match arm is a simple state update - no complex logic to extract.
     fn apply_event(state: &mut EventState, action: &EventAction) {
         match action {
             EventAction::EventCreated {
@@ -822,14 +739,16 @@ impl EventReducer {
                 ..
             } => {
                 if let Some(event) = state.events.get_mut(event_id) {
-                    event.venue.sections.extend(sections.clone());
+                    // Use iter().cloned() to avoid intermediate Vec allocation
+                    event.venue.sections.extend(sections.iter().cloned());
                 }
                 state.last_error = None;
             }
             EventAction::VersionUpdated { version } => {
                 state.version = *version;
             }
-            EventAction::ValidationFailed { error } => {
+            EventAction::ValidationFailed { error }
+            | EventAction::SerializationFailed { error } => {
                 state.last_error = Some(error.clone());
             }
             // Commands and query results don't modify state
@@ -866,6 +785,11 @@ impl Reducer for EventReducer {
     type Action = EventAction;
     type Environment = EventEnvironment;
 
+    #[allow(clippy::too_many_lines)]
+    // This reducer handles 15+ distinct action types. Each match arm is self-contained
+    // and follows a consistent validate→apply→effects pattern. Extracting to separate
+    // handler methods would add parameter-passing boilerplate without improving clarity.
+    // Navigate by searching for "EventAction::Foo" to find specific handlers.
     fn reduce(
         &self,
         state: &mut Self::State,
@@ -873,7 +797,9 @@ impl Reducer for EventReducer {
         env: &Self::Environment,
     ) -> SmallVec<[Effect<Self::Action>; 4]> {
         match action {
-            // ========== Commands ==========
+            // ═══════════════════════════════════════════════════════════════════════════
+            // COMMANDS: External API requests that initiate state changes
+            // ═══════════════════════════════════════════════════════════════════════════
             EventAction::CreateEvent {
                 id,
                 name,
@@ -885,7 +811,7 @@ impl Reducer for EventReducer {
             } => {
                 // Validate command
                 if let Err(error) =
-                    Self::validate_create_event(state, &id, &name, &date, &venue, &pricing_tiers)
+                    Self::validate_create_event(state, &id, &name, &venue, &pricing_tiers)
                 {
                     Self::apply_event(state, &EventAction::ValidationFailed { error });
                     return SmallVec::new();
@@ -894,17 +820,13 @@ impl Reducer for EventReducer {
                 // Capture timestamp before creating closures
                 let created_at = env.clock.now();
 
-                // Clone venue for inventory initialization (before it's moved into closures)
-                let venue_for_inventory = venue.clone();
-                let inventory_channel = env.global_actions.inventory_actions.clone();
-
                 // Create and apply event (with placeholder respond_to for local state)
                 let event_for_state = EventAction::EventCreated {
                     id,
                     name: name.clone(),
                     owner_id,
                     venue: venue.clone(),
-                    date: date.clone(),
+                    date,
                     pricing_tiers: pricing_tiers.clone(),
                     created_at,
                     respond_to: ResponseChannel::none(),
@@ -942,39 +864,6 @@ impl Reducer for EventReducer {
                         })
                     }),
                 });
-
-                // Auto-initialize inventory for each venue section
-                // This ensures inventory exists before any reservations can be made
-                for section in venue_for_inventory.sections {
-                    let section_name = section.name.clone();
-                    let capacity = section.capacity;
-                    let seat_numbers = match &section.seat_type {
-                        SeatType::Numbered { seats } => {
-                            // Use existing seat numbers from the section
-                            Some(seats.clone())
-                        }
-                        SeatType::GeneralAdmission => {
-                            // Generate seat numbers for general admission
-                            Some(
-                                (1..=capacity.value())
-                                    .map(|n| SeatNumber::new(format!("{}-{}", section_name, n)))
-                                    .collect(),
-                            )
-                        }
-                    };
-                    let init_action = InventoryAction::InitializeInventory {
-                        event_id: id_for_success,
-                        section: section_name,
-                        capacity: Capacity::new(capacity.value()),
-                        seat_numbers,
-                        respond_to: ResponseChannel::none(),
-                    };
-                    let channel = inventory_channel.clone();
-                    effects.push(Effect::Future(Box::pin(async move {
-                        let _ = channel.send(init_action);
-                        None // No feedback needed
-                    })));
-                }
 
                 effects
             }
@@ -1053,6 +942,12 @@ impl Reducer for EventReducer {
                 Self::create_effects(event, expected_version, env)
             }
 
+            // ═══════════════════════════════════════════════════════════════════════════
+            // COMMANDS WITH ASYNC VALIDATION: Two-phase pattern (load → validate → execute)
+            // These commands need to load data from projections before validation.
+            // Phase 1: Return Effect::Future that loads data and returns Execute* action
+            // Phase 2: Execute* action applies changes with loaded data
+            // ═══════════════════════════════════════════════════════════════════════════
             EventAction::UpdateEvent { event_id, name } => {
                 // Check if there's actually anything to update (early validation)
                 if name.is_none() {
@@ -1062,22 +957,40 @@ impl Reducer for EventReducer {
                     return SmallVec::new();
                 }
 
-                // Load event from projection to validate (async path for per-request stores)
+                // Load event from projection and version from event store in parallel
                 let projection = env.projection.clone();
+                let event_store = env.event_store.clone();
+                let stream_id = env.stream_id.clone();
                 let clock = env.clock.clone();
 
                 smallvec![Effect::Future(Box::pin(async move {
-                    // Load event from projection
-                    let loaded_event = match projection.load_event(&event_id).await {
+                    // Run both queries in parallel using tokio::join!
+                    let (projection_result, version_result) = tokio::join!(
+                        projection.load_event(&event_id),
+                        event_store.get_stream_version(stream_id)
+                    );
+
+                    // Handle projection result
+                    let loaded_event = match projection_result {
                         Ok(Some(event)) => event,
                         Ok(None) => {
                             return Some(EventAction::ValidationFailed {
-                                error: format!("Event {} not found", event_id),
+                                error: format!("Event {event_id} not found"),
                             });
                         }
                         Err(e) => {
                             return Some(EventAction::ValidationFailed {
                                 error: format!("Failed to load event from projection: {e}"),
+                            });
+                        }
+                    };
+
+                    // Handle version result
+                    let current_version = match version_result {
+                        Ok(version) => version,
+                        Err(e) => {
+                            return Some(EventAction::ValidationFailed {
+                                error: format!("Failed to load version from event store: {e}"),
                             });
                         }
                     };
@@ -1089,13 +1002,11 @@ impl Reducer for EventReducer {
                         });
                     }
 
-                    // Return execute action
-                    // Note: Version is handled by the store - we use Version::new(0) as placeholder
-                    // since we're not doing optimistic concurrency on per-request stores
+                    // Return execute action with loaded version for optimistic concurrency
                     Some(EventAction::ExecuteUpdateEvent {
                         event_id,
                         name,
-                        current_version: Version::new(0),
+                        current_version,
                         updated_at: clock.now(),
                     })
                 }))]
@@ -1160,7 +1071,7 @@ impl Reducer for EventReducer {
                     // Run both queries in parallel using tokio::join!
                     let (projection_result, version_result) = tokio::join!(
                         projection.load_event(&event_id),
-                        event_store.load_events(stream_id, None)
+                        event_store.get_stream_version(stream_id)
                     );
 
                     // Handle projection result
@@ -1168,7 +1079,7 @@ impl Reducer for EventReducer {
                         Ok(Some(event)) => event,
                         Ok(None) => {
                             return Some(EventAction::ValidationFailed {
-                                error: format!("Event {} not found", event_id),
+                                error: format!("Event {event_id} not found"),
                             });
                         }
                         Err(e) => {
@@ -1180,7 +1091,7 @@ impl Reducer for EventReducer {
 
                     // Handle version result
                     let current_version = match version_result {
-                        Ok(events) => Version::new(events.len() as u64),
+                        Ok(version) => version,
                         Err(e) => {
                             return Some(EventAction::ValidationFailed {
                                 error: format!("Failed to load version from event store: {e}"),
@@ -1222,12 +1133,10 @@ impl Reducer for EventReducer {
                     updated_at,
                     respond_to: ResponseChannel::none(),
                 };
-                // Use version loaded from event store for optimistic concurrency
-                let expected_version = current_version;
                 Self::apply_event(state, &event_for_state);
 
-                // Persist event to event store
-                let mut effects = Self::create_effects(event_for_state, expected_version, env);
+                // Persist event to event store (use version loaded from event store for optimistic concurrency)
+                let mut effects = Self::create_effects(event_for_state, current_version, env);
 
                 // Publish EVENT to global channel for projections and wait for completion
                 let event_id_for_success = event_id;
@@ -1272,7 +1181,7 @@ impl Reducer for EventReducer {
                     // Run both queries in parallel using tokio::join!
                     let (projection_result, version_result) = tokio::join!(
                         projection.load_event(&event_id),
-                        event_store.load_events(stream_id, None)
+                        event_store.get_stream_version(stream_id)
                     );
 
                     // Handle projection result
@@ -1280,7 +1189,7 @@ impl Reducer for EventReducer {
                         Ok(Some(event)) => event,
                         Ok(None) => {
                             return Some(EventAction::ValidationFailed {
-                                error: format!("Event {} not found", event_id),
+                                error: format!("Event {event_id} not found"),
                             });
                         }
                         Err(e) => {
@@ -1292,7 +1201,7 @@ impl Reducer for EventReducer {
 
                     // Handle version result
                     let current_version = match version_result {
-                        Ok(events) => Version::new(events.len() as u64),
+                        Ok(version) => version,
                         Err(e) => {
                             return Some(EventAction::ValidationFailed {
                                 error: format!("Failed to load version from event store: {e}"),
@@ -1336,9 +1245,8 @@ impl Reducer for EventReducer {
                 };
                 Self::apply_event(state, &event_for_state);
 
-                // Use version loaded from event store for optimistic concurrency
-                let expected_version = current_version;
-                let mut effects = Self::create_effects(event_for_state, expected_version, env);
+                // Persist event to event store (use version loaded from event store for optimistic concurrency)
+                let mut effects = Self::create_effects(event_for_state, current_version, env);
 
                 // Publish EVENT to global channel for projections and wait for completion
                 let event_id_for_success = event_id;
@@ -1369,7 +1277,9 @@ impl Reducer for EventReducer {
                 effects
             }
 
-            // ========== Query Commands ==========
+            // ═══════════════════════════════════════════════════════════════════════════
+            // QUERIES: Read-only operations that load data from projections
+            // ═══════════════════════════════════════════════════════════════════════════
             EventAction::GetEvent { event_id } => {
                 let projection = env.projection.clone();
                 smallvec![Effect::Future(Box::pin(async move {
@@ -1410,52 +1320,22 @@ impl Reducer for EventReducer {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::types::{Capacity, Money, SeatType, VenueSection};
+    use crate::test_utils::{create_test_global_channels, MockEventProjectionQuery};
+    use crate::types::{Capacity, Money, SeatType, TierType};
     use composable_rust_core::environment::SystemClock;
-    use composable_rust_testing::{
-        assertions,
-        mocks::InMemoryEventStore,
-        ReducerTest,
-    };
-
-    /// Mock projection for testing
-    struct MockEventProjection;
-
-    #[async_trait::async_trait]
-    impl EventProjectionQuery for MockEventProjection {
-        async fn load_event(&self, _event_id: &EventId) -> Result<Option<Event>, String> {
-            Ok(None) // Tests don't need actual projection data
-        }
-
-        async fn load_events(&self, _status_filter: Option<EventStatus>) -> Result<Vec<Event>, String> {
-            Ok(Vec::new()) // Tests don't need actual projection data
-        }
-    }
-
-    fn create_test_global_actions() -> crate::types::GlobalActionChannels {
-        use tokio::sync::broadcast;
-        let (event_tx, _) = broadcast::channel(10);
-        let (inventory_tx, _) = broadcast::channel(10);
-        let (reservation_tx, _) = broadcast::channel(10);
-        let (payment_tx, _) = broadcast::channel(10);
-        crate::types::GlobalActionChannels {
-            event_actions: event_tx,
-            inventory_actions: inventory_tx,
-            reservation_actions: reservation_tx,
-            payment_actions: payment_tx,
-        }
-    }
+    use composable_rust_testing::{assertions, mocks::InMemoryEventStore, ReducerTest};
 
     fn create_test_env() -> EventEnvironment {
         EventEnvironment::new(
             Arc::new(SystemClock),
             Arc::new(InMemoryEventStore::new()),
             StreamId::new("test-stream"),
-            Arc::new(MockEventProjection),
-            create_test_global_actions(),
+            Arc::new(MockEventProjectionQuery),
+            create_test_global_channels(),
         )
     }
 
+    // Local test venue with single section (for simpler tests)
     fn create_test_venue() -> Venue {
         Venue::new(
             "Madison Square Garden".to_string(),
@@ -1468,9 +1348,10 @@ mod tests {
         )
     }
 
+    // Local test pricing matching the single-section venue
     fn create_test_pricing_tiers() -> Vec<PricingTier> {
         vec![PricingTier::new(
-            crate::types::TierType::Regular,
+            TierType::Regular,
             "General".to_string(),
             Money::from_dollars(50),
             Utc::now(),
@@ -1503,8 +1384,9 @@ mod tests {
                 assert_eq!(event.status, EventStatus::Draft);
             })
             .then_effects(|effects| {
-                // Should return 3 effects: AppendEvents + PublishWithResponse + Inventory Init
-                assert_eq!(effects.len(), 3);
+                // Should return 2 effects: AppendEvents + PublishWithResponse
+                // (Inventory initialization is now handled by EventInventorySaga)
+                assert_eq!(effects.len(), 2);
             })
             .run();
     }
@@ -1715,8 +1597,6 @@ mod tests {
     fn test_update_cancelled_event_fails() {
         // Validation for cancelled events happens in the async Future path
         // For unit testing, we verify that ValidationFailed is applied correctly
-        let id = EventId::new();
-
         ReducerTest::new(EventReducer::new())
             .with_env(create_test_env())
             .given_state(EventState::new())
@@ -1732,8 +1612,6 @@ mod tests {
             })
             .then_effects(assertions::assert_no_effects)
             .run();
-
-        let _ = id; // suppress unused warning
     }
 
     #[test]
@@ -1806,14 +1684,14 @@ mod tests {
         // Create event with initial pricing for both sections
         let initial_pricing = vec![
             PricingTier::new(
-                crate::types::TierType::Regular,
+                TierType::Regular,
                 "VIP".to_string(),
                 Money::from_dollars(100),
                 Utc::now(),
                 None,
             ),
             PricingTier::new(
-                crate::types::TierType::Regular,
+                TierType::Regular,
                 "General".to_string(),
                 Money::from_dollars(50),
                 Utc::now(),
@@ -1824,21 +1702,21 @@ mod tests {
         // New pricing with multiple tiers (covers both sections)
         let new_pricing = vec![
             PricingTier::new(
-                crate::types::TierType::EarlyBird,
+                TierType::EarlyBird,
                 "VIP".to_string(),
                 Money::from_dollars(80),
                 Utc::now(),
                 Some(Utc::now() + Duration::days(7)),
             ),
             PricingTier::new(
-                crate::types::TierType::Regular,
+                TierType::Regular,
                 "VIP".to_string(),
                 Money::from_dollars(100),
                 Utc::now() + Duration::days(7),
                 None,
             ),
             PricingTier::new(
-                crate::types::TierType::Regular,
+                TierType::Regular,
                 "General".to_string(),
                 Money::from_dollars(50),
                 Utc::now(),
@@ -1939,7 +1817,7 @@ mod tests {
 
         let result = EventReducer::validate_update_pricing_tiers_with_event(
             &event,
-            &vec![], // Empty pricing tiers
+            &[], // Empty pricing tiers - use slice literal, no heap allocation
         );
 
         assert!(result.is_err());
@@ -1961,7 +1839,7 @@ mod tests {
 
         // Pricing tier for section that doesn't exist in venue
         let invalid_pricing = vec![PricingTier::new(
-            crate::types::TierType::Regular,
+            TierType::Regular,
             "NonExistentSection".to_string(), // Invalid section
             Money::from_dollars(50),
             Utc::now(),
@@ -1988,14 +1866,14 @@ mod tests {
             EventDate::new(Utc::now() + Duration::days(30)),
             vec![
                 PricingTier::new(
-                    crate::types::TierType::Regular,
+                    TierType::Regular,
                     "VIP".to_string(),
                     Money::from_dollars(100),
                     Utc::now(),
                     None,
                 ),
                 PricingTier::new(
-                    crate::types::TierType::Regular,
+                    TierType::Regular,
                     "General".to_string(),
                     Money::from_dollars(50),
                     Utc::now(),
@@ -2007,7 +1885,7 @@ mod tests {
 
         // Only provide pricing for VIP, missing General section
         let incomplete_pricing = vec![PricingTier::new(
-            crate::types::TierType::Regular,
+            TierType::Regular,
             "VIP".to_string(),
             Money::from_dollars(100),
             Utc::now(),
@@ -2035,7 +1913,7 @@ mod tests {
         let pricing_tiers = vec![
             // EarlyBird: available now until 7 days from now
             PricingTier::new(
-                crate::types::TierType::EarlyBird,
+                TierType::EarlyBird,
                 "General".to_string(),
                 Money::from_dollars(30),
                 now,
@@ -2043,7 +1921,7 @@ mod tests {
             ),
             // Regular: available after 7 days
             PricingTier::new(
-                crate::types::TierType::Regular,
+                TierType::Regular,
                 "General".to_string(),
                 Money::from_dollars(50),
                 now + Duration::days(7),
@@ -2071,7 +1949,7 @@ mod tests {
             .then_state(move |state| {
                 let event = state.get(&id).unwrap();
                 // Verify early bird pricing is first
-                assert_eq!(event.pricing_tiers[0].tier_type, crate::types::TierType::EarlyBird);
+                assert_eq!(event.pricing_tiers[0].tier_type, TierType::EarlyBird);
                 assert_eq!(event.pricing_tiers[0].base_price.cents(), 3000);
             })
             .then_effects(|effects| {
@@ -2089,7 +1967,7 @@ mod tests {
         // Create pricing with last-minute tier
         let pricing_tiers = vec![
             PricingTier::new(
-                crate::types::TierType::Regular,
+                TierType::Regular,
                 "General".to_string(),
                 Money::from_dollars(50),
                 now,
@@ -2097,7 +1975,7 @@ mod tests {
             ),
             // LastMinute: available 25-30 days from now (5 days before event)
             PricingTier::new(
-                crate::types::TierType::LastMinute,
+                TierType::LastMinute,
                 "General".to_string(),
                 Money::from_dollars(70),
                 now + Duration::days(25),
@@ -2125,7 +2003,7 @@ mod tests {
             .then_state(move |state| {
                 let event = state.get(&id).unwrap();
                 // Verify last-minute pricing exists
-                assert_eq!(event.pricing_tiers[1].tier_type, crate::types::TierType::LastMinute);
+                assert_eq!(event.pricing_tiers[1].tier_type, TierType::LastMinute);
                 assert_eq!(event.pricing_tiers[1].base_price.cents(), 7000);
             })
             .then_effects(|effects| {
@@ -2143,21 +2021,21 @@ mod tests {
         // Multiple pricing tiers for the same section
         let pricing_tiers = vec![
             PricingTier::new(
-                crate::types::TierType::EarlyBird,
+                TierType::EarlyBird,
                 "General".to_string(),
                 Money::from_dollars(30),
                 now,
                 Some(now + Duration::days(7)),
             ),
             PricingTier::new(
-                crate::types::TierType::Regular,
+                TierType::Regular,
                 "General".to_string(),
                 Money::from_dollars(50),
                 now + Duration::days(7),
                 Some(now + Duration::days(25)),
             ),
             PricingTier::new(
-                crate::types::TierType::LastMinute,
+                TierType::LastMinute,
                 "General".to_string(),
                 Money::from_dollars(70),
                 now + Duration::days(25),
@@ -2186,9 +2064,9 @@ mod tests {
                     .iter()
                     .map(|t| t.tier_type)
                     .collect();
-                assert!(tier_types.contains(&crate::types::TierType::EarlyBird));
-                assert!(tier_types.contains(&crate::types::TierType::Regular));
-                assert!(tier_types.contains(&crate::types::TierType::LastMinute));
+                assert!(tier_types.contains(&TierType::EarlyBird));
+                assert!(tier_types.contains(&TierType::Regular));
+                assert!(tier_types.contains(&TierType::LastMinute));
             })
             .then_effects(|effects| {
                 assert!(!effects.is_empty());

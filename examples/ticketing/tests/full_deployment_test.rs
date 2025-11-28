@@ -138,6 +138,7 @@ async fn test_availability_queries() {
     let client = reqwest::Client::new();
 
     // Create an event with correct schema
+    // capacity: 100 creates a single "General" section with 100 seats
     let create_payload = create_event_payload("Availability Test Concert", 20, 100);
 
     let create_response = client
@@ -163,9 +164,9 @@ async fn test_availability_queries() {
 
     // No sleep needed - API waits for projection completion before returning
 
-    // Query section availability
+    // Query section availability for the General section that was created
     let section_availability = client
-        .get(format!("{API_BASE}/api/events/{event_id}/sections/VIP/availability"))
+        .get(format!("{API_BASE}/api/events/{event_id}/sections/General/availability"))
         .send()
         .await
         .expect("Failed to query section availability");
@@ -182,15 +183,15 @@ async fn test_availability_queries() {
         .expect("Failed to parse availability");
 
     assert_eq!(
-        availability["section"], "VIP",
+        availability["section"], "General",
         "Should return correct section"
     );
     assert_eq!(
         availability["available"]
             .as_u64()
             .unwrap(),
-        20,
-        "Should have 20 available seats initially"
+        100,
+        "Should have 100 available seats initially"
     );
 
     println!("  ✅ Section availability query successful");
@@ -215,8 +216,8 @@ async fn test_availability_queries() {
 
     assert_eq!(
         total["total_available"].as_u64().unwrap(),
-        20,
-        "Total available should be 20"
+        100,
+        "Total available should be 100"
     );
 
     println!("  ✅ Total availability query successful");

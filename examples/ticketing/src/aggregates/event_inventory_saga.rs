@@ -885,7 +885,7 @@ mod tests {
     struct MockEventQuery;
 
     #[async_trait::async_trait]
-    impl crate::aggregates::event::EventProjectionQuery for MockEventQuery {
+    impl crate::projections::EventProjectionQuery for MockEventQuery {
         async fn load_event(&self, _event_id: &EventId) -> Result<Option<crate::types::Event>, String> {
             Ok(None) // No cached state, use event sourcing
         }

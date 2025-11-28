@@ -92,6 +92,9 @@ pub mod types;
 pub mod server;
 pub mod api;
 
+#[cfg(test)]
+pub mod test_utils;
+
 pub use aggregates::{EventAction, EventReducer, InventoryAction, InventoryReducer};
 pub use config::Config;
 pub use projections::{

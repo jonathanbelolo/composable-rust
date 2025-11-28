@@ -230,7 +230,7 @@ impl Projection for AvailableSeatsProjection {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::types::{Capacity, ReservationId};
+    use crate::types::{Capacity, ReservationId, ResponseChannel};
     use chrono::Utc;
 
     #[test]
@@ -244,6 +244,7 @@ mod tests {
             capacity: Capacity::new(100),
             seats: vec![],
             initialized_at: Utc::now(),
+            respond_to: ResponseChannel::none(),
         });
 
         projection.handle_event(&event).unwrap();
@@ -270,6 +271,7 @@ mod tests {
                     capacity: Capacity::new(50),
                     seats: vec![],
                     initialized_at: Utc::now(),
+                    respond_to: ResponseChannel::none(),
                 },
             ))
             .unwrap();
@@ -311,6 +313,7 @@ mod tests {
                     capacity: Capacity::new(20),
                     seats: vec![],
                     initialized_at: Utc::now(),
+                    respond_to: ResponseChannel::none(),
                 },
             ))
             .unwrap();
@@ -367,6 +370,7 @@ mod tests {
                     capacity: Capacity::new(30),
                     seats: vec![],
                     initialized_at: Utc::now(),
+                    respond_to: ResponseChannel::none(),
                 },
             ))
             .unwrap();
@@ -420,6 +424,7 @@ mod tests {
                     capacity: Capacity::new(50),
                     seats: vec![],
                     initialized_at: Utc::now(),
+                    respond_to: ResponseChannel::none(),
                 },
             ))
             .unwrap();
@@ -433,6 +438,7 @@ mod tests {
                     capacity: Capacity::new(200),
                     seats: vec![],
                     initialized_at: Utc::now(),
+                    respond_to: ResponseChannel::none(),
                 },
             ))
             .unwrap();
@@ -457,6 +463,7 @@ mod tests {
                     capacity: Capacity::new(10),
                     seats: vec![],
                     initialized_at: Utc::now(),
+                    respond_to: ResponseChannel::none(),
                 },
             ))
             .unwrap();

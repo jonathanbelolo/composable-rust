@@ -3,7 +3,7 @@
 //! Stores full `Event` domain objects as JSONB for simplicity.
 //! Much simpler than denormalized schema - just serialize/deserialize.
 
-use crate::aggregates::event::EventProjectionQuery;
+use crate::projections::EventProjectionQuery;
 use crate::aggregates::EventAction;
 use crate::projections::TicketingEvent;
 use crate::types::{Event, EventId, EventStatus};

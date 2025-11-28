@@ -6,7 +6,7 @@
 //! **Concurrency Strategy**: Optimistic concurrency control - check available seats including
 //! reserved count to prevent overselling during concurrent reservation attempts.
 
-use crate::projections::TicketingEvent;
+use crate::projections::{EventProjectionQuery, TicketingEvent};
 use crate::types::{
     Capacity, CustomerId, EventId, GlobalActionChannels, Inventory, InventoryState, Money, ReservationId, ResponseChannel,
     SeatAssignment, SeatId, SeatNumber, SeatStatus,
@@ -209,6 +209,10 @@ pub enum InventoryAction {
         seats: Vec<SeatId>,
         /// When initialized
         initialized_at: DateTime<Utc>,
+
+        /// Response channel for projection completion signaling
+        #[serde(skip)]
+        respond_to: ResponseChannel,
     },
 
     /// Seats were reserved
@@ -349,6 +353,24 @@ pub enum InventoryAction {
         /// New version number
         version: Version,
     },
+
+    /// Projection update confirmed
+    InventoryProjectionConfirmed {
+        /// Event ID
+        event_id: EventId,
+        /// Section
+        section: String,
+    },
+
+    /// Projection update failed
+    InventoryProjectionFailed {
+        /// Event ID
+        event_id: EventId,
+        /// Section
+        section: String,
+        /// Failure reason
+        reason: String,
+    },
 }
 
 // ============================================================================
@@ -367,7 +389,7 @@ pub struct InventoryEnvironment {
     /// Projection query for loading inventory state on-demand
     pub inventory_projection: Arc<dyn InventoryProjectionQuery>,
     /// Event projection for pricing queries
-    pub event_projection: Arc<dyn super::event::EventProjectionQuery>,
+    pub event_projection: Arc<dyn EventProjectionQuery>,
     /// Global action channels for cross-aggregate coordination
     pub global_actions: GlobalActionChannels,
 }
@@ -380,7 +402,7 @@ impl InventoryEnvironment {
         event_store: Arc<dyn EventStore>,
         stream_id: StreamId,
         inventory_projection: Arc<dyn InventoryProjectionQuery>,
-        event_projection: Arc<dyn super::event::EventProjectionQuery>,
+        event_projection: Arc<dyn EventProjectionQuery>,
         global_actions: GlobalActionChannels,
     ) -> Self {
         Self {
@@ -893,10 +915,13 @@ impl InventoryReducer {
             | InventoryAction::GetTotalAvailable { .. }
             | InventoryAction::AllSectionsQueried { .. }
             | InventoryAction::SectionAvailabilityQueried { .. }
-            | InventoryAction::TotalAvailableQueried { .. } => {
+            | InventoryAction::TotalAvailableQueried { .. }
+            | InventoryAction::InventoryProjectionConfirmed { .. }
+            | InventoryAction::InventoryProjectionFailed { .. } => {
                 // Commands don't modify state
                 // Query actions and results are handled in reducer
                 // InsufficientInventory is informational - no state change needed
+                // Projection confirmation actions are logged but don't modify aggregate state
                 // Don't clear last_error - this represents a failure condition
             }
         }
@@ -949,14 +974,30 @@ impl Reducer for InventoryReducer {
                     capacity,
                     seats,
                     initialized_at: env.clock.now(),
+                    respond_to: crate::types::ResponseChannel::none(),
                 };
                 let expected_version = state.version;
                 Self::apply_event(state, &event);
 
                 // Clone event for feedback - this is the domain event we'll return on success
                 let event_for_feedback = event.clone();
-                // Clone for the global channel (needs to happen before event_for_feedback is moved into closure)
-                let event_for_channel = event_for_feedback.clone();
+
+                // Create copies for PublishWithResponse closures
+                let event_id_for_channel = event_id;
+                let section_for_channel = section.clone();
+                let capacity_for_channel = capacity;
+                let seats_for_channel = match &event {
+                    InventoryAction::InventoryInitialized { seats, .. } => seats.clone(),
+                    _ => vec![],
+                };
+                let initialized_at_for_channel = match &event {
+                    InventoryAction::InventoryInitialized { initialized_at, .. } => *initialized_at,
+                    _ => env.clock.now(),
+                };
+                let event_id_for_success = event_id;
+                let section_for_success = section.clone();
+                let event_id_for_error = event_id;
+                let section_for_error = section.clone();
 
                 // Serialize event
                 let ticketing_event = TicketingEvent::Inventory(event);
@@ -983,13 +1024,32 @@ impl Reducer for InventoryReducer {
                     }
                 ];
 
-                // Publish the domain EVENT (not command) to global channel for projections
-                // event_for_channel was cloned earlier before event_for_feedback was moved into closure
-                let global_channel = env.global_actions.inventory_actions.clone();
-                effects.push(Effect::Future(Box::pin(async move {
-                    let _ = global_channel.send(event_for_channel);
-                    None
-                })));
+                // Publish the domain EVENT to global channel and wait for projection completion
+                // Uses Effect::PublishWithResponse to ensure synchronous handling
+                effects.push(Effect::PublishWithResponse {
+                    channel: env.global_actions.inventory_actions.clone(),
+                    create_action: Box::new(move |respond_to| InventoryAction::InventoryInitialized {
+                        event_id: event_id_for_channel,
+                        section: section_for_channel,
+                        capacity: capacity_for_channel,
+                        seats: seats_for_channel,
+                        initialized_at: initialized_at_for_channel,
+                        respond_to,
+                    }),
+                    on_success: Box::new(move || {
+                        Some(InventoryAction::InventoryProjectionConfirmed {
+                            event_id: event_id_for_success,
+                            section: section_for_success.clone(),
+                        })
+                    }),
+                    on_error: Box::new(move |reason| {
+                        Some(InventoryAction::InventoryProjectionFailed {
+                            event_id: event_id_for_error,
+                            section: section_for_error.clone(),
+                            reason,
+                        })
+                    }),
+                });
 
                 effects
             }
@@ -1148,12 +1208,13 @@ impl Reducer for InventoryReducer {
                         error
                     );
 
-                    // Emit ValidationFailed event
-                    Self::apply_event(state, &InventoryAction::ValidationFailed {
+                    // Apply ValidationFailed event to state
+                    let validation_failed = InventoryAction::ValidationFailed {
                         error: error.clone(),
-                    });
+                    };
+                    Self::apply_event(state, &validation_failed);
 
-                    // Also emit InsufficientInventory for saga coordination
+                    // Also apply InsufficientInventory for saga coordination
                     if error.contains("Insufficient inventory") {
                         if let Some(inventory) = state.get_inventory(&event_id, &section) {
                             let event = InventoryAction::InsufficientInventory {
@@ -1166,7 +1227,10 @@ impl Reducer for InventoryReducer {
                         }
                     }
 
-                    return SmallVec::new();
+                    // Return effect that broadcasts ValidationFailed for send_and_wait_for
+                    return smallvec![Effect::Future(Box::pin(async move {
+                        Some(validation_failed)
+                    }))];
                 }
 
                 tracing::debug!(
@@ -1180,11 +1244,15 @@ impl Reducer for InventoryReducer {
                         Ok(seat_ids) => seat_ids,
                         Err(error) => {
                             // Specific seat selection failed - return validation error
-                            Self::apply_event(state, &InventoryAction::ValidationFailed {
+                            let validation_failed = InventoryAction::ValidationFailed {
                                 error: error.clone(),
-                            });
+                            };
+                            Self::apply_event(state, &validation_failed);
                             tracing::warn!("Specific seat selection failed: {}", error);
-                            return SmallVec::new();
+                            // Return effect that broadcasts ValidationFailed for send_and_wait_for
+                            return smallvec![Effect::Future(Box::pin(async move {
+                                Some(validation_failed)
+                            }))];
                         }
                     }
                 } else {
@@ -1498,7 +1566,7 @@ mod tests {
     struct MockEventQuery;
 
     #[async_trait::async_trait]
-    impl crate::aggregates::event::EventProjectionQuery for MockEventQuery {
+    impl crate::projections::EventProjectionQuery for MockEventQuery {
         async fn load_event(&self, _event_id: &EventId) -> Result<Option<crate::types::Event>, String> {
             // Return None for tests - no pricing configured
             Ok(None)
@@ -1657,8 +1725,8 @@ mod tests {
                 assert!(state.last_error.is_some());
             })
             .then_effects(|effects| {
-                // Validation failure - no effects
-                assert_eq!(effects.len(), 0);
+                // Validation failure broadcasts ValidationFailed for saga coordination
+                assert_eq!(effects.len(), 1);
             })
             .run();
     }

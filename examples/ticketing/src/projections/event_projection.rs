@@ -232,10 +232,11 @@ impl EventProjection {
             | EventAction::GetEvent { .. }
             | EventAction::ListEvents { .. } => {}
 
-            // Query results, version updates, validation failures, and projection confirmations don't affect projection
+            // Query results, version updates, validation/serialization failures, and projection confirmations don't affect projection
             EventAction::EventQueried { .. }
             | EventAction::EventsListed { .. }
             | EventAction::ValidationFailed { .. }
+            | EventAction::SerializationFailed { .. }
             | EventAction::VersionUpdated { .. }
             | EventAction::EventProjectionConfirmed { .. }
             | EventAction::EventProjectionFailed { .. }

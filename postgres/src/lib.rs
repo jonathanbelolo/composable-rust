@@ -934,6 +934,39 @@ impl EventStore for PostgresEventStore {
             Ok(results)
         }.instrument(span))
     }
+
+    fn get_stream_version(
+        &self,
+        stream_id: StreamId,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Version, EventStoreError>> + Send + '_>,
+    > {
+        let span = tracing::info_span!(
+            "event_store.get_stream_version",
+            stream_id = %stream_id,
+        );
+
+        Box::pin(async move {
+            // Use COUNT for O(1) performance with indexed stream_id
+            let count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM events WHERE stream_id = $1",
+            )
+            .bind(stream_id.as_str())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| EventStoreError::DatabaseError(e.to_string()))?;
+
+            // Convert i64 to u64 with proper error handling
+            let version = u64::try_from(count).map_err(|e| {
+                EventStoreError::DatabaseError(format!(
+                    "Invalid negative count {count} from database: {e}"
+                ))
+            })?;
+
+            tracing::debug!(stream_id = %stream_id, version, "Retrieved stream version");
+            Ok(Version::new(version))
+        }.instrument(span))
+    }
 }
 
 #[cfg(test)]

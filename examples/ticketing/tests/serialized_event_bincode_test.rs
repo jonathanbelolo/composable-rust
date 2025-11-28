@@ -3,7 +3,7 @@
 use composable_rust_core::event::{EventMetadata, SerializedEvent};
 use ticketing::aggregates::InventoryAction;
 use ticketing::projections::TicketingEvent;
-use ticketing::types::{Capacity, EventId, SeatId};
+use ticketing::types::{Capacity, EventId, ResponseChannel, SeatId};
 use chrono::Utc;
 
 #[test]
@@ -15,6 +15,7 @@ fn test_serialized_event_with_metadata_bincode() {
         capacity: Capacity(100),
         seats: vec![SeatId::new()],
         initialized_at: Utc::now(),
+        respond_to: ResponseChannel::none(),
     };
     let ticketing_event = TicketingEvent::Inventory(action);
 

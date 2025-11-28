@@ -107,6 +107,7 @@ fn create_inventory_initialized(
         capacity: Capacity(capacity),
         seats,
         initialized_at: chrono::Utc::now(),
+        respond_to: ResponseChannel::none(),
     })
 }
 

@@ -26,7 +26,7 @@ use composable_rust_macros::Action;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use super::event::EventProjectionQuery;
+use crate::projections::EventProjectionQuery;
 use super::inventory::{InventoryAction, InventoryProjectionQuery};
 use super::payment::PaymentAction;
 use crate::types::PaymentId;

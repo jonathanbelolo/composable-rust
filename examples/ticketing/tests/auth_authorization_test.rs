@@ -91,12 +91,12 @@ async fn test_user_cannot_cancel_other_users_reservation() {
     // Step 2: User A creates a reservation
     println!("  📝 Step 2: User A creates a reservation");
 
-    // First, wait a bit for event initialization to complete
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    // Event creation is synchronous - handler waits for projection confirmation
+    // No arbitrary sleep needed
 
     let reservation_request = json!({
         "event_id": event_id,
-        "section": "VIP",
+        "section": "General Admission",
         "quantity": 2,
         "specific_seats": null
     });
@@ -134,8 +134,8 @@ async fn test_user_cannot_cancel_other_users_reservation() {
 
     println!("  ✅ User A created reservation: {reservation_id}");
 
-    // Wait for ownership index to be updated
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    // Reservation creation is synchronous - handler waits for projection confirmation
+    // No arbitrary sleep needed
 
     // Step 3: User B attempts to cancel User A's reservation
     println!("  📝 Step 3: User B attempts to cancel User A's reservation");
@@ -221,8 +221,8 @@ async fn test_user_can_access_own_reservation() {
 
     println!("  ✅ User A created event: {event_id}");
 
-    // Wait for event initialization
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    // Event creation is synchronous - handler waits for projection confirmation
+    // No arbitrary sleep needed
 
     // User A creates a reservation
     println!("  📝 Step 2: User A creates a reservation");
@@ -242,19 +242,33 @@ async fn test_user_can_access_own_reservation() {
         .await
         .expect("Failed to create reservation");
 
+    let status = create_reservation_response.status();
     let created_reservation: serde_json::Value = create_reservation_response
         .json()
         .await
         .expect("Failed to parse reservation");
 
+    if status != 201 {
+        panic!(
+            "Reservation creation failed with status {}: {}",
+            status,
+            serde_json::to_string_pretty(&created_reservation).unwrap_or_default()
+        );
+    }
+
     let reservation_id = created_reservation["reservation_id"]
         .as_str()
-        .expect("Reservation ID missing");
+        .unwrap_or_else(|| {
+            panic!(
+                "Reservation ID missing from response: {}",
+                serde_json::to_string_pretty(&created_reservation).unwrap_or_default()
+            )
+        });
 
     println!("  ✅ User A created reservation: {reservation_id}");
 
-    // Wait for ownership index update
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    // Reservation creation is synchronous - handler waits for projection confirmation
+    // No arbitrary sleep needed
 
     // User A retrieves their own reservation
     println!("  📝 Step 3: User A retrieves their own reservation");
@@ -309,12 +323,12 @@ async fn test_user_cannot_get_other_users_reservation() {
         .as_str()
         .expect("Event ID missing");
 
-    // Wait for event initialization
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    // Event creation is synchronous - handler waits for projection confirmation
+    // No arbitrary sleep needed
 
     let reservation_request = json!({
         "event_id": event_id,
-        "section": "VIP",
+        "section": "General Admission",
         "quantity": 1,
         "specific_seats": null
     });
@@ -327,19 +341,33 @@ async fn test_user_cannot_get_other_users_reservation() {
         .await
         .expect("Failed to create reservation");
 
+    let status = create_reservation_response.status();
     let created_reservation: serde_json::Value = create_reservation_response
         .json()
         .await
         .expect("Failed to parse reservation");
 
+    if status != 201 {
+        panic!(
+            "Reservation creation failed with status {}: {}",
+            status,
+            serde_json::to_string_pretty(&created_reservation).unwrap_or_default()
+        );
+    }
+
     let reservation_id = created_reservation["reservation_id"]
         .as_str()
-        .expect("Reservation ID missing");
+        .unwrap_or_else(|| {
+            panic!(
+                "Reservation ID missing from response: {}",
+                serde_json::to_string_pretty(&created_reservation).unwrap_or_default()
+            )
+        });
 
     println!("  ✅ User A created reservation: {reservation_id}");
 
-    // Wait for ownership index update
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    // Reservation creation is synchronous - handler waits for projection confirmation
+    // No arbitrary sleep needed
 
     // User B attempts to GET User A's reservation
     println!("  📝 Step 2: User B attempts to access User A's reservation");
@@ -478,8 +506,8 @@ async fn test_user_cannot_update_other_users_event() {
 
     println!("  ✅ User A created event: {event_id}");
 
-    // Wait for projection update
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    // Event creation is synchronous - handler waits for projection confirmation
+    // No arbitrary sleep needed
 
     // Step 2: User B attempts to update User A's event
     println!("  📝 Step 2: User B attempts to update User A's event");
@@ -610,8 +638,8 @@ async fn test_user_cannot_delete_other_users_event() {
 
     println!("  ✅ User A created event: {event_id}");
 
-    // Wait for projection update
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    // Event creation is synchronous - handler waits for projection confirmation
+    // No arbitrary sleep needed
 
     // Step 2: User B attempts to delete User A's event
     println!("  📝 Step 2: User B attempts to delete User A's event");

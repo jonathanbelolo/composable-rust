@@ -111,6 +111,7 @@ pub use sales_analytics_postgres::PostgresSalesAnalyticsProjection;
 use crate::aggregates::{
     EventAction, EventInventorySagaAction, InventoryAction, PaymentAction, ReservationAction,
 };
+use crate::types::{Event, EventId, EventStatus};
 use composable_rust_core::event::SerializedEvent;
 use serde::{Deserialize, Serialize};
 
@@ -191,4 +192,32 @@ pub trait Projection: Send + Sync {
     ///
     /// Used for rebuilding projections from scratch.
     fn reset(&mut self);
+}
+
+/// Event projection query trait for loading event state.
+///
+/// This trait abstracts projection queries to enable:
+/// - Dependency injection (pass mocks in tests)
+/// - Query actions flowing through reducer
+/// - Business logic on read operations
+///
+/// # Implementations
+///
+/// - [`PostgresEventsProjection`]: Production PostgreSQL-backed implementation
+/// - Test mocks in aggregate test modules
+#[async_trait::async_trait]
+pub trait EventProjectionQuery: Send + Sync {
+    /// Load a single event by ID
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database query fails
+    async fn load_event(&self, event_id: &EventId) -> Result<Option<Event>, String>;
+
+    /// Load events with optional status filter
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database query fails
+    async fn load_events(&self, status_filter: Option<EventStatus>) -> Result<Vec<Event>, String>;
 }

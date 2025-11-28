@@ -47,14 +47,14 @@ use tracing::{info, warn};
 
 use crate::{
     aggregates::{
-        event::EventProjectionQuery,
         inventory::{InventoryEnvironment, InventoryReducer},
         payment::{PaymentEnvironment, PaymentReducer},
         PaymentAction, ReservationAction,
     },
     projections::{
         query_adapters::{PostgresInventoryQuery, PostgresPaymentQuery},
-        CustomerHistoryProjection, Projection, SalesAnalyticsProjection, TicketingEvent,
+        CustomerHistoryProjection, EventProjectionQuery, Projection, SalesAnalyticsProjection,
+        TicketingEvent,
     },
     types::{CustomerId, GlobalActionChannels, InventoryState, PaymentId, PaymentState, ReservationId},
 };
