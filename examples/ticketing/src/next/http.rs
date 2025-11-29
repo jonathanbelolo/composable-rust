@@ -58,7 +58,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use super::{
-    environment::{NoOpEventBus, NoOpProjector, TicketingEnvironment},
+    environment::{NoOpEventBus, NoOpProjector, ProductionEnvironment},
     event_inventory_saga::SagaError,
     EventBusinessLogic, EventCommand, EventError,
 };
@@ -71,11 +71,13 @@ use composable_rust_auth::state::UserId;
 // Type Aliases
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Type alias for the Event aggregate handler with minimal environment.
+/// Type alias for the Event aggregate handler with minimal production environment.
+///
+/// Uses `SystemClock` and `PostgresEventStore` with no projector or event bus.
 pub type EventHandler = Handler<
     EventBusinessLogic,
     NoOpCallExecutor,
-    TicketingEnvironment<NoOpProjector, NoOpEventBus>,
+    ProductionEnvironment<NoOpProjector, NoOpEventBus>,
 >;
 
 // Note: A full SagaHandler would require a SagaCallExecutor that can dispatch

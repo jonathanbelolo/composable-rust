@@ -593,3 +593,202 @@ mod tests {
         assert_eq!(state.status, EventStatus::Draft);
     }
 }
+
+/// Handler-level integration tests using in-memory dependencies.
+///
+/// These tests demonstrate the full flow: command → Handler → events persisted.
+#[cfg(test)]
+mod handler_tests {
+    use super::*;
+    use crate::next::environment::{NoOpEventBus, NoOpProjector, TicketingEnvironment};
+    use crate::types::{Capacity, Money, TierType};
+    use composable_rust_next::testing::{InMemoryEventBus, InMemoryEventStore, InMemoryProjector};
+    use composable_rust_next::{FixedClock, Handler, NoOpCallExecutor};
+
+    fn sample_venue() -> Venue {
+        Venue {
+            name: "Test Arena".to_string(),
+            capacity: Capacity::new(1000),
+            sections: vec![],
+        }
+    }
+
+    fn sample_pricing_tier() -> PricingTier {
+        PricingTier {
+            tier_type: TierType::Regular,
+            section: "General".to_string(),
+            base_price: Money::from_cents(5000),
+            available_from: Utc::now(),
+            available_until: None,
+        }
+    }
+
+    /// Test environment type with all in-memory dependencies.
+    type TestEnv = TicketingEnvironment<
+        FixedClock,
+        InMemoryEventStore,
+        InMemoryProjector,
+        InMemoryEventBus,
+    >;
+
+    /// Type alias for a test handler using in-memory dependencies.
+    type TestHandler = Handler<EventBusinessLogic, NoOpCallExecutor, TestEnv>;
+
+    /// Creates a test environment with shared in-memory stores.
+    fn create_test_env() -> (
+        TestEnv,
+        InMemoryEventStore,
+        InMemoryProjector,
+        InMemoryEventBus,
+    ) {
+        let clock = FixedClock::new(Utc::now());
+        let event_store = InMemoryEventStore::new();
+        let projector = InMemoryProjector::new();
+        let event_bus = InMemoryEventBus::new();
+
+        let env = TicketingEnvironment::new(
+            clock,
+            event_store.clone(),
+            Some(projector.clone()),
+            Some(event_bus.clone()),
+            "test-events",
+        );
+
+        (env, event_store, projector, event_bus)
+    }
+
+    #[tokio::test]
+    async fn handler_creates_event_and_persists() {
+        // Arrange: Create handler with in-memory environment
+        let (env, event_store, projector, event_bus) = create_test_env();
+        let handler = TestHandler::new(EventBusinessLogic, NoOpCallExecutor, env);
+
+        let event_id = EventId::new();
+
+        // Act: Handle a create event command
+        let result = handler
+            .handle(EventCommand::Create {
+                event_id,
+                name: "Test Concert".to_string(),
+                owner_id: UserId::new(),
+                venue: sample_venue(),
+                date: EventDate::new(Utc::now()),
+                pricing_tiers: vec![sample_pricing_tier()],
+            })
+            .await;
+
+        // Assert: Command succeeded
+        assert!(result.is_ok());
+
+        // Assert: Events were persisted to the in-memory store
+        let stream_id = format!("event-{}", event_id.as_uuid());
+        let stored_events = event_store.events_for_stream(&stream_id);
+        assert_eq!(stored_events.len(), 1);
+        assert_eq!(stored_events[0].event_type, "EventCreated");
+
+        // Assert: Events were projected
+        let projected = projector.projected_events();
+        assert_eq!(projected.len(), 1);
+
+        // Assert: Events were broadcast
+        let published = event_bus.published_events();
+        assert_eq!(published.len(), 1);
+        assert_eq!(published[0].0, "test-events"); // topic
+    }
+
+    #[tokio::test]
+    async fn handler_publishes_event_after_create() {
+        // Arrange: Create handler
+        let (env, event_store, _projector, _event_bus) = create_test_env();
+        let handler = TestHandler::new(EventBusinessLogic, NoOpCallExecutor, env);
+
+        let event_id = EventId::new();
+
+        // First create the event
+        handler
+            .handle(EventCommand::Create {
+                event_id,
+                name: "Test Concert".to_string(),
+                owner_id: UserId::new(),
+                venue: sample_venue(),
+                date: EventDate::new(Utc::now()),
+                pricing_tiers: vec![sample_pricing_tier()],
+            })
+            .await
+            .unwrap();
+
+        // Act: Publish the event
+        let result = handler.handle(EventCommand::Publish { event_id }).await;
+
+        // Assert: Command succeeded
+        assert!(result.is_ok());
+
+        // Assert: Both events persisted (Created + Published)
+        let stream_id = format!("event-{}", event_id.as_uuid());
+        let stored_events = event_store.events_for_stream(&stream_id);
+        assert_eq!(stored_events.len(), 2);
+        assert_eq!(stored_events[0].event_type, "EventCreated");
+        assert_eq!(stored_events[1].event_type, "EventPublished");
+    }
+
+    #[tokio::test]
+    async fn handler_rejects_duplicate_create() {
+        // Arrange: Create handler and first event
+        let (env, _event_store, _projector, _event_bus) = create_test_env();
+        let handler = TestHandler::new(EventBusinessLogic, NoOpCallExecutor, env);
+
+        let event_id = EventId::new();
+
+        // Create first event
+        handler
+            .handle(EventCommand::Create {
+                event_id,
+                name: "Test Concert".to_string(),
+                owner_id: UserId::new(),
+                venue: sample_venue(),
+                date: EventDate::new(Utc::now()),
+                pricing_tiers: vec![sample_pricing_tier()],
+            })
+            .await
+            .unwrap();
+
+        // Act: Try to create duplicate
+        let result = handler
+            .handle(EventCommand::Create {
+                event_id,
+                name: "Another Concert".to_string(),
+                owner_id: UserId::new(),
+                venue: sample_venue(),
+                date: EventDate::new(Utc::now()),
+                pricing_tiers: vec![sample_pricing_tier()],
+            })
+            .await;
+
+        // Assert: Business error returned
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.is_business());
+    }
+
+    #[tokio::test]
+    async fn handler_rejects_publish_nonexistent_event() {
+        // Arrange: Create handler (no events created) - use minimal env
+        let clock = FixedClock::new(Utc::now());
+        let event_store = InMemoryEventStore::new();
+        let env: TicketingEnvironment<_, _, NoOpProjector, NoOpEventBus> =
+            TicketingEnvironment::new(clock, event_store, None, None, "");
+        let handler = Handler::new(EventBusinessLogic, NoOpCallExecutor, env);
+
+        // Act: Try to publish non-existent event
+        let result = handler
+            .handle(EventCommand::Publish {
+                event_id: EventId::new(),
+            })
+            .await;
+
+        // Assert: Business error (NotFound)
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.is_business());
+    }
+}

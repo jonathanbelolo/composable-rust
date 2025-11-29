@@ -2,9 +2,36 @@
 //!
 //! This module provides the [`TicketingEnvironment`] which implements
 //! [`HandlerEnvironment`] to provide infrastructure dependencies to the Handler.
+//!
+//! # Dependency Injection
+//!
+//! The environment is fully generic over all infrastructure dependencies:
+//! - `C`: Clock (for timestamps)
+//! - `ES`: Event store (for persistence)
+//! - `P`: Projector (for read models)
+//! - `EB`: Event bus (for broadcasting)
+//!
+//! This enables easy testing with in-memory implementations:
+//!
+//! ```ignore
+//! use composable_rust_next::testing::{InMemoryEventStore, InMemoryProjector, InMemoryEventBus};
+//! use composable_rust_next::FixedClock;
+//!
+//! // Test environment with in-memory dependencies
+//! let env = TicketingEnvironment::new(
+//!     FixedClock::new(Utc::now()),
+//!     InMemoryEventStore::new(),
+//!     Some(InMemoryProjector::new()),
+//!     Some(InMemoryEventBus::new()),
+//!     "test-events",
+//! );
+//!
+//! let handler = Handler::new(EventBusinessLogic, NoOpCallExecutor, env);
+//! let result = handler.handle(command).await?;
+//! ```
 
 use composable_rust_next::{
-    Clock, EventBus, EventBusError, HandlerEnvironment, ProjectionError, Projector,
+    Clock, EventBus, EventBusError, EventStore, HandlerEnvironment, ProjectionError, Projector,
     SerializedEvent, SystemClock,
 };
 use composable_rust_postgres_next::PostgresEventStore;
@@ -12,13 +39,13 @@ use composable_rust_postgres_next::PostgresEventStore;
 use super::EventProjector;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// No-Op Event Bus (placeholder until we need Redpanda)
+// No-Op Implementations
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// A no-op event bus that does nothing.
 ///
 /// Used when event broadcasting is not needed or not yet configured.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct NoOpEventBus;
 
 impl EventBus for NoOpEventBus {
@@ -27,14 +54,10 @@ impl EventBus for NoOpEventBus {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// No-Op Projector (placeholder for when projections aren't needed)
-// ═══════════════════════════════════════════════════════════════════════════
-
 /// A no-op projector that does nothing.
 ///
 /// Used when projections are not needed for a particular aggregate.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct NoOpProjector;
 
 impl Projector for NoOpProjector {
@@ -44,63 +67,88 @@ impl Projector for NoOpProjector {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Ticketing Environment
+// Ticketing Environment (Fully Generic)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Environment providing infrastructure dependencies for ticketing aggregates.
 ///
-/// This implements [`HandlerEnvironment`] with concrete types for:
-/// - Event store: `PostgreSQL` via [`PostgresEventStore`]
-/// - Projector: [`EventProjector`] for updating read models
-/// - Event bus: [`NoOpEventBus`] (placeholder, can be replaced with Redpanda)
+/// This struct is fully generic over all infrastructure dependencies, enabling:
+/// - **Production**: Use `PostgresEventStore`, real projectors, Redpanda event bus
+/// - **Testing**: Use `InMemoryEventStore`, `InMemoryProjector`, `InMemoryEventBus`
 ///
-/// # Example
+/// # Type Parameters
+///
+/// - `C`: Clock implementation (`SystemClock` or `FixedClock`)
+/// - `ES`: Event store implementation (`PostgresEventStore` or `InMemoryEventStore`)
+/// - `P`: Projector implementation (`EventProjector`, `InMemoryProjector`, or `NoOpProjector`)
+/// - `EB`: Event bus implementation (`RedpandaEventBus`, `InMemoryEventBus`, or `NoOpEventBus`)
+///
+/// # Example (Production)
 ///
 /// ```ignore
 /// let env = TicketingEnvironment::new(
-///     event_store,
-///     Some(projector),
-///     None, // No event bus for now
-///     "event-events",
+///     SystemClock,
+///     postgres_event_store,
+///     Some(event_projector),
+///     Some(redpanda_event_bus),
+///     "ticketing-events",
 /// );
-///
-/// let handler = Handler::new(EventBusinessLogic, NoOpCallExecutor, env);
-/// let result = handler.handle(command).await?;
 /// ```
-pub struct TicketingEnvironment<P = NoOpProjector, EB = NoOpEventBus>
+///
+/// # Example (Testing)
+///
+/// ```ignore
+/// use composable_rust_next::testing::{InMemoryEventStore, InMemoryProjector, InMemoryEventBus};
+/// use composable_rust_next::FixedClock;
+///
+/// let env = TicketingEnvironment::new(
+///     FixedClock::new(Utc::now()),
+///     InMemoryEventStore::new(),
+///     Some(InMemoryProjector::new()),
+///     Some(InMemoryEventBus::new()),
+///     "test-events",
+/// );
+/// ```
+pub struct TicketingEnvironment<C, ES, P = NoOpProjector, EB = NoOpEventBus>
 where
+    C: Clock,
+    ES: EventStore,
     P: Projector,
     EB: EventBus,
 {
-    clock: SystemClock,
-    event_store: PostgresEventStore,
+    clock: C,
+    event_store: ES,
     projector: Option<P>,
     event_bus: Option<EB>,
     broadcast_topic: String,
 }
 
-impl<P, EB> TicketingEnvironment<P, EB>
+impl<C, ES, P, EB> TicketingEnvironment<C, ES, P, EB>
 where
+    C: Clock,
+    ES: EventStore,
     P: Projector,
     EB: EventBus,
 {
-    /// Create a new ticketing environment.
+    /// Create a new ticketing environment with all dependencies.
     ///
     /// # Arguments
     ///
-    /// * `event_store` - `PostgreSQL` event store for persistence
+    /// * `clock` - Clock for timestamps
+    /// * `event_store` - Event store for persistence
     /// * `projector` - Optional projector for updating read models
     /// * `event_bus` - Optional event bus for broadcasting events
     /// * `broadcast_topic` - Topic name for broadcasting (used if `event_bus` is `Some`)
     #[must_use]
     pub fn new(
-        event_store: PostgresEventStore,
+        clock: C,
+        event_store: ES,
         projector: Option<P>,
         event_bus: Option<EB>,
         broadcast_topic: impl Into<String>,
     ) -> Self {
         Self {
-            clock: SystemClock,
+            clock,
             event_store,
             projector,
             event_bus,
@@ -108,36 +156,39 @@ where
         }
     }
 
-    /// Get a reference to the underlying event store.
+    /// Get a reference to the clock.
     #[must_use]
-    pub const fn event_store_ref(&self) -> &PostgresEventStore {
+    pub const fn clock_ref(&self) -> &C {
+        &self.clock
+    }
+
+    /// Get a reference to the event store.
+    #[must_use]
+    pub const fn event_store_ref(&self) -> &ES {
         &self.event_store
     }
-}
 
-impl TicketingEnvironment<NoOpProjector, NoOpEventBus> {
-    /// Create a minimal environment without projector or event bus.
-    ///
-    /// Useful for testing or simple use cases.
+    /// Get a reference to the projector (if configured).
     #[must_use]
-    #[allow(clippy::missing_const_for_fn)] // String::new() is not const
-    pub fn minimal(event_store: PostgresEventStore) -> Self {
-        Self {
-            clock: SystemClock,
-            event_store,
-            projector: None,
-            event_bus: None,
-            broadcast_topic: String::new(),
-        }
+    pub const fn projector_ref(&self) -> Option<&P> {
+        self.projector.as_ref()
+    }
+
+    /// Get a reference to the event bus (if configured).
+    #[must_use]
+    pub const fn event_bus_ref(&self) -> Option<&EB> {
+        self.event_bus.as_ref()
     }
 }
 
-impl<P, EB> HandlerEnvironment for TicketingEnvironment<P, EB>
+impl<C, ES, P, EB> HandlerEnvironment for TicketingEnvironment<C, ES, P, EB>
 where
+    C: Clock + Send + Sync,
+    ES: EventStore + Send + Sync,
     P: Projector + Send + Sync,
     EB: EventBus + Send + Sync,
 {
-    type EventStore = PostgresEventStore;
+    type EventStore = ES;
     type Projector = P;
     type EventBus = EB;
 
@@ -163,11 +214,57 @@ where
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Environment with Real Projector
+// Convenience Type Aliases
 // ═══════════════════════════════════════════════════════════════════════════
 
-impl TicketingEnvironment<EventProjector, NoOpEventBus> {
-    /// Create an environment with a projector but no event bus.
+/// Production environment with PostgreSQL and system clock.
+pub type ProductionEnvironment<P = NoOpProjector, EB = NoOpEventBus> =
+    TicketingEnvironment<SystemClock, PostgresEventStore, P, EB>;
+
+/// Production environment with PostgreSQL, EventProjector, and no event bus.
+pub type ProductionEnvironmentWithProjector =
+    TicketingEnvironment<SystemClock, PostgresEventStore, EventProjector, NoOpEventBus>;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Production Convenience Constructors
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl<P, EB> TicketingEnvironment<SystemClock, PostgresEventStore, P, EB>
+where
+    P: Projector,
+    EB: EventBus,
+{
+    /// Create a production environment with PostgreSQL and system clock.
+    #[must_use]
+    pub fn production(
+        event_store: PostgresEventStore,
+        projector: Option<P>,
+        event_bus: Option<EB>,
+        broadcast_topic: impl Into<String>,
+    ) -> Self {
+        Self::new(SystemClock, event_store, projector, event_bus, broadcast_topic)
+    }
+}
+
+impl TicketingEnvironment<SystemClock, PostgresEventStore, NoOpProjector, NoOpEventBus> {
+    /// Create a minimal production environment without projector or event bus.
+    ///
+    /// Useful for simple use cases or when projections aren't needed.
+    #[must_use]
+    #[allow(clippy::missing_const_for_fn)] // String::new() is not const
+    pub fn minimal(event_store: PostgresEventStore) -> Self {
+        Self {
+            clock: SystemClock,
+            event_store,
+            projector: None,
+            event_bus: None,
+            broadcast_topic: String::new(),
+        }
+    }
+}
+
+impl TicketingEnvironment<SystemClock, PostgresEventStore, EventProjector, NoOpEventBus> {
+    /// Create a production environment with a projector but no event bus.
     #[must_use]
     #[allow(clippy::missing_const_for_fn)] // String::new() is not const
     pub fn with_projector(event_store: PostgresEventStore, projector: EventProjector) -> Self {
@@ -180,3 +277,42 @@ impl TicketingEnvironment<EventProjector, NoOpEventBus> {
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Test Type Aliases
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Test environment type alias with all in-memory dependencies.
+///
+/// Use this for handler integration tests:
+///
+/// ```ignore
+/// use composable_rust_next::testing::{InMemoryEventStore, InMemoryProjector, InMemoryEventBus};
+/// use composable_rust_next::FixedClock;
+///
+/// let clock = FixedClock::new(Utc::now());
+/// let event_store = InMemoryEventStore::new();
+/// let projector = InMemoryProjector::new();
+/// let event_bus = InMemoryEventBus::new();
+///
+/// let env: TestEnvironment = TicketingEnvironment::new(
+///     clock,
+///     event_store.clone(),  // Clone to keep reference for assertions
+///     Some(projector.clone()),
+///     Some(event_bus.clone()),
+///     "test-events",
+/// );
+///
+/// let handler = Handler::new(MyLogic, NoOpCallExecutor, env);
+/// handler.handle(command).await?;
+///
+/// // Assert on stored events
+/// assert_eq!(event_store.events_for_stream("my-stream").len(), 1);
+/// ```
+#[cfg(test)]
+pub type TestEnvironment = TicketingEnvironment<
+    composable_rust_next::FixedClock,
+    composable_rust_next::testing::InMemoryEventStore,
+    composable_rust_next::testing::InMemoryProjector,
+    composable_rust_next::testing::InMemoryEventBus,
+>;

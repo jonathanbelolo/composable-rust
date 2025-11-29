@@ -83,6 +83,7 @@ mod handler;
 mod logic;
 mod result;
 mod stream;
+pub mod testing;
 mod version;
 
 // Re-export core types from modules

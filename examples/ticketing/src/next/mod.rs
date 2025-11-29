@@ -51,7 +51,10 @@ pub mod payment;
 pub mod projector;
 pub mod reservation_saga;
 
-pub use environment::TicketingEnvironment;
+pub use environment::{
+    NoOpEventBus, NoOpProjector, ProductionEnvironment, ProductionEnvironmentWithProjector,
+    TicketingEnvironment,
+};
 pub use event::{EventBusinessLogic, EventCommand, EventError, EventEvent, EventState};
 pub use event_inventory_saga::{
     EventInventorySagaLogic, SagaCall as EventInventorySagaCall,
