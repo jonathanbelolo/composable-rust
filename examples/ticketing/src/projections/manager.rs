@@ -150,8 +150,8 @@ impl EventsProjectionRunner {
                     let result = self.projection.apply_event(&event).await;
 
                     // Send completion notification using framework ResponseChannel
-                    let notification = result.as_ref().map(|()| ()).map_err(|e| {
-                        format!("{}: {}", projection_name, e)
+                    let notification = result.as_ref().copied().map_err(|e| {
+                        format!("{projection_name}: {e}")
                     });
                     let _ = respond_to.send(notification);
 
@@ -224,8 +224,8 @@ impl AvailableSeatsProjectionRunner {
                     let result = self.projection.apply_event(&event).await;
 
                     // Send completion notification using framework ResponseChannel
-                    let notification = result.as_ref().map(|()| ()).map_err(|e| {
-                        format!("{}: {}", projection_name, e)
+                    let notification = result.as_ref().copied().map_err(|e| {
+                        format!("{projection_name}: {e}")
                     });
                     let _ = respond_to.send(notification);
 
@@ -297,8 +297,8 @@ impl PaymentsProjectionRunner {
                     let result = self.projection.apply_event(&event).await;
 
                     // Send completion notification using framework ResponseChannel
-                    let notification = result.as_ref().map(|()| ()).map_err(|e| {
-                        format!("{}: {}", projection_name, e)
+                    let notification = result.as_ref().copied().map_err(|e| {
+                        format!("{projection_name}: {e}")
                     });
                     let _ = respond_to.send(notification);
 
@@ -370,8 +370,8 @@ impl ReservationsProjectionRunner {
                     let result = self.projection.apply_event(&event).await;
 
                     // Send completion notification using framework ResponseChannel
-                    let notification = result.as_ref().map(|()| ()).map_err(|e| {
-                        format!("{}: {}", projection_name, e)
+                    let notification = result.as_ref().copied().map_err(|e| {
+                        format!("{projection_name}: {e}")
                     });
                     let _ = respond_to.send(notification);
 

@@ -168,7 +168,7 @@ impl PostgresCustomerHistoryProjection {
         .await
         .map_err(|e| ProjectionError::Storage(format!("Failed to check event attendance: {e}")))?;
 
-        Ok(result.map_or(false, |(exists,)| exists))
+        Ok(result.is_some_and(|(exists,)| exists))
     }
 
     /// Get all customers who attended a specific event.

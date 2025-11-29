@@ -655,16 +655,14 @@ pub async fn list_user_payments(
         .map_err(|e| AppError::internal(format!("Failed to query payments: {e}")))?;
 
     // Extract payments from result action
-    let payments = match result {
-        PaymentAction::CustomerPaymentsListed {
-            customer_id: _,
-            payments,
-        } => payments,
-        _ => {
-            return Err(AppError::internal(
-                "Unexpected response from payments query",
-            ));
-        }
+    let PaymentAction::CustomerPaymentsListed {
+        customer_id: _,
+        payments,
+    } = result
+    else {
+        return Err(AppError::internal(
+            "Unexpected response from payments query",
+        ));
     };
 
     let total = payments.len();

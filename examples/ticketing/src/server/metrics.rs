@@ -10,7 +10,6 @@ use crate::server::AppState;
 /// Create metrics routes.
 ///
 /// Returns a router with the `/metrics` endpoint.
-#[must_use]
 pub fn metrics_routes() -> Router<AppState> {
     Router::new().route("/metrics", get(metrics_handler))
 }

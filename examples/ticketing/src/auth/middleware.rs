@@ -306,7 +306,7 @@ impl FromRequestParts<AppState> for RequireAdmin
         .bind(session_user.user_id.0) // UserId is a tuple struct wrapping Uuid
         .fetch_one(state.auth_pool.as_ref())
         .await
-        .map_err(|e| AppError::internal(&format!("Failed to query user role: {e}")))?;
+        .map_err(|e| AppError::internal(format!("Failed to query user role: {e}")))?;
 
         // Check if user is admin
         if role != "admin" {

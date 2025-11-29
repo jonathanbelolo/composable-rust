@@ -127,7 +127,7 @@ impl Projection for PostgresEventsProjection {
                             updated_at = EXCLUDED.updated_at"
                     )
                     .bind(id.as_uuid())
-                    .bind(&owner_id.0)
+                    .bind(owner_id.0)
                     .bind(&json)
                     .bind(created_at)
                     .bind(chrono::Utc::now())
@@ -155,7 +155,7 @@ impl Projection for PostgresEventsProjection {
                          WHERE id = $1"
                     )
                     .bind(event_id.as_uuid())
-                    .bind(format!("\"{}\"", new_status))
+                    .bind(format!("\"{new_status}\""))
                     .bind(chrono::Utc::now())
                     .execute(&*self.pool)
                     .await
@@ -195,8 +195,7 @@ impl Projection for PostgresEventsProjection {
 
                     let Some((json,)) = current else {
                         return Err(ProjectionError::Storage(format!(
-                            "Event {} not found in projection",
-                            event_id
+                            "Event {event_id} not found in projection"
                         )));
                     };
 
@@ -236,8 +235,7 @@ impl Projection for PostgresEventsProjection {
 
                     let Some((json,)) = current else {
                         return Err(ProjectionError::Storage(format!(
-                            "Event {} not found in projection",
-                            event_id
+                            "Event {event_id} not found in projection"
                         )));
                     };
 

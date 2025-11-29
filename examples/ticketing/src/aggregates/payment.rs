@@ -490,6 +490,7 @@ impl Reducer for PaymentReducer {
     type Environment = PaymentEnvironment;
 
     #[allow(clippy::too_many_lines)] // Payment workflow has many state transitions
+    #[allow(clippy::match_same_arms)] // Echoed events kept explicit per architecture design
     fn reduce(
         &self,
         state: &mut Self::State,

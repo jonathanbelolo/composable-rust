@@ -246,7 +246,7 @@ impl AppState {
         use composable_rust_core::stream::StreamId;
         use composable_rust_runtime::Store;
 
-        let stream_id = StreamId::new(&format!("inventory-{}", event_id.as_uuid()));
+        let stream_id = StreamId::new(format!("inventory-{}", event_id.as_uuid()));
         let env = InventoryEnvironment::new(
             self.clock.clone(),
             self.event_store.clone(),
@@ -286,7 +286,7 @@ impl AppState {
         use composable_rust_core::stream::StreamId;
         use composable_rust_runtime::Store;
 
-        let stream_id = StreamId::new(&format!("payment-{}", payment_id.as_uuid()));
+        let stream_id = StreamId::new(format!("payment-{}", payment_id.as_uuid()));
         let env = PaymentEnvironment::new(
             self.clock.clone(),
             self.event_store.clone(),
@@ -327,7 +327,7 @@ impl AppState {
         use composable_rust_core::stream::StreamId;
         use composable_rust_runtime::Store;
 
-        let stream_id = StreamId::new(&format!("reservation-{}", reservation_id.as_uuid()));
+        let stream_id = StreamId::new(format!("reservation-{}", reservation_id.as_uuid()));
 
         // Create factory functions for child aggregate stores
         // These capture the shared dependencies and create fresh stores on demand
@@ -342,7 +342,7 @@ impl AppState {
                 + Send
                 + Sync,
         > = std::sync::Arc::new(move |event_id| {
-            let stream_id = StreamId::new(&format!("inventory-{}", event_id.as_uuid()));
+            let stream_id = StreamId::new(format!("inventory-{}", event_id.as_uuid()));
             let env = InventoryEnvironment::new(
                 clock_for_inventory.clone(),
                 event_store_for_inventory.clone(),
@@ -364,7 +364,7 @@ impl AppState {
                 + Send
                 + Sync,
         > = std::sync::Arc::new(move |payment_id| {
-            let stream_id = StreamId::new(&format!("payment-{}", payment_id.as_uuid()));
+            let stream_id = StreamId::new(format!("payment-{}", payment_id.as_uuid()));
             let env = PaymentEnvironment::new(
                 clock_for_payment.clone(),
                 event_store_for_payment.clone(),
@@ -415,7 +415,7 @@ impl AppState {
         use composable_rust_core::stream::StreamId;
         use composable_rust_runtime::Store;
 
-        let stream_id = StreamId::new(&format!("event-{}", event_id.as_uuid()));
+        let stream_id = StreamId::new(format!("event-{}", event_id.as_uuid()));
         let env = EventEnvironment::new(
             self.clock.clone(),
             self.event_store.clone(),
@@ -455,7 +455,7 @@ impl AppState {
         use composable_rust_core::stream::StreamId;
         use composable_rust_runtime::Store;
 
-        let stream_id = StreamId::new(&format!("event-inventory-saga-{}", saga_id.as_uuid()));
+        let stream_id = StreamId::new(format!("event-inventory-saga-{}", saga_id.as_uuid()));
 
         // Create factory function for Event aggregate stores
         let clock_for_event = self.clock.clone();
@@ -468,7 +468,7 @@ impl AppState {
                 + Send
                 + Sync,
         > = std::sync::Arc::new(move |event_id| {
-            let stream_id = StreamId::new(&format!("event-{}", event_id.as_uuid()));
+            let stream_id = StreamId::new(format!("event-{}", event_id.as_uuid()));
             let env = EventEnvironment::new(
                 clock_for_event.clone(),
                 event_store_for_event.clone(),
@@ -491,7 +491,7 @@ impl AppState {
                 + Send
                 + Sync,
         > = std::sync::Arc::new(move |event_id| {
-            let stream_id = StreamId::new(&format!("inventory-{}", event_id.as_uuid()));
+            let stream_id = StreamId::new(format!("inventory-{}", event_id.as_uuid()));
             let env = InventoryEnvironment::new(
                 clock_for_inventory.clone(),
                 event_store_for_inventory.clone(),

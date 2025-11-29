@@ -202,7 +202,7 @@ impl EventProjection {
             } => {
                 if let Some(event) = self.events.get_mut(event_id) {
                     if let Some(new_name) = name {
-                        event.name = new_name.clone();
+                        event.name.clone_from(new_name);
                     }
                 }
             }

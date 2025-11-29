@@ -36,7 +36,7 @@
 //! - **ONE Consumer**: Created at startup, runs forever
 //! - **Cheap Per-Request**: Only allocates oneshot channel
 //! - **Automatic Cleanup**: Entries removed after notification
-//! - **Multiple Waiters**: Many requests can wait for same correlation_id
+//! - **Multiple Waiters**: Many requests can wait for same `correlation_id`
 //! - **Timeout Support**: Requests don't block forever
 
 use composable_rust_core::event_bus::EventBus;
@@ -89,7 +89,7 @@ impl std::fmt::Display for CorrelationId {
 pub struct ProjectionCompleted {
     /// Correlation ID from the original domain event
     pub correlation_id: CorrelationId,
-    /// Name of the projection (e.g., "available_seats", "sales_analytics")
+    /// Name of the projection (e.g., `available_seats`, `sales_analytics`)
     pub projection_name: String,
     /// Type of domain event that was processed
     pub event_type: String,
@@ -193,16 +193,16 @@ impl Waiter {
 /// and notifies individual HTTP requests when their projections complete.
 pub struct ProjectionCompletionTracker {
     /// Pending requests waiting for projection completion
-    /// Key: CorrelationId, Value: List of waiters
+    /// Key: [`CorrelationId`], Value: List of waiters
     pending: Arc<RwLock<HashMap<CorrelationId, Vec<Waiter>>>>,
     /// Background consumer task handle
     consumer_handle: Option<JoinHandle<()>>,
 }
 
 impl ProjectionCompletionTracker {
-    /// Create a new tracker without EventBus tracking (for local channel-based architecture).
+    /// Create a new tracker without `EventBus` tracking (for local channel-based architecture).
     ///
-    /// This version doesn't track projection completions via EventBus.
+    /// This version doesn't track projection completions via `EventBus`.
     /// Projections are assumed to be synchronous in the monolith architecture.
     #[must_use]
     pub fn new_without_tracking() -> Self {
@@ -239,6 +239,8 @@ impl ProjectionCompletionTracker {
     /// Background consumer loop (runs forever).
     ///
     /// Consumes from "projection.completed" topic and notifies waiting requests.
+    #[allow(clippy::expect_used)] // Lock poisoning indicates unrecoverable state
+    #[allow(clippy::cognitive_complexity)] // Event handling loop has inherent complexity
     async fn consume_loop(
         event_bus: Arc<dyn EventBus>,
         pending: Arc<RwLock<HashMap<CorrelationId, Vec<Waiter>>>>,
@@ -282,11 +284,12 @@ impl ProjectionCompletionTracker {
 
     /// Handle a projection completion/failure event.
     ///
-    /// Updates all waiters for this correlation_id and notifies those that are done.
+    /// Updates all waiters for this `correlation_id` and notifies those that are done.
     fn handle_completion_event(
         pending: &Arc<RwLock<HashMap<CorrelationId, Vec<Waiter>>>>,
         event: ProjectionCompletionEvent,
     ) {
+        #![allow(clippy::expect_used)] // Lock poisoning indicates unrecoverable state
         let correlation_id = *event.correlation_id();
 
         let mut pending_lock = pending.write().expect("Pending lock poisoned");
@@ -332,17 +335,22 @@ impl ProjectionCompletionTracker {
     /// Register interest in waiting for specific projections to complete.
     ///
     /// Returns a future that resolves when all specified projections have
-    /// processed the event with the given correlation_id.
+    /// processed the event with the given `correlation_id`.
     ///
     /// # Arguments
     ///
     /// - `correlation_id`: Correlation ID to track
-    /// - `projection_names`: Names of projections to wait for (e.g., ["available_seats"])
+    /// - `projection_names`: Names of projections to wait for (e.g., `["available_seats"]`)
     ///
     /// # Returns
     ///
     /// A receiver that will be notified when all projections complete or fail.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the pending lock is poisoned (indicates unrecoverable state).
     #[must_use]
+    #[allow(clippy::expect_used)] // Lock poisoning indicates unrecoverable state
     pub fn register_interest(
         &self,
         correlation_id: CorrelationId,
@@ -360,14 +368,19 @@ impl ProjectionCompletionTracker {
         let mut pending = self.pending.write().expect("Pending lock poisoned");
         pending
             .entry(correlation_id)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(waiter);
 
         receiver
     }
 
     /// Get count of pending requests (for monitoring).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the pending lock is poisoned (indicates unrecoverable state).
     #[must_use]
+    #[allow(clippy::expect_used)] // Lock poisoning indicates unrecoverable state
     pub fn pending_count(&self) -> usize {
         self.pending.read().expect("Pending lock poisoned").len()
     }
