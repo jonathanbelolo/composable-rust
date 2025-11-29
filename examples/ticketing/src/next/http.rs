@@ -59,6 +59,7 @@ use uuid::Uuid;
 
 use super::{
     environment::{NoOpEventBus, NoOpProjector, TicketingEnvironment},
+    saga::SagaError,
     EventBusinessLogic, EventCommand, EventError,
 };
 use crate::types::{
@@ -77,11 +78,27 @@ pub type EventHandler = Handler<
     TicketingEnvironment<NoOpProjector, NoOpEventBus>,
 >;
 
+// Note: A full SagaHandler would require a SagaCallExecutor that can dispatch
+// SagaCall variants to the appropriate child handlers:
+//
+// pub type SagaHandler = Handler<
+//     EventInventorySagaLogic,
+//     SagaCallExecutor,  // Dispatches to EventHandler + InventoryHandler
+//     TicketingEnvironment<...>,
+// >;
+//
+// The SagaCallExecutor would implement CallExecutor trait with:
+// - Call = SagaCall (Event | Inventory)
+// - CallResult = SagaCallResult
+// - execute() would pattern match on SagaCall and delegate to child handlers
+
 /// Shared state containing the event handler.
 #[derive(Clone)]
 pub struct NextAppState {
     /// The event aggregate handler.
     pub event_handler: Arc<EventHandler>,
+    // For saga support, add:
+    // pub saga_handler: Arc<SagaHandler>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -141,6 +158,60 @@ pub struct PublishEventResponse {
     pub message: String,
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Saga Request/Response Types
+// ───────────────────────────────────────────────────────────────────────────
+
+/// Request to create an event with inventory in one atomic saga.
+///
+/// This endpoint coordinates creating an Event aggregate and initializing
+/// Inventory aggregates for each venue section.
+#[derive(Debug, Deserialize)]
+pub struct CreateEventWithInventoryRequest {
+    /// Event title
+    pub title: String,
+    /// Event description
+    #[allow(dead_code)]
+    pub description: Option<String>,
+    /// Event start time
+    pub start_time: DateTime<Utc>,
+    /// Venue configuration with sections
+    pub venue: VenueRequest,
+    /// Ticket price in dollars
+    pub price: f64,
+    /// Optional owner ID (for demo purposes)
+    pub owner_id: Option<Uuid>,
+}
+
+/// Venue configuration for saga request.
+#[derive(Debug, Deserialize)]
+pub struct VenueRequest {
+    /// Venue name
+    pub name: String,
+    /// Venue sections with capacities
+    pub sections: Vec<SectionRequest>,
+}
+
+/// Section configuration for saga request.
+#[derive(Debug, Deserialize)]
+pub struct SectionRequest {
+    /// Section name (e.g., "VIP", "General Admission")
+    pub name: String,
+    /// Section capacity
+    pub capacity: u32,
+}
+
+/// Response after creating event with inventory.
+#[derive(Debug, Serialize)]
+pub struct CreateEventWithInventoryResponse {
+    /// Created event ID
+    pub event_id: Uuid,
+    /// Sections initialized
+    pub sections: Vec<String>,
+    /// Success message
+    pub message: String,
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Error Conversion
 // ═══════════════════════════════════════════════════════════════════════════
@@ -167,6 +238,29 @@ fn to_app_error(err: HandlerError<EventError>) -> AppError {
         HandlerError::Broadcast(e) => AppError::internal(format!("Broadcast failed: {e}")),
         HandlerError::Serialization(e) => {
             AppError::internal(format!("Serialization failed: {e}"))
+        }
+    }
+}
+
+/// Convert a saga handler error to an HTTP error response.
+#[allow(dead_code)] // Will be used when SagaHandler is fully implemented
+fn saga_to_app_error(err: HandlerError<SagaError>) -> AppError {
+    match err {
+        HandlerError::Business(SagaError::AlreadyInProgress) => {
+            AppError::conflict("Saga already in progress")
+        }
+        HandlerError::Business(SagaError::InvalidStateTransition { from, to }) => {
+            AppError::bad_request(format!("Invalid saga transition from {from:?} to {to:?}"))
+        }
+        HandlerError::Business(SagaError::ValidationFailed(message)) => {
+            AppError::bad_request(message)
+        }
+        HandlerError::Load(e) => AppError::internal(format!("Failed to load saga state: {e}")),
+        HandlerError::Persist(e) => AppError::internal(format!("Failed to persist saga: {e}")),
+        HandlerError::Projection(e) => AppError::internal(format!("Saga projection failed: {e}")),
+        HandlerError::Broadcast(e) => AppError::internal(format!("Saga broadcast failed: {e}")),
+        HandlerError::Serialization(e) => {
+            AppError::internal(format!("Saga serialization failed: {e}"))
         }
     }
 }
@@ -338,6 +432,51 @@ pub async fn cancel_event(
     }))
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Saga Handlers (Placeholder)
+// ───────────────────────────────────────────────────────────────────────────
+
+// TODO: Implement saga endpoint when SagaCallExecutor is available.
+//
+// The full implementation would look like:
+//
+// pub async fn create_event_with_inventory(
+//     State(state): State<NextAppState>,
+//     Json(request): Json<CreateEventWithInventoryRequest>,
+// ) -> Result<(StatusCode, Json<CreateEventWithInventoryResponse>), AppError> {
+//     let event_id = EventId::new();
+//
+//     // Build domain types from request
+//     let venue = venue_from_request(&request.venue);
+//     let sections: Vec<String> = request.venue.sections.iter().map(|s| s.name.clone()).collect();
+//
+//     // Build saga input
+//     let input = SagaInput::CreateEventWithInventory {
+//         event_id,
+//         name: request.title,
+//         owner_id: request.owner_id.map(UserId).unwrap_or_else(UserId::new),
+//         venue,
+//         date: EventDate::new(request.start_time),
+//         pricing_tiers: create_pricing_tiers_for_saga(&request),
+//     };
+//
+//     // Execute saga - the SagaHandler orchestrates Event + Inventory creation
+//     let _result = state
+//         .saga_handler
+//         .handle(input)
+//         .await
+//         .map_err(saga_to_app_error)?;
+//
+//     Ok((
+//         StatusCode::CREATED,
+//         Json(CreateEventWithInventoryResponse {
+//             event_id: *event_id.as_uuid(),
+//             sections,
+//             message: "Event created with inventory".to_string(),
+//         }),
+//     ))
+// }
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Helper Functions
 // ═══════════════════════════════════════════════════════════════════════════
@@ -383,11 +522,16 @@ use axum::{routing::post, Router};
 /// - POST /api/v2/events - Create a new event
 /// - POST /api/v2/events/:id/publish - Publish an event
 /// - POST /api/v2/events/:id/cancel - Cancel an event
+///
+/// # Future Saga Routes (requires SagaCallExecutor)
+///
+/// - POST /api/v2/sagas/events - Create event with inventory (saga)
 pub fn events_v2_routes() -> Router<NextAppState> {
     Router::new()
         .route("/events", post(create_event))
         .route("/events/{id}/publish", post(publish_event))
         .route("/events/{id}/cancel", post(cancel_event))
+    // Future: .route("/sagas/events", post(create_event_with_inventory))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
