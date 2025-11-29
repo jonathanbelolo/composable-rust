@@ -1829,6 +1829,7 @@ pub mod store {
                     expected_version,
                     events,
                     metadata: existing_metadata,
+                    broadcast_on_success,
                     on_success,
                     on_error,
                 }) => {
@@ -1903,6 +1904,7 @@ pub mod store {
                         expected_version,
                         events: updated_events,
                         metadata: merged_metadata,
+                        broadcast_on_success,
                         on_success,
                         on_error,
                     })
@@ -2538,6 +2540,7 @@ pub mod store {
                                 expected_version,
                                 events,
                                 metadata,
+                                broadcast_on_success,
                                 on_success,
                                 on_error,
                             } => {
@@ -2546,6 +2549,7 @@ pub mod store {
                                     expected_version = ?expected_version,
                                     event_count = events.len(),
                                     has_metadata = metadata.is_some(),
+                                    has_broadcast_on_success = broadcast_on_success.is_some(),
                                     "Executing append_events"
                                 );
 
@@ -2593,6 +2597,17 @@ pub mod store {
                                 match result {
                                     Ok(version) => {
                                         tracing::debug!(new_version = ?version, "append_events succeeded");
+
+                                        // If broadcast_on_success is set, broadcast it FIRST (no re-entry)
+                                        // This allows send_and_wait_for to detect completion AFTER persistence
+                                        if let Some(action_to_broadcast) = broadcast_on_success {
+                                            tracing::trace!(
+                                                "Broadcasting broadcast_on_success action (no reducer re-entry)"
+                                            );
+                                            let _ = store.action_broadcast.send(*action_to_broadcast);
+                                        }
+
+                                        // Return on_success action (will be broadcast AND re-enter reducer)
                                         on_success(version)
                                     },
                                     Err(error) => {
@@ -2863,16 +2878,29 @@ pub mod store {
                         // Send result action back to store if callback produced one
                         if let Some(action) = result_action {
                             tracing::trace!(
-                                "PublishWithResponse completed, broadcasting result action"
+                                "PublishWithResponse completed, sending result action to store"
                             );
-                            // Broadcast the action so send_and_wait_for_with_metadata can receive it
-                            // Note: We broadcast instead of send because send_and_wait_for_with_metadata
-                            // only receives actions that are broadcast (produced by effects), not directly sent
-                            let _ = store.action_broadcast.send(action);
+                            // Broadcast to observers (HTTP handlers, WebSockets, send_and_wait_for)
+                            let _ = store.action_broadcast.send(action.clone());
+
+                            // Also send action back to store for reducer processing
+                            let _ = store.send_with_metadata(action, metadata_clone).await;
                         } else {
                             tracing::trace!("PublishWithResponse completed with no result action");
                         }
                     });
+                },
+                Effect::BroadcastOnly(action) => {
+                    // Broadcast to observers WITHOUT re-entering the reducer.
+                    // This is synchronous - no spawning needed.
+                    tracing::trace!("Executing Effect::BroadcastOnly");
+                    metrics::counter!("store.effects.executed", "type" => "broadcast_only").increment(1);
+
+                    // Broadcast to action_broadcast channel (for send_and_wait_for, WebSockets, etc.)
+                    // Note: We DON'T call send_with_metadata - this action should NOT re-enter the reducer
+                    let _ = self.action_broadcast.send(*action);
+
+                    tracing::trace!("Effect::BroadcastOnly completed (no reducer re-entry)");
                 },
             }
         }
@@ -3290,6 +3318,7 @@ mod tests {
                             expected_version: state.last_version.map(Version::new),
                             events: serialized_events,
                             metadata: None,
+                            broadcast_on_success: None,
                             on_success: Box::new(|version| {
                                 Some(EventStoreAction::EventsAppended {
                                     version: version.value(),
@@ -3630,6 +3659,7 @@ mod tests {
                             None,
                         )],
                         metadata: None,
+                        broadcast_on_success: None,
                         on_success: Box::new(|_| None), // No feedback action
                         on_error: Box::new(|_| None),
                     }),
@@ -3643,6 +3673,7 @@ mod tests {
                             None,
                         )],
                         metadata: None,
+                        broadcast_on_success: None,
                         on_success: Box::new(|_| None),
                         on_error: Box::new(|_| None),
                     }),
@@ -4556,6 +4587,178 @@ mod tests {
 
             assert_eq!(config.dlq_max_size, 400);
             assert_eq!(config.default_shutdown_timeout, Duration::from_secs(120));
+        }
+    }
+
+    /// Tests for `Effect::BroadcastOnly` and `broadcast_on_success`
+    mod broadcast_only_tests {
+        use super::*;
+        use composable_rust_core::effect::Effect;
+
+        // Test state
+        #[derive(Clone, Debug, Default)]
+        struct BroadcastTestState {
+            reducer_calls: Vec<String>,
+        }
+
+        // Test actions
+        #[derive(Clone, Debug)]
+        enum BroadcastTestAction {
+            TriggerBroadcast {
+                message: String,
+            },
+            /// This action should be broadcast but NOT re-enter the reducer
+            BroadcastedMessage {
+                message: String,
+            },
+            /// This action should be broadcast AND re-enter the reducer
+            RegularMessage {
+                message: String,
+            },
+        }
+
+        // Test reducer
+        #[derive(Clone)]
+        struct BroadcastTestReducer;
+
+        impl Reducer for BroadcastTestReducer {
+            type State = BroadcastTestState;
+            type Action = BroadcastTestAction;
+            type Environment = ();
+
+            fn reduce(
+                &self,
+                state: &mut Self::State,
+                action: Self::Action,
+                _env: &Self::Environment,
+            ) -> SmallVec<[Effect<Self::Action>; 4]> {
+                match action {
+                    BroadcastTestAction::TriggerBroadcast { message } => {
+                        state.reducer_calls.push(format!("trigger:{message}"));
+                        // Return BroadcastOnly effect - should NOT cause re-entry
+                        smallvec![Effect::BroadcastOnly(Box::new(
+                            BroadcastTestAction::BroadcastedMessage {
+                                message: message.clone(),
+                            }
+                        ))]
+                    }
+                    BroadcastTestAction::BroadcastedMessage { message } => {
+                        // If we get here, BroadcastOnly is broken (it's re-entering)
+                        state
+                            .reducer_calls
+                            .push(format!("UNEXPECTED_REENTRY:{message}"));
+                        SmallVec::new()
+                    }
+                    BroadcastTestAction::RegularMessage { message } => {
+                        state.reducer_calls.push(format!("regular:{message}"));
+                        SmallVec::new()
+                    }
+                }
+            }
+        }
+
+        #[tokio::test]
+        #[allow(clippy::unwrap_used)] // Test code
+        async fn test_broadcast_only_does_not_reenter_reducer() {
+            let store = Store::new(BroadcastTestState::default(), BroadcastTestReducer, ());
+
+            // Subscribe to broadcasts to verify the action IS broadcast
+            let mut rx = store.subscribe_actions();
+
+            // Trigger the broadcast
+            let mut handle = store
+                .send(BroadcastTestAction::TriggerBroadcast {
+                    message: "test".to_string(),
+                })
+                .await
+                .unwrap();
+
+            handle.wait().await;
+
+            // Give time for any potential re-entry to occur
+            tokio::time::sleep(Duration::from_millis(50)).await;
+
+            // Check that we received the broadcast
+            let mut received_broadcast = false;
+            while let Ok(action) =
+                tokio::time::timeout(Duration::from_millis(10), rx.recv()).await
+            {
+                if let Ok(BroadcastTestAction::BroadcastedMessage { .. }) = action {
+                    received_broadcast = true;
+                }
+            }
+            assert!(
+                received_broadcast,
+                "BroadcastedMessage should be broadcast"
+            );
+
+            // Check reducer calls - should only have the trigger, NOT the re-entry
+            let calls = store.state(|s| s.reducer_calls.clone()).await;
+            assert_eq!(calls.len(), 1, "Should only have 1 reducer call");
+            assert_eq!(calls[0], "trigger:test");
+            // Should NOT contain "UNEXPECTED_REENTRY"
+            assert!(
+                !calls.iter().any(|c| c.contains("UNEXPECTED_REENTRY")),
+                "BroadcastOnly should not re-enter reducer"
+            );
+        }
+
+        #[tokio::test]
+        #[allow(clippy::unwrap_used)] // Test code
+        async fn test_regular_future_does_reenter_reducer() {
+            // For comparison, test that Effect::Future DOES re-enter
+            #[derive(Clone)]
+            struct FutureTestReducer;
+
+            impl Reducer for FutureTestReducer {
+                type State = BroadcastTestState;
+                type Action = BroadcastTestAction;
+                type Environment = ();
+
+                fn reduce(
+                    &self,
+                    state: &mut Self::State,
+                    action: Self::Action,
+                    _env: &Self::Environment,
+                ) -> SmallVec<[Effect<Self::Action>; 4]> {
+                    match action {
+                        BroadcastTestAction::TriggerBroadcast { message } => {
+                            state.reducer_calls.push(format!("trigger:{message}"));
+                            // Use regular Future - SHOULD cause re-entry
+                            smallvec![Effect::Future(Box::pin(async move {
+                                Some(BroadcastTestAction::RegularMessage {
+                                    message: message.clone(),
+                                })
+                            }))]
+                        }
+                        BroadcastTestAction::RegularMessage { message } => {
+                            state.reducer_calls.push(format!("regular:{message}"));
+                            SmallVec::new()
+                        }
+                        _ => SmallVec::new(),
+                    }
+                }
+            }
+
+            let store = Store::new(BroadcastTestState::default(), FutureTestReducer, ());
+
+            let mut handle = store
+                .send(BroadcastTestAction::TriggerBroadcast {
+                    message: "test".to_string(),
+                })
+                .await
+                .unwrap();
+
+            handle.wait().await;
+
+            // Give time for re-entry to occur
+            tokio::time::sleep(Duration::from_millis(50)).await;
+
+            // Check reducer calls - should have BOTH the trigger AND the re-entry
+            let calls = store.state(|s| s.reducer_calls.clone()).await;
+            assert_eq!(calls.len(), 2, "Should have 2 reducer calls");
+            assert_eq!(calls[0], "trigger:test");
+            assert_eq!(calls[1], "regular:test");
         }
     }
 }

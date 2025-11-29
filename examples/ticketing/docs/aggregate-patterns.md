@@ -356,8 +356,22 @@ fn reduce(&self, state: &mut Self::State, action: Self::Action, env: &Self::Envi
         {Aggregate}Action::ListEntities { ... } => { ... }
 
         // ═══════════════════════════════════════════════════════════════════
-        // EVENTS: State updates (from event store replay or commands)
+        // EVENTS: State updates (from event store replay only)
         // ═══════════════════════════════════════════════════════════════════
+        //
+        // This catch-all handles EVENT REPLAY during state reconstruction.
+        // It does NOT handle live events during normal operation.
+        //
+        // When processing live commands:
+        //   1. Command handler calls apply_event() directly
+        //   2. Command handler calls create_effects() with broadcast_on_success
+        //   3. broadcast_on_success broadcasts WITHOUT re-entering reducer
+        //   4. NO catch-all needed for live events
+        //
+        // When replaying from event store:
+        //   1. Persisted events arrive as actions
+        //   2. This catch-all applies them to state
+        //   3. No effects returned (they were already executed)
 
         event => {
             Self::apply_event(state, &event);
@@ -596,9 +610,50 @@ Option 1 is preferred when the timestamp should reflect when async validation co
 
 ## 7. Effect Patterns
 
-### 7.1 create_effects Helper
+### 7.1 The Echo Problem and Its Solution
 
-Standard helper for persistence effects:
+When using `send_and_wait_for`, observers listen on the broadcast channel to detect when specific actions occur. Previously, this required "echoing" events back via `Effect::Future`:
+
+```rust
+// ❌ OLD PATTERN (problematic - causes reducer re-entry)
+smallvec![
+    append_events! { ... },
+    Effect::Future(Box::pin(async move { Some(event) }))  // Echoes event back
+]
+```
+
+**Problems with the old pattern:**
+
+1. **Re-entry**: The echoed event re-enters the reducer, requiring handlers
+2. **Infinite loops**: If the handler calls `create_effects` again → infinite loop
+3. **Catch-all needed**: Either explicit handlers or a catch-all to swallow re-entry
+4. **Race condition**: The echo could broadcast BEFORE persistence completes
+
+**The clean solution** uses `broadcast_on_success` in the `append_events!` macro:
+
+```rust
+// ✅ NEW PATTERN (clean - no reducer re-entry)
+append_events! {
+    store: env.event_store,
+    stream: env.stream_id.as_str(),
+    expected_version: Some(expected_version),
+    events: vec![serialized],
+    broadcast_on_success: event,  // Broadcast AFTER persist, NO re-entry
+    on_success: |version| Some({Aggregate}Action::VersionUpdated { version }),
+    on_error: |error| Some({Aggregate}Action::ValidationFailed { error: error.to_string() })
+}
+```
+
+**Benefits:**
+
+1. **No re-entry**: The event is broadcast but doesn't feed back into reducer
+2. **Guaranteed ordering**: Broadcast happens AFTER successful persistence
+3. **No catch-all needed**: Reducers stay lean with only meaningful handlers
+4. **No infinite loops**: Architecturally impossible
+
+### 7.2 create_effects Helper
+
+Standard helper for persistence effects with broadcast:
 
 ```rust
 fn create_effects(
@@ -608,8 +663,8 @@ fn create_effects(
 ) -> SmallVec<[Effect<{Aggregate}Action>; 4]> {
     // Wrap in TicketingEvent for serialization
     // TicketingEvent variants match aggregate names: Event, Inventory, Reservation, Payment
-    let ticketing_event = TicketingEvent::Event(event);  // For Event aggregate
-    // let ticketing_event = TicketingEvent::Inventory(event);  // For Inventory aggregate
+    let ticketing_event = TicketingEvent::Event(event.clone());  // For Event aggregate
+    // let ticketing_event = TicketingEvent::Inventory(event.clone());  // For Inventory aggregate
 
     let serialized = match ticketing_event.serialize() {
         Ok(s) => s,
@@ -628,6 +683,7 @@ fn create_effects(
             stream: env.stream_id.as_str(),
             expected_version: Some(expected_version),
             events: vec![serialized],
+            broadcast_on_success: event,  // Broadcast for send_and_wait_for detection
             on_success: |version| Some({Aggregate}Action::VersionUpdated { version }),
             on_error: |error| Some({Aggregate}Action::ValidationFailed {
                 error: error.to_string()
@@ -637,13 +693,30 @@ fn create_effects(
 }
 ```
 
+### 7.3 Effect::BroadcastOnly for Non-Persistence Cases
+
+For cases where you need to broadcast an action without event store operations:
+
+```rust
+// Broadcast an action for observers without re-entering reducer
+Effect::BroadcastOnly(Box::new({Aggregate}Action::SomeNotification { ... }))
+```
+
+**Use `broadcast_on_success`** when:
+- You're persisting events AND need to signal completion to `send_and_wait_for`
+- Guaranteed ordering (broadcast after persist) is required
+
+**Use `Effect::BroadcastOnly`** when:
+- You're NOT persisting to event store but need to notify observers
+- The action should NOT re-enter the reducer
+
 **TicketingEvent variants** (defined in `src/projections/mod.rs`):
 - `TicketingEvent::Event(EventAction)` - Event aggregate
 - `TicketingEvent::Inventory(InventoryAction)` - Inventory aggregate
 - `TicketingEvent::Reservation(ReservationAction)` - Reservation aggregate
 - `TicketingEvent::Payment(PaymentAction)` - Payment aggregate
 
-### 7.2 Query Effects
+### 7.4 Query Effects
 
 For read-only queries:
 

@@ -381,16 +381,12 @@ impl PaymentReducer {
                 stream: env.stream_id.as_str(),
                 expected_version: Some(expected_version),
                 events: vec![serialized],
+                broadcast_on_success: event,
                 on_success: |version| Some(PaymentAction::VersionUpdated { version }),
                 on_error: |error| Some(PaymentAction::ValidationFailed {
                     error: error.to_string()
                 })
-            },
-            // Echo the event back as an action so it broadcasts to action_broadcast channel
-            // This allows send_and_wait_for to receive it (e.g., PaymentConfirmed)
-            Effect::Future(Box::pin(async move {
-                Some(event)
-            }))
+            }
         ]
     }
 
@@ -926,9 +922,74 @@ impl Reducer for PaymentReducer {
                 SmallVec::new()
             }
 
-            // ========== Events (from event store) ==========
-            event => {
-                Self::apply_event(state, &event);
+            // ========== Echoed Events (terminal actions for send_and_wait_for) ==========
+            //
+            // These events are persisted and then echoed back as actions so they appear
+            // on the action_broadcast channel. This allows send_and_wait_for to detect
+            // completion. They apply the event to state and return NO effects to prevent
+            // infinite loops.
+            //
+            // CRITICAL: Each echoed event MUST have an explicit handler here.
+            // Do NOT use a catch-all - it hides bugs and is architecturally sloppy.
+            PaymentAction::PaymentProcessed { .. } => {
+                Self::apply_event(state, &action);
+                SmallVec::new()
+            }
+
+            PaymentAction::PaymentSucceeded { .. } => {
+                Self::apply_event(state, &action);
+                SmallVec::new()
+            }
+
+            PaymentAction::PaymentFailed { .. } => {
+                Self::apply_event(state, &action);
+                SmallVec::new()
+            }
+
+            PaymentAction::PaymentRefunded { .. } => {
+                Self::apply_event(state, &action);
+                SmallVec::new()
+            }
+
+            PaymentAction::PaymentConfirmed { .. } => {
+                Self::apply_event(state, &action);
+                SmallVec::new()
+            }
+
+            PaymentAction::PaymentProjectionFailed { .. } => {
+                Self::apply_event(state, &action);
+                SmallVec::new()
+            }
+
+            // ========== Infrastructure Events (from effect system) ==========
+            //
+            // These are produced by the effect system (e.g., append_events macro)
+            // and feed back into the reducer. They update state but produce no
+            // further effects.
+            PaymentAction::VersionUpdated { version } => {
+                state.version = version;
+                SmallVec::new()
+            }
+
+            PaymentAction::ValidationFailed { ref error } => {
+                state.last_error = Some(error.clone());
+                SmallVec::new()
+            }
+
+            PaymentAction::SerializationFailed { ref error } => {
+                state.last_error = Some(error.clone());
+                SmallVec::new()
+            }
+
+            // ========== Query Results (terminal actions) ==========
+            //
+            // Query results are returned to the caller via send_and_wait_for.
+            // They don't modify aggregate state (queries are side-effect free).
+            PaymentAction::PaymentQueried { .. } => {
+                SmallVec::new()
+            }
+
+            PaymentAction::CustomerPaymentsListed { .. } => {
                 SmallVec::new()
             }
         }

@@ -216,7 +216,7 @@ pub async fn get_section_availability(
     let Some(data) = section_data else {
         let stub_capacity = match section.as_str() {
             "VIP" => 20,
-            "General" => 100,
+            "General" | "General Admission" => 100,
             _ => 50,
         };
 
@@ -303,7 +303,7 @@ pub async fn get_total_available(
     // If projection is empty, return stub data for testing
     // TODO: Remove this stub once event creation is fully implemented
     let total_available = if total == 0 {
-        20 // Default stub capacity (matches VIP section in tests)
+        100 // Default stub capacity (matches General Admission section in tests)
     } else {
         total
     };

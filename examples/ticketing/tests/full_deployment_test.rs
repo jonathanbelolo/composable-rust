@@ -164,9 +164,9 @@ async fn test_availability_queries() {
 
     // No sleep needed - API waits for projection completion before returning
 
-    // Query section availability for the General section that was created
+    // Query section availability for the General Admission section that was created
     let section_availability = client
-        .get(format!("{API_BASE}/api/events/{event_id}/sections/General/availability"))
+        .get(format!("{API_BASE}/api/events/{event_id}/sections/General%20Admission/availability"))
         .send()
         .await
         .expect("Failed to query section availability");
@@ -183,7 +183,7 @@ async fn test_availability_queries() {
         .expect("Failed to parse availability");
 
     assert_eq!(
-        availability["section"], "General",
+        availability["section"], "General Admission",
         "Should return correct section"
     );
     assert_eq!(
@@ -308,7 +308,7 @@ async fn test_reservation_flow() {
 
     // Verify availability decreased
     let availability = client
-        .get(format!("{API_BASE}/api/events/{event_id}/sections/General/availability"))
+        .get(format!("{API_BASE}/api/events/{event_id}/sections/General%20Admission/availability"))
         .send()
         .await
         .expect("Failed to query availability");
@@ -633,7 +633,350 @@ async fn test_analytics_queries() {
         .expect("Failed to delete event");
 }
 
-/// Test 7: Magic Link Authentication (Auth Database + Redis)
+/// Test 7: List Events
+///
+/// Verifies that the list events endpoint returns all events.
+#[tokio::test]
+#[ignore = "Requires running server (docker compose up + cargo run). Run with: cargo test --test full_deployment_test -- --ignored"]
+async fn test_list_events() {
+    println!("🧪 Test 7: List Events");
+
+    let auth_token = get_auth_token();
+    let client = reqwest::Client::new();
+
+    // Create an event
+    let create_payload = create_event_payload("List Test Concert", 0, 100);
+
+    let create_response = client
+        .post(format!("{API_BASE}/api/events"))
+        .header("Authorization", format!("Bearer {auth_token}"))
+        .json(&create_payload)
+        .send()
+        .await
+        .expect("Failed to create event");
+
+    assert_eq!(create_response.status(), 201);
+
+    let created_event: serde_json::Value = create_response.json().await.unwrap();
+    let event_id = created_event["event_id"].as_str().unwrap();
+
+    println!("  ✅ Created event: {event_id}");
+
+    // List all events
+    let list_response = client
+        .get(format!("{API_BASE}/api/events"))
+        .header("Authorization", format!("Bearer {auth_token}"))
+        .send()
+        .await
+        .expect("Failed to list events");
+
+    assert_eq!(list_response.status(), 200, "List events should return 200 OK");
+
+    let events_body: serde_json::Value = list_response.json().await.unwrap();
+    let events = events_body["events"].as_array().expect("Response should contain events array");
+
+    let found = events.iter().any(|e| {
+        e["id"].as_str() == Some(event_id) || e["event_id"].as_str() == Some(event_id)
+    });
+
+    assert!(found, "Created event should appear in the events list");
+    println!("  ✅ Event found in list");
+
+    // Clean up
+    client
+        .delete(format!("{API_BASE}/api/events/{event_id}"))
+        .header("Authorization", format!("Bearer {auth_token}"))
+        .send()
+        .await
+        .expect("Failed to delete event");
+}
+
+/// Test 8: Event Not Found (404)
+///
+/// Verifies that requesting a non-existent event returns 404.
+#[tokio::test]
+#[ignore = "Requires running server (docker compose up + cargo run). Run with: cargo test --test full_deployment_test -- --ignored"]
+async fn test_event_not_found() {
+    println!("🧪 Test 8: Event Not Found");
+
+    let auth_token = get_auth_token();
+    let client = reqwest::Client::new();
+
+    let non_existent_id = "00000000-0000-0000-0000-000000000000";
+
+    let response = client
+        .get(format!("{API_BASE}/api/events/{non_existent_id}"))
+        .header("Authorization", format!("Bearer {auth_token}"))
+        .send()
+        .await
+        .expect("Failed to send request");
+
+    assert_eq!(response.status(), 404, "Non-existent event should return 404");
+    println!("  ✅ Non-existent event correctly returns 404");
+}
+
+/// Test 9: Pricing CRUD Operations
+///
+/// Verifies pricing tier management:
+/// - GET pricing for an event
+/// - PATCH to update pricing tiers
+#[tokio::test]
+#[ignore = "Requires running server (docker compose up + cargo run). Run with: cargo test --test full_deployment_test -- --ignored"]
+async fn test_pricing_operations() {
+    println!("🧪 Test 9: Pricing CRUD Operations");
+
+    let auth_token = get_auth_token();
+    let client = reqwest::Client::new();
+
+    // Create an event
+    let create_payload = create_event_payload("Pricing Test Concert", 0, 100);
+
+    let create_response = client
+        .post(format!("{API_BASE}/api/events"))
+        .header("Authorization", format!("Bearer {auth_token}"))
+        .json(&create_payload)
+        .send()
+        .await
+        .expect("Failed to create event");
+
+    assert_eq!(create_response.status(), 201);
+
+    let created_event: serde_json::Value = create_response.json().await.unwrap();
+    let event_id = created_event["event_id"].as_str().unwrap();
+
+    println!("  ✅ Created event: {event_id}");
+
+    // Get pricing
+    let get_pricing_response = client
+        .get(format!("{API_BASE}/api/events/{event_id}/pricing"))
+        .send()
+        .await
+        .expect("Failed to get pricing");
+
+    assert_eq!(get_pricing_response.status(), 200, "GET pricing should succeed");
+
+    let pricing_data: serde_json::Value = get_pricing_response.json().await.unwrap();
+    println!("  ✅ Retrieved pricing: {:?}", pricing_data["pricing_tiers"]);
+
+    // Update pricing
+    let update_pricing_payload = json!({
+        "pricing_tiers": [
+            {
+                "tier_type": "EarlyBird",
+                "section": "General Admission",
+                "price_cents": 4000,
+                "available_from": "2025-01-01T00:00:00Z",
+                "available_until": "2025-06-01T00:00:00Z"
+            },
+            {
+                "tier_type": "Regular",
+                "section": "General Admission",
+                "price_cents": 5000,
+                "available_from": "2025-06-01T00:00:00Z",
+                "available_until": null
+            }
+        ]
+    });
+
+    let update_response = client
+        .patch(format!("{API_BASE}/api/events/{event_id}/pricing"))
+        .header("Authorization", format!("Bearer {auth_token}"))
+        .json(&update_pricing_payload)
+        .send()
+        .await
+        .expect("Failed to update pricing");
+
+    assert_eq!(update_response.status(), 200, "PATCH pricing should succeed");
+    println!("  ✅ Pricing updated successfully");
+
+    // Clean up
+    client
+        .delete(format!("{API_BASE}/api/events/{event_id}"))
+        .header("Authorization", format!("Bearer {auth_token}"))
+        .send()
+        .await
+        .expect("Failed to delete event");
+}
+
+/// Test 10: Payment Refund
+///
+/// Verifies payment refund flow after successful payment.
+#[tokio::test]
+#[ignore = "Requires running server (docker compose up + cargo run). Run with: cargo test --test full_deployment_test -- --ignored"]
+async fn test_payment_refund() {
+    println!("🧪 Test 10: Payment Refund");
+
+    let auth_token = get_auth_token();
+    let client = reqwest::Client::new();
+
+    // Create event
+    let create_payload = create_event_payload("Refund Test Concert", 0, 100);
+    let create_response = client
+        .post(format!("{API_BASE}/api/events"))
+        .header("Authorization", format!("Bearer {auth_token}"))
+        .json(&create_payload)
+        .send()
+        .await
+        .unwrap();
+
+    let created_event: serde_json::Value = create_response.json().await.unwrap();
+    let event_id = created_event["event_id"].as_str().unwrap();
+
+    // Create reservation
+    let reservation_payload = json!({
+        "event_id": event_id,
+        "section": "General Admission",
+        "quantity": 1
+    });
+
+    let reservation_response = client
+        .post(format!("{API_BASE}/api/reservations"))
+        .header("Authorization", format!("Bearer {auth_token}"))
+        .json(&reservation_payload)
+        .send()
+        .await
+        .unwrap();
+
+    let reservation: serde_json::Value = reservation_response.json().await.unwrap();
+    let reservation_id = reservation["reservation_id"].as_str().unwrap();
+
+    // Process payment
+    let payment_payload = json!({
+        "reservation_id": reservation_id,
+        "payment_method": {
+            "type": "credit_card",
+            "token": "tok_test_4242424242424242",
+            "last_four": "4242"
+        }
+    });
+
+    let payment_response = client
+        .post(format!("{API_BASE}/api/payments"))
+        .header("Authorization", format!("Bearer {auth_token}"))
+        .json(&payment_payload)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(payment_response.status(), 201);
+
+    let payment: serde_json::Value = payment_response.json().await.unwrap();
+    let payment_id = payment["payment_id"].as_str().unwrap();
+
+    println!("  ✅ Payment processed: {payment_id}");
+
+    // Refund payment
+    let refund_payload = json!({
+        "reason": "Customer requested refund"
+    });
+
+    let refund_response = client
+        .post(format!("{API_BASE}/api/payments/{payment_id}/refund"))
+        .header("Authorization", format!("Bearer {auth_token}"))
+        .json(&refund_payload)
+        .send()
+        .await
+        .expect("Failed to refund payment");
+
+    assert_eq!(refund_response.status(), 200, "Refund should succeed");
+    println!("  ✅ Payment refunded successfully");
+
+    // Verify second refund fails (idempotency)
+    let second_refund = client
+        .post(format!("{API_BASE}/api/payments/{payment_id}/refund"))
+        .header("Authorization", format!("Bearer {auth_token}"))
+        .json(&refund_payload)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(second_refund.status(), 400, "Second refund should fail");
+    println!("  ✅ Second refund correctly rejected");
+
+    // Clean up
+    client
+        .delete(format!("{API_BASE}/api/events/{event_id}"))
+        .header("Authorization", format!("Bearer {auth_token}"))
+        .send()
+        .await
+        .expect("Failed to delete event");
+}
+
+/// Test 11: Cross-User Authorization
+///
+/// Verifies that User B cannot modify User A's resources.
+#[tokio::test]
+#[ignore = "Requires running server (docker compose up + cargo run). Run with: cargo test --test full_deployment_test -- --ignored"]
+async fn test_cross_user_authorization() {
+    println!("🧪 Test 11: Cross-User Authorization");
+
+    let user_a_token = "test-user-00000000-0000-0000-0000-000000000001";
+    let user_b_token = "test-user-00000000-0000-0000-0000-000000000002";
+    let client = reqwest::Client::new();
+
+    // User A creates an event
+    let create_payload = create_event_payload("Auth Test Concert", 0, 100);
+    let create_response = client
+        .post(format!("{API_BASE}/api/events"))
+        .header("Authorization", format!("Bearer {user_a_token}"))
+        .json(&create_payload)
+        .send()
+        .await
+        .unwrap();
+
+    let created_event: serde_json::Value = create_response.json().await.unwrap();
+    let event_id = created_event["event_id"].as_str().unwrap();
+
+    println!("  ✅ User A created event: {event_id}");
+
+    // User B tries to update pricing (should fail with 403)
+    let update_pricing_payload = json!({
+        "pricing_tiers": [{
+            "tier_type": "Regular",
+            "section": "General Admission",
+            "price_cents": 1,
+            "available_from": "2025-01-01T00:00:00Z",
+            "available_until": null
+        }]
+    });
+
+    let forbidden_response = client
+        .patch(format!("{API_BASE}/api/events/{event_id}/pricing"))
+        .header("Authorization", format!("Bearer {user_b_token}"))
+        .json(&update_pricing_payload)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        forbidden_response.status(),
+        403,
+        "User B should not be able to update User A's event pricing"
+    );
+
+    println!("  ✅ User B correctly denied (403 Forbidden)");
+
+    // User B CAN view the event (public)
+    let view_response = client
+        .get(format!("{API_BASE}/api/events/{event_id}"))
+        .header("Authorization", format!("Bearer {user_b_token}"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(view_response.status(), 200, "User B should be able to view public event");
+    println!("  ✅ User B can view public event");
+
+    // Clean up
+    client
+        .delete(format!("{API_BASE}/api/events/{event_id}"))
+        .header("Authorization", format!("Bearer {user_a_token}"))
+        .send()
+        .await
+        .expect("Failed to delete event");
+}
+
+/// Test 12: Magic Link Authentication (Auth Database + Redis)
 ///
 /// Verifies magic link authentication flow:
 /// - Send magic link request (stores token in Redis)

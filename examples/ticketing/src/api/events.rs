@@ -10,11 +10,11 @@
 #![allow(clippy::missing_errors_doc)] // Example code - errors are standard AppError
 
 use crate::aggregates::event::EventAction;
-use crate::aggregates::inventory::InventoryAction;
+use crate::aggregates::event_inventory_saga::EventInventorySagaAction;
 use crate::auth::middleware::SessionUser;
 use crate::server::state::AppState;
 use crate::types::{
-    Capacity, EventDate, EventId, EventStatus, Money, PricingTier, ResponseChannel, SeatNumber,
+    Capacity, EventDate, EventId, EventStatus, Money, PricingTier, ResponseChannel,
     SeatType, TierType, Venue, VenueSection,
 };
 use axum::{
@@ -167,6 +167,12 @@ pub struct UpdateEventRequest {
 ///
 /// Requires authentication. The authenticated user becomes the event organizer.
 ///
+/// This endpoint uses the Event-Inventory Saga to atomically:
+/// 1. Create the event in the Event aggregate
+/// 2. Initialize inventory for all venue sections
+///
+/// If any step fails, the saga handles compensation automatically.
+///
 /// # Example
 ///
 /// ```bash
@@ -178,14 +184,10 @@ pub struct UpdateEventRequest {
 ///     "description": "Annual technology conference",
 ///     "start_time": "2024-06-01T09:00:00Z",
 ///     "end_time": "2024-06-01T17:00:00Z",
-///     "venue": {
-///       "name": "Convention Center",
-///       "address": "123 Main St",
-///       "city": "San Francisco",
-///       "state": "CA",
-///       "zip_code": "94102",
-///       "country": "USA"
-///     }
+///     "venue_name": "Convention Center",
+///     "venue_address": "123 Main St, San Francisco, CA 94102",
+///     "capacity": 500,
+///     "price": 50.00
 ///   }'
 /// ```
 pub async fn create_event(
@@ -199,103 +201,57 @@ pub async fn create_event(
     // Map API request to domain types
     let (venue, date, pricing_tiers) = request.to_domain_types();
 
-    // Clone venue sections for inventory initialization (before venue is moved)
-    let sections_for_inventory = venue.sections.clone();
+    // Create Event-Inventory Saga store for this request
+    // The saga coordinates event creation + inventory initialization atomically
+    let store = state.create_event_inventory_saga_store(event_id);
 
-    // Create Event store for this request (per-instance stream)
-    let store = state.create_event_store(event_id);
-
-    // Build CreateEvent action
-    let action = EventAction::CreateEvent {
-        id: event_id,
+    // Build CreateEventWithInventory saga action
+    let action = EventInventorySagaAction::CreateEventWithInventory {
+        event_id,
         name: request.title,
         owner_id: session.user_id,
         venue,
         date,
         pricing_tiers,
-        respond_to: ResponseChannel::none(),
     };
 
-    // Send action to store and wait for projection confirmation
+    // Send action to saga and wait for terminal event (via broadcast_on_success)
     match store
-        .send_and_wait_for_with_metadata(
+        .send_and_wait_for(
             action,
-            None, // No special metadata for this operation
             |action| {
                 matches!(
                     action,
-                    EventAction::EventProjectionConfirmed { .. }
-                        | EventAction::EventProjectionFailed { .. }
-                        | EventAction::ValidationFailed { .. }
+                    EventInventorySagaAction::EventCreationCompleted { .. }
+                        | EventInventorySagaAction::EventCreationFailed { .. }
+                        | EventInventorySagaAction::InventoryInitializationFailed { .. }
+                        | EventInventorySagaAction::ValidationFailed { .. }
                 )
             },
-            std::time::Duration::from_secs(10),
+            std::time::Duration::from_secs(30), // Longer timeout for saga (multiple steps)
         )
         .await
     {
-        Ok(EventAction::EventProjectionConfirmed { .. }) => {
-            // Event created successfully - now initialize inventory for each venue section
-            for section in sections_for_inventory {
-                let seat_numbers = match &section.seat_type {
-                    SeatType::Numbered { seats } => Some(seats.clone()),
-                    SeatType::GeneralAdmission => {
-                        // Generate seat numbers for general admission
-                        Some(
-                            (1..=section.capacity.value())
-                                .map(|n| SeatNumber::new(format!("{}-{}", section.name, n)))
-                                .collect(),
-                        )
-                    }
-                };
-
-                // Create inventory store for this event
-                let inventory_store = state.create_inventory_store(event_id);
-                let init_action = InventoryAction::InitializeInventory {
-                    event_id,
-                    section: section.name.clone(),
-                    capacity: Capacity::new(section.capacity.value()),
-                    seat_numbers,
-                    respond_to: ResponseChannel::none(),
-                };
-
-                // Initialize inventory and wait for projection confirmation
-                // The reducer uses Effect::PublishWithResponse to wait for projection completion
-                if let Err(e) = inventory_store
-                    .send_and_wait_for(
-                        init_action,
-                        |action| {
-                            matches!(
-                                action,
-                                InventoryAction::InventoryProjectionConfirmed { .. }
-                                    | InventoryAction::InventoryProjectionFailed { .. }
-                                    | InventoryAction::ValidationFailed { .. }
-                            )
-                        },
-                        std::time::Duration::from_secs(10),
-                    )
-                    .await
-                {
-                    // Log error but don't fail event creation
-                    tracing::warn!(
-                        "Failed to initialize inventory for section {}: {:?}",
-                        section.name,
-                        e
-                    );
-                }
-            }
-
+        Ok(EventInventorySagaAction::EventCreationCompleted { .. }) => {
             Ok((
                 StatusCode::CREATED,
                 Json(CreateEventResponse {
                     event_id: *event_id.as_uuid(),
-                    message: "Event created successfully".to_string(),
+                    message: "Event created successfully with inventory initialized".to_string(),
                 }),
             ))
         }
-        Ok(EventAction::EventProjectionFailed { reason, .. }) => {
-            Err(AppError::internal(format!("Projection failed: {reason}")))
+        Ok(EventInventorySagaAction::EventCreationFailed { error, .. }) => {
+            Err(AppError::internal(format!("Event creation failed: {error}")))
         }
-        Ok(EventAction::ValidationFailed { error }) => Err(AppError::bad_request(error)),
+        Ok(EventInventorySagaAction::InventoryInitializationFailed { section, error, .. }) => {
+            Err(AppError::internal(format!(
+                "Inventory initialization failed for section '{section}': {error}"
+            )))
+        }
+        Ok(EventInventorySagaAction::ValidationFailed { error }) => {
+            Err(AppError::bad_request(error))
+        }
         Ok(_) => Err(AppError::internal("Unexpected action received")),
         Err(e) => Err(AppError::internal(format!("Failed to create event: {e}"))),
     }

@@ -271,6 +271,22 @@ pub mod effect {
             /// that should be propagated through all events in this effect.
             /// If an event already has metadata, this will be merged in (field-by-field).
             metadata: Option<crate::event::EventMetadata>,
+            /// Optional action to broadcast (without re-entering reducer) after successful append.
+            ///
+            /// This action is broadcast to `action_broadcast` channel BEFORE `on_success` is called,
+            /// allowing `send_and_wait_for` to detect completion. Unlike `on_success`, this action
+            /// does NOT re-enter the reducer - it's broadcast-only.
+            ///
+            /// # Use Case
+            ///
+            /// When persisting domain events (e.g., `PaymentProcessed`), you want to:
+            /// 1. Persist the event to the event store
+            /// 2. Broadcast the event for `send_and_wait_for` detection (no re-entry needed)
+            /// 3. Update aggregate version via `on_success` → `VersionUpdated` (needs re-entry)
+            ///
+            /// This field handles step 2, ensuring the broadcast happens AFTER successful
+            /// persistence but without causing reducer re-entry or infinite loops.
+            broadcast_on_success: Option<Box<Action>>,
             /// Callback invoked on success with the new version
             on_success: Box<dyn Fn(Version) -> Option<Action> + Send + Sync>,
             /// Callback invoked on error
@@ -625,6 +641,38 @@ pub mod effect {
             on_error: Box<dyn Fn(String) -> Option<Action> + Send>,
         },
 
+        /// Broadcast an action to observers WITHOUT re-entering the reducer.
+        ///
+        /// This effect broadcasts an action to the `action_broadcast` channel, making it
+        /// visible to `send_and_wait_for` and other observers, but does NOT send it back
+        /// to the reducer. This prevents infinite loops when broadcasting domain events.
+        ///
+        /// # When to Use
+        ///
+        /// Use this when you need to signal completion to external observers (like HTTP
+        /// handlers using `send_and_wait_for`) but the event has already been applied
+        /// to state and no further reducer processing is needed.
+        ///
+        /// # Comparison with `Effect::Future`
+        ///
+        /// - `Effect::Future(Some(action))`: Broadcasts AND re-enters reducer
+        /// - `Effect::BroadcastOnly(action)`: Broadcasts only, NO reducer re-entry
+        ///
+        /// # Example
+        ///
+        /// ```ignore
+        /// // After persisting and applying PaymentProcessed to state,
+        /// // broadcast it for send_and_wait_for detection without re-entry:
+        /// Effect::BroadcastOnly(Box::new(PaymentAction::PaymentProcessed { ... }))
+        /// ```
+        ///
+        /// # Note
+        ///
+        /// For event store operations, prefer using `broadcast_on_success` in
+        /// `append_events!` macro, which guarantees the broadcast happens AFTER
+        /// successful persistence.
+        BroadcastOnly(Box<Action>),
+
         // Additional effect variants will be added in future phases:
         // - Http { request, on_success, on_error }
         // - Cancellable { id, effect }
@@ -805,6 +853,10 @@ pub mod effect {
                     .field("on_success", &"<fn>")
                     .field("on_error", &"<fn>")
                     .finish(),
+                Effect::BroadcastOnly(action) => f
+                    .debug_struct("Effect::BroadcastOnly")
+                    .field("action", action)
+                    .finish(),
             }
         }
     }
@@ -910,6 +962,7 @@ pub mod effect {
                         }
                     }))
                 },
+                Effect::BroadcastOnly(action) => Effect::BroadcastOnly(Box::new(f(*action))),
             }
         }
     }
@@ -978,6 +1031,7 @@ pub mod effect {
                     }
                 }))
             },
+            Effect::BroadcastOnly(action) => Effect::BroadcastOnly(Box::new(f(*action))),
         }
     }
 
@@ -998,6 +1052,7 @@ pub mod effect {
                 expected_version,
                 events,
                 metadata,
+                broadcast_on_success,
                 on_success,
                 on_error,
             } => {
@@ -1009,6 +1064,7 @@ pub mod effect {
                     expected_version,
                     events,
                     metadata,
+                    broadcast_on_success: broadcast_on_success.map(|a| Box::new(f.clone()(*a))),
                     on_success: Box::new(move |version| {
                         on_success(version).map(|a| f_success.clone()(a))
                     }),

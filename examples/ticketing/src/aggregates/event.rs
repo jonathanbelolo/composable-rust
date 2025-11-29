@@ -418,16 +418,12 @@ impl EventReducer {
                 stream: env.stream_id.as_str(),
                 expected_version: Some(expected_version),
                 events: vec![serialized],
+                broadcast_on_success: event,
                 on_success: |version| Some(EventAction::VersionUpdated { version }),
                 on_error: |error| Some(EventAction::ValidationFailed {
                     error: error.to_string()
                 })
-            },
-            // Echo the event back as an action so it broadcasts to action_broadcast channel
-            // This allows send_and_wait_for to receive it (e.g., EventUpdated, PricingTiersUpdated)
-            Effect::Future(Box::pin(async move {
-                Some(event)
-            }))
+            }
         ]
     }
 
@@ -1592,8 +1588,8 @@ mod tests {
                 assert_eq!(event.status, EventStatus::Draft);
             })
             .then_effects(|effects| {
-                // Should return 3 effects: AppendEvents + Echo + PublishWithResponse
-                assert_eq!(effects.len(), 3);
+                // Should return 2 effects: AppendEvents (with broadcast_on_success) + PublishWithResponse
+                assert_eq!(effects.len(), 2);
             })
             .run();
     }
@@ -1624,8 +1620,8 @@ mod tests {
                 assert_eq!(event.status, EventStatus::Published);
             })
             .then_effects(|effects| {
-                // Should return 2 effects: AppendEvents + Echo
-                assert_eq!(effects.len(), 2);
+                // Should return 1 effect: AppendEvents (with broadcast_on_success)
+                assert_eq!(effects.len(), 1);
             })
             .run();
     }

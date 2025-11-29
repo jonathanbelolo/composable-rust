@@ -525,16 +525,12 @@ impl InventoryReducer {
                 stream: env.stream_id.as_str(),
                 expected_version: Some(expected_version),
                 events: vec![serialized],
+                broadcast_on_success: event,
                 on_success: |version| Some(InventoryAction::VersionUpdated { version }),
                 on_error: |error| Some(InventoryAction::ValidationFailed {
                     error: error.to_string()
                 })
-            },
-            // Echo the event back as an action so it broadcasts to action_broadcast channel
-            // This allows send_and_wait_for to receive it (e.g., SeatsConfirmed, SeatsReleased)
-            Effect::Future(Box::pin(async move {
-                Some(event)
-            }))
+            }
         ]
     }
 
@@ -1756,8 +1752,8 @@ mod tests {
                 assert_eq!(inventory.available(), 98);
             })
             .then_effects(|effects| {
-                // Should return 2 effects: AppendEvents + Echo (no Redpanda)
-                assert_eq!(effects.len(), 2);
+                // Should return 1 effect: AppendEvents (with broadcast_on_success)
+                assert_eq!(effects.len(), 1);
             })
             .run();
     }
@@ -1810,8 +1806,8 @@ mod tests {
                 assert_eq!(inventory.available(), 100);
             })
             .then_effects(|effects| {
-                // Should return 2 effects: AppendEvents + Echo (no Redpanda)
-                assert_eq!(effects.len(), 2);
+                // Should return 1 effect: AppendEvents (with broadcast_on_success)
+                assert_eq!(effects.len(), 1);
             })
             .run();
     }

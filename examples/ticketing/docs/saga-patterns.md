@@ -138,6 +138,64 @@ EventInventorySagaAction::EventCreated { event_id, sections, ... } => {
 3. **Traceable** - Event history shows exactly what happened
 4. **Recoverable** - Replay events to restore saga state after crash
 
+### Terminal Events and the Broadcast Pattern
+
+**CRITICAL**: When a saga reaches its final state (e.g., `EventCreationCompleted`), the event must be broadcast for `send_and_wait_for` detection WITHOUT re-entering the reducer. Use `broadcast_on_success` in the `append_events!` macro:
+
+```rust
+// ✅ CORRECT: Terminal event broadcasts after persist, no re-entry
+fn create_persist_effect(
+    event: EventInventorySagaAction,
+    expected_version: Version,
+    env: &EventInventorySagaEnvironment,
+) -> Effect<EventInventorySagaAction> {
+    let ticketing_event = TicketingEvent::EventInventorySaga(event.clone());
+    let serialized = match ticketing_event.serialize() {
+        Ok(s) => s,
+        Err(e) => {
+            return Effect::Future(Box::pin(async move {
+                Some(EventInventorySagaAction::SerializationFailed {
+                    error: format!("Failed to serialize saga event: {e}"),
+                })
+            }));
+        }
+    };
+
+    append_events! {
+        store: env.event_store,
+        stream: env.stream_id.as_str(),
+        expected_version: Some(expected_version),
+        events: vec![serialized],
+        broadcast_on_success: event,  // Broadcast AFTER persist, NO re-entry
+        on_success: |version| Some(EventInventorySagaAction::VersionUpdated { version }),
+        on_error: |error| Some(EventInventorySagaAction::ValidationFailed {
+            error: error.to_string()
+        })
+    }
+}
+```
+
+**Why this matters:**
+
+The old "echo pattern" used `Effect::Future` to broadcast events:
+
+```rust
+// ❌ OLD PATTERN (causes infinite loops!)
+effects.push(Effect::Future(Box::pin(async move {
+    Some(EventInventorySagaAction::EventCreationCompleted { ... })
+})));
+```
+
+This caused the event to **re-enter the reducer**, which required either:
+1. A catch-all handler to swallow it (dangerous, hides bugs)
+2. An explicit handler that might inadvertently call `create_persist_effect` again (infinite loop!)
+
+With `broadcast_on_success`:
+- The event is broadcast on the `action_broadcast` channel (for `send_and_wait_for`)
+- The event does NOT re-enter the reducer
+- No catch-all or special handlers needed
+- Infinite loops are architecturally impossible
+
 ---
 
 ## 3. Saga State Machine
@@ -322,21 +380,40 @@ EventInventorySagaAction::EventCreated { event_id, sections, ... } => {
 Use a `HashSet` to track pending work:
 
 ```rust
-EventInventorySagaAction::SectionInventoryInitialized { section, ... } => {
-    // Remove from pending
-    state.pending_sections.remove(&section);
+EventInventorySagaAction::SectionInventoryInitialized { event_id, section, initialized_at } => {
+    // Capture version BEFORE applying event
+    let expected_version = state.version;
 
-    // Check if ALL sections are done
+    // Apply state change
+    let event = EventInventorySagaAction::SectionInventoryInitialized {
+        event_id, section: section.clone(), initialized_at,
+    };
+    Self::apply_event(state, &event);
+
+    // Start with persist effect (uses broadcast_on_success)
+    let mut effects = smallvec![Self::create_persist_effect(event, expected_version, env)];
+
+    // Check if ALL sections are done - create completion event
     if state.pending_sections.is_empty() && state.event_created && !state.failed {
-        // Trigger completion
-        effects.push(Effect::Future(Box::pin(async move {
-            Some(EventInventorySagaAction::EventCreationCompleted { ... })
-        })));
+        let completed_version = state.version;
+        let completion_event = EventInventorySagaAction::EventCreationCompleted {
+            event_id,
+            completed_at: env.clock.now(),
+        };
+        Self::apply_event(state, &completion_event);
+
+        // create_persist_effect uses broadcast_on_success - NO re-entry!
+        effects.push(Self::create_persist_effect(completion_event, completed_version, env));
     }
 
     effects
 }
 ```
+
+**Key insight**: The completion event is persisted using `create_persist_effect`, which uses `broadcast_on_success`. This ensures:
+1. The event is persisted to the event store
+2. The event is broadcast for `send_and_wait_for` detection
+3. The event does NOT re-enter the reducer (no infinite loop)
 
 ---
 
@@ -401,7 +478,7 @@ fn create_persist_effect(
     expected_version: Version,
     env: &EventInventorySagaEnvironment,
 ) -> Effect<EventInventorySagaAction> {
-    let ticketing_event = TicketingEvent::EventInventorySaga(event);
+    let ticketing_event = TicketingEvent::EventInventorySaga(event.clone());
     let serialized = match ticketing_event.serialize() {
         Ok(s) => s,
         Err(e) => {
@@ -414,7 +491,18 @@ fn create_persist_effect(
         }
     };
 
-    // ... continue with append_events!
+    // Use broadcast_on_success for proper send_and_wait_for detection
+    append_events! {
+        store: env.event_store,
+        stream: env.stream_id.as_str(),
+        expected_version: Some(expected_version),
+        events: vec![serialized],
+        broadcast_on_success: event,  // Broadcast AFTER persist, NO re-entry
+        on_success: |version| Some(EventInventorySagaAction::VersionUpdated { version }),
+        on_error: |error| Some(EventInventorySagaAction::ValidationFailed {
+            error: error.to_string()
+        })
+    }
 }
 ```
 
@@ -642,6 +730,8 @@ Use this checklist when implementing or reviewing sagas:
 - [ ] Factory functions for child aggregate stores in environment
 - [ ] Clear state machine with progress tracking flags
 - [ ] `pending_*` collection for tracking parallel work
+- [ ] Terminal events use `broadcast_on_success` (no echo pattern)
+- [ ] No catch-all handlers for live events (only for replay)
 
 ### State Management
 - [ ] Capture `expected_version` BEFORE calling `apply_event`
@@ -656,6 +746,7 @@ Use this checklist when implementing or reviewing sagas:
 
 ### Error Handling
 - [ ] `SerializationFailed` action variant exists
+- [ ] `create_persist_effect` uses `broadcast_on_success` for proper broadcast
 - [ ] `create_persist_effect` returns error action on serialization failure
 - [ ] Child aggregate failures mapped to saga error actions
 - [ ] Validation errors don't persist events

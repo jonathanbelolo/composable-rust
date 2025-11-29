@@ -430,16 +430,12 @@ impl ReservationReducer {
                 stream: env.stream_id.as_str(),
                 expected_version: Some(expected_version),
                 events: vec![serialized],
+                broadcast_on_success: event,
                 on_success: |version| Some(ReservationAction::VersionUpdated { version }),
                 on_error: |error| Some(ReservationAction::ValidationFailed {
                     error: error.to_string()
                 })
-            },
-            // Echo the event back as an action so it broadcasts to action_broadcast channel
-            // This allows send_and_wait_for to receive it (e.g., ReservationCompleted)
-            Effect::Future(Box::pin(async move {
-                Some(event)
-            }))
+            }
         ]
     }
 
@@ -447,13 +443,22 @@ impl ReservationReducer {
     ///
     /// This prevents race conditions when multiple events need to be persisted
     /// as part of the same state transition.
+    ///
+    /// Uses `broadcast_on_success` with the LAST event in the batch, which is
+    /// typically the terminal event (e.g., `ReservationCompleted`). This allows
+    /// `send_and_wait_for` to detect completion without causing reducer re-entry.
     fn create_batch_effects(
         events: Vec<ReservationAction>,
         expected_version: Version,
         env: &ReservationEnvironment,
     ) -> SmallVec<[Effect<ReservationAction>; 4]> {
+        // Get the last event for broadcast_on_success (typically the terminal event)
+        let Some(last_event) = events.last().cloned() else {
+            // Empty events list - return empty effects
+            return SmallVec::new();
+        };
+
         let mut serialized_events = Vec::with_capacity(events.len());
-        let events_for_echo = events.clone();
 
         for event in events {
             let ticketing_event = TicketingEvent::Reservation(event);
@@ -469,28 +474,19 @@ impl ReservationReducer {
             }
         }
 
-        let mut effects = smallvec![
+        smallvec![
             append_events! {
                 store: env.event_store,
                 stream: env.stream_id.as_str(),
                 expected_version: Some(expected_version),
                 events: serialized_events,
+                broadcast_on_success: last_event,
                 on_success: |version| Some(ReservationAction::VersionUpdated { version }),
                 on_error: |error| Some(ReservationAction::ValidationFailed {
                     error: error.to_string()
                 })
             }
-        ];
-
-        // Echo each event back as an action so it broadcasts to action_broadcast channel
-        // This allows send_and_wait_for to receive them (e.g., ReservationCompleted)
-        for event in events_for_echo {
-            effects.push(Effect::Future(Box::pin(async move {
-                Some(event)
-            })));
-        }
-
-        effects
+        ]
     }
 
     /// Validates `InitiateReservation` command
@@ -1098,16 +1094,13 @@ impl Reducer for ReservationReducer {
                 Self::apply_event(state, &completion);
 
                 // Batch persist both events atomically to avoid race condition
+                // Note: create_batch_effects uses broadcast_on_success with the last event
+                // (ReservationCompleted), so send_and_wait_for will detect it automatically
                 let mut effects = Self::create_batch_effects(
-                    vec![action, completion.clone()],
+                    vec![action, completion],
                     expected_version,
                     env,
                 );
-
-                // Emit completion as observable action for send_and_wait_for
-                effects.push(Effect::Future(Box::pin(async move {
-                    Some(completion)
-                })));
 
                 // Direct orchestration: Confirm reservation in Inventory using factory
                 // Use send_and_wait_for with short timeout - compensation is best-effort
@@ -1757,12 +1750,12 @@ mod tests {
                 assert_eq!(reservation.seats.len(), 0); // Not yet allocated
             })
             .then_effects(|effects| {
-                // Should return 5 effects:
-                // 2 for ReservationInitiated (AppendEvents + Echo)
+                // Should return 4 effects:
+                // 1 for ReservationInitiated (AppendEvents with broadcast_on_success)
                 // 1 for sending ReserveSeats command to inventory_actions channel (direct orchestration)
                 // 1 for scheduling expiration timeout (Delay)
                 // 1 for PublishWithResponse to reservation_actions channel
-                assert_eq!(effects.len(), 5);
+                assert_eq!(effects.len(), 4);
             })
             .run();
     }

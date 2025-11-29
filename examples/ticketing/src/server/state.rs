@@ -21,6 +21,8 @@
 
 use crate::aggregates::{
     analytics::AnalyticsReducer,
+    event::{EventEnvironment, EventReducer},
+    event_inventory_saga::{EventInventorySaga, EventInventorySagaEnvironment},
     inventory::InventoryReducer,
     payment::PaymentReducer,
     reservation_saga::ReservationReducer,
@@ -423,6 +425,93 @@ impl AppState {
         );
 
         Store::new(EventState::new(), EventReducer::new(), env)
+    }
+
+    /// Create a fresh Event-Inventory Saga store for this request.
+    ///
+    /// This saga coordinates event creation with automatic inventory initialization.
+    /// Use this instead of calling Event and Inventory aggregates directly.
+    ///
+    /// # Arguments
+    ///
+    /// * `saga_id` - Unique ID for this saga instance (typically the event_id)
+    ///
+    /// # Returns
+    ///
+    /// A new Event-Inventory Saga store instance for this request.
+    #[must_use]
+    pub fn create_event_inventory_saga_store(
+        &self,
+        saga_id: EventId,
+    ) -> composable_rust_runtime::Store<
+        crate::aggregates::event_inventory_saga::EventInventorySagaState,
+        crate::aggregates::event_inventory_saga::EventInventorySagaAction,
+        EventInventorySagaEnvironment,
+        EventInventorySaga,
+    > {
+        use crate::aggregates::event_inventory_saga::EventInventorySagaState;
+        use crate::aggregates::inventory::InventoryEnvironment;
+        use crate::types::{EventState, InventoryState};
+        use composable_rust_core::stream::StreamId;
+        use composable_rust_runtime::Store;
+
+        let stream_id = StreamId::new(&format!("event-inventory-saga-{}", saga_id.as_uuid()));
+
+        // Create factory function for Event aggregate stores
+        let clock_for_event = self.clock.clone();
+        let event_store_for_event = self.event_store.clone();
+        let events_projection_for_event = self.events_projection.clone();
+        let global_actions_for_event = self.global_actions();
+
+        let create_event_store: std::sync::Arc<
+            dyn Fn(EventId) -> Store<EventState, crate::aggregates::EventAction, EventEnvironment, EventReducer>
+                + Send
+                + Sync,
+        > = std::sync::Arc::new(move |event_id| {
+            let stream_id = StreamId::new(&format!("event-{}", event_id.as_uuid()));
+            let env = EventEnvironment::new(
+                clock_for_event.clone(),
+                event_store_for_event.clone(),
+                stream_id,
+                events_projection_for_event.clone(),
+                global_actions_for_event.clone(),
+            );
+            Store::new(EventState::new(), EventReducer::new(), env)
+        });
+
+        // Create factory function for Inventory aggregate stores
+        let clock_for_inventory = self.clock.clone();
+        let event_store_for_inventory = self.event_store.clone();
+        let inventory_query_for_inventory = self.inventory_query.clone();
+        let events_projection_for_inventory = self.events_projection.clone();
+        let global_actions_for_inventory = self.global_actions();
+
+        let create_inventory_store: std::sync::Arc<
+            dyn Fn(EventId) -> Store<InventoryState, crate::aggregates::InventoryAction, InventoryEnvironment, InventoryReducer>
+                + Send
+                + Sync,
+        > = std::sync::Arc::new(move |event_id| {
+            let stream_id = StreamId::new(&format!("inventory-{}", event_id.as_uuid()));
+            let env = InventoryEnvironment::new(
+                clock_for_inventory.clone(),
+                event_store_for_inventory.clone(),
+                stream_id,
+                inventory_query_for_inventory.clone(),
+                events_projection_for_inventory.clone(),
+                global_actions_for_inventory.clone(),
+            );
+            Store::new(InventoryState::new(), InventoryReducer::new(), env)
+        });
+
+        let env = EventInventorySagaEnvironment::new(
+            self.clock.clone(),
+            self.event_store.clone(),
+            stream_id,
+            create_event_store,
+            create_inventory_store,
+        );
+
+        Store::new(EventInventorySagaState::new(), EventInventorySaga::new(), env)
     }
 
     /// Create a fresh Analytics store for this request.
