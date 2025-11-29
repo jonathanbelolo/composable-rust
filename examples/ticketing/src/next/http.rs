@@ -59,7 +59,7 @@ use uuid::Uuid;
 
 use super::{
     environment::{NoOpEventBus, NoOpProjector, TicketingEnvironment},
-    saga::SagaError,
+    event_inventory_saga::SagaError,
     EventBusinessLogic, EventCommand, EventError,
 };
 use crate::types::{
