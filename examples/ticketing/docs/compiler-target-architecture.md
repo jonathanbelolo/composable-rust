@@ -657,7 +657,89 @@ impl BusinessLogic for EventBusinessLogic {
 
 The infrastructure handler is **the same for aggregates and sagas**. For aggregates, the loop exits on the first iteration because they always return `BusinessResult::Done`.
 
+**Key Design Principle**: The Handler is generic over an **Environment** type. This allows each aggregate/saga to define its own environment with arbitrary dependencies (projections, external services, etc.), while the Handler only requires the core infrastructure dependencies via the `HandlerEnvironment` trait.
+
+**Coordination Guarantee**: When `handle()` returns, the caller **knows**:
+1. Events are persisted to the event store
+2. Projections (read models) are updated
+3. Events are broadcast to the event bus (for sagas/other subscribers)
+
+This eliminates the need for `respond_to` channels and callback chains—just clean sequential async.
+
 ```rust
+// ═══════════════════════════════════════════════════════════════════
+// FRAMEWORK: Environment Traits
+// ═══════════════════════════════════════════════════════════════════
+
+/// Core infrastructure dependencies required by the Handler.
+///
+/// Each aggregate/saga defines its own Environment struct with domain-specific
+/// dependencies (projections, external services, etc.) and implements this trait
+/// to expose the core deps the Handler needs.
+///
+/// This pattern mirrors the existing Composable Rust `Reducer::Environment` pattern,
+/// but with a trait to ensure the Handler can access what it needs.
+pub trait HandlerEnvironment: Send + Sync {
+    /// Clock for timestamps (used by business logic)
+    fn clock(&self) -> &dyn Clock;
+
+    /// Event store for loading and persisting events
+    fn event_store(&self) -> &dyn EventStore;
+
+    /// Projector for updating read models and waiting for completion
+    ///
+    /// Returns `None` if this aggregate doesn't use projections.
+    fn projector(&self) -> Option<&dyn Projector>;
+
+    /// Event bus for broadcasting events to other aggregates/sagas
+    ///
+    /// Returns `None` if this aggregate doesn't broadcast events.
+    fn event_bus(&self) -> Option<&dyn EventBus>;
+
+    /// Topic for broadcasting events (only used if `event_bus()` returns `Some`)
+    fn broadcast_topic(&self) -> &str;
+}
+
+/// Trait for projecting events to read models with completion tracking.
+///
+/// This solves the coordination problem: the Handler needs to wait for
+/// projections to complete before returning to the caller. Unlike the
+/// current `respond_to` channel pattern, this is a simple async trait.
+///
+/// Implementations typically:
+/// 1. Receive events
+/// 2. Update the read model (PostgreSQL, Redis, etc.)
+/// 3. Return when the update is confirmed
+#[trait_variant::make(Send)]
+pub trait Projector: Send + Sync {
+    /// Project events to the read model and wait for completion.
+    ///
+    /// This method blocks until the projection is fully applied.
+    /// When it returns `Ok(())`, the caller knows the read model is updated.
+    ///
+    /// # Arguments
+    ///
+    /// * `events` - Serialized events to project
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProjectionError` if the projection fails (database error, etc.)
+    async fn project(&self, events: &[SerializedEvent]) -> Result<(), ProjectionError>;
+}
+
+/// Errors that can occur during projection
+#[derive(Debug, thiserror::Error)]
+pub enum ProjectionError {
+    #[error("database error: {0}")]
+    Database(String),
+
+    #[error("deserialization error: {0}")]
+    Deserialization(String),
+
+    #[error("projection timeout")]
+    Timeout,
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // FRAMEWORK: Unified Handler (same for aggregates and sagas)
 // ═══════════════════════════════════════════════════════════════════
@@ -681,6 +763,9 @@ pub enum HandlerError<E: std::error::Error> {
     #[error("failed to persist events: {0}")]
     Persist(EventStoreError),
 
+    #[error("failed to project events: {0}")]
+    Projection(ProjectionError),
+
     #[error("failed to broadcast events: {0}")]
     Broadcast(EventBusError),
 
@@ -690,15 +775,22 @@ pub enum HandlerError<E: std::error::Error> {
 
 /// The unified handler for aggregates and sagas.
 ///
+/// Generic over:
+/// - `T`: The business logic implementation
+/// - `E`: The call executor (for saga aggregate calls)
+/// - `Env`: The environment with all dependencies
+///
 /// For aggregates, `CallExecutor` is typically `NoOpCallExecutor` (never used).
 /// For sagas, `CallExecutor` dispatches calls to the appropriate aggregate handlers.
-pub struct Handler<T: BusinessLogic, E: CallExecutor<T::Call, T::CallResult>> {
+pub struct Handler<T, E, Env>
+where
+    T: BusinessLogic,
+    E: CallExecutor<T::Call, T::CallResult>,
+    Env: HandlerEnvironment,
+{
     business: T,
-    event_store: Arc<dyn EventStore>,
-    event_bus: Arc<dyn EventBus>,
-    clock: Arc<dyn Clock>,
     call_executor: E,
-    topic: String,
+    env: Env,
 }
 
 /// Trait for executing aggregate calls (saga only)
@@ -719,53 +811,71 @@ impl CallExecutor<Infallible, Infallible> for NoOpCallExecutor {
     }
 }
 
-impl<T, E> Handler<T, E>
+impl<T, E, Env> Handler<T, E, Env>
 where
     T: BusinessLogic,
     E: CallExecutor<T::Call, T::CallResult>,
+    Env: HandlerEnvironment,
 {
-    /// Create a new handler
-    pub fn new(
-        business: T,
-        event_store: Arc<dyn EventStore>,
-        event_bus: Arc<dyn EventBus>,
-        clock: Arc<dyn Clock>,
-        call_executor: E,
-        topic: String,
-    ) -> Self {
-        Self { business, event_store, event_bus, clock, call_executor, topic }
+    /// Create a new handler with the given environment
+    pub fn new(business: T, call_executor: E, env: Env) -> Self {
+        Self { business, call_executor, env }
     }
 
-    /// Handle input end-to-end
+    /// Handle input end-to-end with full coordination guarantees.
     ///
     /// This unified loop works for both aggregates and sagas:
     /// - Aggregates always return Done on first iteration
     /// - Sagas may return Continue multiple times before Done
+    ///
+    /// # Coordination Guarantees
+    ///
+    /// When this method returns `Ok(HandleResult)`, the caller **knows**:
+    /// 1. All events are persisted to the event store
+    /// 2. All projections (read models) are updated
+    /// 3. All events are broadcast to the event bus
+    ///
+    /// This eliminates the need for `respond_to` channels and callback chains.
+    /// The HTTP handler can simply `await` this method and return the response.
     pub async fn handle(&self, input: T::Input) -> Result<HandleResult, HandlerError<T::Error>> {
         let stream_id = T::stream_id(&input);
         let (mut state, mut version) = self.load_state(&stream_id).await?;
         let mut current_input = input;
 
         loop {
+            // Business logic only receives Clock - it's pure
             let result = self.business
-                .process(&state, current_input, self.clock.as_ref())
+                .process(&state, current_input, self.env.clock())
                 .map_err(HandlerError::Business)?;
 
             match result {
                 BusinessResult::Done(events) => {
                     if !events.is_empty() {
-                        version = self.persist_events(&stream_id, &events, version).await?;
+                        // Step 1: Persist to event store (source of truth)
+                        let serialized = self.serialize_events(&events)?;
+                        version = self.persist_events(&stream_id, &serialized, version).await?;
+
+                        // Step 2: Apply to local state (for consistency within this handler)
                         self.apply_all(&mut state, &events);
-                        self.broadcast(&events).await?;
+
+                        // Step 3: Project to read model and WAIT for completion
+                        self.project_and_wait(&serialized).await?;
+
+                        // Step 4: Broadcast to event bus (for sagas, other aggregates)
+                        self.broadcast(&serialized).await?;
                     }
+
+                    // Only return when ALL steps are complete
                     return Ok(HandleResult { version });
                 }
 
                 BusinessResult::Continue { events, calls } => {
                     if !events.is_empty() {
-                        version = self.persist_events(&stream_id, &events, version).await?;
+                        let serialized = self.serialize_events(&events)?;
+                        version = self.persist_events(&stream_id, &serialized, version).await?;
                         self.apply_all(&mut state, &events);
-                        self.broadcast(&events).await?;
+                        self.project_and_wait(&serialized).await?;
+                        self.broadcast(&serialized).await?;
                     }
 
                     // Execute aggregate calls and feed results back
@@ -777,9 +887,9 @@ where
         }
     }
 
-    /// Load state by replaying events
+    /// Load state by replaying events from the event store
     async fn load_state(&self, stream_id: &StreamId) -> Result<(T::State, Version), HandlerError<T::Error>> {
-        let raw_events = self.event_store
+        let raw_events = self.env.event_store()
             .load(stream_id, None)
             .await
             .map_err(HandlerError::Load)?;
@@ -796,32 +906,52 @@ where
         Ok((state, version))
     }
 
+    /// Serialize events for persistence and projection
+    fn serialize_events(&self, events: &[T::Event]) -> Result<Vec<SerializedEvent>, HandlerError<T::Error>> {
+        events
+            .iter()
+            .map(|e| self.serialize_event(e))
+            .collect()
+    }
+
     /// Persist events to the event store with optimistic concurrency
     async fn persist_events(
         &self,
         stream_id: &StreamId,
-        events: &[T::Event],
+        events: &[SerializedEvent],
         expected_version: Version,
     ) -> Result<Version, HandlerError<T::Error>> {
-        let serialized: Vec<SerializedEvent> = events
-            .iter()
-            .map(|e| self.serialize_event(e))
-            .collect::<Result<_, _>>()?;
-
-        self.event_store
-            .append(stream_id, Some(expected_version), serialized)
+        self.env.event_store()
+            .append(stream_id, Some(expected_version), events.to_vec())
             .await
             .map_err(HandlerError::Persist)
     }
 
-    /// Broadcast events to the event bus for projections and other subscribers
-    async fn broadcast(&self, events: &[T::Event]) -> Result<(), HandlerError<T::Error>> {
-        for event in events {
-            let serialized = self.serialize_event(event)?;
-            self.event_bus
-                .publish(&self.topic, serialized)
+    /// Project events to read model and wait for completion
+    ///
+    /// If no projector is configured, this is a no-op.
+    async fn project_and_wait(&self, events: &[SerializedEvent]) -> Result<(), HandlerError<T::Error>> {
+        if let Some(projector) = self.env.projector() {
+            projector
+                .project(events)
                 .await
-                .map_err(HandlerError::Broadcast)?;
+                .map_err(HandlerError::Projection)?;
+        }
+        Ok(())
+    }
+
+    /// Broadcast events to the event bus for other subscribers
+    ///
+    /// If no event bus is configured, this is a no-op.
+    async fn broadcast(&self, events: &[SerializedEvent]) -> Result<(), HandlerError<T::Error>> {
+        if let Some(event_bus) = self.env.event_bus() {
+            let topic = self.env.broadcast_topic();
+            for event in events {
+                event_bus
+                    .publish(topic, event.clone())
+                    .await
+                    .map_err(HandlerError::Broadcast)?;
+            }
         }
         Ok(())
     }
@@ -833,7 +963,7 @@ where
         }
     }
 
-    /// Serialize an event for persistence/broadcast
+    /// Serialize an event for persistence/projection/broadcast
     fn serialize_event(&self, event: &T::Event) -> Result<SerializedEvent, HandlerError<T::Error>> {
         let type_name = T::event_type_name(event);
         let payload = bincode::serialize(event)
@@ -854,17 +984,356 @@ where
 }
 ```
 
+### Infrastructure Lifecycle and Dependency Sharing
+
+Understanding how infrastructure is shared across requests is critical for the architecture:
+
+#### Shared Infrastructure (Created at Startup)
+
+Core infrastructure components are **long-lived** and **shared** across all requests via `Arc`:
+
+```rust
+// ═══════════════════════════════════════════════════════════════════
+// APPLICATION STARTUP
+// ═══════════════════════════════════════════════════════════════════
+
+#[tokio::main]
+async fn main() {
+    // === Step 1: Create shared infrastructure (lives for entire app lifetime) ===
+    let pool = PgPool::connect(&database_url).await.unwrap();
+    let event_store: Arc<dyn EventStore> = Arc::new(PostgresEventStore::new(pool.clone()));
+    let event_bus: Arc<dyn EventBus> = Arc::new(RedpandaEventBus::new(redpanda_config));
+
+    // === Step 2: Create shared projectors ===
+    let event_projector: Arc<dyn Projector> = Arc::new(EventProjector::new(pool.clone()));
+    let inventory_projector: Arc<dyn Projector> = Arc::new(InventoryProjector::new(pool.clone()));
+
+    // === Step 3: Start decoupled subscribers (long-running background tasks) ===
+    // These consume from the event bus asynchronously, independent of request handlers
+    tokio::spawn(EmailService::new(smtp_config).subscribe(event_bus.clone()));
+    tokio::spawn(AnalyticsService::new(analytics_config).subscribe(event_bus.clone()));
+    tokio::spawn(SearchIndexer::new(elasticsearch_config).subscribe(event_bus.clone()));
+    tokio::spawn(WebhookService::new(webhook_config).subscribe(event_bus.clone()));
+
+    // === Step 4: Create shared handler factories or pass Arc refs to HTTP handlers ===
+    let shared_deps = SharedDependencies {
+        event_store,
+        event_bus,
+        event_projector,
+        inventory_projector,
+        pool,
+    };
+
+    // === Step 5: Start HTTP server ===
+    let app = Router::new()
+        .route("/events", post(create_event_handler))
+        .route("/events/:id/publish", post(publish_event_handler))
+        .with_state(Arc::new(shared_deps));
+
+    axum::serve(listener, app).await.unwrap();
+}
+```
+
+#### Per-Request Handler Creation
+
+Handlers are created **per-request**, but they share the underlying infrastructure via `Arc::clone()` (cheap reference count increment):
+
+```rust
+// ═══════════════════════════════════════════════════════════════════
+// HTTP HANDLER (per-request)
+// ═══════════════════════════════════════════════════════════════════
+
+async fn create_event_handler(
+    State(deps): State<Arc<SharedDependencies>>,
+    Json(request): Json<CreateEventRequest>,
+) -> Result<Json<CreateEventResponse>, ApiError> {
+    // Create environment for this request (cheap Arc clones)
+    let env = EventEnvironment::new(
+        Arc::new(SystemClock),           // Or clone a shared clock
+        deps.event_store.clone(),        // Arc::clone - just increments ref count
+        deps.event_projector.clone(),    // Arc::clone
+        Some(deps.event_bus.clone()),    // Arc::clone
+        "event-events".to_string(),
+    );
+
+    // Create handler for this request
+    let handler = Handler::new(EventBusinessLogic, NoOpCallExecutor, env);
+
+    // Execute command - when this returns, events are persisted AND projected
+    let result = handler.handle(EventCommand::Create {
+        event_id: EventId::new(),
+        name: request.name,
+        owner_id: request.owner_id,
+        venue: request.venue,
+        date: request.date,
+        pricing_tiers: request.pricing_tiers,
+    }).await?;
+
+    Ok(Json(CreateEventResponse {
+        event_id: result.event_id,
+        version: result.version,
+    }))
+}
+```
+
+#### Two Categories of Dependencies
+
+| Category | Managed By | Consistency | Examples |
+|----------|------------|-------------|----------|
+| **Synchronous** | Handler (via `HandlerEnvironment`) | Strong - must complete before response | Event Store, Projector, Event Bus publish |
+| **Asynchronous** | Decoupled Subscribers | Eventual - processed independently | Email, Analytics, Search, Webhooks |
+
+**Synchronous (Handler-Managed):**
+- Event Store → persist events (source of truth)
+- Projector → update read model (query side)
+- Event Bus → publish events (fire-and-complete, not fire-and-forget)
+
+When `handler.handle()` returns, all three are complete. The HTTP response guarantees the read model is updated.
+
+**Asynchronous (Decoupled Subscribers):**
+- Email notifications
+- Analytics/metrics collection
+- Search indexing (Elasticsearch)
+- External webhooks
+- Audit logging
+- Cache invalidation
+
+These subscribe to the event bus and process events at their own pace. If they fail or lag, it doesn't affect command responses.
+
+#### Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Application Startup                                                     │
+│  ┌─────────────────────────────────────────────────────────────────────┐│
+│  │ • Create shared infrastructure (EventStore, EventBus, Projectors)   ││
+│  │ • Spawn long-running subscriber tasks                               ││
+│  │ • Start HTTP server with shared deps                                ││
+│  └─────────────────────────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────────────────────┘
+                              │
+                              │ Shared via Arc<T>
+                              ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Per-Request Flow                                                        │
+│  ┌─────────────────────────────────────────────────────────────────────┐│
+│  │ HTTP Request                                                        ││
+│  │      │                                                              ││
+│  │      ▼                                                              ││
+│  │ Create Handler (with Arc::clone refs to shared infra)               ││
+│  │      │                                                              ││
+│  │      ▼                                                              ││
+│  │ handler.handle(command)                                             ││
+│  │      │                                                              ││
+│  │      ├─► 1. Business Logic (pure) → events                          ││
+│  │      ├─► 2. Event Store.persist(events)     ✓ COMPLETE              ││
+│  │      ├─► 3. Projector.project(events)       ✓ COMPLETE              ││
+│  │      └─► 4. Event Bus.broadcast(events)     ✓ COMPLETE              ││
+│  │      │                                                              ││
+│  │      ▼                                                              ││
+│  │ HTTP Response (200 OK)                                              ││
+│  │ Caller knows: persisted + projected + broadcast                     ││
+│  └─────────────────────────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────────────────────┘
+                              │
+                              │ Event Bus (async delivery)
+                              ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Decoupled Subscribers (long-running background tasks)                   │
+│  ┌───────────┐ ┌───────────┐ ┌───────────┐ ┌───────────┐ ┌───────────┐ │
+│  │  Email    │ │ Analytics │ │  Search   │ │ Webhooks  │ │  Audit    │ │
+│  │  Service  │ │  Service  │ │  Indexer  │ │  Service  │ │  Logger   │ │
+│  └───────────┘ └───────────┘ └───────────┘ └───────────┘ └───────────┘ │
+│  (eventually consistent - process at their own pace)                     │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Key Points
+
+1. **Infrastructure is shared**: Created once at startup, shared via `Arc`
+2. **Handlers are per-request**: Cheap to create (just `Arc::clone` refs)
+3. **Synchronous deps block the response**: Persist, project, broadcast must complete
+4. **Async subscribers are decoupled**: They listen to the event bus independently
+5. **Event bus is the integration point**: Handlers publish, subscribers consume
+
 ### What Gets Generated
 
 | Component | Lines | Variability |
 |-----------|-------|-------------|
 | Business types (Command, Event, Error, State) | ~100 | Per-aggregate |
 | Business logic impl (`process`, `apply`) | ~200-400 | Per-aggregate |
+| Environment struct + `HandlerEnvironment` impl | ~50-80 | Per-aggregate |
 | Handler instantiation | ~20 | Per-aggregate (just wiring) |
-| **Total per aggregate** | **~400-600** | vs ~2,300 currently |
-| **Framework code (shared)** | ~300 | One-time (Handler, BusinessResult, traits) |
+| **Total per aggregate** | **~450-700** | vs ~2,300 currently |
+| **Framework code (shared)** | ~400 | One-time (Handler, BusinessResult, traits, Projector) |
 
-The framework code (unified `Handler`, `BusinessLogic` trait, `BusinessResult` enum) is written once and shared across all aggregates and sagas.
+The framework code (unified `Handler`, `BusinessLogic` trait, `BusinessResult` enum, `HandlerEnvironment` trait, `Projector` trait) is written once and shared across all aggregates and sagas.
+
+### Generated Environment Example
+
+Each aggregate gets its own Environment struct with domain-specific dependencies, implementing `HandlerEnvironment` to expose the core infrastructure:
+
+```rust
+// ═══════════════════════════════════════════════════════════════════
+// GENERATED: Per-aggregate Environment
+// ═══════════════════════════════════════════════════════════════════
+
+use std::sync::Arc;
+
+/// Environment for the Event aggregate.
+///
+/// Contains all dependencies needed by this aggregate:
+/// - Core infrastructure (required by HandlerEnvironment)
+/// - Domain-specific dependencies (projections, external services, etc.)
+pub struct EventEnvironment {
+    // === Core infrastructure (exposed via HandlerEnvironment) ===
+    clock: Arc<dyn Clock>,
+    event_store: Arc<dyn EventStore>,
+    projector: Arc<dyn Projector>,
+    event_bus: Option<Arc<dyn EventBus>>,
+    broadcast_topic: String,
+
+    // === Domain-specific dependencies (aggregate-specific) ===
+    // These are NOT accessed by the Handler, but could be used by
+    // custom middleware, HTTP handlers, or other infrastructure code.
+    // The business logic never sees these - it only gets Clock.
+}
+
+impl EventEnvironment {
+    /// Create a new Event environment
+    #[must_use]
+    pub fn new(
+        clock: Arc<dyn Clock>,
+        event_store: Arc<dyn EventStore>,
+        projector: Arc<dyn Projector>,
+        event_bus: Option<Arc<dyn EventBus>>,
+        broadcast_topic: String,
+    ) -> Self {
+        Self {
+            clock,
+            event_store,
+            projector,
+            event_bus,
+            broadcast_topic,
+        }
+    }
+}
+
+impl HandlerEnvironment for EventEnvironment {
+    fn clock(&self) -> &dyn Clock {
+        self.clock.as_ref()
+    }
+
+    fn event_store(&self) -> &dyn EventStore {
+        self.event_store.as_ref()
+    }
+
+    fn projector(&self) -> Option<&dyn Projector> {
+        Some(self.projector.as_ref())
+    }
+
+    fn event_bus(&self) -> Option<&dyn EventBus> {
+        self.event_bus.as_ref().map(|eb| eb.as_ref())
+    }
+
+    fn broadcast_topic(&self) -> &str {
+        &self.broadcast_topic
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// GENERATED: Projector Implementation (per-aggregate)
+// ═══════════════════════════════════════════════════════════════════
+
+/// Projector for the Event aggregate's read model.
+///
+/// Updates the PostgreSQL read model and returns when the update is confirmed.
+pub struct EventProjector {
+    pool: PgPool,
+}
+
+impl EventProjector {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+impl Projector for EventProjector {
+    async fn project(&self, events: &[SerializedEvent]) -> Result<(), ProjectionError> {
+        for event in events {
+            // Deserialize and apply to read model
+            let event: EventEvent = bincode::deserialize(&event.payload)
+                .map_err(|e| ProjectionError::Deserialization(e.to_string()))?;
+
+            match event {
+                EventEvent::Created { id, name, owner_id, venue, date, pricing_tiers, created_at, .. } => {
+                    sqlx::query!(
+                        r#"
+                        INSERT INTO events (id, name, owner_id, venue, date, pricing_tiers, status, created_at)
+                        VALUES ($1, $2, $3, $4, $5, $6, 'draft', $7)
+                        "#,
+                        id.as_uuid(),
+                        name,
+                        owner_id.as_uuid(),
+                        serde_json::to_value(&venue).unwrap(),
+                        date.as_datetime(),
+                        serde_json::to_value(&pricing_tiers).unwrap(),
+                        created_at,
+                    )
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| ProjectionError::Database(e.to_string()))?;
+                }
+                EventEvent::Published { event_id, published_at } => {
+                    sqlx::query!(
+                        r#"UPDATE events SET status = 'published', published_at = $2 WHERE id = $1"#,
+                        event_id.as_uuid(),
+                        published_at,
+                    )
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| ProjectionError::Database(e.to_string()))?;
+                }
+                // ... other event handlers
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// GENERATED: Handler Instantiation (wiring)
+// ═══════════════════════════════════════════════════════════════════
+
+/// Create the Event aggregate handler with all dependencies wired up.
+pub fn create_event_handler(
+    pool: PgPool,
+    event_store: Arc<dyn EventStore>,
+    event_bus: Option<Arc<dyn EventBus>>,
+) -> Handler<EventBusinessLogic, NoOpCallExecutor, EventEnvironment> {
+    let clock = Arc::new(SystemClock);
+    let projector = Arc::new(EventProjector::new(pool));
+
+    let env = EventEnvironment::new(
+        clock,
+        event_store,
+        projector,
+        event_bus,
+        "event-events".to_string(),
+    );
+
+    Handler::new(EventBusinessLogic, NoOpCallExecutor, env)
+}
+```
+
+**Key Points:**
+
+1. **Environment is per-aggregate**: Each aggregate defines its own struct with exactly the dependencies it needs
+2. **HandlerEnvironment exposes core deps**: The Handler only accesses what it needs via the trait
+3. **Projector is per-aggregate**: Each aggregate has its own projector that knows how to update its read model
+4. **Business logic stays pure**: It never sees the environment - only the Clock passed by the Handler
+5. **Handler instantiation is simple**: Just wire up the dependencies and create the Handler
 
 ---
 
@@ -1560,39 +2029,124 @@ impl SagaCallExecutor {
 
 ### Saga Handler Instantiation
 
+Sagas use the same `Handler` with Environment pattern. The key difference is that sagas have a `CallExecutor` that dispatches calls to other aggregate handlers.
+
 ```rust
-// Create aggregate handlers first
-let event_handler = Arc::new(Handler::new(
-    EventBusinessLogic,
-    event_store.clone(),
-    event_bus.clone(),
-    clock.clone(),
-    NoOpCallExecutor,
-    "event-events".to_string(),
-));
+// ═══════════════════════════════════════════════════════════════════
+// GENERATED: Saga Environment
+// ═══════════════════════════════════════════════════════════════════
 
-let inventory_handler = Arc::new(Handler::new(
-    InventoryBusinessLogic,
-    event_store.clone(),
-    event_bus.clone(),
-    clock.clone(),
-    NoOpCallExecutor,
-    "inventory-events".to_string(),
-));
+/// Environment for the EventInventory saga.
+pub struct EventInventorySagaEnvironment {
+    clock: Arc<dyn Clock>,
+    event_store: Arc<dyn EventStore>,
+    projector: Arc<dyn Projector>,
+    event_bus: Option<Arc<dyn EventBus>>,
+    broadcast_topic: String,
+}
 
-// Create saga handler with call executor
+impl EventInventorySagaEnvironment {
+    pub fn new(
+        clock: Arc<dyn Clock>,
+        event_store: Arc<dyn EventStore>,
+        projector: Arc<dyn Projector>,
+        event_bus: Option<Arc<dyn EventBus>>,
+        broadcast_topic: String,
+    ) -> Self {
+        Self { clock, event_store, projector, event_bus, broadcast_topic }
+    }
+}
+
+impl HandlerEnvironment for EventInventorySagaEnvironment {
+    fn clock(&self) -> &dyn Clock { self.clock.as_ref() }
+    fn event_store(&self) -> &dyn EventStore { self.event_store.as_ref() }
+    fn projector(&self) -> Option<&dyn Projector> { Some(self.projector.as_ref()) }
+    fn event_bus(&self) -> Option<&dyn EventBus> { self.event_bus.as_ref().map(|eb| eb.as_ref()) }
+    fn broadcast_topic(&self) -> &str { &self.broadcast_topic }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// GENERATED: Saga Projector (tracks saga state in read model)
+// ═══════════════════════════════════════════════════════════════════
+
+pub struct EventInventorySagaProjector {
+    pool: PgPool,
+}
+
+impl Projector for EventInventorySagaProjector {
+    async fn project(&self, events: &[SerializedEvent]) -> Result<(), ProjectionError> {
+        // Update saga status in read model for monitoring/debugging
+        for event in events {
+            let saga_event: SagaEvent = bincode::deserialize(&event.payload)
+                .map_err(|e| ProjectionError::Deserialization(e.to_string()))?;
+
+            match saga_event {
+                SagaEvent::Initiated { saga_id, event_id, .. } => {
+                    sqlx::query!(
+                        "INSERT INTO sagas (id, event_id, status) VALUES ($1, $2, 'initiated')",
+                        saga_id.as_uuid(),
+                        event_id.as_uuid(),
+                    )
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| ProjectionError::Database(e.to_string()))?;
+                }
+                SagaEvent::Completed { saga_id, .. } => {
+                    sqlx::query!(
+                        "UPDATE sagas SET status = 'completed' WHERE id = $1",
+                        saga_id.as_uuid(),
+                    )
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| ProjectionError::Database(e.to_string()))?;
+                }
+                SagaEvent::Failed { saga_id, error, .. } => {
+                    sqlx::query!(
+                        "UPDATE sagas SET status = 'failed', error = $2 WHERE id = $1",
+                        saga_id.as_uuid(),
+                        error,
+                    )
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| ProjectionError::Database(e.to_string()))?;
+                }
+                // ... other saga events
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// GENERATED: Handler Wiring
+// ═══════════════════════════════════════════════════════════════════
+
+// Create aggregate handlers first (using their own environments)
+let event_handler = Arc::new(create_event_handler(pool.clone(), event_store.clone(), event_bus.clone()));
+let inventory_handler = Arc::new(create_inventory_handler(pool.clone(), event_store.clone(), event_bus.clone()));
+
+// Create saga call executor that dispatches to aggregate handlers
 let saga_call_executor = SagaCallExecutor {
     event_handler: event_handler.clone(),
     inventory_handler: inventory_handler.clone(),
 };
 
+// Create saga environment
+let saga_projector = Arc::new(EventInventorySagaProjector::new(pool.clone()));
+let saga_env = EventInventorySagaEnvironment::new(
+    Arc::new(SystemClock),
+    event_store.clone(),
+    saga_projector,
+    event_bus.clone(),
+    "saga-events".to_string(),
+);
+
+// Create saga handler
 let saga_handler = Handler::new(
     EventInventorySagaLogic,
-    saga_event_store.clone(),  // Saga has its own event store stream
-    event_bus.clone(),
-    clock.clone(),
     saga_call_executor,
-    "saga-events".to_string(),
+    saga_env,
 );
 ```
 
@@ -2559,3 +3113,4 @@ Before deploying Option A to production, verify:
 |---------|------|--------|---------|
 | 1.0 | 2025-11-29 | Claude + User | Initial specification |
 | 2.0 | 2025-11-29 | Claude + User | Industrial-grade update: unified `BusinessLogic` trait with full associated types (`Call`, `CallResult`), removed `Reject` variant in favor of `Err`, comprehensive saga compensation (forward + rollback phases), `CallExecutor` trait for saga dispatch, `NoOpCallExecutor` for aggregates, testing patterns, serialization details, production checklist |
+| 3.0 | 2025-11-29 | Claude + User | Configurable Environment: Handler is now generic over `Env: HandlerEnvironment`, enabling per-aggregate dependency injection. Added `Projector` trait for synchronous projection completion. Handler now guarantees: persist → project → broadcast ordering. Business logic remains pure (only receives Clock). Added generated Environment and Projector examples. Updated saga instantiation to use Environment pattern. Added "Infrastructure Lifecycle and Dependency Sharing" section explaining: shared infrastructure (created at startup via Arc), per-request handler creation, synchronous vs asynchronous dependencies, and decoupled subscriber pattern. |

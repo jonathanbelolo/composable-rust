@@ -1,0 +1,39 @@
+[package]
+name = "composable-rust-postgres-next"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "PostgreSQL event store for composable-rust-next"
+
+[dependencies]
+# The next framework
+composable-rust-next = { path = "../next" }
+
+# Database
+sqlx = { workspace = true, features = ["runtime-tokio", "postgres"] }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Observability
+tracing = { workspace = true }
+metrics = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
