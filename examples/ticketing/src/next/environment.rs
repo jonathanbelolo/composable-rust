@@ -31,8 +31,9 @@
 //! ```
 
 use composable_rust_next::{
-    Clock, EventBus, EventBusError, EventStore, HandlerEnvironment, ProjectionError, Projector,
-    SerializedEvent, SystemClock,
+    Clock, EventBus, EventBusError, EventStore, HandlerEnvironment, MetadataContext,
+    NoOpProjectionQueries, ProjectionError, ProjectionQueries, Projector, SerializedEvent,
+    SystemClock,
 };
 use composable_rust_postgres_next::PostgresEventStore;
 
@@ -109,28 +110,42 @@ impl Projector for NoOpProjector {
 ///     "test-events",
 /// );
 /// ```
-pub struct TicketingEnvironment<C, ES, P = NoOpProjector, EB = NoOpEventBus>
-where
+#[derive(Clone)]
+pub struct TicketingEnvironment<
+    C,
+    ES,
+    P = NoOpProjector,
+    EB = NoOpEventBus,
+    PQ = NoOpProjectionQueries,
+> where
     C: Clock,
     ES: EventStore,
     P: Projector,
     EB: EventBus,
+    PQ: ProjectionQueries,
 {
     clock: C,
     event_store: ES,
     projector: Option<P>,
     event_bus: Option<EB>,
     broadcast_topic: String,
+    projections: PQ,
+    metadata: MetadataContext,
 }
 
-impl<C, ES, P, EB> TicketingEnvironment<C, ES, P, EB>
+impl<C, ES, P, EB> TicketingEnvironment<C, ES, P, EB, NoOpProjectionQueries>
 where
     C: Clock,
     ES: EventStore,
     P: Projector,
     EB: EventBus,
 {
-    /// Create a new ticketing environment with all dependencies.
+    /// Create a new ticketing environment without projection queries.
+    ///
+    /// Uses `NoOpProjectionQueries` which is suitable for aggregates that only
+    /// write data and don't support query operations.
+    ///
+    /// For environments that support queries, use [`TicketingEnvironment::with_projections`].
     ///
     /// # Arguments
     ///
@@ -153,6 +168,50 @@ where
             projector,
             event_bus,
             broadcast_topic: broadcast_topic.into(),
+            projections: NoOpProjectionQueries,
+            metadata: MetadataContext::new(),
+        }
+    }
+}
+
+impl<C, ES, P, EB, PQ> TicketingEnvironment<C, ES, P, EB, PQ>
+where
+    C: Clock,
+    ES: EventStore,
+    P: Projector,
+    EB: EventBus,
+    PQ: ProjectionQueries,
+{
+    /// Create a new ticketing environment with projection queries.
+    ///
+    /// Use this constructor when you need to support query operations
+    /// that read from projection data.
+    ///
+    /// # Arguments
+    ///
+    /// * `clock` - Clock for timestamps
+    /// * `event_store` - Event store for persistence
+    /// * `projector` - Optional projector for updating read models
+    /// * `event_bus` - Optional event bus for broadcasting events
+    /// * `broadcast_topic` - Topic name for broadcasting
+    /// * `projections` - Projection queries implementation for read operations
+    #[must_use]
+    pub fn with_projections(
+        clock: C,
+        event_store: ES,
+        projector: Option<P>,
+        event_bus: Option<EB>,
+        broadcast_topic: impl Into<String>,
+        projections: PQ,
+    ) -> Self {
+        Self {
+            clock,
+            event_store,
+            projector,
+            event_bus,
+            broadcast_topic: broadcast_topic.into(),
+            projections,
+            metadata: MetadataContext::new(),
         }
     }
 
@@ -181,18 +240,21 @@ where
     }
 }
 
-impl<C, ES, P, EB> HandlerEnvironment for TicketingEnvironment<C, ES, P, EB>
+impl<C, ES, P, EB, PQ> HandlerEnvironment for TicketingEnvironment<C, ES, P, EB, PQ>
 where
     C: Clock + Send + Sync,
     ES: EventStore + Send + Sync,
     P: Projector + Send + Sync,
     EB: EventBus + Send + Sync,
+    PQ: ProjectionQueries,
 {
+    type Clock = C;
     type EventStore = ES;
     type Projector = P;
     type EventBus = EB;
+    type Projections = PQ;
 
-    fn clock(&self) -> &dyn Clock {
+    fn clock(&self) -> &Self::Clock {
         &self.clock
     }
 
@@ -210,6 +272,14 @@ where
 
     fn broadcast_topic(&self) -> &str {
         &self.broadcast_topic
+    }
+
+    fn projections(&self) -> &Self::Projections {
+        &self.projections
+    }
+
+    fn metadata(&self) -> &MetadataContext {
+        &self.metadata
     }
 }
 
@@ -246,7 +316,15 @@ where
     }
 }
 
-impl TicketingEnvironment<SystemClock, PostgresEventStore, NoOpProjector, NoOpEventBus> {
+impl
+    TicketingEnvironment<
+        SystemClock,
+        PostgresEventStore,
+        NoOpProjector,
+        NoOpEventBus,
+        NoOpProjectionQueries,
+    >
+{
     /// Create a minimal production environment without projector or event bus.
     ///
     /// Useful for simple use cases or when projections aren't needed.
@@ -259,11 +337,21 @@ impl TicketingEnvironment<SystemClock, PostgresEventStore, NoOpProjector, NoOpEv
             projector: None,
             event_bus: None,
             broadcast_topic: String::new(),
+            projections: NoOpProjectionQueries,
+            metadata: MetadataContext::new(),
         }
     }
 }
 
-impl TicketingEnvironment<SystemClock, PostgresEventStore, EventProjector, NoOpEventBus> {
+impl
+    TicketingEnvironment<
+        SystemClock,
+        PostgresEventStore,
+        EventProjector,
+        NoOpEventBus,
+        NoOpProjectionQueries,
+    >
+{
     /// Create a production environment with a projector but no event bus.
     #[must_use]
     #[allow(clippy::missing_const_for_fn)] // String::new() is not const
@@ -274,6 +362,8 @@ impl TicketingEnvironment<SystemClock, PostgresEventStore, EventProjector, NoOpE
             projector: Some(projector),
             event_bus: None,
             broadcast_topic: String::new(),
+            projections: NoOpProjectionQueries,
+            metadata: MetadataContext::new(),
         }
     }
 }

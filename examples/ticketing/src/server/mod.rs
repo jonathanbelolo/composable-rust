@@ -6,16 +6,16 @@
 //! - Metrics endpoint
 //! - HTTP middleware (metrics, correlation ID)
 //! - Graceful shutdown handling
-//! - Router configuration
+//! - Router configuration (using next-generation handlers)
 
-pub mod state;
 pub mod health;
 pub mod metrics;
 pub mod middleware;
 pub mod routes;
+pub mod state;
 
-pub use state::AppState;
 pub use health::health_check;
 pub use metrics::metrics_routes;
 pub use middleware::metrics_middleware;
 pub use routes::build_router;
+pub use state::AppState;

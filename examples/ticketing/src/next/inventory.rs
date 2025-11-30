@@ -24,13 +24,56 @@ use std::convert::Infallible;
 use crate::types::{Capacity, CustomerId, EventId, ReservationId, SeatId};
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Release Reason
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Reason why seats were released back to the available pool.
+///
+/// This enables different business reactions to different release scenarios:
+/// - Analytics: Track abandonment vs. cancellation rates
+/// - Customer outreach: Send abandoned cart emails for expirations
+/// - Audit: Understand why seats became available
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReleaseReason {
+    /// Customer explicitly cancelled their reservation
+    CustomerCancelled,
+    /// Reservation expired (timeout)
+    Expired,
+    /// Payment processing failed
+    PaymentFailed,
+    /// Saga compensation (e.g., downstream step failed)
+    Compensation,
+}
+
+impl std::fmt::Display for ReleaseReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CustomerCancelled => write!(f, "customer_cancelled"),
+            Self::Expired => write!(f, "expired"),
+            Self::PaymentFailed => write!(f, "payment_failed"),
+            Self::Compensation => write!(f, "compensation"),
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Commands
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Commands for the Inventory aggregate.
+///
+/// # CQRS Pattern
+///
+/// Write commands include a `fetched` field that contains validation data
+/// pre-loaded from projections by the [`QueryFetcher`]. This follows the CQRS
+/// principle: validation data comes from projections, not from loading state
+/// from the event store.
 #[derive(Debug, Clone)]
 pub enum InventoryCommand {
     /// Initialize inventory for an event section.
+    ///
+    /// `fetched: None` means inventory doesn't exist (can initialize).
+    /// `fetched: Some(_)` with `initialized: true` means already initialized.
     Initialize {
         /// Event ID this inventory belongs to
         event_id: EventId,
@@ -38,9 +81,13 @@ pub enum InventoryCommand {
         section: String,
         /// Total capacity for this section
         capacity: Capacity,
+        /// Pre-fetched inventory data (None = doesn't exist)
+        fetched: Option<InventoryDto>,
     },
 
     /// Reserve seats for a pending purchase.
+    ///
+    /// `fetched` must contain current inventory state for availability check.
     Reserve {
         /// Unique reservation ID
         reservation_id: ReservationId,
@@ -52,21 +99,126 @@ pub enum InventoryCommand {
         quantity: u32,
         /// When this reservation expires (if not confirmed)
         expires_at: DateTime<Utc>,
+        /// Pre-fetched inventory data for availability check
+        fetched: Option<InventoryDto>,
     },
 
     /// Confirm a reservation (mark as sold).
+    ///
+    /// `fetched` must contain the reservation data for validation.
     Confirm {
         /// Reservation to confirm
         reservation_id: ReservationId,
         /// Customer who purchased
         customer_id: CustomerId,
+        /// Pre-fetched reservation data
+        fetched: Option<ReservationDto>,
     },
 
     /// Release a reservation (return seats to available pool).
+    ///
+    /// `fetched` must contain the reservation data for validation.
     Release {
         /// Reservation to release
         reservation_id: ReservationId,
+        /// Why the reservation is being released
+        reason: ReleaseReason,
+        /// Pre-fetched reservation data
+        fetched: Option<ReservationDto>,
     },
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Query Commands
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Get availability for a specific section.
+    ///
+    /// The `fetched` field is populated by the Handler before calling process().
+    GetSectionAvailability {
+        /// Event ID
+        event_id: EventId,
+        /// Section name
+        section: String,
+        /// Pre-fetched availability data (populated by Handler)
+        fetched: Option<SectionAvailabilityDto>,
+    },
+
+    /// Get availability for all sections of an event.
+    ///
+    /// The `fetched` field is populated by the Handler before calling process().
+    GetEventAvailability {
+        /// Event ID
+        event_id: EventId,
+        /// Pre-fetched availability data (populated by Handler)
+        fetched: Vec<SectionAvailabilityDto>,
+    },
+
+    /// Get total available seats across all sections.
+    ///
+    /// The `fetched` field is populated by the Handler before calling process().
+    GetTotalAvailable {
+        /// Event ID
+        event_id: EventId,
+        /// Pre-fetched total (populated by Handler)
+        fetched: u32,
+    },
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Query DTOs and Response Types
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Availability data for a single section.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SectionAvailabilityDto {
+    /// Event ID
+    pub event_id: EventId,
+    /// Section name
+    pub section: String,
+    /// Total capacity for this section
+    pub total_capacity: u32,
+    /// Number of available seats
+    pub available_seats: u32,
+    /// Number of reserved seats (pending payment)
+    pub reserved_seats: u32,
+    /// Number of sold seats (confirmed)
+    pub sold_seats: u32,
+}
+
+/// DTO for inventory write command validation.
+///
+/// This is fetched from projections and embedded in write commands
+/// to provide validation data without loading state from the event store.
+#[derive(Debug, Clone)]
+pub struct InventoryDto {
+    /// Whether inventory has been initialized
+    pub initialized: bool,
+    /// Total capacity
+    pub capacity: u32,
+    /// Available seat count
+    pub available_count: u32,
+    /// Available seat IDs (for reservation)
+    pub available_seats: Vec<SeatId>,
+}
+
+/// DTO for reservation validation.
+#[derive(Debug, Clone)]
+pub struct ReservationDto {
+    /// Seat IDs in this reservation
+    pub seats: Vec<SeatId>,
+    /// When the reservation expires
+    pub expires_at: DateTime<Utc>,
+}
+
+/// Response types for Inventory queries.
+#[derive(Debug, Clone)]
+pub enum InventoryResponse {
+    /// Single section availability
+    SectionAvailability(SectionAvailabilityDto),
+    /// All sections availability for an event
+    EventAvailability(Vec<SectionAvailabilityDto>),
+    /// Total available seats
+    TotalAvailable(u32),
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -124,6 +276,8 @@ pub enum InventoryEvent {
         reservation_id: ReservationId,
         /// Released seat IDs
         seats: Vec<SeatId>,
+        /// Why the reservation was released
+        reason: ReleaseReason,
         /// When released
         released_at: DateTime<Utc>,
     },
@@ -255,6 +409,7 @@ impl BusinessLogic for InventoryBusinessLogic {
     type Error = InventoryError;
     type Call = Infallible;
     type CallResult = Infallible;
+    type Response = InventoryResponse;
 
     fn stream_id(input: &Self::Input) -> StreamId {
         match input {
@@ -273,15 +428,22 @@ impl BusinessLogic for InventoryBusinessLogic {
             InventoryCommand::Release { reservation_id, .. } => {
                 StreamId::new(format!("inventory-reservation-{}", reservation_id.as_uuid()))
             }
+            // Query commands - use query stream IDs (not persisted)
+            InventoryCommand::GetSectionAvailability { event_id, section, .. } => {
+                StreamId::new(format!("query-inventory-{}-{}", event_id.as_uuid(), section))
+            }
+            InventoryCommand::GetEventAvailability { event_id, .. }
+            | InventoryCommand::GetTotalAvailable { event_id, .. } => {
+                StreamId::new(format!("query-inventory-{}", event_id.as_uuid()))
+            }
         }
     }
 
     fn process(
         &self,
-        state: &Self::State,
         input: Self::Input,
         clock: &dyn Clock,
-    ) -> Result<BusinessResult<Self::Event, Self::Call>, Self::Error> {
+    ) -> Result<BusinessResult<Self::Event, Self::Call, Self::Response>, Self::Error> {
         let now = clock.now();
 
         match input {
@@ -289,10 +451,13 @@ impl BusinessLogic for InventoryBusinessLogic {
                 event_id,
                 section,
                 capacity,
+                fetched,
             } => {
-                // Validation
-                if state.initialized {
-                    return Err(InventoryError::AlreadyInitialized);
+                // Validation: if fetched exists and is initialized, reject
+                if let Some(inv) = fetched {
+                    if inv.initialized {
+                        return Err(InventoryError::AlreadyInitialized);
+                    }
                 }
                 if capacity.value() == 0 {
                     return Err(InventoryError::ValidationFailed(
@@ -320,13 +485,15 @@ impl BusinessLogic for InventoryBusinessLogic {
                 section,
                 quantity,
                 expires_at,
+                fetched,
             } => {
-                // Validation
-                if !state.initialized {
+                // Validation: inventory must be initialized
+                let inventory = fetched.ok_or(InventoryError::NotInitialized)?;
+                if !inventory.initialized {
                     return Err(InventoryError::NotInitialized);
                 }
 
-                let available = state.available_count();
+                let available = inventory.available_count;
                 if available < quantity {
                     return Err(InventoryError::InsufficientInventory {
                         requested: quantity,
@@ -334,13 +501,12 @@ impl BusinessLogic for InventoryBusinessLogic {
                     });
                 }
 
-                // Find available seats to reserve
-                let seats: Vec<SeatId> = state
-                    .seats
+                // Use the pre-fetched available seats
+                let seats: Vec<SeatId> = inventory
+                    .available_seats
                     .iter()
-                    .filter(|(_, status)| matches!(status, SeatStatus::Available))
                     .take(quantity as usize)
-                    .map(|(id, _)| *id)
+                    .copied()
                     .collect();
 
                 Ok(BusinessResult::Done(vec![InventoryEvent::SeatsReserved {
@@ -356,31 +522,68 @@ impl BusinessLogic for InventoryBusinessLogic {
             InventoryCommand::Confirm {
                 reservation_id,
                 customer_id,
+                fetched,
             } => {
-                let reservation = state
-                    .reservations
-                    .get(&reservation_id)
+                // Validation: reservation must exist
+                let reservation = fetched
                     .ok_or(InventoryError::ReservationNotFound(reservation_id))?;
 
                 Ok(BusinessResult::Done(vec![InventoryEvent::SeatsConfirmed {
                     reservation_id,
                     customer_id,
-                    seats: reservation.seats.clone(),
+                    seats: reservation.seats,
                     confirmed_at: now,
                 }]))
             }
 
-            InventoryCommand::Release { reservation_id } => {
-                let reservation = state
-                    .reservations
-                    .get(&reservation_id)
+            InventoryCommand::Release {
+                reservation_id,
+                reason,
+                fetched,
+            } => {
+                // Validation: reservation must exist
+                let reservation = fetched
                     .ok_or(InventoryError::ReservationNotFound(reservation_id))?;
 
                 Ok(BusinessResult::Done(vec![InventoryEvent::SeatsReleased {
                     reservation_id,
-                    seats: reservation.seats.clone(),
+                    seats: reservation.seats,
+                    reason,
                     released_at: now,
                 }]))
+            }
+
+            // ═══════════════════════════════════════════════════════════════
+            // Query Commands (data pre-fetched by Handler)
+            // ═══════════════════════════════════════════════════════════════
+
+            InventoryCommand::GetSectionAvailability {
+                event_id: _,
+                section: _,
+                fetched,
+            } => {
+                let availability = fetched.ok_or(InventoryError::NotInitialized)?;
+                Ok(BusinessResult::Respond(InventoryResponse::SectionAvailability(
+                    availability,
+                )))
+            }
+
+            InventoryCommand::GetEventAvailability {
+                event_id: _,
+                fetched,
+            } => {
+                Ok(BusinessResult::Respond(InventoryResponse::EventAvailability(
+                    fetched,
+                )))
+            }
+
+            InventoryCommand::GetTotalAvailable {
+                event_id: _,
+                fetched,
+            } => {
+                Ok(BusinessResult::Respond(InventoryResponse::TotalAvailable(
+                    fetched,
+                )))
             }
         }
     }
@@ -450,6 +653,7 @@ impl BusinessLogic for InventoryBusinessLogic {
             InventoryEvent::SeatsReleased {
                 reservation_id,
                 seats,
+                reason: _, // Reason doesn't affect state, only used for projections/analytics
                 ..
             } => {
                 for seat_id in seats {
@@ -485,19 +689,30 @@ mod tests {
         FixedClock::new(Utc::now())
     }
 
+    /// Helper to create an InventoryDto for testing
+    fn inventory_dto(initialized: bool, capacity: u32, available_seats: Vec<SeatId>) -> InventoryDto {
+        InventoryDto {
+            initialized,
+            capacity,
+            available_count: available_seats.len() as u32,
+            available_seats,
+        }
+    }
+
     #[test]
     fn initialize_inventory_succeeds() {
         let logic = InventoryBusinessLogic;
-        let state = InventoryState::default();
         let clock = test_clock();
 
+        // fetched: None means inventory doesn't exist yet
         let command = InventoryCommand::Initialize {
             event_id: EventId::new(),
             section: "VIP".to_string(),
             capacity: Capacity::new(100),
+            fetched: None,
         };
 
-        let result = logic.process(&state, command, &clock).unwrap();
+        let result = logic.process(command, &clock).unwrap();
 
         match result {
             BusinessResult::Done(events) => {
@@ -517,17 +732,17 @@ mod tests {
     #[test]
     fn initialize_already_initialized_fails() {
         let logic = InventoryBusinessLogic;
-        let mut state = InventoryState::default();
-        state.initialized = true;
         let clock = test_clock();
 
+        // fetched: Some with initialized=true means already initialized
         let command = InventoryCommand::Initialize {
             event_id: EventId::new(),
             section: "VIP".to_string(),
             capacity: Capacity::new(100),
+            fetched: Some(inventory_dto(true, 100, vec![])),
         };
 
-        let result = logic.process(&state, command, &clock);
+        let result = logic.process(command, &clock);
 
         assert!(matches!(result, Err(InventoryError::AlreadyInitialized)));
     }
@@ -537,30 +752,20 @@ mod tests {
         let logic = InventoryBusinessLogic;
         let clock = test_clock();
 
-        // Initialize first
-        let mut state = InventoryState::default();
-        let init_cmd = InventoryCommand::Initialize {
-            event_id: EventId::new(),
-            section: "VIP".to_string(),
-            capacity: Capacity::new(100),
-        };
-        let init_result = logic.process(&state, init_cmd, &clock).unwrap();
-        if let BusinessResult::Done(events) = init_result {
-            for event in &events {
-                logic.apply(&mut state, event);
-            }
-        }
+        // Create available seats for testing
+        let available_seats: Vec<SeatId> = (0..100).map(|_| SeatId::new()).collect();
 
-        // Now reserve
+        // Reserve command with fetched inventory data
         let reserve_cmd = InventoryCommand::Reserve {
             reservation_id: ReservationId::new(),
             event_id: EventId::new(),
             section: "VIP".to_string(),
             quantity: 5,
             expires_at: Utc::now() + chrono::Duration::minutes(15),
+            fetched: Some(inventory_dto(true, 100, available_seats)),
         };
 
-        let result = logic.process(&state, reserve_cmd, &clock).unwrap();
+        let result = logic.process(reserve_cmd, &clock).unwrap();
 
         match result {
             BusinessResult::Done(events) => {
@@ -581,30 +786,20 @@ mod tests {
         let logic = InventoryBusinessLogic;
         let clock = test_clock();
 
-        // Initialize with small capacity
-        let mut state = InventoryState::default();
-        let init_cmd = InventoryCommand::Initialize {
-            event_id: EventId::new(),
-            section: "VIP".to_string(),
-            capacity: Capacity::new(5),
-        };
-        let init_result = logic.process(&state, init_cmd, &clock).unwrap();
-        if let BusinessResult::Done(events) = init_result {
-            for event in &events {
-                logic.apply(&mut state, event);
-            }
-        }
+        // Only 5 seats available
+        let available_seats: Vec<SeatId> = (0..5).map(|_| SeatId::new()).collect();
 
         // Try to reserve more than available
         let reserve_cmd = InventoryCommand::Reserve {
             reservation_id: ReservationId::new(),
             event_id: EventId::new(),
             section: "VIP".to_string(),
-            quantity: 10, // More than capacity of 5
+            quantity: 10, // More than available 5
             expires_at: Utc::now() + chrono::Duration::minutes(15),
+            fetched: Some(inventory_dto(true, 100, available_seats)),
         };
 
-        let result = logic.process(&state, reserve_cmd, &clock);
+        let result = logic.process(reserve_cmd, &clock);
 
         assert!(matches!(
             result,

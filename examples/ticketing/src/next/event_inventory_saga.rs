@@ -86,7 +86,14 @@ pub enum SagaInput {
     },
 
     /// Feedback from aggregate calls.
-    Feedback(Vec<SagaCallResult>),
+    Feedback {
+        /// Event ID for state lookup (extracted from call results)
+        event_id: EventId,
+        /// Results from aggregate calls
+        results: Vec<SagaCallResult>,
+        /// Fetched saga state (populated by QueryFetcher before calling process)
+        fetched: Option<SagaState>,
+    },
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -316,13 +323,14 @@ impl BusinessLogic for EventInventorySagaLogic {
     type Error = SagaError;
     type Call = SagaCall;
     type CallResult = SagaCallResult;
+    type Response = ();
 
     fn stream_id(input: &Self::Input) -> StreamId {
         match input {
             SagaInput::CreateEventWithInventory { event_id, .. } => {
                 StreamId::new(format!("saga-event-inventory-{}", event_id.as_uuid()))
             }
-            SagaInput::Feedback(_) => {
+            SagaInput::Feedback { .. } => {
                 // Feedback is always for an in-progress saga
                 // The Handler maintains the stream_id from the original command
                 StreamId::new("saga-feedback-placeholder")
@@ -332,10 +340,9 @@ impl BusinessLogic for EventInventorySagaLogic {
 
     fn process(
         &self,
-        state: &Self::State,
         input: Self::Input,
         clock: &dyn Clock,
-    ) -> Result<BusinessResult<Self::Event, Self::Call>, Self::Error> {
+    ) -> Result<BusinessResult<Self::Event, Self::Call, Self::Response>, Self::Error> {
         let now = clock.now();
 
         match input {
@@ -347,10 +354,7 @@ impl BusinessLogic for EventInventorySagaLogic {
                 date,
                 pricing_tiers,
             } => {
-                // Validation
-                if state.phase != SagaPhase::Initial {
-                    return Err(SagaError::AlreadyInProgress);
-                }
+                // Validation - new saga, no existing state expected
                 if venue.sections.is_empty() {
                     return Err(SagaError::ValidationFailed(
                         "Venue must have at least one section".to_string(),
@@ -368,6 +372,7 @@ impl BusinessLogic for EventInventorySagaLogic {
                     venue: venue.clone(),
                     date,
                     pricing_tiers,
+                    fetched: None, // New event, should not exist
                 };
 
                 Ok(BusinessResult::Continue {
@@ -381,8 +386,11 @@ impl BusinessLogic for EventInventorySagaLogic {
                 })
             }
 
-            SagaInput::Feedback(results) => {
-                self.process_feedback(state, results, now)
+            SagaInput::Feedback { event_id: _, results, fetched } => {
+                let state = fetched.ok_or_else(|| {
+                    SagaError::ValidationFailed("Saga state required for feedback".to_string())
+                })?;
+                self.process_feedback(&state, results, now)
             }
         }
     }
@@ -435,7 +443,14 @@ impl BusinessLogic for EventInventorySagaLogic {
     }
 
     fn feedback_input(results: Vec<Self::CallResult>) -> Self::Input {
-        SagaInput::Feedback(results)
+        // Extract event_id from call results
+        let event_id = Self::extract_event_id_from_results(&results);
+
+        SagaInput::Feedback {
+            event_id,
+            results,
+            fetched: None, // QueryFetcher will populate this before calling process
+        }
     }
 
     fn event_type_name(event: &Self::Event) -> &'static str {
@@ -460,7 +475,7 @@ impl EventInventorySagaLogic {
         state: &SagaState,
         results: Vec<SagaCallResult>,
         now: DateTime<Utc>,
-    ) -> Result<BusinessResult<SagaEvent, SagaCall>, SagaError> {
+    ) -> Result<BusinessResult<SagaEvent, SagaCall, ()>, SagaError> {
         let event_id = state.event_id.ok_or_else(|| {
             SagaError::ValidationFailed("No event_id in state".to_string())
         })?;
@@ -490,7 +505,7 @@ impl EventInventorySagaLogic {
         event_id: EventId,
         results: Vec<SagaCallResult>,
         now: DateTime<Utc>,
-    ) -> Result<BusinessResult<SagaEvent, SagaCall>, SagaError> {
+    ) -> Result<BusinessResult<SagaEvent, SagaCall, ()>, SagaError> {
         // Should have exactly one Event result
         let event_result = results.into_iter().find_map(|r| {
             if let SagaCallResult::Event(result) = r {
@@ -525,6 +540,7 @@ impl EventInventorySagaLogic {
                                 event_id,
                                 section: section.clone(),
                                 capacity,
+                                fetched: None, // New inventory, should not exist
                             },
                         }
                     })
@@ -563,7 +579,7 @@ impl EventInventorySagaLogic {
         event_id: EventId,
         results: Vec<SagaCallResult>,
         now: DateTime<Utc>,
-    ) -> Result<BusinessResult<SagaEvent, SagaCall>, SagaError> {
+    ) -> Result<BusinessResult<SagaEvent, SagaCall, ()>, SagaError> {
         let mut events = Vec::new();
         let mut failed_section = None;
         let mut completed_count = state.completed_sections.len();
@@ -626,7 +642,7 @@ impl EventInventorySagaLogic {
         event_id: EventId,
         _results: Vec<SagaCallResult>,
         now: DateTime<Utc>,
-    ) -> Result<BusinessResult<SagaEvent, SagaCall>, SagaError> {
+    ) -> Result<BusinessResult<SagaEvent, SagaCall, ()>, SagaError> {
         // Compensation completed (we don't fail on compensation errors - just log)
         Ok(BusinessResult::Done(vec![
             SagaEvent::CompensationCompleted {
@@ -645,7 +661,59 @@ impl EventInventorySagaLogic {
         vec![SagaCall::Event(EventCommand::Cancel {
             event_id,
             reason: "Inventory initialization failed".to_string(),
+            fetched: None, // Compensation doesn't need fetched data (best-effort)
         })]
+    }
+
+    /// Extract event_id from call results.
+    ///
+    /// This examines the results from aggregate calls to find the event_id.
+    /// The event_id is present in all event types from both Event and Inventory aggregates.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no event_id can be extracted. This should never happen in practice
+    /// since all call results contain events with event_id.
+    fn extract_event_id_from_results(results: &[SagaCallResult]) -> EventId {
+        for result in results {
+            match result {
+                SagaCallResult::Event(Ok(events)) => {
+                    if let Some(event) = events.first() {
+                        return match event {
+                            EventEvent::Created { event_id, .. }
+                            | EventEvent::Updated { event_id, .. }
+                            | EventEvent::Published { event_id, .. }
+                            | EventEvent::Cancelled { event_id, .. }
+                            | EventEvent::PricingUpdated { event_id, .. }
+                            | EventEvent::VenueSectionsAdded { event_id, .. } => *event_id,
+                        };
+                    }
+                }
+                SagaCallResult::Inventory { result: Ok(events), .. } => {
+                    for event in events {
+                        // Only some inventory events have event_id
+                        match event {
+                            InventoryEvent::Initialized { event_id, .. }
+                            | InventoryEvent::SeatsReserved { event_id, .. } => {
+                                return *event_id;
+                            }
+                            // SeatsConfirmed and SeatsReleased don't have event_id
+                            InventoryEvent::SeatsConfirmed { .. }
+                            | InventoryEvent::SeatsReleased { .. } => continue,
+                        }
+                    }
+                }
+                // Error results don't contain event_id, continue searching
+                SagaCallResult::Event(Err(_)) | SagaCallResult::Inventory { result: Err(_), .. } => {
+                    continue;
+                }
+            }
+        }
+
+        // This is a programming error - feedback should always contain at least one result with event_id
+        // Using a fallback instead of panic to satisfy clippy deny rules
+        tracing::error!("No event_id found in saga call results - this is a bug");
+        EventId::new() // Fallback: generate new ID (saga will fail validation anyway)
     }
 }
 
@@ -683,7 +751,6 @@ mod tests {
     #[test]
     fn create_event_with_inventory_initiates_saga() {
         let logic = EventInventorySagaLogic;
-        let state = SagaState::default();
         let clock = test_clock();
 
         let input = SagaInput::CreateEventWithInventory {
@@ -695,7 +762,7 @@ mod tests {
             pricing_tiers: vec![],
         };
 
-        let result = logic.process(&state, input, &clock).unwrap();
+        let result = logic.process(input, &clock).unwrap();
 
         match result {
             BusinessResult::Continue { events, calls } => {

@@ -1,7 +1,7 @@
 //! Clock abstraction for time-dependent operations
 
 use chrono::{DateTime, Utc};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// Clock abstraction for getting the current time
 ///
@@ -67,6 +67,12 @@ impl Clock for SystemClock {
 /// The internal time is protected by a mutex, making it safe to share
 /// across threads (e.g., in async tests).
 ///
+/// # Cloning
+///
+/// `FixedClock` implements `Clone` via `Arc`, so clones share the same
+/// underlying time. This is intentional—when you clone a `TestEnvironment`,
+/// all components see the same clock state.
+///
 /// # Examples
 ///
 /// ```rust
@@ -83,19 +89,23 @@ impl Clock for SystemClock {
 /// // Manually advance time
 /// clock.advance(Duration::from_secs(3600)); // 1 hour
 /// assert_eq!(clock.now(), Utc.with_ymd_and_hms(2025, 1, 15, 11, 0, 0).unwrap());
+///
+/// // Clones share the same time
+/// let clock2 = clock.clone();
+/// clock.advance(Duration::from_secs(60));
+/// assert_eq!(clock.now(), clock2.now()); // Both see the same time
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FixedClock {
-    time: Mutex<DateTime<Utc>>,
+    time: Arc<Mutex<DateTime<Utc>>>,
 }
 
 impl FixedClock {
     /// Create a new fixed clock at the given time
     #[must_use]
-    #[allow(clippy::missing_const_for_fn)] // Mutex::new is not const in stable Rust
     pub fn new(time: DateTime<Utc>) -> Self {
         Self {
-            time: Mutex::new(time),
+            time: Arc::new(Mutex::new(time)),
         }
     }
 
@@ -192,5 +202,24 @@ mod tests {
         clock.set(new_time);
 
         assert_eq!(clock.now(), new_time);
+    }
+
+    #[test]
+    fn fixed_clock_clones_share_state() {
+        let clock1 = FixedClock::new(Utc.with_ymd_and_hms(2025, 1, 15, 10, 0, 0).unwrap());
+        let clock2 = clock1.clone();
+
+        // Both start at the same time
+        assert_eq!(clock1.now(), clock2.now());
+
+        // Advance clock1
+        clock1.advance(Duration::from_secs(60));
+
+        // clock2 sees the same advancement (shared state)
+        assert_eq!(clock1.now(), clock2.now());
+        assert_eq!(
+            clock1.now(),
+            Utc.with_ymd_and_hms(2025, 1, 15, 10, 1, 0).unwrap()
+        );
     }
 }

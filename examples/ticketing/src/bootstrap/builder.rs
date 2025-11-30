@@ -45,14 +45,40 @@
 use crate::auth::setup::{build_auth_store, TicketingAuthStore};
 use crate::bootstrap::{register_aggregate_consumers, register_projections, ProjectionSystem, ResourceManager};
 use crate::config::Config;
+use crate::next::{
+    AnalyticsBusinessLogic, EventBusinessLogic, EventInventorySagaLogic, InventoryBusinessLogic,
+    PaymentBusinessLogic, ReservationQueryLogic, ReservationSagaLogic,
+    call_executor::{
+        EventHandler as EventHandlerTrait,
+        EventInventorySagaCallExecutor,
+        InventoryHandler as InventoryHandlerTrait,
+        PaymentHandler as PaymentHandlerTrait,
+        ReservationSagaCallExecutor,
+    },
+    http::{
+        AnalyticsAppState, EventCreationAppState, FullQueryAppState, NextAppState, QueryAppState,
+        ReservationQueryAppState, ReservationAppState,
+    },
+    projection_queries::{
+        AnalyticsProjectionQueries, AnalyticsQueryFetcher, EventProjectionQueries,
+        EventQueryFetcher, InventoryProjectionQueries, InventoryQueryFetcher,
+        PaymentProjectionQueries, PaymentQueryFetcher, ReservationProjectionQueries,
+        ReservationQueryFetcher, ReservationSagaProjectionQueries, ReservationSagaQueryFetcher,
+        SagaProjectionQueries, SagaQueryFetcher,
+    },
+    projector::{EventInventorySagaProjector, EventProjector, InventoryProjector, PaymentProjector, ReservationSagaProjector},
+    TicketingEnvironment, NoOpEventBus, NoOpProjector,
+};
 use crate::projections::query_adapters::{PostgresAnalyticsQuery, PostgresInventoryQuery, PostgresPaymentQuery, PostgresReservationQuery};
 use crate::projections::{
     PostgresAvailableSeatsProjection, PostgresEventsProjection, PostgresPaymentsProjection,
     PostgresReservationsProjection, ProjectionCompletionTracker,
 };
 use crate::runtime::{Application, EventConsumer};
-use crate::server::{build_router, AppState};
+use crate::server::{routes::AuthAppState, AppState};
 use composable_rust_core::environment::SystemClock;
+use composable_rust_next::{HandlerBuilder, NoOpCallExecutor, NoOpQueryFetcher, SystemClock as NextSystemClock};
+use composable_rust_postgres_next::PostgresEventStore as NextPostgresEventStore;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -430,31 +456,374 @@ impl ApplicationBuilder {
             ProjectionCompletionTracker::new_without_tracking()
         );
 
-        // Build AppState
+        // Build AppState (kept for reference, but handlers now use next-gen architecture)
         let app_state = AppState::new(
             config.clone(),
-            auth_store,
+            auth_store.clone(),
             resources.auth_pool.clone(),
             Arc::new(SystemClock),
             resources.event_store.clone(),
             inventory_query,
             payment_query,
             reservation_query,
-            analytics_query,
-            events_projection,
-            reservations_projection,
-            payments_projection,
-            available_seats_projection,
-            projection_system.sales_analytics,
-            projection_system.customer_history,
+            analytics_query.clone(),
+            events_projection.clone(),
+            reservations_projection.clone(),
+            payments_projection.clone(),
+            available_seats_projection.clone(),
+            projection_system.sales_analytics.clone(),
+            projection_system.customer_history.clone(),
             projection_system.reservation_ownership,
             projection_system.payment_ownership,
             projection_completion_tracker,
             resources.clone(),
         );
+        let _app_state = app_state; // Kept for potential future use
 
-        // Build HTTP router
-        let router = build_router(app_state);
+        // ═══════════════════════════════════════════════════════════════════════
+        // Create Next-Generation Handlers
+        // ═══════════════════════════════════════════════════════════════════════
+
+        // Create the next-gen PostgresEventStore from the existing pool
+        let next_event_store = NextPostgresEventStore::from_pool(
+            resources.event_store.pool().clone()
+        );
+
+        // Get projections pool for creating projectors
+        let projections_pool = (*resources.projections_pool).clone();
+
+        // ───────────────────────────────────────────────────────────────────────
+        // Event Handler (write operations with projection)
+        // ───────────────────────────────────────────────────────────────────────
+        let event_projector = EventProjector::new(projections_pool.clone());
+        type EventEnv = TicketingEnvironment<NextSystemClock, NextPostgresEventStore, EventProjector, NoOpEventBus>;
+        let event_env: EventEnv = TicketingEnvironment::new(
+            NextSystemClock,
+            next_event_store.clone(),
+            Some(event_projector),
+            None::<NoOpEventBus>,
+            "ticketing-events",
+        );
+        let event_handler = Arc::new(
+            HandlerBuilder::new(EventBusinessLogic)
+                .call_executor(NoOpCallExecutor)
+                .query_fetcher(NoOpQueryFetcher)
+                .environment(event_env)
+                .build()
+        );
+
+        // ───────────────────────────────────────────────────────────────────────
+        // Inventory Handler (write operations with projection)
+        // ───────────────────────────────────────────────────────────────────────
+        let inventory_projector = InventoryProjector::new(projections_pool.clone());
+        type InventoryEnv = TicketingEnvironment<NextSystemClock, NextPostgresEventStore, InventoryProjector, NoOpEventBus>;
+        let inventory_env: InventoryEnv = TicketingEnvironment::new(
+            NextSystemClock,
+            next_event_store.clone(),
+            Some(inventory_projector),
+            None::<NoOpEventBus>,
+            "ticketing-inventory",
+        );
+        let inventory_handler = Arc::new(
+            HandlerBuilder::new(InventoryBusinessLogic)
+                .call_executor(NoOpCallExecutor)
+                .query_fetcher(NoOpQueryFetcher)
+                .environment(inventory_env)
+                .build()
+        );
+
+        // ───────────────────────────────────────────────────────────────────────
+        // Payment Handler (write operations with projection)
+        // ───────────────────────────────────────────────────────────────────────
+        let payment_projector = PaymentProjector::new(projections_pool.clone());
+        type PaymentEnv = TicketingEnvironment<NextSystemClock, NextPostgresEventStore, PaymentProjector, NoOpEventBus>;
+        let payment_env: PaymentEnv = TicketingEnvironment::new(
+            NextSystemClock,
+            next_event_store.clone(),
+            Some(payment_projector),
+            None::<NoOpEventBus>,
+            "ticketing-payments",
+        );
+        let payment_handler = Arc::new(
+            HandlerBuilder::new(PaymentBusinessLogic)
+                .call_executor(NoOpCallExecutor)
+                .query_fetcher(NoOpQueryFetcher)
+                .environment(payment_env)
+                .build()
+        );
+
+        // ───────────────────────────────────────────────────────────────────────
+        // Query-Enabled Event Handler
+        // ───────────────────────────────────────────────────────────────────────
+        let event_projection_queries = EventProjectionQueries::new(
+            projections_pool.clone(),
+        );
+        type QueryEventEnv = TicketingEnvironment<NextSystemClock, NextPostgresEventStore, NoOpProjector, NoOpEventBus, EventProjectionQueries>;
+        let query_event_env: QueryEventEnv = TicketingEnvironment::with_projections(
+            NextSystemClock,
+            next_event_store.clone(),
+            None::<NoOpProjector>,
+            None::<NoOpEventBus>,
+            "ticketing-events",
+            event_projection_queries,
+        );
+        let query_event_handler = Arc::new(
+            HandlerBuilder::new(EventBusinessLogic)
+                .call_executor(NoOpCallExecutor)
+                .query_fetcher(EventQueryFetcher)
+                .environment(query_event_env)
+                .build()
+        );
+
+        // ───────────────────────────────────────────────────────────────────────
+        // Query-Enabled Inventory Handler
+        // ───────────────────────────────────────────────────────────────────────
+        let inventory_projection_queries = InventoryProjectionQueries::new(
+            projections_pool.clone(),
+        );
+        type QueryInventoryEnv = TicketingEnvironment<NextSystemClock, NextPostgresEventStore, NoOpProjector, NoOpEventBus, InventoryProjectionQueries>;
+        let query_inventory_env: QueryInventoryEnv = TicketingEnvironment::with_projections(
+            NextSystemClock,
+            next_event_store.clone(),
+            None::<NoOpProjector>,
+            None::<NoOpEventBus>,
+            "ticketing-events",
+            inventory_projection_queries,
+        );
+        let query_inventory_handler = Arc::new(
+            HandlerBuilder::new(InventoryBusinessLogic)
+                .call_executor(NoOpCallExecutor)
+                .query_fetcher(InventoryQueryFetcher)
+                .environment(query_inventory_env)
+                .build()
+        );
+
+        // ───────────────────────────────────────────────────────────────────────
+        // Query-Enabled Payment Handler
+        // ───────────────────────────────────────────────────────────────────────
+        let payment_projection_queries = PaymentProjectionQueries::new(
+            projections_pool.clone(),
+        );
+        type QueryPaymentEnv = TicketingEnvironment<NextSystemClock, NextPostgresEventStore, NoOpProjector, NoOpEventBus, PaymentProjectionQueries>;
+        let query_payment_env: QueryPaymentEnv = TicketingEnvironment::with_projections(
+            NextSystemClock,
+            next_event_store.clone(),
+            None::<NoOpProjector>,
+            None::<NoOpEventBus>,
+            "ticketing-events",
+            payment_projection_queries,
+        );
+        let query_payment_handler = Arc::new(
+            HandlerBuilder::new(PaymentBusinessLogic)
+                .call_executor(NoOpCallExecutor)
+                .query_fetcher(PaymentQueryFetcher)
+                .environment(query_payment_env)
+                .build()
+        );
+
+        // ───────────────────────────────────────────────────────────────────────
+        // Analytics Handler
+        // ───────────────────────────────────────────────────────────────────────
+        let analytics_projection_queries = AnalyticsProjectionQueries::new(
+            projections_pool.clone(),
+        );
+        type AnalyticsEnv = TicketingEnvironment<NextSystemClock, NextPostgresEventStore, NoOpProjector, NoOpEventBus, AnalyticsProjectionQueries>;
+        let analytics_env: AnalyticsEnv = TicketingEnvironment::with_projections(
+            NextSystemClock,
+            next_event_store.clone(),
+            None::<NoOpProjector>,
+            None::<NoOpEventBus>,
+            "ticketing-events",
+            analytics_projection_queries,
+        );
+        let analytics_handler = Arc::new(
+            HandlerBuilder::new(AnalyticsBusinessLogic)
+                .call_executor(NoOpCallExecutor)
+                .query_fetcher(AnalyticsQueryFetcher)
+                .environment(analytics_env)
+                .build()
+        );
+
+        // ───────────────────────────────────────────────────────────────────────
+        // Reservation Query Handler
+        // ───────────────────────────────────────────────────────────────────────
+        let reservation_projection_queries = ReservationProjectionQueries::new(
+            projections_pool.clone(),
+        );
+        type ReservationQueryEnv = TicketingEnvironment<NextSystemClock, NextPostgresEventStore, NoOpProjector, NoOpEventBus, ReservationProjectionQueries>;
+        let reservation_query_env: ReservationQueryEnv = TicketingEnvironment::with_projections(
+            NextSystemClock,
+            next_event_store.clone(),
+            None::<NoOpProjector>,
+            None::<NoOpEventBus>,
+            "ticketing-events",
+            reservation_projection_queries,
+        );
+        let reservation_query_handler = Arc::new(
+            HandlerBuilder::new(ReservationQueryLogic)
+                .call_executor(NoOpCallExecutor)
+                .query_fetcher(ReservationQueryFetcher)
+                .environment(reservation_query_env)
+                .build()
+        );
+
+        // ───────────────────────────────────────────────────────────────────────
+        // Reservation Saga Handler (orchestrates Inventory + Payment)
+        // ───────────────────────────────────────────────────────────────────────
+        // Use the query-enabled handlers (with real QueryFetcher) for the saga
+        // so that commands get their `fetched` fields populated from projections.
+        // The type-erased trait objects hide the QueryFetcher types from the saga.
+        let saga_inventory_handler: Arc<dyn InventoryHandlerTrait> = query_inventory_handler.clone();
+        let saga_payment_handler: Arc<dyn PaymentHandlerTrait> = query_payment_handler.clone();
+        let reservation_saga_call_executor = ReservationSagaCallExecutor::new(
+            saga_inventory_handler,
+            saga_payment_handler,
+            next_event_store.clone(),
+        );
+
+        // Create in-memory reservation saga projection state (shared between projector and query fetcher)
+        let reservation_saga_projection_state: crate::next::InMemoryReservationSagaProjection =
+            std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+
+        // Create reservation saga projector that updates both in-memory state AND PostgreSQL
+        let reservation_saga_projector = ReservationSagaProjector::new(
+            reservation_saga_projection_state.clone(),
+            projections_pool.clone(),
+        );
+
+        // Create reservation saga query fetcher that reads from the in-memory state
+        let reservation_saga_query_fetcher = ReservationSagaQueryFetcher::new(reservation_saga_projection_state.clone());
+
+        // Create saga projection queries for the environment
+        let reservation_saga_projection_queries = ReservationSagaProjectionQueries::new(reservation_saga_projection_state);
+
+        type ReservationSagaEnv = TicketingEnvironment<NextSystemClock, NextPostgresEventStore, ReservationSagaProjector, NoOpEventBus, ReservationSagaProjectionQueries>;
+        let saga_env: ReservationSagaEnv = TicketingEnvironment::with_projections(
+            NextSystemClock,
+            next_event_store.clone(),
+            Some(reservation_saga_projector),
+            None::<NoOpEventBus>,
+            "ticketing-sagas",
+            reservation_saga_projection_queries,
+        );
+        let saga_handler = Arc::new(
+            HandlerBuilder::new(ReservationSagaLogic)
+                .call_executor(reservation_saga_call_executor)
+                .query_fetcher(reservation_saga_query_fetcher)
+                .environment(saga_env)
+                .build()
+        );
+
+        // ───────────────────────────────────────────────────────────────────────
+        // Event-Inventory Saga Handler (orchestrates Event + Inventory creation)
+        // ───────────────────────────────────────────────────────────────────────
+        // Use the handlers with real QueryFetcher for the saga.
+        // Note: For event creation, the event handler uses NoOpQueryFetcher since
+        // Initialize doesn't need fetched data (fetched: None is valid).
+        // The inventory handler uses the query-enabled version.
+        let saga_event_handler: Arc<dyn EventHandlerTrait> = event_handler.clone();
+        let saga_inventory_handler_for_event_saga: Arc<dyn InventoryHandlerTrait> = inventory_handler.clone();
+        let event_inventory_saga_executor = EventInventorySagaCallExecutor::new(
+            saga_event_handler,
+            saga_inventory_handler_for_event_saga,
+            next_event_store.clone(),
+        );
+
+        // Create in-memory saga projection state (shared between projector and query fetcher)
+        let saga_projection_state: crate::next::InMemorySagaProjection =
+            std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+
+        // Create saga projector that updates the in-memory state
+        let saga_projector = EventInventorySagaProjector::new(saga_projection_state.clone());
+
+        // Create saga query fetcher that reads from the in-memory state
+        let saga_query_fetcher = SagaQueryFetcher::new(saga_projection_state.clone());
+
+        // Create saga projection queries for the environment
+        let saga_projection_queries = SagaProjectionQueries::new(saga_projection_state);
+
+        type EventInventorySagaEnv = TicketingEnvironment<NextSystemClock, NextPostgresEventStore, EventInventorySagaProjector, NoOpEventBus, SagaProjectionQueries>;
+        let event_inventory_saga_env: EventInventorySagaEnv = TicketingEnvironment::with_projections(
+            NextSystemClock,
+            next_event_store.clone(),
+            Some(saga_projector),
+            None::<NoOpEventBus>,
+            "ticketing-event-inventory-sagas",
+            saga_projection_queries,
+        );
+        let event_inventory_saga_handler = Arc::new(
+            HandlerBuilder::new(EventInventorySagaLogic)
+                .call_executor(event_inventory_saga_executor)
+                .query_fetcher(saga_query_fetcher)
+                .environment(event_inventory_saga_env)
+                .build()
+        );
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // Build State Types
+        // ═══════════════════════════════════════════════════════════════════════
+
+        let auth_state = AuthAppState {
+            auth_store,
+            config: config.clone(),
+        };
+
+        let next_state = NextAppState {
+            event_handler: event_handler.clone(),
+            inventory_handler: inventory_handler.clone(),
+            payment_handler: payment_handler.clone(),
+        };
+
+        let query_state = QueryAppState {
+            event_handler: query_event_handler.clone(),
+        };
+
+        let full_query_state = FullQueryAppState {
+            event_handler: event_handler.clone(),
+            query_event_handler: query_event_handler.clone(),
+            inventory_handler: inventory_handler.clone(),
+            query_inventory_handler: query_inventory_handler.clone(),
+            payment_handler: payment_handler.clone(),
+            query_payment_handler: query_payment_handler.clone(),
+        };
+
+        let analytics_state = AnalyticsAppState {
+            analytics_handler,
+        };
+
+        let reservation_query_state = ReservationQueryAppState {
+            reservation_handler: reservation_query_handler,
+        };
+
+        let reservation_state = ReservationAppState {
+            saga_handler,
+        };
+
+        let event_creation_state = EventCreationAppState {
+            saga_handler: event_inventory_saga_handler,
+        };
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // Build HTTP Router
+        // ═══════════════════════════════════════════════════════════════════════
+
+        // Build API v2 routes (nested under /api/v2)
+        let api_v2_routes = axum::Router::new()
+            .merge(crate::next::http::event_creation_routes().with_state(event_creation_state))
+            .merge(crate::next::http::events_v2_routes().with_state(full_query_state.clone()))
+            .merge(crate::next::http::query_routes().with_state(query_state))
+            .merge(crate::next::http::availability_routes().with_state(full_query_state.clone()))
+            .merge(crate::next::http::payment_routes().with_state(full_query_state))
+            .merge(crate::next::http::analytics_routes().with_state(analytics_state))
+            .merge(crate::next::http::reservation_query_routes().with_state(reservation_query_state))
+            .merge(crate::next::http::reservation_routes().with_state(reservation_state));
+
+        let router = crate::next::http::health_routes()
+            .nest("/api/v2", api_v2_routes)
+            .nest("/auth", axum::Router::new()
+                .route("/magic-link/request", axum::routing::post(crate::auth::handlers::send_magic_link))
+                .route("/magic-link/verify", axum::routing::post(crate::auth::handlers::verify_magic_link))
+                .with_state(auth_state));
 
         // Bind TCP listener
         let listener = tokio::net::TcpListener::bind(format!(

@@ -185,7 +185,7 @@ impl PostgresSalesAnalyticsProjection {
     /// Returns error if database query fails.
     pub async fn get_total_revenue_all_events(&self) -> Result<Money> {
         let result: Option<(i64,)> = sqlx::query_as(
-            "SELECT COALESCE(SUM(total_revenue), 0) FROM sales_analytics_projection",
+            "SELECT COALESCE(SUM(total_revenue)::BIGINT, 0) FROM sales_analytics_projection",
         )
         .fetch_optional(self.pool.as_ref())
         .await
@@ -202,7 +202,7 @@ impl PostgresSalesAnalyticsProjection {
     /// Returns error if database query fails.
     pub async fn get_total_tickets_sold(&self) -> Result<u32> {
         let result: Option<(i64,)> = sqlx::query_as(
-            "SELECT COALESCE(SUM(tickets_sold), 0) FROM sales_analytics_projection",
+            "SELECT COALESCE(SUM(tickets_sold)::BIGINT, 0) FROM sales_analytics_projection",
         )
         .fetch_optional(self.pool.as_ref())
         .await

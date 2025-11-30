@@ -100,6 +100,27 @@ pub enum HandlerError<E: std::error::Error> {
     /// This indicates a bug in the serialization code or schema mismatch.
     #[error("serialization error: {0}")]
     Serialization(SerializationError),
+
+    /// Failed to fetch query data from projections
+    ///
+    /// This occurs when the `QueryFetcher` fails to retrieve data from
+    /// the projection database before calling business logic.
+    #[error("failed to fetch query data: {0}")]
+    QueryFetch(String),
+
+    /// Saga exceeded maximum iterations
+    ///
+    /// This occurs when a saga's `Continue` loop exceeds the configured
+    /// maximum iterations. This is a safety guard against infinite loops
+    /// in saga logic.
+    ///
+    /// If this error occurs, check the saga's business logic to ensure
+    /// it eventually returns `Done`.
+    #[error("saga exceeded maximum iterations ({max_iterations})")]
+    SagaIterationsExceeded {
+        /// The maximum iterations that were allowed
+        max_iterations: u32,
+    },
 }
 
 impl<E: std::error::Error> HandlerError<E> {

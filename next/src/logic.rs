@@ -10,34 +10,36 @@ use serde::{de::DeserializeOwned, Serialize};
 /// - **Aggregates**: `Call = Infallible`, `CallResult = Infallible` (never used)
 /// - **Sagas**: `Call = SagaAggregateCall`, `CallResult = SagaAggregateResult`
 ///
-/// The framework doesn't know or care which one it's running—the types encode
-/// the distinction.
+/// # CQRS Architecture
+///
+/// In this architecture, **validation state comes from projections**, not the event store.
+/// The `process()` method receives a prepared input that already contains any fetched
+/// projection data (via [`QueryFetcher`](crate::QueryFetcher)).
+///
+/// The event store is only used for:
+/// 1. Appending events (with version check for optimistic concurrency)
+/// 2. Rebuilding projections (via `apply()`)
 ///
 /// # Associated Types
 ///
 /// | Type | Description |
 /// |------|-------------|
-/// | `State` | Domain state, reconstructed by replaying events |
-/// | `Input` | Input to process (command for aggregates, command-or-feedback for sagas) |
+/// | `State` | Domain state for projection rebuilding (via `apply()`) |
+/// | `Input` | Input with fetched projection data embedded |
 /// | `Event` | Domain events to persist |
 /// | `Error` | Business errors (validation failures, invalid state transitions) |
 /// | `Call` | Aggregate calls (saga only). Use `Infallible` for aggregates. |
 /// | `CallResult` | Results from aggregate calls (saga only). Use `Infallible` for aggregates. |
+/// | `Response` | Query response type. Use `()` if no queries. |
 ///
 /// # Required Methods
 ///
 /// | Method | Purpose |
 /// |--------|---------|
-/// | `stream_id` | Extract stream ID from input for loading/persisting |
-/// | `process` | Process input and return events (and optionally calls) |
-/// | `apply` | Apply an event to state for replay/reconstruction |
+/// | `stream_id` | Extract stream ID from input for event store operations |
+/// | `process` | Process input and return events (pure business logic) |
+/// | `apply` | Apply an event to state (for projection rebuilding) |
 /// | `event_type_name` | Return event type name for serialization tagging |
-///
-/// # Optional Methods
-///
-/// | Method | Default | Purpose |
-/// |--------|---------|---------|
-/// | `feedback_input` | `unreachable!()` | Convert call results to input (saga only) |
 ///
 /// # Example: Aggregate
 ///
@@ -52,28 +54,30 @@ use serde::{de::DeserializeOwned, Serialize};
 ///     type Input = EventCommand;
 ///     type Event = EventEvent;
 ///     type Error = EventError;
-///     type Call = Infallible;        // Aggregates never make calls
-///     type CallResult = Infallible;  // Aggregates never receive call results
+///     type Call = Infallible;
+///     type CallResult = Infallible;
+///     type Response = EventResponse;
 ///
 ///     fn stream_id(input: &EventCommand) -> StreamId {
 ///         match input {
 ///             EventCommand::Create { event_id, .. } |
-///             EventCommand::Publish { event_id } |
-///             EventCommand::Cancel { event_id, .. } => {
-///                 StreamId::new(format!("event-{}", event_id))
+///             EventCommand::Publish { event_id, .. } => {
+///                 StreamId::new(format!("event-{event_id}"))
 ///             }
+///             // Queries don't need stream_id (returns dummy)
+///             EventCommand::GetEvent { .. } => StreamId::new("query"),
 ///         }
 ///     }
 ///
 ///     fn process(
 ///         &self,
-///         state: &EventState,
-///         command: EventCommand,
+///         input: EventCommand,
 ///         clock: &dyn Clock,
-///     ) -> Result<BusinessResult<EventEvent, Infallible>, EventError> {
-///         match command {
-///             EventCommand::Create { event_id, name, .. } => {
-///                 if state.event_id.is_some() {
+///     ) -> Result<BusinessResult<EventEvent, Infallible, EventResponse>, EventError> {
+///         match input {
+///             EventCommand::Create { event_id, name, fetched } => {
+///                 // Validate: entity shouldn't exist
+///                 if fetched.is_some() {
 ///                     return Err(EventError::AlreadyExists);
 ///                 }
 ///                 Ok(BusinessResult::Done(vec![EventEvent::Created {
@@ -82,18 +86,36 @@ use serde::{de::DeserializeOwned, Serialize};
 ///                     created_at: clock.now(),
 ///                 }]))
 ///             }
-///             // ... other commands
+///             EventCommand::Publish { event_id, fetched } => {
+///                 // Validate: entity must exist and be in correct state
+///                 let data = fetched.ok_or(EventError::NotFound)?;
+///                 if data.status != EventStatus::Draft {
+///                     return Err(EventError::InvalidState);
+///                 }
+///                 Ok(BusinessResult::Done(vec![EventEvent::Published {
+///                     event_id,
+///                     published_at: clock.now(),
+///                 }]))
+///             }
+///             EventCommand::GetEvent { fetched, .. } => {
+///                 // Query: just return the fetched data
+///                 let data = fetched.ok_or(EventError::NotFound)?;
+///                 Ok(BusinessResult::Respond(EventResponse::Single(data)))
+///             }
 ///         }
 ///     }
 ///
 ///     fn apply(&self, state: &mut EventState, event: &EventEvent) {
+///         // Used for projection rebuilding
 ///         match event {
 ///             EventEvent::Created { event_id, name, .. } => {
 ///                 state.event_id = Some(*event_id);
 ///                 state.name = name.clone();
 ///                 state.status = EventStatus::Draft;
 ///             }
-///             // ... other events
+///             EventEvent::Published { .. } => {
+///                 state.status = EventStatus::Published;
+///             }
 ///         }
 ///     }
 ///
@@ -101,61 +123,70 @@ use serde::{de::DeserializeOwned, Serialize};
 ///         match event {
 ///             EventEvent::Created { .. } => "EventCreated",
 ///             EventEvent::Published { .. } => "EventPublished",
-///             EventEvent::Cancelled { .. } => "EventCancelled",
 ///         }
 ///     }
-///
-///     // Note: feedback_input uses default impl (unreachable) since aggregates
-///     // never return Continue and thus never receive feedback.
 /// }
 /// ```
 ///
 /// # Example: Saga
 ///
 /// ```rust,ignore
-/// impl BusinessLogic for OrderSagaLogic {
+/// impl BusinessLogic for ReservationSagaLogic {
 ///     type State = SagaState;
-///     type Input = SagaInput;  // Command | Feedback
+///     type Input = SagaInput;  // Contains saga state from projection
 ///     type Event = SagaEvent;
 ///     type Error = SagaError;
-///     type Call = SagaCall;           // Calls to other aggregates
-///     type CallResult = SagaCallResult;  // Results from those calls
+///     type Call = SagaCall;
+///     type CallResult = SagaCallResult;
+///     type Response = ();
 ///
-///     fn process(&self, state: &SagaState, input: SagaInput, clock: &dyn Clock)
-///         -> Result<BusinessResult<SagaEvent, SagaCall>, SagaError>
+///     fn process(&self, input: SagaInput, clock: &dyn Clock)
+///         -> Result<BusinessResult<SagaEvent, SagaCall, ()>, SagaError>
 ///     {
-///         match (&state.phase, input) {
-///             (Phase::Initial, SagaInput::Command(cmd)) => {
+///         match input {
+///             SagaInput::Start { saga_id, command, fetched } => {
+///                 // New saga - fetched should be None
+///                 if fetched.is_some() {
+///                     return Err(SagaError::AlreadyExists);
+///                 }
 ///                 Ok(BusinessResult::Continue {
-///                     events: vec![SagaEvent::Initiated { .. }],
-///                     calls: vec![SagaCall::CreateOrder { .. }],
+///                     events: vec![SagaEvent::Initiated { saga_id, .. }],
+///                     calls: vec![SagaCall::ReserveInventory { .. }],
 ///                 })
 ///             }
-///             (Phase::WaitingForOrder, SagaInput::Feedback(results)) => {
-///                 // Check results, possibly continue or complete
-///                 Ok(BusinessResult::Done(vec![SagaEvent::Completed { .. }]))
+///             SagaInput::Feedback { saga_id, results, fetched } => {
+///                 // Continuing saga - use fetched state
+///                 let saga_state = fetched.ok_or(SagaError::NotFound)?;
+///                 match (saga_state.phase, results) {
+///                     // ... handle based on current phase and call results
+///                 }
 ///             }
-///             // ...
 ///         }
 ///     }
 ///
 ///     fn feedback_input(results: Vec<SagaCallResult>) -> SagaInput {
-///         SagaInput::Feedback(results)
+///         SagaInput::Feedback { results, .. }
 ///     }
-///
-///     // ... other methods
 /// }
 /// ```
 pub trait BusinessLogic: Send + Sync + 'static {
-    /// Domain state, reconstructed by replaying events
+    /// Domain state for projection rebuilding
     ///
-    /// Must implement `Default` for initial state when no events exist.
+    /// This is NOT used in the normal command flow. Validation data comes from
+    /// projections via the prepared input.
+    ///
+    /// Used for:
+    /// - Rebuilding projections from event store
+    /// - Testing (replaying events)
     type State: Default + Send + Sync;
 
-    /// Input to process
+    /// Input to process (command with fetched projection data)
     ///
-    /// For aggregates, this is typically the command enum.
-    /// For sagas, this is typically `Command | Feedback`.
+    /// The input should contain any data needed for validation, fetched from
+    /// projections by [`QueryFetcher`](crate::QueryFetcher).
+    ///
+    /// For aggregates, this is typically the command enum with optional `fetched` field.
+    /// For sagas, this is typically `Command | Feedback` with saga state from projection.
     type Input: Send;
 
     /// Domain events to persist
@@ -178,25 +209,40 @@ pub trait BusinessLogic: Send + Sync + 'static {
     /// Use `std::convert::Infallible` for aggregates since they never receive results.
     type CallResult: Send;
 
+    /// Response type for queries
+    ///
+    /// This is the data returned from `BusinessResult::Respond` for read operations.
+    /// Use `()` for aggregates/sagas that don't support queries.
+    type Response: Send;
+
     /// Extract stream ID from input
     ///
-    /// This determines which event stream to load and append to.
+    /// This determines which event stream to append to.
     /// The stream ID should be deterministic for a given input.
+    ///
+    /// For queries (which return `Respond`), this may return a dummy value
+    /// since no events are persisted.
     ///
     /// # Examples
     ///
     /// - Aggregate: `event-{event_id}`, `order-{order_id}`
-    /// - Saga: `saga-checkout-{saga_id}`, `saga-order-{saga_id}`
+    /// - Saga: `saga-reservation-{saga_id}`
     fn stream_id(input: &Self::Input) -> StreamId;
 
-    /// Process input (command or feedback) and return what to do next
+    /// Process input and return what to do next
     ///
-    /// This is the core business logic—pure, deterministic, no I/O.
+    /// This is pure business logic—deterministic, no I/O.
+    ///
+    /// # Validation Data
+    ///
+    /// The input contains fetched projection data for validation.
+    /// Do NOT load state from the event store—use the embedded data.
     ///
     /// # Returns
     ///
     /// - `Ok(Done(events))` → Persist events and finish
-    /// - `Ok(Continue { events, calls })` → Persist events, execute calls, continue
+    /// - `Ok(Continue { events, calls })` → Persist events, execute calls, continue (saga)
+    /// - `Ok(Respond(data))` → Return query response without persistence
     /// - `Err(error)` → Fail without persisting anything
     ///
     /// # Errors
@@ -204,28 +250,44 @@ pub trait BusinessLogic: Send + Sync + 'static {
     /// Returns an error for business rule violations:
     /// - Validation failures (empty name, invalid format)
     /// - Invalid state transitions (can't publish a cancelled event)
+    /// - Authorization failures (user doesn't have access)
     /// - Precondition failures (entity doesn't exist)
+    ///
+    /// # Clock Parameter
+    ///
+    /// The clock is passed as `&dyn Clock` for flexibility. The Handler has
+    /// the full environment with concrete types, but business logic only needs
+    /// the clock for timestamps. Dynamic dispatch here keeps the trait simple
+    /// while allowing different clock implementations (`SystemClock` in production,
+    /// `FixedClock` in tests).
+    #[allow(clippy::type_complexity)]
     fn process(
         &self,
-        state: &Self::State,
         input: Self::Input,
         clock: &dyn Clock,
-    ) -> Result<BusinessResult<Self::Event, Self::Call>, Self::Error>;
+    ) -> Result<BusinessResult<Self::Event, Self::Call, Self::Response>, Self::Error>;
 
-    /// Apply an event to state (for replay/reconstruction)
+    /// Apply an event to state (for projection rebuilding)
     ///
-    /// This must be a **pure function**: given the same state and event,
-    /// it must produce the same result. No side effects, no I/O.
+    /// This is used to rebuild state by replaying events from the event store.
+    /// It is NOT used in the normal command flow.
     ///
-    /// This is called:
-    /// 1. During state reconstruction (replaying persisted events)
-    /// 2. After persisting new events (keeping in-memory state consistent)
+    /// # Use Cases
+    ///
+    /// - Rebuilding projections from scratch
+    /// - Creating new projections
+    /// - Testing (replaying events to verify state)
     fn apply(&self, state: &mut Self::State, event: &Self::Event);
 
     /// Convert aggregate call results into input for the next iteration (saga only)
     ///
     /// Aggregates use `Infallible` for `CallResult`, so this is never called.
     /// The default implementation panics—sagas **must** override this.
+    ///
+    /// # Arguments
+    ///
+    /// - `results`: Results from the aggregate calls
+    /// - `saga_id`: The saga ID (for constructing the feedback input)
     ///
     /// # Panics
     ///
@@ -241,18 +303,6 @@ pub trait BusinessLogic: Send + Sync + 'static {
     ///
     /// Returns a unique, stable string identifier for each event variant.
     /// This is used to tag serialized events for correct deserialization.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// fn event_type_name(event: &EventEvent) -> &'static str {
-    ///     match event {
-    ///         EventEvent::Created { .. } => "EventCreated",
-    ///         EventEvent::Published { .. } => "EventPublished",
-    ///         EventEvent::Cancelled { .. } => "EventCancelled",
-    ///     }
-    /// }
-    /// ```
     ///
     /// # Stability
     ///

@@ -113,9 +113,8 @@ pub mod next;
 pub mod payment_gateway;
 pub mod projections;
 pub mod runtime;
-pub mod types;
 pub mod server;
-pub mod api;
+pub mod types;
 
 #[cfg(test)]
 pub mod test_utils;

@@ -42,15 +42,27 @@
 //! [`Handler`]: composable_rust_next::Handler
 //! [`EventInventorySagaLogic`]: saga::EventInventorySagaLogic
 
+pub mod analytics;
+pub mod call_executor;
 pub mod environment;
 pub mod event;
 pub mod event_inventory_saga;
+pub mod expiration;
 pub mod http;
 pub mod inventory;
 pub mod payment;
+pub mod projection_queries;
 pub mod projector;
+pub mod reservation;
 pub mod reservation_saga;
+pub mod testing;
 
+pub use analytics::{
+    AnalyticsBusinessLogic, AnalyticsCommand, AnalyticsError, AnalyticsEvent, AnalyticsResponse,
+    AnalyticsState, CustomerProfileDto, CustomerSpendingDto, EventSalesDto, PopularSectionsDto,
+    PurchaseRecordDto, SectionPopularityDto, SectionSalesDto, TopSpendersDto, TotalRevenueDto,
+};
+pub use call_executor::{EventInventorySagaCallExecutor, ReservationSagaCallExecutor};
 pub use environment::{
     NoOpEventBus, NoOpProjector, ProductionEnvironment, ProductionEnvironmentWithProjector,
     TicketingEnvironment,
@@ -62,12 +74,41 @@ pub use event_inventory_saga::{
     SagaEvent as EventInventorySagaEvent, SagaInput as EventInventorySagaInput,
     SagaPhase as EventInventorySagaPhase, SagaState as EventInventorySagaState,
 };
-pub use http::{events_v2_routes, EventHandler, NextAppState};
-pub use inventory::{
-    InventoryBusinessLogic, InventoryCommand, InventoryError, InventoryEvent, InventoryState,
+pub use http::{
+    analytics_routes, availability_routes, events_v2_routes, health_routes, payment_routes,
+    query_routes, reservation_query_routes, reservation_routes, AnalyticsAppState,
+    AnalyticsQueryEnvironment, EventAggregateHandler, FullQueryAppState, InventoryAggregateHandler,
+    InventoryQueryEnvironment, NextAppState, PaymentAggregateHandler, PaymentQueryEnvironment,
+    QueryAppState, QueryEnabledAnalyticsHandler, QueryEnabledEnvironment, QueryEnabledEventHandler,
+    QueryEnabledInventoryHandler, QueryEnabledPaymentHandler,
+    QueryEnabledReservationQueryHandler, ReservationAppState, ReservationQueryAppState,
+    ReservationQueryEnvironment, ReservationSagaHandler,
 };
-pub use payment::{PaymentBusinessLogic, PaymentCommand, PaymentError, PaymentEvent, PaymentState};
-pub use projector::EventProjector;
+pub use inventory::{
+    InventoryBusinessLogic, InventoryCommand, InventoryError, InventoryEvent, InventoryResponse,
+    InventoryState, ReleaseReason, SectionAvailabilityDto,
+};
+pub use payment::{
+    PaymentBusinessLogic, PaymentCommand, PaymentDto, PaymentDtoStatus, PaymentError,
+    PaymentEvent, PaymentResponse, PaymentState,
+};
+pub use expiration::ReservationExpirationWorker;
+pub use projection_queries::{
+    AnalyticsProjectionQueries, AnalyticsQueryFetcher, EventProjectionQueries, EventQueryFetcher,
+    InMemoryEventProjectionQueries, InMemoryEventQueryFetcher, InventoryProjectionQueries,
+    InventoryQueryFetcher, PaymentProjectionQueries, PaymentQueryFetcher,
+    ReservationProjectionQueries, ReservationQueryFetcher, ReservationSagaProjectionQueries,
+    ReservationSagaQueryFetcher, SagaProjectionQueries, SagaQueryFetcher,
+};
+pub use projector::{
+    EventInventorySagaProjector, EventProjector, InMemoryReservationSagaProjection,
+    InMemorySagaProjection, InventoryProjector, PaymentProjector, ReservationSagaProjector,
+};
+pub use reservation::{
+    ReservationDto, ReservationListDto, ReservationQueryCommand, ReservationQueryError,
+    ReservationQueryEvent, ReservationQueryLogic, ReservationQueryResponse, ReservationQueryState,
+    ReservationSummaryDto,
+};
 pub use reservation_saga::{
     ReservationSagaLogic, ReservationSagaCall, ReservationSagaCallResult, ReservationSagaError,
     ReservationSagaEvent, ReservationSagaInput, ReservationSagaPhase, ReservationSagaState,

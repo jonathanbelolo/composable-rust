@@ -79,8 +79,10 @@
 mod clock;
 mod error;
 mod executor;
+mod fetcher;
 mod handler;
 mod logic;
+mod projections;
 mod result;
 mod stream;
 pub mod testing;
@@ -90,8 +92,12 @@ mod version;
 pub use clock::{Clock, FixedClock, SystemClock};
 pub use error::{HandlerError, ProjectionError, SerializationError};
 pub use executor::{CallExecutor, NoOpCallExecutor};
-pub use handler::{HandleResult, Handler};
+pub use fetcher::{FetchResult, NoOpQueryFetcher, QueryFetcher};
+pub use handler::{
+    HandleResult, Handler, HandlerBuilder, DEFAULT_MAX_RETRIES, DEFAULT_MAX_SAGA_ITERATIONS,
+};
 pub use logic::BusinessLogic;
+pub use projections::{GetById, NoOpProjectionQueries, ProjectionQueries};
 pub use result::BusinessResult;
 pub use stream::StreamId;
 pub use version::Version;
@@ -112,12 +118,28 @@ pub use version::Version;
 /// This trait provides loading and appending events to streams.
 /// Implementations are provided by infrastructure crates (e.g., `composable-rust-postgres`).
 ///
+/// # CQRS Note
+///
+/// In normal operation, the event store is used for:
+/// 1. **Appending events** (with version check for optimistic concurrency)
+/// 2. **Rebuilding projections** (disaster recovery, new projections)
+///
+/// It is NOT used for reading validation state during command handling.
+/// Validation data comes from projections via [`QueryFetcher`].
+///
 /// # Async Methods
 ///
 /// This trait uses native async fn in traits (Rust 2024).
 /// Implementations must be `Send + Sync`.
 pub trait EventStore: Send + Sync {
-    /// Load events from a stream
+    /// Load events from a stream (for projection rebuilding)
+    ///
+    /// This is typically used for:
+    /// - Rebuilding projections from scratch
+    /// - Debugging and auditing
+    /// - Testing
+    ///
+    /// **NOT for command validation** - use projections instead.
     ///
     /// # Errors
     ///
@@ -148,8 +170,14 @@ pub trait EventStore: Send + Sync {
 ///
 /// This trait provides event publishing for cross-aggregate communication.
 /// Implementations are provided by infrastructure crates (e.g., `composable-rust-redpanda`).
+///
+/// # Batch Publishing
+///
+/// Use [`publish_batch`](Self::publish_batch) for efficiency when publishing multiple events.
+/// The default implementation calls `publish` for each event, but implementations
+/// should override this for better performance (single round-trip to Kafka/Redpanda).
 pub trait EventBus: Send + Sync {
-    /// Publish an event to a topic
+    /// Publish a single event to a topic
     ///
     /// # Errors
     ///
@@ -159,6 +187,31 @@ pub trait EventBus: Send + Sync {
         topic: &str,
         event: SerializedEvent,
     ) -> impl std::future::Future<Output = Result<(), EventBusError>> + Send;
+
+    /// Publish multiple events to a topic in a single batch
+    ///
+    /// This is more efficient than calling `publish` multiple times,
+    /// as it can use a single network round-trip.
+    ///
+    /// The default implementation calls `publish` for each event sequentially.
+    /// Implementations should override this for better performance.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the event bus is unavailable or publishing fails.
+    /// On failure, some events may have been published.
+    fn publish_batch(
+        &self,
+        topic: &str,
+        events: &[SerializedEvent],
+    ) -> impl std::future::Future<Output = Result<(), EventBusError>> + Send {
+        async move {
+            for event in events {
+                self.publish(topic, event.clone()).await?;
+            }
+            Ok(())
+        }
+    }
 }
 
 /// Projector trait for updating read models
@@ -190,6 +243,83 @@ pub trait Projector: Send + Sync {
 // Handler Environment
 // ═══════════════════════════════════════════════════════════════════
 
+/// Metadata context for event correlation and auditing
+///
+/// This struct provides metadata that is attached to events during persistence.
+/// It enables distributed tracing, audit logging, and debugging.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let metadata = MetadataContext::new()
+///     .with_correlation_id("req-12345")
+///     .with_user_id("user-abc");
+///
+/// let env = MyEnvironment::new(...)
+///     .with_metadata(metadata);
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct MetadataContext {
+    /// Correlation ID for tracing across services
+    ///
+    /// Typically propagated from HTTP headers (e.g., `X-Correlation-ID`).
+    pub correlation_id: Option<String>,
+
+    /// Causation ID linking to the event that caused this action
+    ///
+    /// For sagas, this links back to the triggering event.
+    pub causation_id: Option<String>,
+
+    /// User who triggered the action
+    ///
+    /// Extracted from authentication context (JWT, session, etc.).
+    pub user_id: Option<String>,
+}
+
+impl MetadataContext {
+    /// Create an empty metadata context
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            correlation_id: None,
+            causation_id: None,
+            user_id: None,
+        }
+    }
+
+    /// Set the correlation ID
+    #[must_use]
+    pub fn with_correlation_id(mut self, id: impl Into<String>) -> Self {
+        self.correlation_id = Some(id.into());
+        self
+    }
+
+    /// Set the causation ID
+    #[must_use]
+    pub fn with_causation_id(mut self, id: impl Into<String>) -> Self {
+        self.causation_id = Some(id.into());
+        self
+    }
+
+    /// Set the user ID
+    #[must_use]
+    pub fn with_user_id(mut self, id: impl Into<String>) -> Self {
+        self.user_id = Some(id.into());
+        self
+    }
+
+    /// Create [`EventMetadata`] with the current timestamp
+    #[must_use]
+    pub fn to_event_metadata(&self) -> EventMetadata {
+        EventMetadata {
+            correlation_id: self.correlation_id.clone(),
+            causation_id: self.causation_id.clone(),
+            user_id: self.user_id.clone(),
+            timestamp: chrono::Utc::now(),
+        }
+    }
+}
+
 /// Core infrastructure dependencies required by the [`Handler`]
 ///
 /// Each aggregate/saga defines its own Environment struct with domain-specific
@@ -197,39 +327,51 @@ pub trait Projector: Send + Sync {
 ///
 /// # Design Pattern
 ///
-/// This trait uses associated types for infrastructure dependencies, enabling
-/// static dispatch and avoiding dyn compatibility issues with async traits.
-/// Each environment specifies concrete types for `EventStore`, `Projector`, and `EventBus`.
+/// This trait uses associated types for ALL infrastructure dependencies, enabling
+/// static dispatch throughout. This includes Clock, which was previously dynamic.
 ///
 /// # Example
 ///
 /// ```rust,ignore
-/// pub struct EventEnvironment<ES, P, EB> {
-///     clock: SystemClock,
+/// pub struct EventEnvironment<C, ES, P, EB, PQ> {
+///     clock: C,
 ///     event_store: ES,
 ///     projector: P,
 ///     event_bus: Option<EB>,
+///     projections: PQ,
 ///     broadcast_topic: String,
+///     metadata: MetadataContext,
 /// }
 ///
-/// impl<ES, P, EB> HandlerEnvironment for EventEnvironment<ES, P, EB>
+/// impl<C, ES, P, EB, PQ> HandlerEnvironment for EventEnvironment<C, ES, P, EB, PQ>
 /// where
+///     C: Clock,
 ///     ES: EventStore,
 ///     P: Projector,
 ///     EB: EventBus,
+///     PQ: ProjectionQueries,
 /// {
+///     type Clock = C;
 ///     type EventStore = ES;
 ///     type Projector = P;
 ///     type EventBus = EB;
+///     type Projections = PQ;
 ///
-///     fn clock(&self) -> &dyn Clock { &self.clock }
+///     fn clock(&self) -> &Self::Clock { &self.clock }
 ///     fn event_store(&self) -> &Self::EventStore { &self.event_store }
 ///     fn projector(&self) -> Option<&Self::Projector> { Some(&self.projector) }
 ///     fn event_bus(&self) -> Option<&Self::EventBus> { self.event_bus.as_ref() }
 ///     fn broadcast_topic(&self) -> &str { &self.broadcast_topic }
+///     fn projections(&self) -> &Self::Projections { &self.projections }
+///     fn metadata(&self) -> &MetadataContext { &self.metadata }
 /// }
 /// ```
 pub trait HandlerEnvironment: Send + Sync {
+    /// The clock type (for timestamps)
+    ///
+    /// Use [`SystemClock`] in production, [`FixedClock`] in tests.
+    type Clock: Clock;
+
     /// The event store type
     type EventStore: EventStore;
 
@@ -239,10 +381,18 @@ pub trait HandlerEnvironment: Send + Sync {
     /// The event bus type (for broadcasting events)
     type EventBus: EventBus;
 
-    /// Clock for timestamps (used by business logic)
-    fn clock(&self) -> &dyn Clock;
+    /// The projection queries type (for reading from projections)
+    ///
+    /// Use [`NoOpProjectionQueries`] for aggregates that don't support queries.
+    type Projections: ProjectionQueries;
 
-    /// Event store for loading and persisting events
+    /// Clock for timestamps
+    fn clock(&self) -> &Self::Clock;
+
+    /// Event store for appending events
+    ///
+    /// In CQRS, this is NOT used for reading validation state.
+    /// Use projections for that.
     fn event_store(&self) -> &Self::EventStore;
 
     /// Projector for updating read models and waiting for completion
@@ -257,6 +407,16 @@ pub trait HandlerEnvironment: Send + Sync {
 
     /// Topic for broadcasting events (only used if `event_bus()` returns `Some`)
     fn broadcast_topic(&self) -> &str;
+
+    /// Projection queries for reading from read models
+    ///
+    /// This is the primary source of validation data for commands.
+    fn projections(&self) -> &Self::Projections;
+
+    /// Metadata context for event correlation
+    ///
+    /// Provides correlation IDs, user IDs, etc. for event metadata.
+    fn metadata(&self) -> &MetadataContext;
 }
 
 /// Serialized event for persistence and transport

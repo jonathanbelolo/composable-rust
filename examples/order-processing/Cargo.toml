@@ -41,7 +41,7 @@ tracing-subscriber = { workspace = true }
 chrono = { workspace = true }
 
 # Web (optional)
-axum = { version = "0.7", optional = true }
+axum = { version = "0.8", optional = true }
 uuid = { version = "1", features = ["v4", "serde"], optional = true }
 
 [dev-dependencies]

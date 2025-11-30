@@ -35,9 +35,19 @@ use crate::types::{CustomerId, Money, PaymentId, PaymentMethod, ReservationId};
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Commands for the Payment aggregate.
+///
+/// # CQRS Pattern
+///
+/// Write commands include a `fetched` field that contains validation data
+/// pre-loaded from projections by the [`QueryFetcher`]. This follows the CQRS
+/// principle: validation data comes from projections, not from loading state
+/// from the event store.
 #[derive(Debug, Clone)]
 pub enum PaymentCommand {
     /// Process a new payment.
+    ///
+    /// `fetched: None` means payment doesn't exist (can create).
+    /// `fetched: Some(_)` means payment already exists (reject as duplicate).
     ProcessPayment {
         /// Payment ID (provided for idempotency)
         payment_id: PaymentId,
@@ -49,9 +59,13 @@ pub enum PaymentCommand {
         amount: Money,
         /// Payment method
         payment_method: PaymentMethod,
+        /// Pre-fetched payment data (None = doesn't exist)
+        fetched: Option<PaymentDto>,
     },
 
     /// Refund a captured payment.
+    ///
+    /// `fetched` contains the payment data for validation (must exist, must be captured).
     RefundPayment {
         /// Payment to refund
         payment_id: PaymentId,
@@ -59,6 +73,8 @@ pub enum PaymentCommand {
         amount: Money,
         /// Reason for refund
         reason: String,
+        /// Pre-fetched payment data for validation
+        fetched: Option<PaymentDto>,
     },
 
     /// Simulate payment failure (for testing compensation flows).
@@ -68,6 +84,81 @@ pub enum PaymentCommand {
         /// Failure reason
         reason: String,
     },
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Query Commands
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Get a single payment by ID.
+    ///
+    /// The `fetched` field is populated by the Handler before calling process().
+    GetPayment {
+        /// Payment to retrieve
+        payment_id: PaymentId,
+        /// Pre-fetched payment data (populated by Handler)
+        fetched: Option<PaymentDto>,
+    },
+
+    /// List all payments for a customer.
+    ///
+    /// The `fetched` field is populated by the Handler before calling process().
+    ListCustomerPayments {
+        /// Customer to list payments for
+        customer_id: CustomerId,
+        /// Pre-fetched payments (populated by Handler)
+        fetched: Vec<PaymentDto>,
+    },
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Query DTOs and Response Types
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Payment data transfer object for query responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaymentDto {
+    /// Payment ID
+    pub id: PaymentId,
+    /// Reservation ID
+    pub reservation_id: ReservationId,
+    /// Customer ID
+    pub customer_id: CustomerId,
+    /// Amount
+    pub amount: Money,
+    /// Payment method
+    pub payment_method: String,
+    /// Payment status
+    pub status: PaymentDtoStatus,
+    /// Transaction ID (if succeeded)
+    pub transaction_id: Option<String>,
+    /// Failure reason (if failed)
+    pub failure_reason: Option<String>,
+    /// Refund amount (if refunded)
+    pub refund_amount: Option<Money>,
+    /// Refund reason (if refunded)
+    pub refund_reason: Option<String>,
+}
+
+/// Payment status for DTOs (simplified, no embedded data).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PaymentDtoStatus {
+    /// Payment is being processed
+    Processing,
+    /// Payment succeeded (captured)
+    Succeeded,
+    /// Payment failed
+    Failed,
+    /// Payment was refunded
+    Refunded,
+}
+
+/// Response types for Payment queries.
+#[derive(Debug, Clone)]
+pub enum PaymentResponse {
+    /// Single payment details
+    Single(PaymentDto),
+    /// List of payments
+    List(Vec<PaymentDto>),
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -212,6 +303,10 @@ pub enum PaymentError {
     #[error("Payment not found: {0}")]
     NotFound(PaymentId),
 
+    /// Payment not found (query context)
+    #[error("Payment not found")]
+    PaymentNotFound,
+
     /// Invalid amount
     #[error("Invalid amount: {0}")]
     InvalidAmount(String),
@@ -223,6 +318,10 @@ pub enum PaymentError {
     /// Validation failed
     #[error("Validation failed: {0}")]
     ValidationFailed(String),
+
+    /// Payment was declined by the payment processor
+    #[error("Payment declined: {0}")]
+    PaymentDeclined(String),
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -243,23 +342,27 @@ impl BusinessLogic for PaymentBusinessLogic {
     type Error = PaymentError;
     type Call = Infallible;
     type CallResult = Infallible;
+    type Response = PaymentResponse;
 
     fn stream_id(input: &Self::Input) -> StreamId {
         match input {
             PaymentCommand::ProcessPayment { payment_id, .. }
             | PaymentCommand::RefundPayment { payment_id, .. }
-            | PaymentCommand::SimulatePaymentFailure { payment_id, .. } => {
+            | PaymentCommand::SimulatePaymentFailure { payment_id, .. }
+            | PaymentCommand::GetPayment { payment_id, .. } => {
                 StreamId::new(format!("payment-{}", payment_id.as_uuid()))
+            }
+            PaymentCommand::ListCustomerPayments { customer_id, .. } => {
+                StreamId::new(format!("query-payments-customer-{}", customer_id.as_uuid()))
             }
         }
     }
 
     fn process(
         &self,
-        state: &Self::State,
         input: Self::Input,
         clock: &dyn Clock,
-    ) -> Result<BusinessResult<Self::Event, Self::Call>, Self::Error> {
+    ) -> Result<BusinessResult<Self::Event, Self::Call, Self::Response>, Self::Error> {
         let now = clock.now();
 
         match input {
@@ -269,9 +372,10 @@ impl BusinessLogic for PaymentBusinessLogic {
                 customer_id,
                 amount,
                 payment_method,
+                fetched,
             } => {
-                // Validation
-                if state.exists(&payment_id) {
+                // Validation: fetched = Some means payment already exists
+                if fetched.is_some() {
                     return Err(PaymentError::AlreadyExists(payment_id));
                 }
 
@@ -306,11 +410,10 @@ impl BusinessLogic for PaymentBusinessLogic {
                 payment_id,
                 amount,
                 reason,
+                fetched,
             } => {
-                // Validation
-                let payment = state
-                    .get(&payment_id)
-                    .ok_or(PaymentError::NotFound(payment_id))?;
+                // Validation: payment must exist
+                let payment = fetched.ok_or(PaymentError::NotFound(payment_id))?;
 
                 if amount.cents() == 0 {
                     return Err(PaymentError::InvalidAmount(
@@ -325,7 +428,7 @@ impl BusinessLogic for PaymentBusinessLogic {
                 }
 
                 // Can only refund captured payments
-                if !matches!(payment.status, PaymentStatus::Captured) {
+                if payment.status != PaymentDtoStatus::Succeeded {
                     return Err(PaymentError::CannotRefund(
                         "Can only refund captured payments".to_string(),
                     ));
@@ -360,6 +463,19 @@ impl BusinessLogic for PaymentBusinessLogic {
                     reason,
                     failed_at: now,
                 }]))
+            }
+
+            // ═══════════════════════════════════════════════════════════════
+            // Query Commands (data pre-fetched by Handler)
+            // ═══════════════════════════════════════════════════════════════
+
+            PaymentCommand::GetPayment { payment_id: _, fetched } => {
+                let payment = fetched.ok_or(PaymentError::PaymentNotFound)?;
+                Ok(BusinessResult::Respond(PaymentResponse::Single(payment)))
+            }
+
+            PaymentCommand::ListCustomerPayments { customer_id: _, fetched } => {
+                Ok(BusinessResult::Respond(PaymentResponse::List(fetched)))
             }
         }
     }
@@ -447,12 +563,28 @@ mod tests {
         FixedClock::new(Utc::now())
     }
 
+    /// Helper to create a PaymentDto for testing
+    fn payment_dto(payment_id: PaymentId, amount: Money, status: PaymentDtoStatus) -> PaymentDto {
+        PaymentDto {
+            id: payment_id,
+            reservation_id: ReservationId::new(),
+            customer_id: CustomerId::new(),
+            amount,
+            payment_method: "CreditCard".to_string(),
+            status,
+            transaction_id: if status == PaymentDtoStatus::Succeeded { Some("txn_123".to_string()) } else { None },
+            failure_reason: None,
+            refund_amount: None,
+            refund_reason: None,
+        }
+    }
+
     #[test]
     fn process_payment_succeeds() {
         let logic = PaymentBusinessLogic;
-        let state = PaymentState::default();
         let clock = test_clock();
 
+        // fetched: None means payment doesn't exist yet
         let command = PaymentCommand::ProcessPayment {
             payment_id: PaymentId::new(),
             reservation_id: ReservationId::new(),
@@ -461,9 +593,10 @@ mod tests {
             payment_method: PaymentMethod::CreditCard {
                 last_four: "4242".to_string(),
             },
+            fetched: None,
         };
 
-        let result = logic.process(&state, command, &clock).unwrap();
+        let result = logic.process(command, &clock).unwrap();
 
         match result {
             BusinessResult::Done(events) => {
@@ -482,24 +615,7 @@ mod tests {
 
         let payment_id = PaymentId::new();
 
-        // Create state with existing payment
-        let mut state = PaymentState::default();
-        state.payments.insert(
-            payment_id,
-            Payment {
-                id: payment_id,
-                reservation_id: ReservationId::new(),
-                customer_id: CustomerId::new(),
-                amount: Money::from_dollars(50),
-                payment_method: PaymentMethod::CreditCard {
-                    last_four: "1234".to_string(),
-                },
-                status: PaymentStatus::Captured,
-                processed_at: Some(Utc::now()),
-                transaction_id: Some("txn_123".to_string()),
-            },
-        );
-
+        // fetched: Some means payment already exists
         let command = PaymentCommand::ProcessPayment {
             payment_id,
             reservation_id: ReservationId::new(),
@@ -508,16 +624,16 @@ mod tests {
             payment_method: PaymentMethod::CreditCard {
                 last_four: "4242".to_string(),
             },
+            fetched: Some(payment_dto(payment_id, Money::from_dollars(50), PaymentDtoStatus::Succeeded)),
         };
 
-        let result = logic.process(&state, command, &clock);
+        let result = logic.process(command, &clock);
         assert!(matches!(result, Err(PaymentError::AlreadyExists(_))));
     }
 
     #[test]
     fn process_payment_zero_amount_fails() {
         let logic = PaymentBusinessLogic;
-        let state = PaymentState::default();
         let clock = test_clock();
 
         let command = PaymentCommand::ProcessPayment {
@@ -528,9 +644,10 @@ mod tests {
             payment_method: PaymentMethod::CreditCard {
                 last_four: "4242".to_string(),
             },
+            fetched: None,
         };
 
-        let result = logic.process(&state, command, &clock);
+        let result = logic.process(command, &clock);
         assert!(matches!(result, Err(PaymentError::InvalidAmount(_))));
     }
 
@@ -541,31 +658,15 @@ mod tests {
 
         let payment_id = PaymentId::new();
 
-        // Create state with captured payment
-        let mut state = PaymentState::default();
-        state.payments.insert(
-            payment_id,
-            Payment {
-                id: payment_id,
-                reservation_id: ReservationId::new(),
-                customer_id: CustomerId::new(),
-                amount: Money::from_dollars(100),
-                payment_method: PaymentMethod::CreditCard {
-                    last_four: "4242".to_string(),
-                },
-                status: PaymentStatus::Captured,
-                processed_at: Some(Utc::now()),
-                transaction_id: Some("txn_123".to_string()),
-            },
-        );
-
+        // Provide fetched data showing captured payment
         let command = PaymentCommand::RefundPayment {
             payment_id,
             amount: Money::from_dollars(50),
             reason: "Customer requested refund".to_string(),
+            fetched: Some(payment_dto(payment_id, Money::from_dollars(100), PaymentDtoStatus::Succeeded)),
         };
 
-        let result = logic.process(&state, command, &clock).unwrap();
+        let result = logic.process(command, &clock).unwrap();
 
         match result {
             BusinessResult::Done(events) => {
@@ -589,31 +690,15 @@ mod tests {
 
         let payment_id = PaymentId::new();
 
-        // Create state with processing payment (not captured)
-        let mut state = PaymentState::default();
-        state.payments.insert(
-            payment_id,
-            Payment {
-                id: payment_id,
-                reservation_id: ReservationId::new(),
-                customer_id: CustomerId::new(),
-                amount: Money::from_dollars(100),
-                payment_method: PaymentMethod::CreditCard {
-                    last_four: "4242".to_string(),
-                },
-                status: PaymentStatus::Processing,
-                processed_at: Some(Utc::now()),
-                transaction_id: None,
-            },
-        );
-
+        // Provide fetched data showing processing payment (not captured)
         let command = PaymentCommand::RefundPayment {
             payment_id,
             amount: Money::from_dollars(50),
             reason: "Customer requested refund".to_string(),
+            fetched: Some(payment_dto(payment_id, Money::from_dollars(100), PaymentDtoStatus::Processing)),
         };
 
-        let result = logic.process(&state, command, &clock);
+        let result = logic.process(command, &clock);
         assert!(matches!(result, Err(PaymentError::CannotRefund(_))));
     }
 
@@ -624,38 +709,21 @@ mod tests {
 
         let payment_id = PaymentId::new();
 
-        // Create state with captured payment for $100
-        let mut state = PaymentState::default();
-        state.payments.insert(
-            payment_id,
-            Payment {
-                id: payment_id,
-                reservation_id: ReservationId::new(),
-                customer_id: CustomerId::new(),
-                amount: Money::from_dollars(100),
-                payment_method: PaymentMethod::CreditCard {
-                    last_four: "4242".to_string(),
-                },
-                status: PaymentStatus::Captured,
-                processed_at: Some(Utc::now()),
-                transaction_id: Some("txn_123".to_string()),
-            },
-        );
-
+        // Provide fetched data for $100 payment
         let command = PaymentCommand::RefundPayment {
             payment_id,
             amount: Money::from_dollars(150), // More than original!
             reason: "Customer requested refund".to_string(),
+            fetched: Some(payment_dto(payment_id, Money::from_dollars(100), PaymentDtoStatus::Succeeded)),
         };
 
-        let result = logic.process(&state, command, &clock);
+        let result = logic.process(command, &clock);
         assert!(matches!(result, Err(PaymentError::InvalidAmount(_))));
     }
 
     #[test]
     fn simulate_payment_failure_succeeds() {
         let logic = PaymentBusinessLogic;
-        let state = PaymentState::default();
         let clock = test_clock();
 
         let command = PaymentCommand::SimulatePaymentFailure {
@@ -663,7 +731,7 @@ mod tests {
             reason: "Card declined".to_string(),
         };
 
-        let result = logic.process(&state, command, &clock).unwrap();
+        let result = logic.process(command, &clock).unwrap();
 
         match result {
             BusinessResult::Done(events) => {

@@ -36,7 +36,6 @@ use composable_rust_web::{
     extractors::{ClientIp, CorrelationId},
 };
 use axum::{
-    async_trait,
     extract::{FromRequestParts, State},
     http::request::Parts,
 };
@@ -47,7 +46,6 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 pub struct BearerToken(pub String);
 
-#[async_trait]
 impl<S> FromRequestParts<S> for BearerToken
 where
     S: Send + Sync,
@@ -93,7 +91,6 @@ pub struct SessionUser {
 }
 
 // Implementation for Arc<TicketingAuthStore> (used by auth routes)
-#[async_trait]
 impl FromRequestParts<Arc<TicketingAuthStore>> for SessionUser
 {
     type Rejection = AppError;
@@ -229,7 +226,6 @@ impl FromRequestParts<Arc<TicketingAuthStore>> for SessionUser
 }
 
 // Implementation for AppState (used by API routes)
-#[async_trait]
 impl FromRequestParts<AppState> for SessionUser
 {
     type Rejection = AppError;
@@ -262,7 +258,6 @@ pub struct RequireAdmin {
     pub session: Session,
 }
 
-#[async_trait]
 impl FromRequestParts<Arc<TicketingAuthStore>> for RequireAdmin
 {
     type Rejection = AppError;
@@ -287,7 +282,6 @@ impl FromRequestParts<Arc<TicketingAuthStore>> for RequireAdmin
 }
 
 // Implementation for AppState
-#[async_trait]
 impl FromRequestParts<AppState> for RequireAdmin
 {
     type Rejection = AppError;
@@ -549,7 +543,6 @@ impl ResourceId for crate::types::CustomerId {
     }
 }
 
-#[async_trait]
 impl<T> FromRequestParts<Arc<TicketingAuthStore>> for RequireOwnership<T>
 where
     T: ResourceId,
@@ -582,7 +575,6 @@ where
 }
 
 // Implementation for AppState
-#[async_trait]
 impl<T> FromRequestParts<AppState> for RequireOwnership<T>
 where
     T: ResourceId,

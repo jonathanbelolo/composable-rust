@@ -5,12 +5,14 @@
 use axum::{response::IntoResponse, routing::get, Router};
 use prometheus::{Encoder, TextEncoder};
 
-use crate::server::AppState;
-
 /// Create metrics routes.
 ///
 /// Returns a router with the `/metrics` endpoint.
-pub fn metrics_routes() -> Router<AppState> {
+/// Generic over state since handler doesn't require any state.
+pub fn metrics_routes<S>() -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
     Router::new().route("/metrics", get(metrics_handler))
 }
 

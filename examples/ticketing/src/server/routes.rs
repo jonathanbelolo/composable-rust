@@ -1,124 +1,90 @@
-//! Router configuration for the ticketing system.
+//! Router configuration for the ticketing system using next-generation handlers.
 //!
-//! Builds the complete Axum router with all endpoints.
+//! All domain routes use the `BusinessLogic` + `Handler` pattern from `next::http`.
+
+use crate::auth::handlers;
+use crate::auth::setup::TicketingAuthStore;
+use crate::config::Config;
+use crate::next::http::{
+    analytics_routes, availability_routes, events_v2_routes, payment_routes, query_routes,
+    reservation_query_routes, reservation_routes, AnalyticsAppState, FullQueryAppState,
+    NextAppState, QueryAppState, ReservationAppState, ReservationQueryAppState,
+};
+use axum::{
+    extract::FromRef,
+    middleware as axum_middleware,
+    routing::{get, post},
+    Router,
+};
+use composable_rust_web::middleware::correlation_id_layer;
+use std::sync::Arc;
 
 use super::health::{health_check, readiness_check};
 use super::metrics::metrics_routes;
 use super::middleware::metrics_middleware;
-use super::state::AppState;
-use crate::api::{analytics, availability, events, payments, reservations, websocket};
-use crate::auth::handlers;
-use axum::{
-    middleware as axum_middleware,
-    routing::{delete, get, patch, post, put},
-    Router,
-};
-use composable_rust_web::middleware::correlation_id_layer;
 
-/// Build the complete Axum router.
-///
-/// Configures all routes including:
-/// - Health checks
-/// - Authentication endpoints (via framework's `auth_router`)
-/// - Event management endpoints
-/// - Pricing management endpoints (GET/PATCH event pricing tiers)
-/// - Reservation endpoints
-/// - Payment endpoints
-/// - Analytics endpoints
-///
-/// # Arguments
-///
-/// - `state`: Application state to share with handlers
-///
-/// # Returns
-///
-/// Configured Axum router ready to serve requests.
-pub fn build_router(state: AppState) -> Router {
-    // API routes
-    let api_routes = Router::new()
-        // Event management
-        .route("/events", post(events::create_event))
-        .route("/events", get(events::list_events))
-        .route("/events/:id", get(events::get_event))
-        .route("/events/:id", put(events::update_event))
-        .route("/events/:id", delete(events::delete_event))
-        // Pricing management
-        .route("/events/:id/pricing", get(events::get_event_pricing))
-        .route("/events/:id/pricing", patch(events::update_event_pricing))
-        // Venue sections management
-        .route("/events/:id/sections", post(events::add_venue_sections))
-        // Availability queries (CQRS read side)
-        .route(
-            "/events/:id/availability",
-            get(availability::get_event_availability),
-        )
-        .route(
-            "/events/:id/sections/:section/availability",
-            get(availability::get_section_availability),
-        )
-        .route(
-            "/events/:id/total-available",
-            get(availability::get_total_available),
-        )
-        // Reservation management (saga-coordinated)
-        .route("/reservations", post(reservations::create_reservation))
-        .route("/reservations", get(reservations::list_user_reservations))
-        .route("/reservations/:id", get(reservations::get_reservation))
-        .route(
-            "/reservations/:id/cancel",
-            post(reservations::cancel_reservation),
-        )
-        // Payment processing
-        .route("/payments", post(payments::process_payment))
-        .route("/payments", get(payments::list_user_payments))
-        .route("/payments/:id", get(payments::get_payment))
-        .route("/payments/:id/refund", post(payments::refund_payment))
-        // Analytics and reporting
-        .route(
-            "/analytics/events/:id/sales",
-            get(analytics::get_event_sales),
-        )
-        .route(
-            "/analytics/events/:id/sections/popular",
-            get(analytics::get_popular_sections),
-        )
-        .route("/analytics/revenue", get(analytics::get_total_revenue))
-        .route(
-            "/analytics/customers/top-spenders",
-            get(analytics::get_top_spenders),
-        )
-        .route(
-            "/analytics/customers/:id/profile",
-            get(analytics::get_customer_profile),
-        )
-        // WebSocket endpoints
-        .route(
-            "/ws/availability/:event_id",
-            get(websocket::availability_updates),
-        )
-        .route(
-            "/ws/notifications",
-            get(websocket::personal_notifications),
-        );
+/// Auth-specific state for authentication routes.
+#[derive(Clone)]
+pub struct AuthAppState {
+    /// Auth store for session management
+    pub auth_store: Arc<TicketingAuthStore>,
+    /// Config for auth settings
+    pub config: Arc<Config>,
+}
 
-    // Auth routes (custom handlers with testing support)
+impl FromRef<AuthAppState> for Arc<TicketingAuthStore> {
+    fn from_ref(state: &AuthAppState) -> Self {
+        state.auth_store.clone()
+    }
+}
+
+impl FromRef<AuthAppState> for Arc<Config> {
+    fn from_ref(state: &AuthAppState) -> Self {
+        state.config.clone()
+    }
+}
+
+/// Build the complete router with all next-generation handlers.
+///
+/// Each route group is bound to its specific state before merging.
+pub fn build_router(
+    auth_state: AuthAppState,
+    next_state: NextAppState,
+    query_state: QueryAppState,
+    full_query_state: FullQueryAppState,
+    analytics_state: AnalyticsAppState,
+    reservation_query_state: ReservationQueryAppState,
+    reservation_state: ReservationAppState,
+) -> Router {
+    // Auth routes with their own state
     let auth_routes = Router::new()
         .route("/magic-link/request", post(handlers::send_magic_link))
-        .route("/magic-link/verify", post(handlers::verify_magic_link));
+        .route("/magic-link/verify", post(handlers::verify_magic_link))
+        .with_state(auth_state);
+
+    // API routes - each bound to its specific state
+    let api_routes = Router::new()
+        // Event write routes (need projection data for authorization)
+        .merge(events_v2_routes().with_state(full_query_state.clone()))
+        // Event query routes
+        .merge(query_routes().with_state(query_state))
+        // Availability routes
+        .merge(availability_routes().with_state(full_query_state.clone()))
+        // Payment routes
+        .merge(payment_routes().with_state(full_query_state))
+        // Reservation saga routes
+        .merge(reservation_routes().with_state(reservation_state))
+        // Reservation query routes
+        .merge(reservation_query_routes().with_state(reservation_query_state))
+        // Analytics routes
+        .merge(analytics_routes().with_state(analytics_state));
 
     Router::new()
-        // Health checks (no authentication)
         .route("/health", get(health_check))
         .route("/ready", get(readiness_check))
-        // Metrics endpoint (Prometheus scraping)
         .merge(metrics_routes())
-        // Authentication routes under /auth prefix
         .nest("/auth", auth_routes)
-        // API routes under /api prefix
-        .nest("/api", api_routes)
-        .with_state(state)
-        // Add metrics middleware to record HTTP requests
+        .nest("/api/v2", api_routes)
         .layer(axum_middleware::from_fn(metrics_middleware))
-        // Add correlation ID middleware for distributed tracing
         .layer(correlation_id_layer())
 }

@@ -140,6 +140,14 @@ impl ReservationId {
         Self(Uuid::new_v4())
     }
 
+    /// Creates a nil (all zeros) `ReservationId`.
+    ///
+    /// Used as a fallback when extraction fails.
+    #[must_use]
+    pub const fn nil() -> Self {
+        Self(Uuid::nil())
+    }
+
     /// Create a `ReservationId` from a `Uuid`
     #[must_use]
     pub const fn from_uuid(uuid: Uuid) -> Self {
@@ -150,6 +158,12 @@ impl ReservationId {
     #[must_use]
     pub const fn as_uuid(&self) -> &Uuid {
         &self.0
+    }
+
+    /// Check if this is a nil (all zeros) `ReservationId`.
+    #[must_use]
+    pub fn is_nil(&self) -> bool {
+        self.0.is_nil()
     }
 }
 

@@ -13,40 +13,36 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composable_rust_next::testing::{InMemoryEventStore, InMemoryEventBus, InMemoryProjector};
-//! use composable_rust_next::{Handler, FixedClock, NoOpCallExecutor};
+//! use composable_rust_next::testing::{InMemoryEventStore, InMemoryEventBus, InMemoryProjector, TestEnvironment};
+//! use composable_rust_next::{Handler, FixedClock, NoOpCallExecutor, NoOpQueryFetcher};
 //!
-//! // Create in-memory dependencies
-//! let event_store = InMemoryEventStore::new();
-//! let projector = InMemoryProjector::new();
-//! let event_bus = InMemoryEventBus::new();
-//!
-//! // Create environment with in-memory deps
-//! let env = TestEnvironment::new(
-//!     FixedClock::new(Utc::now()),
-//!     event_store.clone(),
-//!     projector.clone(),
-//!     Some(event_bus.clone()),
-//! );
+//! // Create test environment
+//! let env = TestEnvironment::new(FixedClock::new(Utc::now()));
 //!
 //! // Create handler
-//! let handler = Handler::new(MyBusinessLogic, NoOpCallExecutor, env);
+//! let handler = Handler::new(
+//!     MyBusinessLogic,
+//!     NoOpCallExecutor,
+//!     NoOpQueryFetcher,
+//!     env.clone(),
+//! );
 //!
 //! // Test command processing
 //! let result = handler.handle(MyCommand::DoSomething { ... }).await?;
 //!
 //! // Inspect stored events
-//! let stored = event_store.events_for_stream("my-stream").await;
+//! let stored = env.event_store().events_for_stream("my-stream");
 //! assert_eq!(stored.len(), 1);
 //!
 //! // Inspect published events
-//! let published = event_bus.published_events();
+//! let published = env.event_bus().published_events();
 //! assert_eq!(published.len(), 1);
 //! ```
 
 use crate::{
     Clock, EventBus, EventBusError, EventStore, EventStoreError, HandlerEnvironment,
-    Projector, ProjectionError, SerializedEvent, StreamId, Version,
+    MetadataContext, NoOpProjectionQueries, ProjectionError, ProjectionQueries, Projector,
+    SerializedEvent, StreamId, Version,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -83,7 +79,7 @@ use std::sync::{Arc, RwLock};
 /// // Version conflict detection
 /// let result = store.append(
 ///     &StreamId::new("order-123"),
-///     Some(Version(0)), // Wrong version!
+///     Some(Version::initial()), // Wrong version!
 ///     vec![event3],
 /// ).await;
 /// assert!(matches!(result, Err(EventStoreError::VersionConflict { .. })));
@@ -142,7 +138,10 @@ impl InMemoryEventStore {
     #[must_use]
     #[allow(clippy::expect_used)] // Test infrastructure
     pub fn current_version(&self, stream_id: &str) -> Option<Version> {
-        let streams = self.streams.read().expect("InMemoryEventStore lock poisoned");
+        let streams = self
+            .streams
+            .read()
+            .expect("InMemoryEventStore lock poisoned");
         streams.get(stream_id).map(|events| {
             if events.is_empty() {
                 Version::initial()
@@ -176,7 +175,10 @@ impl EventStore for InMemoryEventStore {
         stream_id: &StreamId,
         from_version: Option<Version>,
     ) -> Result<Vec<SerializedEvent>, EventStoreError> {
-        let streams = self.streams.read().expect("InMemoryEventStore lock poisoned");
+        let streams = self
+            .streams
+            .read()
+            .expect("InMemoryEventStore lock poisoned");
 
         let Some(events) = streams.get(stream_id.as_str()) else {
             return Ok(Vec::new()); // Empty stream
@@ -185,11 +187,7 @@ impl EventStore for InMemoryEventStore {
         #[allow(clippy::cast_possible_truncation)] // Event streams won't exceed usize on 32-bit
         let start_idx = from_version.map_or(0, |v| v.as_u64() as usize);
 
-        Ok(events
-            .iter()
-            .skip(start_idx)
-            .cloned()
-            .collect())
+        Ok(events.iter().skip(start_idx).cloned().collect())
     }
 
     #[allow(clippy::expect_used)] // Test infrastructure
@@ -199,9 +197,14 @@ impl EventStore for InMemoryEventStore {
         expected_version: Option<Version>,
         events: Vec<SerializedEvent>,
     ) -> Result<Version, EventStoreError> {
-        let mut streams = self.streams.write().expect("InMemoryEventStore lock poisoned");
+        let mut streams = self
+            .streams
+            .write()
+            .expect("InMemoryEventStore lock poisoned");
 
-        let stream = streams.entry(stream_id.as_str().to_string()).or_default();
+        let stream = streams
+            .entry(stream_id.as_str().to_string())
+            .or_default();
         let current_version = if stream.is_empty() {
             Version::initial()
         } else {
@@ -311,17 +314,15 @@ impl InMemoryEventBus {
 
 impl EventBus for InMemoryEventBus {
     #[allow(clippy::expect_used)] // Test infrastructure
-    async fn publish(
-        &self,
-        topic: &str,
-        event: SerializedEvent,
-    ) -> Result<(), EventBusError> {
+    async fn publish(&self, topic: &str, event: SerializedEvent) -> Result<(), EventBusError> {
         self.events
             .write()
             .expect("InMemoryEventBus lock poisoned")
             .push((topic.to_string(), event));
         Ok(())
     }
+
+    // Use default implementation for publish_batch (calls publish for each)
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -414,10 +415,7 @@ impl InMemoryProjector {
 
 impl Projector for InMemoryProjector {
     #[allow(clippy::expect_used)] // Test infrastructure
-    async fn project(
-        &self,
-        events: &[SerializedEvent],
-    ) -> Result<(), ProjectionError> {
+    async fn project(&self, events: &[SerializedEvent]) -> Result<(), ProjectionError> {
         if let Some(ref message) = self.failure {
             return Err(ProjectionError::Custom(message.clone()));
         }
@@ -443,11 +441,11 @@ impl Projector for InMemoryProjector {
 ///
 /// ```rust,ignore
 /// use composable_rust_next::testing::TestEnvironment;
-/// use composable_rust_next::{Handler, FixedClock, NoOpCallExecutor};
+/// use composable_rust_next::{Handler, FixedClock, NoOpCallExecutor, NoOpQueryFetcher};
 ///
 /// let env = TestEnvironment::new(FixedClock::new(Utc::now()));
 ///
-/// let handler = Handler::new(MyBusinessLogic, NoOpCallExecutor, env.clone());
+/// let handler = Handler::new(MyBusinessLogic, NoOpCallExecutor, NoOpQueryFetcher, env.clone());
 ///
 /// // Process commands
 /// handler.handle(MyCommand::DoSomething).await?;
@@ -458,16 +456,21 @@ impl Projector for InMemoryProjector {
 /// let published = env.event_bus().published_events();
 /// ```
 #[derive(Debug, Clone)]
-pub struct TestEnvironment<C: Clock> {
+pub struct TestEnvironment<C: Clock, P: ProjectionQueries = NoOpProjectionQueries> {
     clock: C,
     event_store: InMemoryEventStore,
     projector: InMemoryProjector,
     event_bus: InMemoryEventBus,
     broadcast_topic: String,
+    projections: P,
+    metadata: MetadataContext,
 }
 
-impl<C: Clock> TestEnvironment<C> {
+impl<C: Clock> TestEnvironment<C, NoOpProjectionQueries> {
     /// Create a new test environment with the given clock.
+    ///
+    /// Uses `NoOpProjectionQueries` by default. For testing queries,
+    /// use [`TestEnvironment::with_projections`] to provide a custom implementation.
     #[must_use]
     pub fn new(clock: C) -> Self {
         Self {
@@ -476,6 +479,38 @@ impl<C: Clock> TestEnvironment<C> {
             projector: InMemoryProjector::new(),
             event_bus: InMemoryEventBus::new(),
             broadcast_topic: "test-events".to_string(),
+            projections: NoOpProjectionQueries,
+            metadata: MetadataContext::new(),
+        }
+    }
+}
+
+impl<C: Clock, P: ProjectionQueries> TestEnvironment<C, P> {
+    /// Create a test environment with custom projection queries.
+    ///
+    /// Use this when testing queries that need access to projection data.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let projections = InMemoryProjectionQueries::new();
+    /// projections.insert_event(EventDto { id: event_id, name: "Test".into(), ... });
+    ///
+    /// let env = TestEnvironment::with_projections(FixedClock::new(now), projections);
+    /// let handler = Handler::new(EventBusinessLogic, NoOpCallExecutor, NoOpQueryFetcher, env);
+    ///
+    /// let result = handler.handle(EventCommand::GetEvent { event_id }).await?;
+    /// ```
+    #[must_use]
+    pub fn with_projections(clock: C, projections: P) -> Self {
+        Self {
+            clock,
+            event_store: InMemoryEventStore::new(),
+            projector: InMemoryProjector::new(),
+            event_bus: InMemoryEventBus::new(),
+            broadcast_topic: "test-events".to_string(),
+            projections,
+            metadata: MetadataContext::new(),
         }
     }
 
@@ -490,6 +525,13 @@ impl<C: Clock> TestEnvironment<C> {
     #[must_use]
     pub fn with_projector(mut self, projector: InMemoryProjector) -> Self {
         self.projector = projector;
+        self
+    }
+
+    /// Create with custom metadata context.
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: MetadataContext) -> Self {
+        self.metadata = metadata;
         self
     }
 
@@ -519,12 +561,14 @@ impl<C: Clock> TestEnvironment<C> {
     }
 }
 
-impl<C: Clock + Send + Sync> HandlerEnvironment for TestEnvironment<C> {
+impl<C: Clock + Send + Sync, P: ProjectionQueries> HandlerEnvironment for TestEnvironment<C, P> {
+    type Clock = C;
     type EventStore = InMemoryEventStore;
     type Projector = InMemoryProjector;
     type EventBus = InMemoryEventBus;
+    type Projections = P;
 
-    fn clock(&self) -> &dyn Clock {
+    fn clock(&self) -> &Self::Clock {
         &self.clock
     }
 
@@ -542,6 +586,14 @@ impl<C: Clock + Send + Sync> HandlerEnvironment for TestEnvironment<C> {
 
     fn broadcast_topic(&self) -> &str {
         &self.broadcast_topic
+    }
+
+    fn projections(&self) -> &Self::Projections {
+        &self.projections
+    }
+
+    fn metadata(&self) -> &MetadataContext {
+        &self.metadata
     }
 }
 
@@ -579,7 +631,11 @@ mod tests {
 
         // Append second event with correct version
         let version = store
-            .append(&stream_id, Some(Version::new(1)), vec![make_event("Event2")])
+            .append(
+                &stream_id,
+                Some(Version::new(1)),
+                vec![make_event("Event2")],
+            )
             .await
             .unwrap();
         assert_eq!(version, Version::new(2));
@@ -591,7 +647,10 @@ mod tests {
         assert_eq!(events[1].event_type, "Event2");
 
         // Load from version
-        let events = store.load(&stream_id, Some(Version::new(1))).await.unwrap();
+        let events = store
+            .load(&stream_id, Some(Version::new(1)))
+            .await
+            .unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, "Event2");
     }
@@ -609,7 +668,11 @@ mod tests {
 
         // Try to append with wrong version
         let result = store
-            .append(&stream_id, Some(Version::initial()), vec![make_event("Event2")])
+            .append(
+                &stream_id,
+                Some(Version::initial()),
+                vec![make_event("Event2")],
+            )
             .await;
 
         assert!(matches!(
@@ -655,7 +718,9 @@ mod tests {
 
         let result = projector.project(&[make_event("Event1")]).await;
 
-        assert!(matches!(result, Err(ProjectionError::Custom(msg)) if msg == "Database down"));
+        assert!(
+            matches!(result, Err(ProjectionError::Custom(msg)) if msg == "Database down")
+        );
     }
 
     #[test]
@@ -666,5 +731,21 @@ mod tests {
         assert_eq!(env.event_store().total_event_count(), 0);
         assert_eq!(env.projector().projection_count(), 0);
         assert!(env.event_bus().published_events().is_empty());
+    }
+
+    #[test]
+    fn test_environment_with_metadata() {
+        let clock = FixedClock::new(Utc::now());
+        let metadata = MetadataContext::new()
+            .with_correlation_id("test-123")
+            .with_user_id("user-abc");
+
+        let env = TestEnvironment::new(clock).with_metadata(metadata);
+
+        assert_eq!(
+            env.metadata().correlation_id,
+            Some("test-123".to_string())
+        );
+        assert_eq!(env.metadata().user_id, Some("user-abc".to_string()));
     }
 }

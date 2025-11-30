@@ -59,7 +59,7 @@ use serde::{Deserialize, Serialize};
 use crate::types::{CustomerId, EventId, Money, PaymentId, PaymentMethod, ReservationId, SeatId, TicketId};
 
 use super::{
-    InventoryCommand, InventoryError, InventoryEvent,
+    InventoryCommand, InventoryError, InventoryEvent, ReleaseReason,
     PaymentCommand, PaymentError, PaymentEvent,
 };
 
@@ -88,16 +88,27 @@ pub enum ReservationSagaInput {
     CancelReservation {
         /// Reservation ID
         reservation_id: ReservationId,
+        /// Fetched saga state (populated by Handler)
+        fetched: Option<ReservationSagaState>,
     },
 
     /// Expire a reservation (timeout reached).
     ExpireReservation {
         /// Reservation ID
         reservation_id: ReservationId,
+        /// Fetched saga state (populated by Handler)
+        fetched: Option<ReservationSagaState>,
     },
 
     /// Feedback from aggregate calls.
-    Feedback(Vec<ReservationSagaCallResult>),
+    Feedback {
+        /// Reservation ID (needed for state lookup)
+        reservation_id: ReservationId,
+        /// Results from aggregate calls
+        results: Vec<ReservationSagaCallResult>,
+        /// Fetched saga state (populated by Handler before calling process)
+        fetched: Option<ReservationSagaState>,
+    },
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -114,12 +125,25 @@ pub enum ReservationSagaCall {
 }
 
 /// Results from aggregate calls.
+///
+/// Each result includes the reservation_id so that feedback can be routed correctly
+/// even when calls fail (errors don't contain events to extract the ID from).
 #[derive(Debug, Clone)]
 pub enum ReservationSagaCallResult {
     /// Result from Inventory aggregate.
-    Inventory(Result<Vec<InventoryEvent>, InventoryError>),
+    Inventory {
+        /// The reservation ID from the original command
+        reservation_id: ReservationId,
+        /// The result of the inventory operation
+        result: Result<Vec<InventoryEvent>, InventoryError>,
+    },
     /// Result from Payment aggregate.
-    Payment(Result<Vec<PaymentEvent>, PaymentError>),
+    Payment {
+        /// The reservation ID from the original command
+        reservation_id: ReservationId,
+        /// The result of the payment operation
+        result: Result<Vec<PaymentEvent>, PaymentError>,
+    },
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -351,28 +375,24 @@ impl BusinessLogic for ReservationSagaLogic {
     type Error = ReservationSagaError;
     type Call = ReservationSagaCall;
     type CallResult = ReservationSagaCallResult;
+    type Response = ();
 
     fn stream_id(input: &Self::Input) -> StreamId {
         match input {
             ReservationSagaInput::InitiateReservation { reservation_id, .. }
-            | ReservationSagaInput::CancelReservation { reservation_id }
-            | ReservationSagaInput::ExpireReservation { reservation_id } => {
+            | ReservationSagaInput::CancelReservation { reservation_id, .. }
+            | ReservationSagaInput::ExpireReservation { reservation_id, .. }
+            | ReservationSagaInput::Feedback { reservation_id, .. } => {
                 StreamId::new(format!("saga-reservation-{}", reservation_id.as_uuid()))
-            }
-            ReservationSagaInput::Feedback(_) => {
-                // Feedback is always for an in-progress saga
-                // The Handler maintains the stream_id from the original command
-                StreamId::new("saga-reservation-feedback-placeholder")
             }
         }
     }
 
     fn process(
         &self,
-        state: &Self::State,
         input: Self::Input,
         clock: &dyn Clock,
-    ) -> Result<BusinessResult<Self::Event, Self::Call>, Self::Error> {
+    ) -> Result<BusinessResult<Self::Event, Self::Call, Self::Response>, Self::Error> {
         let now = clock.now();
 
         match input {
@@ -383,10 +403,7 @@ impl BusinessLogic for ReservationSagaLogic {
                 section,
                 quantity,
             } => {
-                // Validation
-                if state.phase != ReservationSagaPhase::Initial {
-                    return Err(ReservationSagaError::AlreadyInProgress);
-                }
+                // Validation - new saga, no existing state
 
                 if quantity == 0 {
                     return Err(ReservationSagaError::ValidationFailed(
@@ -410,6 +427,7 @@ impl BusinessLogic for ReservationSagaLogic {
                     section: section.clone(),
                     quantity,
                     expires_at,
+                    fetched: None, // New reservation, inventory shouldn't have this reservation yet
                 };
 
                 Ok(BusinessResult::Continue {
@@ -426,7 +444,10 @@ impl BusinessLogic for ReservationSagaLogic {
                 })
             }
 
-            ReservationSagaInput::CancelReservation { reservation_id } => {
+            ReservationSagaInput::CancelReservation { reservation_id, fetched } => {
+                // Get state from fetched
+                let state = fetched.unwrap_or_default();
+
                 // Can only cancel if in appropriate state
                 match state.phase {
                     ReservationSagaPhase::ReservingSeats | ReservationSagaPhase::AwaitingPayment => {
@@ -436,7 +457,11 @@ impl BusinessLogic for ReservationSagaLogic {
                         })?;
 
                         // Release seats
-                        let release_cmd = InventoryCommand::Release { reservation_id };
+                        let release_cmd = InventoryCommand::Release {
+                            reservation_id,
+                            reason: ReleaseReason::CustomerCancelled,
+                            fetched: None, // Release doesn't need fetched data
+                        };
 
                         Ok(BusinessResult::Continue {
                             events: vec![ReservationSagaEvent::ReservationCancelled {
@@ -464,14 +489,21 @@ impl BusinessLogic for ReservationSagaLogic {
                 }
             }
 
-            ReservationSagaInput::ExpireReservation { reservation_id } => {
+            ReservationSagaInput::ExpireReservation { reservation_id, fetched } => {
+                // Get state from fetched
+                let state = fetched.unwrap_or_default();
+
                 // Can only expire if in appropriate state
                 match state.phase {
                     ReservationSagaPhase::ReservingSeats
                     | ReservationSagaPhase::AwaitingPayment
                     | ReservationSagaPhase::ProcessingPayment => {
                         // Release seats
-                        let release_cmd = InventoryCommand::Release { reservation_id };
+                        let release_cmd = InventoryCommand::Release {
+                            reservation_id,
+                            reason: ReleaseReason::Expired,
+                            fetched: None, // Release doesn't need fetched data
+                        };
 
                         Ok(BusinessResult::Continue {
                             events: vec![ReservationSagaEvent::ReservationExpired {
@@ -488,8 +520,11 @@ impl BusinessLogic for ReservationSagaLogic {
                 }
             }
 
-            ReservationSagaInput::Feedback(results) => {
-                self.process_feedback(state, results, now)
+            ReservationSagaInput::Feedback { reservation_id: _, results, fetched } => {
+                let state = fetched.ok_or_else(|| {
+                    ReservationSagaError::ValidationFailed("Saga state required for feedback".to_string())
+                })?;
+                self.process_feedback(&state, results, now)
             }
         }
     }
@@ -549,7 +584,14 @@ impl BusinessLogic for ReservationSagaLogic {
     }
 
     fn feedback_input(results: Vec<Self::CallResult>) -> Self::Input {
-        ReservationSagaInput::Feedback(results)
+        // Extract reservation_id from results to enable state lookup
+        let reservation_id = Self::extract_reservation_id_from_results(&results);
+
+        ReservationSagaInput::Feedback {
+            reservation_id,
+            results,
+            fetched: None, // Handler will populate this before calling process
+        }
     }
 
     fn event_type_name(event: &Self::Event) -> &'static str {
@@ -575,7 +617,7 @@ impl ReservationSagaLogic {
         state: &ReservationSagaState,
         results: Vec<ReservationSagaCallResult>,
         now: DateTime<Utc>,
-    ) -> Result<BusinessResult<ReservationSagaEvent, ReservationSagaCall>, ReservationSagaError> {
+    ) -> Result<BusinessResult<ReservationSagaEvent, ReservationSagaCall, ()>, ReservationSagaError> {
         let reservation_id = state.reservation_id.ok_or_else(|| {
             ReservationSagaError::MissingData("reservation_id".to_string())
         })?;
@@ -590,9 +632,17 @@ impl ReservationSagaLogic {
             ReservationSagaPhase::Compensating => {
                 self.process_compensation_feedback(state, reservation_id, results, now)
             }
-            _ => Err(ReservationSagaError::InvalidStateTransition {
-                from: state.phase.clone(),
-            }),
+            ReservationSagaPhase::Completed | ReservationSagaPhase::Failed => {
+                // Terminal states - ignore any remaining feedback (e.g., from Confirm call)
+                // The saga has already completed, so we just return Done with no new events.
+                Ok(BusinessResult::Done(vec![]))
+            }
+            ReservationSagaPhase::Initial | ReservationSagaPhase::AwaitingPayment => {
+                // These phases should not receive feedback
+                Err(ReservationSagaError::InvalidStateTransition {
+                    from: state.phase.clone(),
+                })
+            }
         }
     }
 
@@ -604,10 +654,10 @@ impl ReservationSagaLogic {
         reservation_id: ReservationId,
         results: Vec<ReservationSagaCallResult>,
         now: DateTime<Utc>,
-    ) -> Result<BusinessResult<ReservationSagaEvent, ReservationSagaCall>, ReservationSagaError> {
+    ) -> Result<BusinessResult<ReservationSagaEvent, ReservationSagaCall, ()>, ReservationSagaError> {
         // Find inventory result
         let inventory_result = results.into_iter().find_map(|r| {
-            if let ReservationSagaCallResult::Inventory(result) = r {
+            if let ReservationSagaCallResult::Inventory { result, .. } = r {
                 Some(result)
             } else {
                 None
@@ -657,6 +707,7 @@ impl ReservationSagaLogic {
                     payment_method: PaymentMethod::CreditCard {
                         last_four: "4242".to_string(),
                     },
+                    fetched: None, // New payment
                 };
 
                 Ok(BusinessResult::Continue {
@@ -703,7 +754,7 @@ impl ReservationSagaLogic {
         reservation_id: ReservationId,
         results: Vec<ReservationSagaCallResult>,
         now: DateTime<Utc>,
-    ) -> Result<BusinessResult<ReservationSagaEvent, ReservationSagaCall>, ReservationSagaError> {
+    ) -> Result<BusinessResult<ReservationSagaEvent, ReservationSagaCall, ()>, ReservationSagaError> {
         let payment_id = state.payment_id.ok_or_else(|| {
             ReservationSagaError::MissingData("payment_id".to_string())
         })?;
@@ -714,7 +765,7 @@ impl ReservationSagaLogic {
 
         // Find payment result
         let payment_result = results.into_iter().find_map(|r| {
-            if let ReservationSagaCallResult::Payment(result) = r {
+            if let ReservationSagaCallResult::Payment { result, .. } = r {
                 Some(result)
             } else {
                 None
@@ -738,7 +789,11 @@ impl ReservationSagaLogic {
 
                 if let Some(reason) = failed {
                     // Payment failed - compensate by releasing seats
-                    let release_cmd = InventoryCommand::Release { reservation_id };
+                    let release_cmd = InventoryCommand::Release {
+                        reservation_id,
+                        reason: ReleaseReason::PaymentFailed,
+                        fetched: None, // Release doesn't need fetched data
+                    };
 
                     return Ok(BusinessResult::Continue {
                         events: vec![ReservationSagaEvent::PaymentFailed {
@@ -762,6 +817,7 @@ impl ReservationSagaLogic {
                     let confirm_cmd = InventoryCommand::Confirm {
                         reservation_id,
                         customer_id,
+                        fetched: None, // Confirm doesn't need fetched data
                     };
 
                     return Ok(BusinessResult::Continue {
@@ -789,7 +845,11 @@ impl ReservationSagaLogic {
 
             Some(Err(e)) => {
                 // Payment call failed - compensate by releasing seats
-                let release_cmd = InventoryCommand::Release { reservation_id };
+                let release_cmd = InventoryCommand::Release {
+                    reservation_id,
+                    reason: ReleaseReason::PaymentFailed,
+                    fetched: None, // Release doesn't need fetched data
+                };
 
                 Ok(BusinessResult::Continue {
                     events: vec![ReservationSagaEvent::PaymentFailed {
@@ -816,7 +876,7 @@ impl ReservationSagaLogic {
         reservation_id: ReservationId,
         _results: Vec<ReservationSagaCallResult>,
         now: DateTime<Utc>,
-    ) -> Result<BusinessResult<ReservationSagaEvent, ReservationSagaCall>, ReservationSagaError> {
+    ) -> Result<BusinessResult<ReservationSagaEvent, ReservationSagaCall, ()>, ReservationSagaError> {
         // Compensation completed (we don't fail on compensation errors - just log)
         let reason = state
             .last_error
@@ -830,6 +890,32 @@ impl ReservationSagaLogic {
                 compensated_at: now,
             },
         ]))
+    }
+
+    /// Extract reservation_id from call results.
+    ///
+    /// The Handler calls this via `feedback_input()` to get the reservation_id
+    /// needed for state lookup in the feedback loop.
+    ///
+    /// Now that `ReservationSagaCallResult` includes the reservation_id directly
+    /// (not just in events), we can always extract it even when calls fail.
+    fn extract_reservation_id_from_results(results: &[ReservationSagaCallResult]) -> ReservationId {
+        for result in results {
+            match result {
+                ReservationSagaCallResult::Inventory { reservation_id, .. }
+                | ReservationSagaCallResult::Payment { reservation_id, .. } => {
+                    // Skip nil UUIDs (from commands that don't have a reservation_id)
+                    if !reservation_id.is_nil() {
+                        return *reservation_id;
+                    }
+                }
+            }
+        }
+
+        // This should not happen in normal operation - fall back to nil UUID
+        // The saga state lookup will fail, which gives a proper error message
+        tracing::warn!("Could not extract reservation_id from call results - using nil UUID");
+        ReservationId::nil()
     }
 }
 
@@ -855,7 +941,6 @@ mod tests {
     #[test]
     fn initiate_reservation_creates_inventory_call() {
         let logic = ReservationSagaLogic;
-        let state = ReservationSagaState::default();
         let clock = test_clock();
 
         let input = ReservationSagaInput::InitiateReservation {
@@ -866,7 +951,7 @@ mod tests {
             quantity: 2,
         };
 
-        let result = logic.process(&state, input, &clock).unwrap();
+        let result = logic.process(input, &clock).unwrap();
 
         match result {
             BusinessResult::Continue { events, calls } => {
@@ -888,7 +973,6 @@ mod tests {
     #[test]
     fn initiate_reservation_zero_quantity_fails() {
         let logic = ReservationSagaLogic;
-        let state = ReservationSagaState::default();
         let clock = test_clock();
 
         let input = ReservationSagaInput::InitiateReservation {
@@ -899,7 +983,7 @@ mod tests {
             quantity: 0,
         };
 
-        let result = logic.process(&state, input, &clock);
+        let result = logic.process(input, &clock);
         assert!(matches!(
             result,
             Err(ReservationSagaError::ValidationFailed(_))
@@ -909,7 +993,6 @@ mod tests {
     #[test]
     fn initiate_reservation_too_many_tickets_fails() {
         let logic = ReservationSagaLogic;
-        let state = ReservationSagaState::default();
         let clock = test_clock();
 
         let input = ReservationSagaInput::InitiateReservation {
@@ -920,7 +1003,7 @@ mod tests {
             quantity: 10, // More than 8
         };
 
-        let result = logic.process(&state, input, &clock);
+        let result = logic.process(input, &clock);
         assert!(matches!(
             result,
             Err(ReservationSagaError::ValidationFailed(_))
@@ -986,20 +1069,27 @@ mod tests {
 
         // Simulate inventory success feedback
         let seats = vec![SeatId::new(), SeatId::new()];
-        let feedback = ReservationSagaInput::Feedback(vec![
-            ReservationSagaCallResult::Inventory(Ok(vec![
-                InventoryEvent::SeatsReserved {
+        let feedback = ReservationSagaInput::Feedback {
+            reservation_id,
+            results: vec![
+                ReservationSagaCallResult::Inventory {
                     reservation_id,
-                    event_id,
-                    section: "VIP".to_string(),
-                    seats: seats.clone(),
-                    expires_at: Utc::now() + Duration::minutes(5),
-                    reserved_at: Utc::now(),
+                    result: Ok(vec![
+                        InventoryEvent::SeatsReserved {
+                            reservation_id,
+                            event_id,
+                            section: "VIP".to_string(),
+                            seats: seats.clone(),
+                            expires_at: Utc::now() + Duration::minutes(5),
+                            reserved_at: Utc::now(),
+                        },
+                    ]),
                 },
-            ])),
-        ]);
+            ],
+            fetched: Some(state),
+        };
 
-        let result = logic.process(&state, feedback, &clock).unwrap();
+        let result = logic.process(feedback, &clock).unwrap();
 
         match result {
             BusinessResult::Continue { events, calls } => {
@@ -1039,27 +1129,34 @@ mod tests {
         state.phase = ReservationSagaPhase::ProcessingPayment;
 
         // Simulate payment success feedback
-        let feedback = ReservationSagaInput::Feedback(vec![
-            ReservationSagaCallResult::Payment(Ok(vec![
-                PaymentEvent::PaymentProcessed {
-                    payment_id,
+        let feedback = ReservationSagaInput::Feedback {
+            reservation_id,
+            results: vec![
+                ReservationSagaCallResult::Payment {
                     reservation_id,
-                    customer_id,
-                    amount: Money::from_dollars(100),
-                    payment_method: PaymentMethod::CreditCard {
-                        last_four: "4242".to_string(),
-                    },
-                    processed_at: Utc::now(),
+                    result: Ok(vec![
+                        PaymentEvent::PaymentProcessed {
+                            payment_id,
+                            reservation_id,
+                            customer_id,
+                            amount: Money::from_dollars(100),
+                            payment_method: PaymentMethod::CreditCard {
+                                last_four: "4242".to_string(),
+                            },
+                            processed_at: Utc::now(),
+                        },
+                        PaymentEvent::PaymentSucceeded {
+                            payment_id,
+                            transaction_id: "txn_123".to_string(),
+                            succeeded_at: Utc::now(),
+                        },
+                    ]),
                 },
-                PaymentEvent::PaymentSucceeded {
-                    payment_id,
-                    transaction_id: "txn_123".to_string(),
-                    succeeded_at: Utc::now(),
-                },
-            ])),
-        ]);
+            ],
+            fetched: Some(state),
+        };
 
-        let result = logic.process(&state, feedback, &clock).unwrap();
+        let result = logic.process(feedback, &clock).unwrap();
 
         match result {
             BusinessResult::Continue { events, calls } => {
@@ -1100,15 +1197,22 @@ mod tests {
         state.phase = ReservationSagaPhase::ProcessingPayment;
 
         // Simulate payment failure feedback
-        let feedback = ReservationSagaInput::Feedback(vec![
-            ReservationSagaCallResult::Payment(Ok(vec![PaymentEvent::PaymentFailed {
-                payment_id,
-                reason: "Card declined".to_string(),
-                failed_at: Utc::now(),
-            }])),
-        ]);
+        let feedback = ReservationSagaInput::Feedback {
+            reservation_id,
+            results: vec![
+                ReservationSagaCallResult::Payment {
+                    reservation_id,
+                    result: Ok(vec![PaymentEvent::PaymentFailed {
+                        payment_id,
+                        reason: "Card declined".to_string(),
+                        failed_at: Utc::now(),
+                    }]),
+                },
+            ],
+            fetched: Some(state),
+        };
 
-        let result = logic.process(&state, feedback, &clock).unwrap();
+        let result = logic.process(feedback, &clock).unwrap();
 
         match result {
             BusinessResult::Continue { events, calls } => {

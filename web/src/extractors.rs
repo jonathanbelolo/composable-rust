@@ -28,7 +28,6 @@
 //! ```
 
 use axum::{
-    async_trait,
     extract::FromRequestParts,
     http::{request::Parts, HeaderMap},
 };
@@ -50,7 +49,6 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Copy)]
 pub struct CorrelationId(pub Uuid);
 
-#[async_trait]
 impl<S> FromRequestParts<S> for CorrelationId
 where
     S: Send + Sync,
@@ -91,7 +89,6 @@ where
 #[derive(Debug, Clone, Copy)]
 pub struct ClientIp(pub IpAddr);
 
-#[async_trait]
 impl<S> FromRequestParts<S> for ClientIp
 where
     S: Send + Sync,
@@ -148,7 +145,6 @@ fn extract_client_ip(
 #[derive(Debug, Clone)]
 pub struct UserAgent(pub String);
 
-#[async_trait]
 impl<S> FromRequestParts<S> for UserAgent
 where
     S: Send + Sync,

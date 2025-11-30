@@ -175,7 +175,7 @@ where
                 action,
                 topic: "default".to_string(),
             }) {
-                Ok(json) => Message::Text(json),
+                Ok(json) => Message::Text(json.into()),
                 Err(e) => {
                     error!(error = %e, "Failed to serialize action");
                     continue;

@@ -65,6 +65,7 @@ impl PoolStats {
 /// - Optimistic concurrency control via version numbers
 /// - Connection pooling for efficient resource usage
 /// - Tracing and metrics for observability
+#[derive(Clone)]
 pub struct PostgresEventStore {
     pool: PgPool,
 }
