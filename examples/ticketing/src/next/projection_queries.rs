@@ -1310,6 +1310,7 @@ impl AnalyticsProjectionQueries {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[allow(clippy::cast_possible_wrap)]
     pub async fn get_top_spenders(&self, limit: usize) -> Result<TopSpendersDto, sqlx::Error> {
         let rows: Vec<CustomerSpendingRow> = sqlx::query_as(
             r"

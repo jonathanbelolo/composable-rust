@@ -10,8 +10,7 @@
 //!
 //! The builder handles all the complex initialization:
 //! - Database connections and migrations
-//! - Event store and event bus setup
-//! - Aggregate and projection registration
+//! - Event store setup
 //! - HTTP server configuration
 //! - Graceful shutdown coordination
 //!
@@ -25,8 +24,8 @@
 //! # 1. Load config from environment variables (.env file)
 //! # 2. Setup tracing/logging
 //! # 3. Connect to PostgreSQL databases (with migrations)
-//! # 4. Connect to Redpanda event bus
-//! # 5. Register all aggregates and projections
+//! # 4. Initialize authentication
+//! # 5. Build all handlers using next-gen architecture
 //! # 6. Start HTTP server on configured port
 //! # 7. Run until Ctrl+C or SIGTERM
 //! ```
@@ -46,7 +45,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(
         postgres_url = %config.postgres.url,
         projections_url = %config.projections.url,
-        redpanda_brokers = %config.redpanda.brokers,
         server_address = %format!("{}:{}", config.server.host, config.server.port),
         "Configuration loaded"
     );
@@ -56,8 +54,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_config(config)
         .with_tracing()?
         .with_resources().await?
-        .with_aggregates()?
-        .with_projections().await?
         .with_auth().await?
         .build().await?
         .run().await?;

@@ -4,12 +4,11 @@
 //! - Bearer token extraction from Authorization header
 //! - Session validation (auto-validates sessions from tokens)
 //! - Role-based access control (admin checks)
-//! - Resource ownership verification
 //!
 //! # Usage
 //!
 //! ```rust,ignore
-//! use ticketing::auth::middleware::{SessionUser, RequireAdmin};
+//! use ticketing::auth::middleware::{SessionUser, BearerToken};
 //!
 //! // Require authentication
 //! async fn get_profile(
@@ -18,18 +17,9 @@
 //!     // session.user_id is guaranteed valid
 //!     Ok(Json(ProfileResponse { user_id: session.user_id }))
 //! }
-//!
-//! // Require admin role
-//! async fn admin_dashboard(
-//!     admin: RequireAdmin,
-//! ) -> Result<Json<DashboardResponse>, AppError> {
-//!     // admin.user_id is guaranteed to be an admin
-//!     Ok(Json(DashboardResponse { ... }))
-//! }
 //! ```
 
 use crate::auth::setup::TicketingAuthStore;
-use crate::server::state::AppState;
 use composable_rust_auth::{AuthAction, state::{Session, SessionId, UserId}};
 use composable_rust_web::{
     error::AppError,
@@ -225,20 +215,6 @@ impl FromRequestParts<Arc<TicketingAuthStore>> for SessionUser
     }
 }
 
-// Implementation for AppState (used by API routes)
-impl FromRequestParts<AppState> for SessionUser
-{
-    type Rejection = AppError;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &AppState,
-    ) -> Result<Self, Self::Rejection> {
-        // Delegate to the Arc<TicketingAuthStore> implementation
-        Self::from_request_parts(parts, &state.auth_store).await
-    }
-}
-
 /// Require admin role.
 ///
 /// Validates that the authenticated user has admin privileges.
@@ -270,334 +246,10 @@ impl FromRequestParts<Arc<TicketingAuthStore>> for RequireAdmin
         let session_user = SessionUser::from_request_parts(parts, state).await?;
 
         // Note: This implementation is a placeholder that allows all authenticated users.
-        // The proper implementation is in the AppState extractor below, which queries
-        // the user's role from the auth database. Use AppState in your handlers instead.
-        //
-        // This exists for backward compatibility and testing purposes.
+        // In production, query user roles from database.
         Ok(Self {
             user_id: session_user.user_id,
             session: session_user.session,
-        })
-    }
-}
-
-// Implementation for AppState
-impl FromRequestParts<AppState> for RequireAdmin
-{
-    type Rejection = AppError;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &AppState,
-    ) -> Result<Self, Self::Rejection> {
-        // First validate session using the auth store
-        let session_user = SessionUser::from_request_parts(parts, &state.auth_store).await?;
-
-        // Query user role from auth database
-        let role: String = sqlx::query_scalar(
-            "SELECT role FROM users WHERE id = $1"
-        )
-        .bind(session_user.user_id.0) // UserId is a tuple struct wrapping Uuid
-        .fetch_one(state.auth_pool.as_ref())
-        .await
-        .map_err(|e| AppError::internal(format!("Failed to query user role: {e}")))?;
-
-        // Check if user is admin
-        if role != "admin" {
-            return Err(AppError::forbidden("Admin access required"));
-        }
-
-        Ok(Self {
-            user_id: session_user.user_id,
-            session: session_user.session,
-        })
-    }
-}
-
-/// Require resource ownership.
-///
-/// Validates that the authenticated user owns a specific resource.
-/// Returns 403 Forbidden if the user does not own the resource.
-///
-/// # Type Parameters
-///
-/// - `T`: The resource type (must implement `ResourceId`)
-///
-/// # Usage
-///
-/// ```rust,ignore
-/// async fn update_event(
-///     Path(event_id): Path<Uuid>,
-///     ownership: RequireOwnership<EventId>,
-///     State(store): State<...>,
-/// ) -> Result<Json<EventResponse>, AppError> {
-///     // ownership.user_id owns the event with event_id
-///     // Safe to proceed with update
-/// }
-/// ```
-#[derive(Debug, Clone)]
-pub struct RequireOwnership<T> {
-    /// The authenticated user ID (resource owner)
-    pub user_id: UserId,
-    /// The resource identifier
-    pub resource: T,
-}
-
-/// Trait for resources that can be owned and have an ID.
-pub trait ResourceId: Send + Sync + Clone {
-    /// Extract the resource ID from the request path.
-    fn from_path(path: &str) -> Option<Self>;
-
-    /// Verify ownership of this resource.
-    ///
-    /// # Arguments
-    ///
-    /// * `user_id` - The user ID to check ownership for
-    /// * `store` - The auth store for querying ownership
-    ///
-    /// # Returns
-    ///
-    /// `Ok(())` if the user owns the resource, `Err(AppError)` otherwise.
-    fn verify_ownership(
-        &self,
-        user_id: &UserId,
-        store: &Arc<TicketingAuthStore>,
-    ) -> impl std::future::Future<Output = Result<(), AppError>> + Send;
-
-    /// Verify ownership of this resource with access to full AppState.
-    ///
-    /// This method has access to ownership indices and projections.
-    /// Override this for resource types that need AppState.
-    ///
-    /// # Arguments
-    ///
-    /// * `user_id` - The user ID to check ownership for
-    /// * `state` - The full application state
-    ///
-    /// # Returns
-    ///
-    /// `Ok(())` if the user owns the resource, `Err(AppError)` otherwise.
-    fn verify_ownership_with_state(
-        &self,
-        user_id: &UserId,
-        state: &crate::server::state::AppState,
-    ) -> impl std::future::Future<Output = Result<(), AppError>> + Send {
-        // Default: delegate to verify_ownership (backward compatibility)
-        self.verify_ownership(user_id, &state.auth_store)
-    }
-}
-
-// ============================================================================
-// ResourceId Implementations
-// ============================================================================
-
-impl ResourceId for crate::types::ReservationId {
-    fn from_path(path: &str) -> Option<Self> {
-        // Extract UUID from paths like /api/reservations/:id/cancel
-        // Path format: /api/reservations/{uuid}/...
-        let parts: Vec<&str> = path.split('/').collect();
-
-        // Find "reservations" segment, next segment should be UUID
-        for (i, &part) in parts.iter().enumerate() {
-            if part == "reservations" && i + 1 < parts.len() {
-                if let Ok(uuid) = uuid::Uuid::parse_str(parts[i + 1]) {
-                    return Some(crate::types::ReservationId::from_uuid(uuid));
-                }
-            }
-        }
-
-        None
-    }
-
-    async fn verify_ownership(
-        &self,
-        user_id: &UserId,
-        _store: &Arc<TicketingAuthStore>,
-    ) -> Result<(), AppError> {
-        // Legacy method - ownership verification now requires AppState
-        // This method is only called when using Arc<TicketingAuthStore> state
-        // For AppState, verify_ownership_with_state is called instead
-        let _ = user_id;
-        Ok(())
-    }
-
-    async fn verify_ownership_with_state(
-        &self,
-        user_id: &UserId,
-        state: &crate::server::state::AppState,
-    ) -> Result<(), AppError> {
-        // Query reservation ownership from PostgreSQL projection
-        // This is restart-safe and has no race condition because we query
-        // the same projection that sent the completion confirmation
-        let customer_id = state.reservations_projection
-            .get_owner(self)
-            .await
-            .map_err(|e| AppError::internal(format!("Failed to query reservation owner: {e}")))?
-            .ok_or_else(|| AppError::not_found("Reservation", self.as_uuid()))?;
-
-        // Verify ownership
-        let expected_customer_id = crate::types::CustomerId::from_uuid(user_id.0);
-        if customer_id != expected_customer_id {
-            return Err(AppError::forbidden("You do not own this reservation"));
-        }
-
-        Ok(())
-    }
-}
-
-impl ResourceId for crate::types::PaymentId {
-    fn from_path(path: &str) -> Option<Self> {
-        // Extract UUID from paths like /api/payments/:id/refund
-        // Path format: /api/payments/{uuid}/...
-        let parts: Vec<&str> = path.split('/').collect();
-
-        // Find "payments" segment, next segment should be UUID
-        for (i, &part) in parts.iter().enumerate() {
-            if part == "payments" && i + 1 < parts.len() {
-                if let Ok(uuid) = uuid::Uuid::parse_str(parts[i + 1]) {
-                    return Some(crate::types::PaymentId::from_uuid(uuid));
-                }
-            }
-        }
-
-        None
-    }
-
-    async fn verify_ownership(
-        &self,
-        user_id: &UserId,
-        _store: &Arc<TicketingAuthStore>,
-    ) -> Result<(), AppError> {
-        // Legacy method - ownership verification now requires AppState
-        // This method is only called when using Arc<TicketingAuthStore> state
-        // For AppState, verify_ownership_with_state is called instead
-        let _ = user_id;
-        Ok(())
-    }
-
-    async fn verify_ownership_with_state(
-        &self,
-        user_id: &UserId,
-        state: &crate::server::state::AppState,
-    ) -> Result<(), AppError> {
-        // Query payment ownership from PostgreSQL projection
-        // This is restart-safe and has no race condition because we query
-        // the same projection that sent the completion confirmation
-        let customer_id = state.payments_projection
-            .get_owner(self)
-            .await
-            .map_err(|e| AppError::internal(format!("Failed to query payment owner: {e}")))?
-            .ok_or_else(|| AppError::not_found("Payment", self.as_uuid()))?;
-
-        // Verify ownership
-        let expected_customer_id = crate::types::CustomerId::from_uuid(user_id.0);
-        if customer_id != expected_customer_id {
-            return Err(AppError::forbidden("You do not own this payment"));
-        }
-
-        Ok(())
-    }
-}
-
-impl ResourceId for crate::types::CustomerId {
-    fn from_path(path: &str) -> Option<Self> {
-        // Extract UUID from paths like /api/analytics/customers/:id/profile
-        // Path format: /api/analytics/customers/{uuid}/...
-        let parts: Vec<&str> = path.split('/').collect();
-
-        // Find "customers" segment, next segment should be UUID
-        for (i, &part) in parts.iter().enumerate() {
-            if part == "customers" && i + 1 < parts.len() {
-                if let Ok(uuid) = uuid::Uuid::parse_str(parts[i + 1]) {
-                    return Some(crate::types::CustomerId::from_uuid(uuid));
-                }
-            }
-        }
-
-        None
-    }
-
-    async fn verify_ownership(
-        &self,
-        user_id: &UserId,
-        _store: &Arc<TicketingAuthStore>,
-    ) -> Result<(), AppError> {
-        // Verify that the customer ID in the path matches the authenticated user's ID
-        // This ensures customers can only view their own profile
-        //
-        // TODO: Add admin override check - admins should be able to view any customer profile
-        // Pseudocode:
-        // if !is_admin(user_id, store).await? {
-        //     if self.as_uuid() != &user_id.0 {
-        //         return Err(AppError::forbidden("You can only view your own profile"));
-        //     }
-        // }
-
-        if self.as_uuid() != &user_id.0 {
-            return Err(AppError::forbidden(
-                "You can only view your own profile. Admin override not yet implemented.",
-            ));
-        }
-
-        Ok(())
-    }
-}
-
-impl<T> FromRequestParts<Arc<TicketingAuthStore>> for RequireOwnership<T>
-where
-    T: ResourceId,
-{
-    type Rejection = AppError;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &Arc<TicketingAuthStore>,
-    ) -> Result<Self, Self::Rejection> {
-        // First validate session
-        let session_user = SessionUser::from_request_parts(parts, state).await?;
-
-        // Extract resource ID from path
-        let resource = T::from_path(parts.uri.path())
-            .ok_or_else(|| AppError::bad_request("Invalid resource ID in path"))?;
-
-        // Verify ownership
-        let store = State::<Arc<TicketingAuthStore>>::from_request_parts(parts, state)
-            .await
-            .map_err(|_| AppError::internal("Failed to access store"))?;
-
-        resource.verify_ownership(&session_user.user_id, &store).await?;
-
-        Ok(Self {
-            user_id: session_user.user_id,
-            resource,
-        })
-    }
-}
-
-// Implementation for AppState
-impl<T> FromRequestParts<AppState> for RequireOwnership<T>
-where
-    T: ResourceId,
-{
-    type Rejection = AppError;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &AppState,
-    ) -> Result<Self, Self::Rejection> {
-        // First validate session
-        let session_user = SessionUser::from_request_parts(parts, &state.auth_store).await?;
-
-        // Extract resource ID from path
-        let resource = T::from_path(parts.uri.path())
-            .ok_or_else(|| AppError::bad_request("Invalid resource ID in path"))?;
-
-        // Verify ownership using AppState (has access to ownership indices)
-        resource.verify_ownership_with_state(&session_user.user_id, state).await?;
-
-        Ok(Self {
-            user_id: session_user.user_id,
-            resource,
         })
     }
 }

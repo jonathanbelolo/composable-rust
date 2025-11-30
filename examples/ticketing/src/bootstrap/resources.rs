@@ -1,7 +1,7 @@
 //! Resource management for infrastructure setup.
 //!
 //! This module centralizes all infrastructure initialization (databases, event bus,
-//! authentication, payment gateway) into a single `ResourceManager` struct.
+//! authentication) into a single `ResourceManager` struct.
 //!
 //! # Design Philosophy
 //!
@@ -12,8 +12,7 @@
 //!
 //! 1. Load configuration
 //! 2. Connect to databases (with migrations)
-//! 3. Connect to event bus
-//! 4. Initialize shared services (auth, payment gateway, etc.)
+//! 3. Initialize shared services
 //!
 //! # Example
 //!
@@ -23,34 +22,28 @@
 //!
 //! // Resources are now ready to use:
 //! // - resources.event_store
-//! // - resources.event_bus
+//! // - resources.projections_pool
+//! // - resources.auth_pool
 //! // - resources.clock
-//! // ... etc
 //! ```
 
-use crate::aggregates::{EventAction, InventoryAction, PaymentAction, ReservationAction};
 use crate::config::Config;
 use composable_rust_core::environment::SystemClock;
 use composable_rust_postgres::PostgresEventStore;
-use composable_rust_runtime::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 use sqlx::PgPool;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::broadcast;
 use tracing::info;
 
 /// Central resource manager for all infrastructure components.
 ///
 /// This struct owns all the infrastructure resources needed by the application:
 /// - Databases (event store, projections, auth)
-/// - Event bus (Redpanda/Kafka)
-/// - System services (clock, payment gateway)
-/// - Circuit breakers for resilience
+/// - System services (clock)
 ///
 /// # Thread Safety
 ///
 /// All resources are wrapped in `Arc` so they can be safely shared across
-/// async tasks and event consumers.
+/// async tasks.
 #[derive(Clone)]
 pub struct ResourceManager {
     /// Application configuration
@@ -67,27 +60,6 @@ pub struct ResourceManager {
 
     /// Authentication database
     pub auth_pool: Arc<PgPool>,
-
-    /// Payment gateway (mock in development, real in production)
-    pub payment_gateway: Arc<dyn crate::payment_gateway::PaymentGateway>,
-
-    /// Circuit breaker for payment gateway
-    pub payment_gateway_breaker: Arc<CircuitBreaker>,
-
-    /// Global action channels for cross-aggregate coordination
-    /// Channel capacity: 1000 (sufficient for high-throughput monolith)
-
-    /// Event aggregate action channel
-    pub event_actions: broadcast::Sender<EventAction>,
-
-    /// Inventory aggregate action channel
-    pub inventory_actions: broadcast::Sender<InventoryAction>,
-
-    /// Reservation aggregate action channel
-    pub reservation_actions: broadcast::Sender<ReservationAction>,
-
-    /// Payment aggregate action channel
-    pub payment_actions: broadcast::Sender<PaymentAction>,
 }
 
 impl ResourceManager {
@@ -96,8 +68,7 @@ impl ResourceManager {
     /// This method:
     /// 1. Connects to PostgreSQL databases (event store, projections, auth)
     /// 2. Runs database migrations
-    /// 3. Connects to Redpanda event bus
-    /// 4. Initializes shared services (clock, payment gateway)
+    /// 3. Initializes shared services (clock)
     ///
     /// # Arguments
     ///
@@ -112,7 +83,6 @@ impl ResourceManager {
     /// Returns error if:
     /// - Database connection fails
     /// - Database migrations fail
-    /// - Event bus connection fails
     ///
     /// # Example
     ///
@@ -177,25 +147,8 @@ impl ResourceManager {
             .await?;
         info!("Analytics migrations complete");
 
-        // Initialize payment gateway and circuit breaker
-        info!("Initializing payment gateway...");
-        let payment_gateway = crate::payment_gateway::MockPaymentGateway::shared();
-        let payment_gateway_breaker = Arc::new(CircuitBreaker::new(
-            CircuitBreakerConfig::builder()
-                .failure_threshold(5) // Open after 5 failures
-                .timeout(Duration::from_secs(30)) // Try again after 30s
-                .success_threshold(2) // Close after 2 successes in half-open
-                .build(),
-        ));
-        info!("Payment gateway initialized (using mock)");
-
-        // Initialize global action channels (capacity: 1000)
-        info!("Initializing global action channels...");
-        let (event_actions, _) = broadcast::channel(1000);
-        let (inventory_actions, _) = broadcast::channel(1000);
-        let (reservation_actions, _) = broadcast::channel(1000);
-        let (payment_actions, _) = broadcast::channel(1000);
-        info!("Global action channels initialized");
+        // Analytics pool is currently not stored - will be used in future
+        drop(analytics_pool);
 
         Ok(Self {
             config: Arc::new(config.clone()),
@@ -203,12 +156,6 @@ impl ResourceManager {
             event_store,
             projections_pool: Arc::new(projections_pool),
             auth_pool: Arc::new(auth_pool),
-            payment_gateway,
-            payment_gateway_breaker,
-            event_actions,
-            inventory_actions,
-            reservation_actions,
-            payment_actions,
         })
     }
 }

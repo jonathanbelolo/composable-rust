@@ -487,12 +487,16 @@ async fn test_payment_processing() {
 
     println!("  ✅ Reservation is in PaymentPending status, proceeding with manual payment");
 
-    // Process payment
+    // Extract user ID from test token (UUID after "test-user-")
+    let customer_id = TEST_USER_TOKEN.strip_prefix("test-user-").unwrap();
+
+    // Process payment - amount is 1 ticket * $50.00 = 5000 cents
     let payment_payload = json!({
         "reservation_id": reservation_id,
+        "customer_id": customer_id,
+        "amount_cents": 5000,
         "payment_method": {
             "type": "credit_card",
-            "token": "tok_test_4242424242424242",
             "last_four": "4242"
         }
     });
@@ -882,8 +886,10 @@ async fn test_payment_refund() {
     if let Some(payment_id) = payment_id {
         println!("  ✅ Payment ID from saga: {payment_id}");
 
-        // Refund payment
+        // Refund payment - needs amount_cents and reason
+        // Refunding 1 ticket * $50.00 = 5000 cents
         let refund_payload = json!({
+            "amount_cents": 5000,
             "reason": "Customer requested refund"
         });
 
@@ -899,10 +905,16 @@ async fn test_payment_refund() {
         println!("  ✅ Payment refunded successfully");
 
         // Verify second refund fails (idempotency)
+        // Same refund payload - needs amount_cents
+        let second_refund_payload = json!({
+            "amount_cents": 5000,
+            "reason": "Customer requested refund"
+        });
+
         let second_refund = client
             .post(format!("{API_BASE}/api/v2/payments/{payment_id}/refund"))
             .header("Authorization", format!("Bearer {auth_token}"))
-            .json(&refund_payload)
+            .json(&second_refund_payload)
             .send()
             .await
             .unwrap();

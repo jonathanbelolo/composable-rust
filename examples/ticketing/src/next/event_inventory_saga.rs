@@ -697,16 +697,14 @@ impl EventInventorySagaLogic {
                             | InventoryEvent::SeatsReserved { event_id, .. } => {
                                 return *event_id;
                             }
-                            // SeatsConfirmed and SeatsReleased don't have event_id
+                            // SeatsConfirmed and SeatsReleased don't have event_id - skip
                             InventoryEvent::SeatsConfirmed { .. }
-                            | InventoryEvent::SeatsReleased { .. } => continue,
+                            | InventoryEvent::SeatsReleased { .. } => {}
                         }
                     }
                 }
-                // Error results don't contain event_id, continue searching
-                SagaCallResult::Event(Err(_)) | SagaCallResult::Inventory { result: Err(_), .. } => {
-                    continue;
-                }
+                // Error results don't contain event_id - skip
+                SagaCallResult::Event(Err(_)) | SagaCallResult::Inventory { result: Err(_), .. } => {}
             }
         }
 

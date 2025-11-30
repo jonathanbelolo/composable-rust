@@ -15,44 +15,6 @@ use uuid::Uuid;
 // Re-export framework ResponseChannel for use in actions
 pub use composable_rust_core::ResponseChannel;
 
-// Import Store and aggregate types for parent-child pattern
-
-// ============================================================================
-// Global Action Channels
-// ============================================================================
-
-/// Global action channels for cross-aggregate coordination.
-///
-/// This struct holds broadcast channels for all aggregate types, enabling
-/// intra-process communication between aggregates and projections without
-/// using Redpanda.
-///
-/// # Pattern: Two-Level Channel Architecture
-///
-/// - **Level 1 (Store-local)**: Ephemeral channels created per-request for
-///   `send_and_wait_for()` coordination within a single store instance.
-/// - **Level 2 (Global)**: These channels live for the entire server lifetime
-///   and multiplex actions from all aggregate instances to subscribers
-///   (projections, sagas, analytics).
-///
-/// Channel capacity is 1000, which provides sufficient buffering for
-/// high-throughput monolith deployments.
-#[derive(Clone)]
-pub struct GlobalActionChannels {
-    /// Event aggregate actions
-    pub event_actions: tokio::sync::broadcast::Sender<crate::aggregates::EventAction>,
-    /// Inventory aggregate actions
-    pub inventory_actions: tokio::sync::broadcast::Sender<crate::aggregates::InventoryAction>,
-    /// Reservation aggregate actions
-    pub reservation_actions: tokio::sync::broadcast::Sender<crate::aggregates::ReservationAction>,
-    /// Payment aggregate actions
-    pub payment_actions: tokio::sync::broadcast::Sender<crate::aggregates::PaymentAction>,
-}
-
-// Note: ResponseChannel is now provided by the framework (composable_rust_core)
-// and re-exported above. It uses Arc<Mutex<Option<Sender>>> to enable cloning
-// while maintaining the ability to send exactly once.
-
 // ============================================================================
 // Identifiers
 // ============================================================================

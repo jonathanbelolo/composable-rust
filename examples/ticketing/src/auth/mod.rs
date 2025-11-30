@@ -13,8 +13,6 @@ pub mod email;
 pub mod setup;
 // Authentication middleware (extractors for protected routes)
 pub mod middleware;
-// Examples of using authentication middleware
-pub mod examples;
 // Custom authentication handlers (with testing support)
 pub mod handlers;
 

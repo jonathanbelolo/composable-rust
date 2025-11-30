@@ -7,10 +7,9 @@
 //!
 //! The builder follows a **declarative, step-by-step** initialization pattern:
 //! 1. Configure (config, tracing)
-//! 2. Initialize infrastructure (databases, event bus, auth)
-//! 3. Register business logic (aggregates, projections)
-//! 4. Build HTTP server (routes, state)
-//! 5. Run application (start consumers, server, manage lifecycle)
+//! 2. Initialize infrastructure (databases, auth)
+//! 3. Build HTTP server (routes, state)
+//! 4. Run application
 //!
 //! Each step returns `Result` for explicit error handling, making the initialization
 //! flow clear and debuggable.
@@ -22,28 +21,13 @@
 //!     .with_config(Config::from_env()?)
 //!     .with_tracing()?
 //!     .with_resources().await?
-//!     .with_aggregates()
-//!     .with_projections().await?
 //!     .with_auth().await?
 //!     .build().await?
 //!     .run().await?;
 //! ```
-//!
-//! # Framework-Level Reusability
-//!
-//! This builder is designed to work with different applications:
-//! - **Configuration**: Application-specific Config type
-//! - **Resources**: Different database URLs, event bus topics
-//! - **Aggregates**: Different aggregate types (Order, Payment, etc.)
-//! - **Projections**: Different projection schemas
-//! - **Routes**: Application-specific HTTP endpoints
-//!
-//! The builder handles the **plumbing** (initialization, lifecycle, shutdown)
-//! while allowing applications to customize the **business logic** (what aggregates,
-//! what projections, what routes).
 
 use crate::auth::setup::{build_auth_store, TicketingAuthStore};
-use crate::bootstrap::{register_aggregate_consumers, register_projections, ProjectionSystem, ResourceManager};
+use crate::bootstrap::ResourceManager;
 use crate::config::Config;
 use crate::next::{
     AnalyticsBusinessLogic, EventBusinessLogic, EventInventorySagaLogic, InventoryBusinessLogic,
@@ -69,14 +53,7 @@ use crate::next::{
     projector::{EventInventorySagaProjector, EventProjector, InventoryProjector, PaymentProjector, ReservationSagaProjector},
     TicketingEnvironment, NoOpEventBus, NoOpProjector,
 };
-use crate::projections::query_adapters::{PostgresAnalyticsQuery, PostgresInventoryQuery, PostgresPaymentQuery, PostgresReservationQuery};
-use crate::projections::{
-    PostgresAvailableSeatsProjection, PostgresEventsProjection, PostgresPaymentsProjection,
-    PostgresReservationsProjection, ProjectionCompletionTracker,
-};
-use crate::runtime::{Application, EventConsumer};
-use crate::server::{routes::AuthAppState, AppState};
-use composable_rust_core::environment::SystemClock;
+use crate::server::routes::AuthAppState;
 use composable_rust_next::{HandlerBuilder, NoOpCallExecutor, NoOpQueryFetcher, SystemClock as NextSystemClock};
 use composable_rust_postgres_next::PostgresEventStore as NextPostgresEventStore;
 use std::sync::Arc;
@@ -89,47 +66,21 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 /// the application. Each method corresponds to a logical phase of initialization:
 ///
 /// 1. **Configuration**: Load config, setup logging
-/// 2. **Infrastructure**: Initialize databases, event bus, auth
-/// 3. **Business Logic**: Register aggregates and projections
-/// 4. **HTTP Server**: Build router and bind listener
-/// 5. **Runtime**: Create application ready to run
-///
-/// # Type-State Pattern
-///
-/// The builder uses **Option fields** to track which components have been initialized.
-/// This provides runtime validation that steps are called in the correct order.
-///
-/// # Framework-Level Design
-///
-/// While this implementation is ticketing-specific, the **structure** is reusable:
-/// - Replace `Config` with your application's config type
-/// - Replace `register_aggregate_consumers` with your aggregate registration
-/// - Replace `register_projections` with your projection registration
-/// - Replace `build_router` with your HTTP routes
-///
-/// The lifecycle management (shutdown coordination, graceful termination) is
-/// completely generic and requires no customization.
+/// 2. **Infrastructure**: Initialize databases, auth
+/// 3. **HTTP Server**: Build router and bind listener
+/// 4. **Runtime**: Create application ready to run
 pub struct ApplicationBuilder {
     /// Application configuration
     config: Option<Arc<Config>>,
 
-    /// Infrastructure resources (databases, event bus, etc.)
+    /// Infrastructure resources (databases, etc.)
     resources: Option<ResourceManager>,
-
-    /// Aggregate event consumers (inventory, payment, reservation, event)
-    aggregate_consumers: Vec<EventConsumer>,
-
-    /// Complete projection system (managers + in-memory + consumers)
-    projection_system: Option<ProjectionSystem>,
 
     /// Authentication store for session management
     auth_store: Option<Arc<TicketingAuthStore>>,
 
     /// Shutdown signal broadcaster
     shutdown_tx: broadcast::Sender<()>,
-
-    /// Shutdown signal receiver (consumed during registration)
-    shutdown_rx: Option<broadcast::Receiver<()>>,
 }
 
 impl ApplicationBuilder {
@@ -141,46 +92,21 @@ impl ApplicationBuilder {
     /// # Returns
     ///
     /// A new `ApplicationBuilder` ready for configuration.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let builder = ApplicationBuilder::new();
-    /// ```
     #[must_use]
     pub fn new() -> Self {
-        let (shutdown_tx, shutdown_rx) = broadcast::channel(16);
+        let (shutdown_tx, _) = broadcast::channel(16);
 
         Self {
             config: None,
             resources: None,
-            aggregate_consumers: Vec::new(),
-            projection_system: None,
             auth_store: None,
             shutdown_tx,
-            shutdown_rx: Some(shutdown_rx),
         }
     }
 
     /// Set application configuration.
     ///
     /// This should be called first, as other steps depend on the configuration.
-    ///
-    /// # Arguments
-    ///
-    /// * `config` - Application configuration (typically from environment variables)
-    ///
-    /// # Returns
-    ///
-    /// Self for method chaining.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let config = Config::from_env()?;
-    /// let builder = ApplicationBuilder::new()
-    ///     .with_config(config);
-    /// ```
     #[must_use]
     pub fn with_config(mut self, config: Config) -> Self {
         self.config = Some(Arc::new(config));
@@ -193,21 +119,9 @@ impl ApplicationBuilder {
     /// - Environment-based filtering (RUST_LOG env var)
     /// - Formatted output for development
     ///
-    /// # Returns
-    ///
-    /// `Ok(Self)` for method chaining, or error if tracing setup fails.
-    ///
     /// # Errors
     ///
     /// Returns error if tracing subscriber cannot be initialized (e.g., already initialized).
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let builder = ApplicationBuilder::new()
-    ///     .with_config(config)
-    ///     .with_tracing()?;
-    /// ```
     pub fn with_tracing(self) -> Result<Self, Box<dyn std::error::Error>> {
         tracing_subscriber::registry()
             .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
@@ -222,12 +136,7 @@ impl ApplicationBuilder {
     /// This method:
     /// 1. Connects to PostgreSQL databases (event store, projections, auth)
     /// 2. Runs database migrations
-    /// 3. Connects to Redpanda event bus
-    /// 4. Creates system clock
-    ///
-    /// # Returns
-    ///
-    /// `Ok(Self)` for method chaining, or error if any infrastructure setup fails.
+    /// 3. Creates system clock
     ///
     /// # Errors
     ///
@@ -235,16 +144,6 @@ impl ApplicationBuilder {
     /// - Config not set (call `with_config` first)
     /// - Database connection fails
     /// - Database migrations fail
-    /// - Event bus connection fails
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let builder = ApplicationBuilder::new()
-    ///     .with_config(config)
-    ///     .with_tracing()?
-    ///     .with_resources().await?;
-    /// ```
     pub async fn with_resources(mut self) -> Result<Self, Box<dyn std::error::Error>> {
         let config = self
             .config
@@ -257,95 +156,6 @@ impl ApplicationBuilder {
         Ok(self)
     }
 
-    /// Register aggregate event consumers.
-    ///
-    /// Creates consumers for:
-    /// - Inventory aggregate (seat reservation/release)
-    /// - Payment aggregate (payment processing)
-    ///
-    /// # Returns
-    ///
-    /// `Ok(Self)` for method chaining, or error if registration fails.
-    ///
-    /// # Errors
-    ///
-    /// Returns error if resources not initialized (call `with_resources` first).
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let builder = ApplicationBuilder::new()
-    ///     .with_config(config)
-    ///     .with_resources().await?
-    ///     .with_aggregates()?;
-    /// ```
-    pub fn with_aggregates(mut self) -> Result<Self, Box<dyn std::error::Error>> {
-        let resources = self
-            .resources
-            .as_ref()
-            .ok_or("Resources must be initialized before registering aggregates")?;
-
-        let shutdown_rx = self
-            .shutdown_rx
-            .take()
-            .ok_or("Shutdown receiver already consumed")?;
-
-        let consumers = register_aggregate_consumers(resources, shutdown_rx);
-        self.aggregate_consumers = consumers;
-
-        // Create new receiver for projections
-        self.shutdown_rx = Some(self.shutdown_tx.subscribe());
-
-        Ok(self)
-    }
-
-    /// Register projection consumers and managers.
-    ///
-    /// Creates:
-    /// - PostgreSQL projection managers (available seats)
-    /// - In-memory projections (sales analytics, customer history)
-    /// - Ownership indices for security
-    /// - Event consumers that update projections
-    ///
-    /// # Returns
-    ///
-    /// `Ok(Self)` for method chaining, or error if registration fails.
-    ///
-    /// # Errors
-    ///
-    /// Returns error if:
-    /// - Resources not initialized (call `with_resources` first)
-    /// - Projection setup fails
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let builder = ApplicationBuilder::new()
-    ///     .with_config(config)
-    ///     .with_resources().await?
-    ///     .with_aggregates()?
-    ///     .with_projections().await?;
-    /// ```
-    pub async fn with_projections(mut self) -> Result<Self, Box<dyn std::error::Error>> {
-        let resources = self
-            .resources
-            .as_ref()
-            .ok_or("Resources must be initialized before registering projections")?;
-
-        let shutdown_rx = self
-            .shutdown_rx
-            .take()
-            .ok_or("Shutdown receiver already consumed")?;
-
-        let projection_system = register_projections(resources, shutdown_rx).await?;
-        self.projection_system = Some(projection_system);
-
-        // Create new receiver for HTTP server
-        self.shutdown_rx = Some(self.shutdown_tx.subscribe());
-
-        Ok(self)
-    }
-
     /// Setup authentication store.
     ///
     /// Initializes the authentication framework with:
@@ -353,25 +163,12 @@ impl ApplicationBuilder {
     /// - Session management
     /// - Email sender configuration
     ///
-    /// # Returns
-    ///
-    /// `Ok(Self)` for method chaining, or error if auth setup fails.
-    ///
     /// # Errors
     ///
     /// Returns error if:
     /// - Config not set
     /// - Resources not initialized
     /// - Auth store initialization fails
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let builder = ApplicationBuilder::new()
-    ///     .with_config(config)
-    ///     .with_resources().await?
-    ///     .with_auth().await?;
-    /// ```
     pub async fn with_auth(mut self) -> Result<Self, Box<dyn std::error::Error>> {
         let config = self
             .config
@@ -392,17 +189,11 @@ impl ApplicationBuilder {
     /// Build the complete application.
     ///
     /// This method:
-    /// 1. Creates projection query adapters
-    /// 2. Creates projection completion tracker
-    /// 3. Builds AppState with all dependencies
-    /// 4. Builds HTTP router with all routes
-    /// 5. Binds TCP listener
-    /// 6. Combines all consumers (aggregates + projections)
-    /// 7. Creates Application ready to run
-    ///
-    /// # Returns
-    ///
-    /// `Ok(Application)` ready to run, or error if build fails.
+    /// 1. Creates all handler instances using next-generation architecture
+    /// 2. Builds AppState with all dependencies
+    /// 3. Builds HTTP router with all routes
+    /// 4. Binds TCP listener
+    /// 5. Returns Application ready to run
     ///
     /// # Errors
     ///
@@ -410,75 +201,11 @@ impl ApplicationBuilder {
     /// - Any required component not initialized
     /// - HTTP server cannot bind to address
     /// - Router construction fails
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let app = ApplicationBuilder::new()
-    ///     .with_config(config)
-    ///     .with_tracing()?
-    ///     .with_resources().await?
-    ///     .with_aggregates()?
-    ///     .with_projections().await?
-    ///     .with_auth().await?
-    ///     .build().await?;
-    /// ```
     pub async fn build(self) -> Result<Application, Box<dyn std::error::Error>> {
         // Validate all components initialized
         let config = self.config.ok_or("Config must be set")?;
         let resources = self.resources.ok_or("Resources must be initialized")?;
-        let projection_system = self.projection_system.ok_or("Projections must be registered")?;
         let auth_store = self.auth_store.ok_or("Auth must be initialized")?;
-
-        // Create projection query adapters
-        let events_projection = Arc::new(PostgresEventsProjection::new(
-            resources.projections_pool.clone(),
-        ));
-        let reservations_projection = Arc::new(PostgresReservationsProjection::new(
-            resources.projections_pool.clone(),
-        ));
-        let available_seats_projection = Arc::new(PostgresAvailableSeatsProjection::new(
-            resources.projections_pool.clone(),
-        ));
-        let payments_projection = Arc::new(PostgresPaymentsProjection::new(
-            resources.projections_pool.clone(),
-        ));
-        let inventory_query = Arc::new(PostgresInventoryQuery::new(available_seats_projection.clone()));
-        let payment_query = Arc::new(PostgresPaymentQuery::new(payments_projection.clone()));
-        let reservation_query = Arc::new(PostgresReservationQuery::new(reservations_projection.clone()));
-        let analytics_query = Arc::new(PostgresAnalyticsQuery::new(
-            projection_system.sales_analytics.clone(),
-            projection_system.customer_history.clone(),
-        ));
-
-        // Create projection completion tracker (without EventBus tracking for channel-based architecture)
-        let projection_completion_tracker = Arc::new(
-            ProjectionCompletionTracker::new_without_tracking()
-        );
-
-        // Build AppState (kept for reference, but handlers now use next-gen architecture)
-        let app_state = AppState::new(
-            config.clone(),
-            auth_store.clone(),
-            resources.auth_pool.clone(),
-            Arc::new(SystemClock),
-            resources.event_store.clone(),
-            inventory_query,
-            payment_query,
-            reservation_query,
-            analytics_query.clone(),
-            events_projection.clone(),
-            reservations_projection.clone(),
-            payments_projection.clone(),
-            available_seats_projection.clone(),
-            projection_system.sales_analytics.clone(),
-            projection_system.customer_history.clone(),
-            projection_system.reservation_ownership,
-            projection_system.payment_ownership,
-            projection_completion_tracker,
-            resources.clone(),
-        );
-        let _app_state = app_state; // Kept for potential future use
 
         // ═══════════════════════════════════════════════════════════════════════
         // Create Next-Generation Handlers
@@ -496,8 +223,7 @@ impl ApplicationBuilder {
         // Event Handler (write operations with projection)
         // ───────────────────────────────────────────────────────────────────────
         let event_projector = EventProjector::new(projections_pool.clone());
-        type EventEnv = TicketingEnvironment<NextSystemClock, NextPostgresEventStore, EventProjector, NoOpEventBus>;
-        let event_env: EventEnv = TicketingEnvironment::new(
+        let event_env: TicketingEnvironment<NextSystemClock, NextPostgresEventStore, EventProjector, NoOpEventBus> = TicketingEnvironment::new(
             NextSystemClock,
             next_event_store.clone(),
             Some(event_projector),
@@ -516,8 +242,7 @@ impl ApplicationBuilder {
         // Inventory Handler (write operations with projection)
         // ───────────────────────────────────────────────────────────────────────
         let inventory_projector = InventoryProjector::new(projections_pool.clone());
-        type InventoryEnv = TicketingEnvironment<NextSystemClock, NextPostgresEventStore, InventoryProjector, NoOpEventBus>;
-        let inventory_env: InventoryEnv = TicketingEnvironment::new(
+        let inventory_env: TicketingEnvironment<NextSystemClock, NextPostgresEventStore, InventoryProjector, NoOpEventBus> = TicketingEnvironment::new(
             NextSystemClock,
             next_event_store.clone(),
             Some(inventory_projector),
@@ -536,8 +261,7 @@ impl ApplicationBuilder {
         // Payment Handler (write operations with projection)
         // ───────────────────────────────────────────────────────────────────────
         let payment_projector = PaymentProjector::new(projections_pool.clone());
-        type PaymentEnv = TicketingEnvironment<NextSystemClock, NextPostgresEventStore, PaymentProjector, NoOpEventBus>;
-        let payment_env: PaymentEnv = TicketingEnvironment::new(
+        let payment_env: TicketingEnvironment<NextSystemClock, NextPostgresEventStore, PaymentProjector, NoOpEventBus> = TicketingEnvironment::new(
             NextSystemClock,
             next_event_store.clone(),
             Some(payment_projector),
@@ -558,8 +282,7 @@ impl ApplicationBuilder {
         let event_projection_queries = EventProjectionQueries::new(
             projections_pool.clone(),
         );
-        type QueryEventEnv = TicketingEnvironment<NextSystemClock, NextPostgresEventStore, NoOpProjector, NoOpEventBus, EventProjectionQueries>;
-        let query_event_env: QueryEventEnv = TicketingEnvironment::with_projections(
+        let query_event_env: TicketingEnvironment<NextSystemClock, NextPostgresEventStore, NoOpProjector, NoOpEventBus, EventProjectionQueries> = TicketingEnvironment::with_projections(
             NextSystemClock,
             next_event_store.clone(),
             None::<NoOpProjector>,
@@ -581,8 +304,7 @@ impl ApplicationBuilder {
         let inventory_projection_queries = InventoryProjectionQueries::new(
             projections_pool.clone(),
         );
-        type QueryInventoryEnv = TicketingEnvironment<NextSystemClock, NextPostgresEventStore, NoOpProjector, NoOpEventBus, InventoryProjectionQueries>;
-        let query_inventory_env: QueryInventoryEnv = TicketingEnvironment::with_projections(
+        let query_inventory_env: TicketingEnvironment<NextSystemClock, NextPostgresEventStore, NoOpProjector, NoOpEventBus, InventoryProjectionQueries> = TicketingEnvironment::with_projections(
             NextSystemClock,
             next_event_store.clone(),
             None::<NoOpProjector>,
@@ -604,8 +326,7 @@ impl ApplicationBuilder {
         let payment_projection_queries = PaymentProjectionQueries::new(
             projections_pool.clone(),
         );
-        type QueryPaymentEnv = TicketingEnvironment<NextSystemClock, NextPostgresEventStore, NoOpProjector, NoOpEventBus, PaymentProjectionQueries>;
-        let query_payment_env: QueryPaymentEnv = TicketingEnvironment::with_projections(
+        let query_payment_env: TicketingEnvironment<NextSystemClock, NextPostgresEventStore, NoOpProjector, NoOpEventBus, PaymentProjectionQueries> = TicketingEnvironment::with_projections(
             NextSystemClock,
             next_event_store.clone(),
             None::<NoOpProjector>,
@@ -627,8 +348,7 @@ impl ApplicationBuilder {
         let analytics_projection_queries = AnalyticsProjectionQueries::new(
             projections_pool.clone(),
         );
-        type AnalyticsEnv = TicketingEnvironment<NextSystemClock, NextPostgresEventStore, NoOpProjector, NoOpEventBus, AnalyticsProjectionQueries>;
-        let analytics_env: AnalyticsEnv = TicketingEnvironment::with_projections(
+        let analytics_env: TicketingEnvironment<NextSystemClock, NextPostgresEventStore, NoOpProjector, NoOpEventBus, AnalyticsProjectionQueries> = TicketingEnvironment::with_projections(
             NextSystemClock,
             next_event_store.clone(),
             None::<NoOpProjector>,
@@ -650,8 +370,7 @@ impl ApplicationBuilder {
         let reservation_projection_queries = ReservationProjectionQueries::new(
             projections_pool.clone(),
         );
-        type ReservationQueryEnv = TicketingEnvironment<NextSystemClock, NextPostgresEventStore, NoOpProjector, NoOpEventBus, ReservationProjectionQueries>;
-        let reservation_query_env: ReservationQueryEnv = TicketingEnvironment::with_projections(
+        let reservation_query_env: TicketingEnvironment<NextSystemClock, NextPostgresEventStore, NoOpProjector, NoOpEventBus, ReservationProjectionQueries> = TicketingEnvironment::with_projections(
             NextSystemClock,
             next_event_store.clone(),
             None::<NoOpProjector>,
@@ -670,9 +389,6 @@ impl ApplicationBuilder {
         // ───────────────────────────────────────────────────────────────────────
         // Reservation Saga Handler (orchestrates Inventory + Payment)
         // ───────────────────────────────────────────────────────────────────────
-        // Use the query-enabled handlers (with real QueryFetcher) for the saga
-        // so that commands get their `fetched` fields populated from projections.
-        // The type-erased trait objects hide the QueryFetcher types from the saga.
         let saga_inventory_handler: Arc<dyn InventoryHandlerTrait> = query_inventory_handler.clone();
         let saga_payment_handler: Arc<dyn PaymentHandlerTrait> = query_payment_handler.clone();
         let reservation_saga_call_executor = ReservationSagaCallExecutor::new(
@@ -681,24 +397,23 @@ impl ApplicationBuilder {
             next_event_store.clone(),
         );
 
-        // Create in-memory reservation saga projection state (shared between projector and query fetcher)
+        // Create in-memory reservation saga projection state
         let reservation_saga_projection_state: crate::next::InMemoryReservationSagaProjection =
             std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
 
-        // Create reservation saga projector that updates both in-memory state AND PostgreSQL
+        // Create reservation saga projector
         let reservation_saga_projector = ReservationSagaProjector::new(
             reservation_saga_projection_state.clone(),
             projections_pool.clone(),
         );
 
-        // Create reservation saga query fetcher that reads from the in-memory state
+        // Create reservation saga query fetcher
         let reservation_saga_query_fetcher = ReservationSagaQueryFetcher::new(reservation_saga_projection_state.clone());
 
         // Create saga projection queries for the environment
         let reservation_saga_projection_queries = ReservationSagaProjectionQueries::new(reservation_saga_projection_state);
 
-        type ReservationSagaEnv = TicketingEnvironment<NextSystemClock, NextPostgresEventStore, ReservationSagaProjector, NoOpEventBus, ReservationSagaProjectionQueries>;
-        let saga_env: ReservationSagaEnv = TicketingEnvironment::with_projections(
+        let saga_env: TicketingEnvironment<NextSystemClock, NextPostgresEventStore, ReservationSagaProjector, NoOpEventBus, ReservationSagaProjectionQueries> = TicketingEnvironment::with_projections(
             NextSystemClock,
             next_event_store.clone(),
             Some(reservation_saga_projector),
@@ -717,10 +432,6 @@ impl ApplicationBuilder {
         // ───────────────────────────────────────────────────────────────────────
         // Event-Inventory Saga Handler (orchestrates Event + Inventory creation)
         // ───────────────────────────────────────────────────────────────────────
-        // Use the handlers with real QueryFetcher for the saga.
-        // Note: For event creation, the event handler uses NoOpQueryFetcher since
-        // Initialize doesn't need fetched data (fetched: None is valid).
-        // The inventory handler uses the query-enabled version.
         let saga_event_handler: Arc<dyn EventHandlerTrait> = event_handler.clone();
         let saga_inventory_handler_for_event_saga: Arc<dyn InventoryHandlerTrait> = inventory_handler.clone();
         let event_inventory_saga_executor = EventInventorySagaCallExecutor::new(
@@ -729,21 +440,20 @@ impl ApplicationBuilder {
             next_event_store.clone(),
         );
 
-        // Create in-memory saga projection state (shared between projector and query fetcher)
+        // Create in-memory saga projection state
         let saga_projection_state: crate::next::InMemorySagaProjection =
             std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
 
-        // Create saga projector that updates the in-memory state
+        // Create saga projector
         let saga_projector = EventInventorySagaProjector::new(saga_projection_state.clone());
 
-        // Create saga query fetcher that reads from the in-memory state
+        // Create saga query fetcher
         let saga_query_fetcher = SagaQueryFetcher::new(saga_projection_state.clone());
 
-        // Create saga projection queries for the environment
+        // Create saga projection queries
         let saga_projection_queries = SagaProjectionQueries::new(saga_projection_state);
 
-        type EventInventorySagaEnv = TicketingEnvironment<NextSystemClock, NextPostgresEventStore, EventInventorySagaProjector, NoOpEventBus, SagaProjectionQueries>;
-        let event_inventory_saga_env: EventInventorySagaEnv = TicketingEnvironment::with_projections(
+        let event_inventory_saga_env: TicketingEnvironment<NextSystemClock, NextPostgresEventStore, EventInventorySagaProjector, NoOpEventBus, SagaProjectionQueries> = TicketingEnvironment::with_projections(
             NextSystemClock,
             next_event_store.clone(),
             Some(saga_projector),
@@ -773,6 +483,7 @@ impl ApplicationBuilder {
             inventory_handler: inventory_handler.clone(),
             payment_handler: payment_handler.clone(),
         };
+        let _ = next_state; // Keep for potential future use
 
         let query_state = QueryAppState {
             event_handler: query_event_handler.clone(),
@@ -832,16 +543,10 @@ impl ApplicationBuilder {
         ))
         .await?;
 
-        // Combine all consumers
-        let mut all_consumers = self.aggregate_consumers;
-        all_consumers.extend(projection_system.consumers);
-
         // Create Application
         Ok(Application::new(
             listener,
             router,
-            all_consumers,
-            projection_system.managers,
             self.shutdown_tx,
             config,
         ))
@@ -851,5 +556,67 @@ impl ApplicationBuilder {
 impl Default for ApplicationBuilder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// A running application instance.
+pub struct Application {
+    listener: tokio::net::TcpListener,
+    router: axum::Router,
+    shutdown_tx: broadcast::Sender<()>,
+    config: Arc<Config>,
+}
+
+impl Application {
+    /// Create a new application.
+    fn new(
+        listener: tokio::net::TcpListener,
+        router: axum::Router,
+        shutdown_tx: broadcast::Sender<()>,
+        config: Arc<Config>,
+    ) -> Self {
+        Self {
+            listener,
+            router,
+            shutdown_tx,
+            config,
+        }
+    }
+
+    /// Run the application.
+    ///
+    /// This starts the HTTP server and waits for shutdown signals.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the server fails to start.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the CTRL+C signal handler cannot be installed (platform-specific failure).
+    pub async fn run(self) -> Result<(), Box<dyn std::error::Error>> {
+        tracing::info!(
+            "Starting ticketing server at http://{}:{}",
+            self.config.server.host,
+            self.config.server.port
+        );
+
+        // Create shutdown signal handler
+        let shutdown_tx = self.shutdown_tx.clone();
+        let shutdown_signal = async move {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("Failed to install CTRL+C signal handler");
+            tracing::info!("Shutdown signal received, initiating graceful shutdown...");
+            let _ = shutdown_tx.send(());
+        };
+
+        // Run the server with graceful shutdown
+        axum::serve(self.listener, self.router)
+            .with_graceful_shutdown(shutdown_signal)
+            .await?;
+
+        tracing::info!("Server shut down successfully");
+        Ok(())
     }
 }

@@ -104,25 +104,12 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-pub mod aggregates;
 pub mod auth;
 pub mod bootstrap;
 pub mod config;
-pub mod metrics;
 pub mod next;
-pub mod payment_gateway;
-pub mod projections;
-pub mod runtime;
 pub mod server;
 pub mod types;
 
-#[cfg(test)]
-pub mod test_utils;
-
-pub use aggregates::{EventAction, EventReducer, InventoryAction, InventoryReducer};
 pub use config::Config;
-pub use projections::{
-    AvailableSeatsProjection, CustomerHistoryProjection, Projection, SalesAnalyticsProjection,
-    TicketingEvent,
-};
 pub use types::*;
