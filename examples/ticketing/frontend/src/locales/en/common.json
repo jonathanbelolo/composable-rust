@@ -1,0 +1,59 @@
+{
+  "app": {
+    "name": "Ticketing",
+    "tagline": "Event Tickets Made Easy"
+  },
+  "nav": {
+    "home": "Home",
+    "events": "Events",
+    "dashboard": "Dashboard",
+    "signIn": "Sign In",
+    "logout": "Logout"
+  },
+  "home": {
+    "title": "Find Your Next Event",
+    "subtitle": "Discover and book tickets for concerts, sports, theater, and more.",
+    "browseEvents": "Browse Events"
+  },
+  "events": {
+    "title": "Events",
+    "loading": "Loading events...",
+    "noEvents": "No events found.",
+    "viewDetails": "View Details"
+  },
+  "auth": {
+    "signIn": "Sign In",
+    "email": "Email address",
+    "emailPlaceholder": "you@example.com",
+    "sendMagicLink": "Send Magic Link",
+    "sending": "Sending...",
+    "checkEmail": "Check your email for a magic link to sign in."
+  },
+  "dashboard": {
+    "title": "Dashboard",
+    "reservations": {
+      "title": "My Reservations",
+      "description": "View and manage your ticket reservations"
+    },
+    "payments": {
+      "title": "Payment History",
+      "description": "View your past payments and receipts"
+    },
+    "organizer": {
+      "title": "Organizer Dashboard",
+      "description": "Manage your events"
+    }
+  },
+  "common": {
+    "loading": "Loading...",
+    "error": "An error occurred",
+    "retry": "Try Again",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "save": "Save",
+    "delete": "Delete",
+    "edit": "Edit",
+    "back": "Back",
+    "next": "Next"
+  }
+}
