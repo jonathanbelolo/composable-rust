@@ -1,9 +1,9 @@
 //! Full deployment integration tests.
 //!
 //! These tests verify the complete Docker Compose deployment by testing the HTTP API v2:
-//! - PostgreSQL Event Store (port 5436) - event persistence
-//! - PostgreSQL Projections (port 5433) - CQRS read models
-//! - PostgreSQL Auth (port 5435) - user sessions and tokens
+//! - `PostgreSQL` Event Store (port 5436) - event persistence
+//! - `PostgreSQL` Projections (port 5433) - CQRS read models
+//! - `PostgreSQL` Auth (port 5435) - user sessions and tokens
 //! - Redis (port 6379) - session and token storage
 //!
 //! Run with: `cargo test --test full_deployment_test -- --ignored`
@@ -17,6 +17,11 @@
 
 #![allow(clippy::expect_used)] // Integration tests can use expect for setup
 #![allow(clippy::unwrap_used)] // Integration tests can use unwrap for assertions
+#![allow(clippy::panic)] // Integration tests can use panic for assertion failures
+#![allow(clippy::similar_names)] // user_a_token/user_b_token are intentionally similar
+#![allow(clippy::doc_markdown)] // Relaxed doc formatting for test file
+#![allow(clippy::missing_const_for_fn)] // Not needed in test code
+#![allow(clippy::uninlined_format_args)] // Relaxed for readability in tests
 
 use serde_json::json;
 
@@ -239,7 +244,7 @@ async fn test_availability_queries() {
 /// - Reservation saga
 /// - Inventory seat reservation
 /// - Payment processing
-/// - Direct orchestration via tokio::sync::broadcast channels
+/// - Direct orchestration via `tokio::sync::broadcast` channels
 #[tokio::test]
 #[ignore = "Requires running server (docker compose up + cargo run). Run with: cargo test --test full_deployment_test -- --ignored"]
 async fn test_reservation_flow() {
@@ -384,9 +389,10 @@ async fn test_reservation_flow() {
 /// - Payment refund
 ///
 /// The saga completes synchronously via `send_and_wait_for_with_metadata`.
-/// When the reservation API returns, the reservation should already be in PaymentPending status.
+/// When the reservation API returns, the reservation should already be in `PaymentPending` status.
 #[tokio::test]
 #[ignore = "Requires running server (docker compose up + cargo run). Run with: cargo test --test full_deployment_test -- --ignored"]
+#[allow(clippy::too_many_lines)]
 async fn test_payment_processing() {
     println!("🧪 Test 5: Payment Processing (Payment Gateway)");
 
@@ -624,7 +630,7 @@ async fn test_analytics_queries() {
             .await
             .expect("Failed to parse sales analytics");
 
-        println!("  ✅ Event sales query successful: {:?}", sales);
+        println!("  ✅ Event sales query successful: {sales:?}");
     } else {
         println!("  ⚠️  Event sales endpoint returned {}", sales_response.status());
     }
@@ -643,7 +649,7 @@ async fn test_analytics_queries() {
             .await
             .expect("Failed to parse revenue");
 
-        println!("  ✅ Total revenue query successful: {:?}", revenue);
+        println!("  ✅ Total revenue query successful: {revenue:?}");
     } else {
         println!("  ⚠️  Revenue endpoint returned {}", revenue_response.status());
     }
@@ -1030,7 +1036,7 @@ async fn test_cross_user_authorization() {
 /// Verifies magic link authentication flow:
 /// - Send magic link request (stores token in Redis)
 /// - Token verification with query parameters
-/// - Session creation (stored in Redis + PostgreSQL Auth)
+/// - Session creation (stored in Redis + `PostgreSQL` Auth)
 /// - Authenticated request using session
 ///
 /// NOTE: This test is currently ignored because it requires extracting

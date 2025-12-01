@@ -189,8 +189,8 @@ async fn all_projection_tests() {
         event_id: eid4, name: "Idem".into(), owner_id: owner, venue: venue(),
         date: EventDate::new(now + Duration::days(30)), pricing_tiers: pricing(), created_at: now,
     }, "EventCreated");
-    ep.project(&[create_ev.clone()]).await.expect("first");
-    ep.project(&[create_ev]).await.expect("second should be idempotent");
+    ep.project(std::slice::from_ref(&create_ev)).await.expect("first");
+    ep.project(std::slice::from_ref(&create_ev)).await.expect("second should be idempotent");
     assert_eq!(eq.list_by_owner(owner).await.unwrap().len(), 1);
     println!("  ✓ EventProjector: Idempotent on duplicate");
 
@@ -357,8 +357,8 @@ async fn all_projection_tests() {
     let init_ev = ser(&InventoryEvent::Initialized {
         event_id: ev_id4, section: "Test".into(), capacity: 10, seats: seats4.clone(), initialized_at: now,
     }, "InventoryInitialized");
-    ip.project(&[init_ev.clone()]).await.unwrap();
-    ip.project(&[init_ev]).await.unwrap(); // should be idempotent
+    ip.project(std::slice::from_ref(&init_ev)).await.unwrap();
+    ip.project(std::slice::from_ref(&init_ev)).await.unwrap(); // should be idempotent
     let avail = iq.get_section_availability(ev_id4, "Test").await.unwrap().unwrap();
     assert_eq!(avail.total_capacity, 10);
     println!("  ✓ InventoryProjector: Idempotent initialize");
@@ -500,8 +500,8 @@ async fn all_projection_tests() {
         payment_id: pay_id4, reservation_id: ReservationId::new(), customer_id: CustomerId::new(),
         amount: Money::from_cents(1000), payment_method: PaymentMethod::ApplePay, processed_at: now,
     }, "PaymentProcessed");
-    pp.project(&[proc_ev.clone()]).await.unwrap();
-    pp.project(&[proc_ev]).await.unwrap(); // idempotent
+    pp.project(std::slice::from_ref(&proc_ev)).await.unwrap();
+    pp.project(std::slice::from_ref(&proc_ev)).await.unwrap(); // idempotent
     assert!(pq.get_payment(pay_id4).await.unwrap().is_some());
     println!("  ✓ PaymentProjector: Idempotent");
 

@@ -626,7 +626,12 @@ fn extract_reservation_id_from_payment_command(command: &PaymentCommand) -> Rese
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::match_wildcard_for_single_variants
+)]
 mod tests {
     use super::*;
     use crate::next::TicketingEnvironment;

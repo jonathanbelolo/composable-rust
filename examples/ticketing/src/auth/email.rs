@@ -142,11 +142,11 @@ impl EmailProvider for ConsoleEmailProvider {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
     #[tokio::test]
-    #[allow(clippy::unwrap_used)] // Test code can use unwrap
     async fn test_console_email_provider() {
         let provider = ConsoleEmailProvider::new("http://localhost:8080".to_string());
 

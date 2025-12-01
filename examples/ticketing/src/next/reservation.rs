@@ -299,6 +299,7 @@ impl BusinessLogic for ReservationQueryLogic {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use composable_rust_next::FixedClock;

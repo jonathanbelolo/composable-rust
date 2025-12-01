@@ -255,6 +255,7 @@ impl FromRequestParts<Arc<TicketingAuthStore>> for RequireAdmin
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     #[test]
     fn test_bearer_token_parsing() {

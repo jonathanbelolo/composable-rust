@@ -835,6 +835,7 @@ impl BusinessLogic for EventBusinessLogic {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::types::{Capacity, Money, TierType};
@@ -1001,6 +1002,7 @@ mod tests {
 ///
 /// These tests demonstrate the full flow: command → Handler → events persisted.
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod handler_tests {
     use super::*;
     use crate::next::environment::{NoOpEventBus, NoOpProjector, TicketingEnvironment};

@@ -23,8 +23,8 @@
 //!
 //! This module enables Level 1-3 tests from the test guidelines:
 //!
-//! - **Level 1**: Handler with NoOpQueryFetcher (tests event persistence)
-//! - **Level 2**: Handler with real QueryFetcher reading from projections
+//! - **Level 1**: Handler with `NoOpQueryFetcher` (tests event persistence)
+//! - **Level 2**: Handler with real `QueryFetcher` reading from projections
 //! - **Level 3**: Saga with child handlers sharing infrastructure
 //!
 //! # Usage
@@ -48,6 +48,11 @@
 //! // Reserve seats - the query fetcher will see the initialized inventory
 //! harness.handle(InventoryCommand::Reserve { ... }).await?;
 //! ```
+
+// Test infrastructure can use unwrap/expect/panic for assertion failures
+#![allow(clippy::expect_used)]
+#![allow(clippy::unwrap_used)]
+#![allow(clippy::panic)]
 
 mod harness;
 mod inventory;
