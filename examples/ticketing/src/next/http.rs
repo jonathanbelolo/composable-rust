@@ -136,6 +136,40 @@ pub type QueryEnabledEventHandler = Handler<
     QueryEnabledEnvironment,
 >;
 
+// ───────────────────────────────────────────────────────────────────────────
+// Full Event Handler (Query + Projection)
+// ───────────────────────────────────────────────────────────────────────────
+
+/// Environment type with BOTH projector AND queries for full CQRS support.
+///
+/// This environment includes:
+/// - `EventProjector` - Updates projection database on writes
+/// - `EventProjectionQueries` - Allows query fetcher to pre-fetch data
+///
+/// Use this for write operations that need to validate against projections
+/// (e.g., Publish needs to check event exists and is in Draft status).
+pub type FullEventEnvironment = TicketingEnvironment<
+    SystemClock,
+    PostgresEventStore,
+    EventProjector,
+    NoOpEventBus,
+    EventProjectionQueries,
+>;
+
+/// Full event handler with both query fetching and projection updates.
+///
+/// This handler:
+/// - Uses `EventQueryFetcher` to pre-fetch projection data for validation
+/// - Uses `EventProjector` to update projections after writes
+///
+/// Use this for write commands that need pre-fetched data (Publish, Cancel, Update).
+pub type FullEventHandler = Handler<
+    EventBusinessLogic,
+    NoOpCallExecutor,
+    EventQueryFetcher,
+    FullEventEnvironment,
+>;
+
 /// Shared state containing handlers.
 ///
 /// Note: The saga handlers are constructed on-demand from the aggregate handlers
@@ -526,8 +560,11 @@ pub async fn publish_event(
         fetched: None,
     };
 
+    // Use full_event_handler which has both:
+    // - EventQueryFetcher to pre-fetch event data for validation
+    // - EventProjector to update projections after write
     let _result = state
-        .query_event_handler
+        .full_event_handler
         .handle(command)
         .await
         .map_err(to_app_error)?;
@@ -587,8 +624,11 @@ pub async fn cancel_event(
         fetched: None,
     };
 
+    // Use full_event_handler which has both:
+    // - EventQueryFetcher to pre-fetch event data for validation
+    // - EventProjector to update projections after write
     let _result = state
-        .query_event_handler
+        .full_event_handler
         .handle(command)
         .await
         .map_err(to_app_error)?;
@@ -1221,10 +1261,12 @@ pub type QueryEnabledPaymentHandler = Handler<
 /// Extended state including all query-enabled handlers.
 #[derive(Clone)]
 pub struct FullQueryAppState {
-    /// Event handler (for commands)
+    /// Event handler (for commands without pre-fetch needs)
     pub event_handler: Arc<EventAggregateHandler>,
-    /// Query-enabled event handler
+    /// Query-enabled event handler (reads only)
     pub query_event_handler: Arc<QueryEnabledEventHandler>,
+    /// Full event handler (writes that need pre-fetch + projection)
+    pub full_event_handler: Arc<FullEventHandler>,
     /// Inventory handler (for commands)
     pub inventory_handler: Arc<InventoryAggregateHandler>,
     /// Query-enabled inventory handler

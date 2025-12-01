@@ -299,6 +299,30 @@ impl ApplicationBuilder {
         );
 
         // ───────────────────────────────────────────────────────────────────────
+        // Full Event Handler (Query + Projection)
+        // ───────────────────────────────────────────────────────────────────────
+        // This handler has BOTH query fetcher (for validation) AND projector (for writes).
+        // Used for operations like Publish/Cancel that need to validate and update.
+        let full_event_projection_queries = EventProjectionQueries::new(
+            projections_pool.clone(),
+        );
+        let full_event_env: TicketingEnvironment<NextSystemClock, NextPostgresEventStore, EventProjector, NoOpEventBus, EventProjectionQueries> = TicketingEnvironment::with_projections(
+            NextSystemClock,
+            next_event_store.clone(),
+            Some(EventProjector::new(projections_pool.clone())),
+            None::<NoOpEventBus>,
+            "ticketing-events",
+            full_event_projection_queries,
+        );
+        let full_event_handler = Arc::new(
+            HandlerBuilder::new(EventBusinessLogic)
+                .call_executor(NoOpCallExecutor)
+                .query_fetcher(EventQueryFetcher)
+                .environment(full_event_env)
+                .build()
+        );
+
+        // ───────────────────────────────────────────────────────────────────────
         // Query-Enabled Inventory Handler
         // ───────────────────────────────────────────────────────────────────────
         let inventory_projection_queries = InventoryProjectionQueries::new(
@@ -492,6 +516,7 @@ impl ApplicationBuilder {
         let full_query_state = FullQueryAppState {
             event_handler: event_handler.clone(),
             query_event_handler: query_event_handler.clone(),
+            full_event_handler: full_event_handler.clone(),
             inventory_handler: inventory_handler.clone(),
             query_inventory_handler: query_inventory_handler.clone(),
             payment_handler: payment_handler.clone(),
