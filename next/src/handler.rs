@@ -322,13 +322,17 @@ where
 
                     // Step 3: Persist with version check
                     match self.persist_events(&stream_id, &serialized, expected_version).await {
-                        Ok(version) => {
+                        Ok(final_version) => {
+                            // Update events with their actual versions for projection/broadcast
+                            let versioned =
+                                Self::assign_versions(serialized, final_version, events.len());
+
                             // Step 4: Project and broadcast (after successful persist)
-                            self.project_and_wait(&serialized).await?;
-                            self.broadcast(&serialized).await?;
+                            self.project_and_wait(&versioned).await?;
+                            self.broadcast(&versioned).await?;
 
                             return Ok(HandleResult::Command {
-                                version,
+                                version: final_version,
                                 event_count: events.len(),
                             });
                         }
@@ -348,13 +352,17 @@ where
                     if !events.is_empty() {
                         let stream_id = T::stream_id(&prepared_input);
                         let serialized = self.serialize_events(&events)?;
+                        let event_count = events.len();
 
                         // Persist with retry
                         match self.persist_events(&stream_id, &serialized, expected_version).await
                         {
-                            Ok(_version) => {
-                                self.project_and_wait(&serialized).await?;
-                                self.broadcast(&serialized).await?;
+                            Ok(final_version) => {
+                                // Update events with their actual versions for projection/broadcast
+                                let versioned =
+                                    Self::assign_versions(serialized, final_version, event_count);
+                                self.project_and_wait(&versioned).await?;
+                                self.broadcast(&versioned).await?;
                             }
                             Err(HandlerError::Persist(EventStoreError::VersionConflict { .. }))
                                 if attempts < self.max_retries =>
@@ -444,6 +452,26 @@ where
                 .map_err(HandlerError::Broadcast)?;
         }
         Ok(())
+    }
+
+    /// Assign versions to events after persistence
+    ///
+    /// The event store returns the final version after appending. Since versions
+    /// are sequential starting from the previous version + 1, we can calculate
+    /// each event's version:
+    ///
+    /// - If `final_version` is V and we persisted N events
+    /// - The events have versions: V-N+1, V-N+2, ..., V
+    fn assign_versions(
+        mut events: Vec<SerializedEvent>,
+        final_version: Version,
+        event_count: usize,
+    ) -> Vec<SerializedEvent> {
+        let start_version = final_version.as_u64() - event_count as u64 + 1;
+        for (i, event) in events.iter_mut().enumerate() {
+            event.version = Some(Version::new(start_version + i as u64));
+        }
+        events
     }
 }
 
