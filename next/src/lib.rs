@@ -81,6 +81,7 @@ mod error;
 mod executor;
 mod fetcher;
 mod handler;
+mod in_process_event_bus;
 mod logic;
 mod projections;
 mod result;
@@ -96,6 +97,7 @@ pub use fetcher::{FetchResult, NoOpQueryFetcher, QueryFetcher};
 pub use handler::{
     HandleResult, Handler, HandlerBuilder, DEFAULT_MAX_RETRIES, DEFAULT_MAX_SAGA_ITERATIONS,
 };
+pub use in_process_event_bus::{InProcessEventBus, DEFAULT_CHANNEL_CAPACITY};
 pub use logic::BusinessLogic;
 pub use projections::{GetById, NoOpProjectionQueries, ProjectionQueries};
 pub use result::BusinessResult;
@@ -106,8 +108,9 @@ pub use version::Version;
 // and are automatically public:
 // - EventStore, EventBus, Projector (infrastructure traits)
 // - HandlerEnvironment (environment trait)
-// - SerializedEvent, EventMetadata (event types)
+// - SerializedEvent, EventMetadata, MetadataContext (event types)
 // - EventStoreError, EventBusError (error types)
+// - SubscriptionHandle (event bus subscription management)
 
 // ═══════════════════════════════════════════════════════════════════
 // Infrastructure Traits
@@ -212,6 +215,47 @@ pub trait EventBus: Send + Sync {
             Ok(())
         }
     }
+
+    /// Subscribe to events on a topic
+    ///
+    /// The handler is called for each event published to the topic.
+    /// Returns a [`SubscriptionHandle`] that can be used to cancel the subscription.
+    ///
+    /// # Handler
+    ///
+    /// The handler receives each event and returns a future that resolves to
+    /// `Ok(())` on success or an error. Errors are logged but do not stop
+    /// the subscription.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use futures::future::BoxFuture;
+    ///
+    /// let handle = event_bus.subscribe("orders", |event| {
+    ///     Box::pin(async move {
+    ///         println!("Received event: {}", event.event_type);
+    ///         Ok(())
+    ///     })
+    /// }).await?;
+    ///
+    /// // Subscription runs until handle is dropped or cancelled
+    /// handle.cancel();
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the subscription cannot be created.
+    fn subscribe<F>(
+        &self,
+        topic: &str,
+        handler: F,
+    ) -> impl std::future::Future<Output = Result<SubscriptionHandle, EventBusError>> + Send
+    where
+        F: Fn(SerializedEvent) -> futures::future::BoxFuture<'static, Result<(), EventBusError>>
+            + Send
+            + Sync
+            + 'static;
 }
 
 /// Projector trait for updating read models
@@ -490,4 +534,77 @@ pub enum EventBusError {
     /// Topic not found
     #[error("topic not found: {0}")]
     TopicNotFound(String),
+
+    /// Subscription error
+    #[error("subscription error: {0}")]
+    Subscription(String),
+}
+
+/// Handle to cancel a subscription
+///
+/// When dropped, the subscription is automatically cancelled.
+/// You can also explicitly cancel by calling [`cancel()`](Self::cancel).
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let handle = event_bus.subscribe("orders", |event| {
+///     Box::pin(async move {
+///         println!("Received: {:?}", event);
+///         Ok(())
+///     })
+/// }).await?;
+///
+/// // Later, cancel the subscription
+/// handle.cancel();
+/// ```
+pub struct SubscriptionHandle {
+    /// Sender to signal cancellation
+    cancel: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+impl SubscriptionHandle {
+    /// Create a new subscription handle with the given cancel sender.
+    #[must_use]
+    pub const fn new(cancel: tokio::sync::oneshot::Sender<()>) -> Self {
+        Self {
+            cancel: Some(cancel),
+        }
+    }
+
+    /// Explicitly cancel the subscription.
+    ///
+    /// This consumes the sender, signaling the subscription task to stop.
+    /// If already cancelled or dropped, this is a no-op.
+    pub fn cancel(mut self) {
+        if let Some(sender) = self.cancel.take() {
+            // Send cancellation signal; ignore error if receiver already dropped
+            let _ = sender.send(());
+        }
+    }
+
+    /// Check if the subscription is still active.
+    ///
+    /// Returns `false` if `cancel()` has been called or the handle was dropped.
+    #[must_use]
+    pub const fn is_active(&self) -> bool {
+        self.cancel.is_some()
+    }
+}
+
+impl Drop for SubscriptionHandle {
+    fn drop(&mut self) {
+        if let Some(sender) = self.cancel.take() {
+            // Automatic cancellation on drop
+            let _ = sender.send(());
+        }
+    }
+}
+
+impl std::fmt::Debug for SubscriptionHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SubscriptionHandle")
+            .field("active", &self.is_active())
+            .finish()
+    }
 }

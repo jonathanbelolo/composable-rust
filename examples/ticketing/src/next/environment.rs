@@ -33,8 +33,9 @@
 use composable_rust_next::{
     Clock, EventBus, EventBusError, EventStore, HandlerEnvironment, MetadataContext,
     NoOpProjectionQueries, ProjectionError, ProjectionQueries, Projector, SerializedEvent,
-    SystemClock,
+    SubscriptionHandle, SystemClock,
 };
+use futures::future::BoxFuture;
 use composable_rust_postgres_next::PostgresEventStore;
 
 use super::EventProjector;
@@ -52,6 +53,22 @@ pub struct NoOpEventBus;
 impl EventBus for NoOpEventBus {
     async fn publish(&self, _topic: &str, _event: SerializedEvent) -> Result<(), EventBusError> {
         Ok(())
+    }
+
+    async fn subscribe<F>(
+        &self,
+        _topic: &str,
+        _handler: F,
+    ) -> Result<SubscriptionHandle, EventBusError>
+    where
+        F: Fn(SerializedEvent) -> BoxFuture<'static, Result<(), EventBusError>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        // No-op: create a handle that does nothing
+        let (cancel_tx, _cancel_rx) = tokio::sync::oneshot::channel();
+        Ok(SubscriptionHandle::new(cancel_tx))
     }
 }
 

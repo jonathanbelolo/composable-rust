@@ -42,8 +42,9 @@
 use crate::{
     Clock, EventBus, EventBusError, EventStore, EventStoreError, HandlerEnvironment,
     MetadataContext, NoOpProjectionQueries, ProjectionError, ProjectionQueries, Projector,
-    SerializedEvent, StreamId, Version,
+    SerializedEvent, StreamId, SubscriptionHandle, Version,
 };
+use futures::future::BoxFuture;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -323,6 +324,28 @@ impl EventBus for InMemoryEventBus {
     }
 
     // Use default implementation for publish_batch (calls publish for each)
+
+    /// Subscribe to events (no-op for testing).
+    ///
+    /// This test implementation does not deliver events to subscribers.
+    /// It only captures published events for inspection via [`published_events()`](Self::published_events).
+    ///
+    /// Returns a handle that can be cancelled, but no events will be delivered.
+    async fn subscribe<F>(
+        &self,
+        _topic: &str,
+        _handler: F,
+    ) -> Result<SubscriptionHandle, EventBusError>
+    where
+        F: Fn(SerializedEvent) -> BoxFuture<'static, Result<(), EventBusError>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        // Create a oneshot channel for cancellation, but don't actually subscribe
+        let (cancel_tx, _cancel_rx) = tokio::sync::oneshot::channel();
+        Ok(SubscriptionHandle::new(cancel_tx))
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════
