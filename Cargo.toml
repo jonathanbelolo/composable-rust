@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "next",
     "postgres-next",
+    "pg-gateway",
     "core",
     "runtime",
     "testing",
@@ -26,6 +27,7 @@ members = [
     "examples/tool-showcase",
     "examples/agent-patterns-demo",
     "examples/production-agent",
+    "examples/thin-server",
     "auth",
     "web",
 ]
@@ -35,6 +37,7 @@ members = [
 default-members = [
     "next",
     "postgres-next",
+    "pg-gateway",
     "core",
     "runtime",
     "testing",
@@ -58,6 +61,7 @@ default-members = [
     "examples/tool-showcase",
     "examples/agent-patterns-demo",
     "examples/production-agent",
+    "examples/thin-server",
     "web",
 ]
 

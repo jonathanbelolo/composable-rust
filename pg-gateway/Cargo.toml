@@ -1,0 +1,69 @@
+[package]
+name = "composable-rust-pg-gateway"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "PostgreSQL gateway for thin server applications - protocol translation and side-effect execution"
+keywords = ["postgresql", "gateway", "api", "websocket", "events"]
+categories = ["web-programming", "database"]
+
+[lints]
+workspace = true
+
+[features]
+default = ["http"]
+http = ["dep:axum", "dep:tower", "dep:tower-http"]
+websocket = ["http", "dep:dashmap"]
+auth-handlers = ["http", "dep:jsonwebtoken", "dep:cookie", "dep:rand"]
+tasks = []
+tasks-email = ["tasks", "dep:lettre", "dep:tera"]
+tasks-sms = ["tasks"]
+tasks-webhook = ["tasks", "dep:reqwest"]
+full = ["http", "websocket", "auth-handlers", "tasks", "tasks-email", "tasks-sms", "tasks-webhook"]
+
+[dependencies]
+# Workspace dependencies (always required)
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+
+# Database (always required)
+sqlx = { workspace = true }
+
+# HTTP (feature-gated)
+axum = { version = "0.8.7", features = ["ws"], optional = true }
+tower = { version = "0.5.2", optional = true }
+tower-http = { version = "0.6.7", features = ["trace", "compression-gzip", "timeout"], optional = true }
+
+# WebSocket
+dashmap = { version = "6.1.0", optional = true }
+
+# Auth
+jsonwebtoken = { version = "10.2.0", default-features = false, features = ["rust_crypto", "use_pem"], optional = true }
+cookie = { version = "0.18.1", optional = true }
+rand = { version = "0.9", optional = true }
+
+# Tasks - Email
+lettre = { version = "0.11.18", default-features = false, features = ["tokio1-rustls-tls", "builder", "smtp-transport"], optional = true }
+tera = { version = "1.20.1", optional = true }
+
+# Tasks - Webhook
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"], optional = true }
+
+# Utilities
+uuid = { version = "1.18.1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+testcontainers = "0.23"
+testcontainers-modules = { version = "0.11", features = ["postgres"] }
+axum-test = "18.4"
+hyper = { version = "1", features = ["full"] }
+tower = "0.5"

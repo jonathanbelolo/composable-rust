@@ -1,0 +1,30 @@
+[package]
+name = "thin-server-example"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85.0"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# The pg-gateway crate
+composable-rust-pg-gateway = { path = "../../pg-gateway", features = ["full"] }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Web framework
+axum = "0.8"
+
+# Database
+sqlx = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+
+# Utilities
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
