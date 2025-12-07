@@ -189,6 +189,9 @@ async fn submit_order(...) -> Result<...> {
 
 #[derive(Deserialize)]
 struct SubmitOrderRequest {
+    /// Client-provided order ID for idempotency
+    /// Clients should generate a UUID and reuse it for retries
+    order_id: String,
     customer_id: String,
     items: Vec<OrderItem>,
 }
@@ -205,10 +208,11 @@ async fn submit_order(
     identity: Identity,
     Json(req): Json<SubmitOrderRequest>,
 ) -> Result<Json<CommandResult>, ApiError> {
+    // Client provides order_id for idempotency - retries with same ID are safe
     let result = app.db.call_with_identity(
         &identity,
         "SELECT * FROM sales.submit_order($1, $2, $3)",
-        &[&Uuid::new_v4().to_string(), &req.customer_id, &Json(&req.items)],
+        &[&req.order_id, &req.customer_id, &Json(&req.items)],
     ).await?;
 
     Ok(Json(result))
@@ -408,13 +412,65 @@ enum Subscription {
     Pattern { context: String, event_type: String },
 }
 
+impl WsConnection {
+    /// Check if this connection is subscribed to receive an event
+    fn is_subscribed_to(&self, event: &EventNotification) -> bool {
+        // Also filter by tenant - users can only see their own tenant's events
+        if event.tenant_id.as_deref() != Some(&self.identity.tenant_id) {
+            return false;
+        }
+
+        for sub in &self.subscriptions {
+            match sub {
+                Subscription::Context(ctx) => {
+                    if &event.context == ctx {
+                        return true;
+                    }
+                }
+                Subscription::Stream(stream) => {
+                    if &event.stream_id == stream {
+                        return true;
+                    }
+                }
+                Subscription::Pattern { context, event_type } => {
+                    if &event.context == context && &event.event_type == event_type {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        false
+    }
+}
+
+/// Event notification from PostgreSQL (via pg_notify)
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct EventNotification {
+    global_id: i64,
+    context: String,
+    stream_id: String,
+    version: i32,
+    event_type: String,
+    payload: serde_json::Value,
+    timestamp: chrono::DateTime<chrono::Utc>,
+    tenant_id: Option<String>,
+}
+
 /// WebSocket manager (shared state)
 struct WsManager {
     /// Active connections by ID
     connections: DashMap<ConnectionId, WsConnection>,
 
-    /// Broadcast channel from PostgreSQL notifications
-    broadcast_rx: broadcast::Receiver<EventNotification>,
+    /// Broadcast sender for PostgreSQL notifications
+    broadcast_tx: broadcast::Sender<EventNotification>,
+}
+
+impl WsManager {
+    /// Subscribe to event notifications (returns a receiver)
+    fn subscribe(&self) -> broadcast::Receiver<EventNotification> {
+        self.broadcast_tx.subscribe()
+    }
 }
 ```
 
@@ -488,7 +544,7 @@ async fn run_listener(
     pool: &PgPool,
     broadcast_tx: &broadcast::Sender<EventNotification>,
 ) -> Result<(), sqlx::Error> {
-    // Get dedicated connection (not from pool)
+    // Get dedicated connection (acquired from pool but held long-term for LISTEN)
     let mut conn = pool.acquire().await?;
 
     // Subscribe to all context notification channels
@@ -567,7 +623,11 @@ async fn handle_ws_connection(
             // Check if this connection is subscribed to this event
             if let Some(conn) = manager_clone.connections.get(&conn_id) {
                 if conn.is_subscribed_to(&event) {
-                    let msg = serde_json::to_string(&event).unwrap();
+                    // Serialize event - skip if serialization fails (shouldn't happen)
+                    let Ok(msg) = serde_json::to_string(&event) else {
+                        tracing::warn!("Failed to serialize event notification");
+                        continue;
+                    };
                     if conn.sender.send(WsMessage::Text(msg)).await.is_err() {
                         break;
                     }
@@ -959,8 +1019,8 @@ BEGIN
             USING ERRCODE = 'P0404';
     END IF;
 
-    -- Generate secure token
-    v_token := encode(gen_random_bytes(32), 'base64url');
+    -- Generate secure token (URL-safe base64)
+    v_token := translate(encode(gen_random_bytes(32), 'base64'), '+/=', '-_');
     v_expires_at := now() + (p_ttl_seconds || ' seconds')::interval;
 
     -- Store magic link
@@ -1026,8 +1086,8 @@ BEGIN
     FROM auth.users
     WHERE email = v_link.email;
 
-    -- Create session
-    v_session_id := encode(gen_random_bytes(32), 'base64url');
+    -- Create session (URL-safe base64)
+    v_session_id := translate(encode(gen_random_bytes(32), 'base64'), '+/=', '-_');
 
     INSERT INTO auth.sessions (session_id, user_id, tenant_id, roles, expires_at)
     VALUES (
@@ -1050,97 +1110,65 @@ $$ LANGUAGE plpgsql;
 ### 6.1 Passing Identity to PostgreSQL
 
 ```rust
-/// Extension trait for database operations with identity context
-#[async_trait]
-pub trait DbWithIdentity {
-    /// Execute a query with identity context set
-    async fn call_with_identity<T>(
-        &self,
-        identity: &Identity,
-        query: &str,
-        params: &[&(dyn ToSql + Sync)],
-    ) -> Result<T, sqlx::Error>
-    where
-        T: for<'r> FromRow<'r, PgRow> + Send + Unpin;
-
-    /// Execute within a transaction with identity context
-    async fn transaction_with_identity<T, F, Fut>(
-        &self,
-        identity: &Identity,
-        f: F,
-    ) -> Result<T, sqlx::Error>
-    where
-        F: FnOnce(Transaction<'_, Postgres>) -> Fut + Send,
-        Fut: Future<Output = Result<T, sqlx::Error>> + Send;
-}
-
-#[async_trait]
-impl DbWithIdentity for PgPool {
-    async fn call_with_identity<T>(
-        &self,
-        identity: &Identity,
-        query: &str,
-        params: &[&(dyn ToSql + Sync)],
-    ) -> Result<T, sqlx::Error>
-    where
-        T: for<'r> FromRow<'r, PgRow> + Send + Unpin,
-    {
-        let mut conn = self.acquire().await?;
-
-        // Set session variables (LOCAL = transaction scoped)
-        set_identity_context(&mut conn, identity).await?;
-
-        // Execute the actual query
-        sqlx::query_as(query)
-            .bind_all(params)
-            .fetch_one(&mut *conn)
-            .await
-    }
-
-    async fn transaction_with_identity<T, F, Fut>(
-        &self,
-        identity: &Identity,
-        f: F,
-    ) -> Result<T, sqlx::Error>
-    where
-        F: FnOnce(Transaction<'_, Postgres>) -> Fut + Send,
-        Fut: Future<Output = Result<T, sqlx::Error>> + Send,
-    {
-        let mut tx = self.begin().await?;
-
-        // Set identity context for entire transaction
-        set_identity_context(&mut *tx, identity).await?;
-
-        // Execute user function
-        let result = f(tx).await?;
-
-        // Commit happens automatically when tx is dropped after Ok
-        Ok(result)
-    }
-}
-
-async fn set_identity_context(
-    conn: &mut PgConnection,
+/// Helper to set identity context on a connection
+///
+/// Note: set_config with 'true' for is_local makes it transaction-scoped.
+/// For pooled connections outside a transaction, the settings persist until
+/// the connection is returned to the pool, so always use transactions or
+/// acquire fresh connections.
+async fn set_identity_context<'c, C>(
+    conn: C,
     identity: &Identity,
-) -> Result<(), sqlx::Error> {
-    // set_config with 'true' for is_local makes it transaction-scoped
+) -> Result<(), sqlx::Error>
+where
+    C: sqlx::Executor<'c, Database = sqlx::Postgres>,
+{
     sqlx::query("SELECT set_config('app.user_id', $1, true)")
         .bind(&identity.user_id)
-        .execute(&mut *conn)
+        .execute(conn)
         .await?;
 
     sqlx::query("SELECT set_config('app.tenant_id', $1, true)")
         .bind(&identity.tenant_id)
-        .execute(&mut *conn)
+        .execute(conn)
         .await?;
 
     sqlx::query("SELECT set_config('app.roles', $1, true)")
-        .bind(&serde_json::to_string(&identity.roles).unwrap())
-        .execute(&mut *conn)
+        .bind(serde_json::to_string(&identity.roles).unwrap_or_default())
+        .execute(conn)
         .await?;
 
     Ok(())
 }
+
+/// Execute a command with identity context in a transaction
+///
+/// This pattern ensures:
+/// 1. Identity is set for the entire transaction
+/// 2. PostgreSQL RLS and auth functions see the correct user
+/// 3. Transaction is explicitly committed on success
+pub async fn execute_with_identity<T>(
+    pool: &PgPool,
+    identity: &Identity,
+    f: impl FnOnce(&mut PgConnection) -> BoxFuture<'_, Result<T, sqlx::Error>>,
+) -> Result<T, sqlx::Error>
+where
+    T: Send,
+{
+    let mut tx = pool.begin().await?;
+
+    // Set identity context for the transaction
+    set_identity_context(&mut *tx, identity).await?;
+
+    // Execute the operation
+    let result = f(&mut *tx).await?;
+
+    // Explicitly commit (rollback on drop if we don't reach here)
+    tx.commit().await?;
+
+    Ok(result)
+}
+
 ```
 
 ### 6.2 Row Level Security for Tenant Isolation
@@ -1355,22 +1383,22 @@ CREATE TABLE outbox.pending_tasks (
     completed_at    TIMESTAMPTZ,
 
     -- Constraints
+    -- Tasks are either 'pending' (ready to be claimed) or 'processing' (being worked on)
+    -- Completed tasks move to completed_tasks table
+    -- Failed tasks (max attempts) move to dead_letters table
+    -- Retryable failures stay as 'pending' with scheduled_for in the future
     CONSTRAINT valid_status CHECK (
-        status IN ('pending', 'processing', 'completed', 'failed', 'dead')
+        status IN ('pending', 'processing')
     )
 );
 
--- Index for claiming tasks
+-- Index for claiming tasks (only pending tasks that are due)
 CREATE INDEX idx_outbox_claimable ON outbox.pending_tasks (scheduled_for, priority DESC)
     WHERE status = 'pending';
 
--- Index for finding stuck tasks
+-- Index for finding stuck tasks (processing but lock expired)
 CREATE INDEX idx_outbox_stuck ON outbox.pending_tasks (locked_until)
     WHERE status = 'processing';
-
--- Index for dead letter queue
-CREATE INDEX idx_outbox_dead ON outbox.pending_tasks (created_at)
-    WHERE status = 'dead';
 
 -- ───────────────────────────────────────────────────────────────────────────
 -- Dead Letter Queue (for manual inspection)
@@ -1594,7 +1622,7 @@ pub enum TaskError {
 /// Email task executor
 pub struct EmailExecutor {
     smtp: lettre::SmtpTransport,
-    from: String,
+    from: lettre::message::Mailbox,  // Pre-validated at construction time
     templates: Tera,
 }
 
@@ -1615,8 +1643,8 @@ impl TaskExecutor for EmailExecutor {
 
         // Build email
         let email = Message::builder()
-            .from(self.from.parse().unwrap())
-            .to(task.to.parse().map_err(|e| TaskError::Permanent(format!("Invalid email: {e}")))?)
+            .from(self.from.clone())
+            .to(task.to.parse().map_err(|e| TaskError::Permanent(format!("Invalid recipient email: {e}")))?)
             .subject(&task.subject)
             .body(body)
             .map_err(|e| TaskError::Permanent(format!("Build error: {e}")))?;
@@ -1800,11 +1828,35 @@ impl OutboxWorker {
         let pool = self.pool.clone();
 
         tokio::spawn(async move {
-            // Simplified - in practice, use the LISTEN connection from earlier
-            let mut conn = pool.acquire().await.unwrap();
-            sqlx::query("LISTEN outbox_tasks").execute(&mut *conn).await.unwrap();
+            loop {
+                let result = async {
+                    let mut conn = pool.acquire().await?;
+                    sqlx::query("LISTEN outbox_tasks")
+                        .execute(&mut *conn)
+                        .await?;
 
-            // ... listen loop
+                    // Convert to listener and process notifications
+                    let mut listener = conn.into_inner().into_listener();
+
+                    while let Some(notification) = listener.try_recv().await? {
+                        if notification.channel() == "outbox_tasks" {
+                            // Signal the worker to check for tasks
+                            if tx.send(()).await.is_err() {
+                                // Receiver dropped, exit
+                                return Ok::<_, sqlx::Error>(());
+                            }
+                        }
+                    }
+
+                    Ok(())
+                }
+                .await;
+
+                if let Err(e) = result {
+                    tracing::warn!("Outbox LISTEN error: {}, reconnecting in 5s...", e);
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
+            }
         });
 
         rx
@@ -2128,9 +2180,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_graceful_shutdown(shutdown_signal(shutdown_tx))
         .await?;
 
-    // Wait for background tasks
+    // Wait for background tasks to finish gracefully
+    tracing::info!("Waiting for background tasks to complete...");
+
+    // Give workers a reasonable time to finish current work
+    let shutdown_timeout = Duration::from_secs(30);
+
+    // Wait for outbox worker (it listens to shutdown channel)
+    if tokio::time::timeout(shutdown_timeout, outbox_worker).await.is_err() {
+        tracing::warn!("Outbox worker did not shut down in time, aborting");
+    }
+
+    // pg_listener runs forever, so we abort it after server stops
+    // (it doesn't have work to complete, just listening)
     pg_listener.abort();
-    outbox_worker.abort();
 
     tracing::info!("Server stopped");
     Ok(())
