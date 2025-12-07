@@ -12,11 +12,16 @@ import type {
   Event,
   EventSummary,
   Reservation,
+  CreateReservationResponse,
   Payment,
   SectionAvailability,
   User,
-  SelectedSeat
+  SelectedSeat,
+  EventFormData,
+  CreateEventApiResponse,
+  UpdateEventApiResponse
 } from './types';
+import { initialEventForm } from './types';
 
 // ============================================================================
 // Actions
@@ -28,12 +33,12 @@ export type AppAction =
 
   // Auth
   | { type: 'auth/requestMagicLink'; email: string }
-  | { type: 'auth/magicLinkSent' }
+  | { type: 'auth/magicLinkSent'; magicLink?: string }
   | { type: 'auth/verifyToken'; token: string }
   | { type: 'auth/verified'; user: User; token: string }
   | { type: 'auth/failed'; error: string }
   | { type: 'auth/logout' }
-  | { type: 'auth/hydrate'; token: string }
+  | { type: 'auth/hydrate'; token: string; user: User | null }
 
   // Events
   | { type: 'events/loadList' }
@@ -50,7 +55,7 @@ export type AppAction =
   | { type: 'reservations/deselectSeat'; seatId: string }
   | { type: 'reservations/clearSelection' }
   | { type: 'reservations/create' }
-  | { type: 'reservations/created'; reservation: Reservation }
+  | { type: 'reservations/created'; response: CreateReservationResponse }
   | { type: 'reservations/createFailed'; error: string }
   | { type: 'reservations/loadMine' }
   | { type: 'reservations/mineLoaded'; reservations: Reservation[] }
@@ -68,7 +73,28 @@ export type AppAction =
   // UI
   | { type: 'ui/showToast'; message: string; toastType: 'success' | 'error' | 'info' | 'warning' }
   | { type: 'ui/dismissToast'; id: string }
-  | { type: 'ui/setLoading'; isLoading: boolean };
+  | { type: 'ui/setLoading'; isLoading: boolean }
+
+  // Organizer
+  | { type: 'organizer/loadMyEvents' }
+  | { type: 'organizer/myEventsLoaded'; events: EventSummary[] }
+  | { type: 'organizer/myEventsFailed'; error: string }
+  | { type: 'organizer/updateForm'; field: keyof EventFormData; value: string | number }
+  | { type: 'organizer/resetForm' }
+  | { type: 'organizer/loadEventForEdit'; eventId: string }
+  | { type: 'organizer/eventLoadedForEdit'; event: Event }
+  | { type: 'organizer/createEvent' }
+  | { type: 'organizer/eventCreated'; eventId: string }
+  | { type: 'organizer/createFailed'; error: string }
+  | { type: 'organizer/updateEvent'; eventId: string }
+  | { type: 'organizer/eventUpdated'; eventId: string }
+  | { type: 'organizer/updateFailed'; error: string }
+  | { type: 'organizer/publishEvent'; eventId: string }
+  | { type: 'organizer/eventPublished'; eventId: string }
+  | { type: 'organizer/cancelEvent'; eventId: string }
+  | { type: 'organizer/eventCancelled'; eventId: string }
+  | { type: 'organizer/deleteEvent'; eventId: string }
+  | { type: 'organizer/eventDeleted'; eventId: string };
 
 // ============================================================================
 // Dependencies
@@ -102,10 +128,80 @@ export const appReducer: Reducer<AppState, AppAction, AppDependencies> = (
     // Navigation
     // -------------------------------------------------------------------------
     case 'navigate': {
-      return [
-        { ...state, destination: action.destination },
-        Effect.none()
-      ];
+      const newState = { ...state, destination: action.destination };
+      const destType = action.destination.type;
+
+      // Trigger data loading effects based on destination
+      // This keeps all side effect logic in the reducer where it belongs
+      if ((destType === 'dashboard' || destType === 'myReservations') && state.auth.isAuthenticated) {
+        // Load reservations AND events when navigating to dashboard/myReservations
+        // Events are needed to display event names in the reservations list
+        return [
+          { ...newState, reservationsLoading: true, eventsLoading: true },
+          Effect.run(async (dispatch) => {
+            // Load both in parallel
+            const [reservationsResult, eventsResult] = await Promise.all([
+              deps.api.get<{ reservations: Reservation[]; total: number }>('/api/v2/reservations'),
+              deps.api.get<{ events: EventSummary[] }>('/api/v2/events')
+            ]);
+
+            if (reservationsResult.ok && reservationsResult.data) {
+              dispatch({ type: 'reservations/mineLoaded', reservations: reservationsResult.data.reservations });
+            } else {
+              dispatch({ type: 'reservations/mineLoaded', reservations: [] });
+            }
+
+            if (eventsResult.ok && eventsResult.data) {
+              dispatch({ type: 'events/listLoaded', events: eventsResult.data.events });
+            }
+          })
+        ];
+      }
+
+      if (destType === 'myPayments' && state.auth.isAuthenticated) {
+        // Load payment history when navigating to myPayments
+        const userId = state.auth.user?.id;
+        if (!userId) {
+          return [{ ...newState, paymentsLoading: false, payments: [] }, Effect.none()];
+        }
+        return [
+          { ...newState, paymentsLoading: true },
+          Effect.run(async (dispatch) => {
+            const result = await deps.api.get<{ payments: Payment[]; total: number }>(
+              `/api/v2/customers/${userId}/payments`
+            );
+            if (result.ok && result.data) {
+              dispatch({ type: 'payments/historyLoaded', payments: result.data.payments });
+            } else {
+              dispatch({ type: 'payments/historyLoaded', payments: [] });
+            }
+          })
+        ];
+      }
+
+      if (destType === 'organizerEvents' && state.auth.isAuthenticated) {
+        // Load organizer events when navigating to organizer page
+        return [
+          { ...newState, organizer: { ...state.organizer, myEventsLoading: true, myEventsError: null } },
+          Effect.run(async (dispatch) => {
+            const result = await deps.api.get<{ events: EventSummary[] }>('/api/v2/events');
+            if (result.ok && result.data) {
+              const userId = state.auth.user?.id;
+              const myEvents = userId
+                ? result.data.events.filter((e) => e.owner_id === userId)
+                : [];
+              dispatch({ type: 'organizer/myEventsLoaded', events: myEvents });
+            } else {
+              dispatch({
+                type: 'organizer/myEventsFailed',
+                error: 'Failed to load events'
+              });
+            }
+          })
+        ];
+      }
+
+      return [newState, Effect.none()];
     }
 
     // -------------------------------------------------------------------------
@@ -113,11 +209,18 @@ export const appReducer: Reducer<AppState, AppAction, AppDependencies> = (
     // -------------------------------------------------------------------------
     case 'auth/requestMagicLink': {
       return [
-        { ...state, auth: { ...state.auth, isLoading: true, error: null } },
+        { ...state, auth: { ...state.auth, isLoading: true, error: null, testMagicLink: null } },
         Effect.run(async (dispatch) => {
-          const result = await deps.api.post('/api/v2/auth/magic-link', { email: action.email });
+          interface MagicLinkResponse {
+            message: string;
+            magic_link_token?: string; // Only present when AUTH_EXPOSE_MAGIC_LINKS_FOR_TESTING=true
+          }
+          const result = await deps.api.post<MagicLinkResponse>('/auth/magic-link/request', { email: action.email });
           if (result.ok) {
-            dispatch({ type: 'auth/magicLinkSent' });
+            // Build full magic link URL if token is present (testing mode)
+            const token = result.data?.magic_link_token;
+            const magicLink = token ? `/auth/magic-link/verify?token=${token}` : undefined;
+            dispatch({ type: 'auth/magicLinkSent', magicLink });
           } else {
             dispatch({ type: 'auth/failed', error: result.error?.message ?? 'Failed to send magic link' });
           }
@@ -126,8 +229,24 @@ export const appReducer: Reducer<AppState, AppAction, AppDependencies> = (
     }
 
     case 'auth/magicLinkSent': {
+      const toast = {
+        id: crypto.randomUUID(),
+        message: action.magicLink
+          ? 'Magic link generated! Click it below to sign in.'
+          : 'Check your email for the magic link!',
+        type: 'success' as const
+      };
       return [
-        { ...state, auth: { ...state.auth, isLoading: false, magicLinkSent: true } },
+        {
+          ...state,
+          auth: {
+            ...state.auth,
+            isLoading: false,
+            magicLinkSent: true,
+            testMagicLink: action.magicLink ?? null
+          },
+          ui: { ...state.ui, toasts: [...state.ui.toasts, toast] }
+        },
         Effect.none()
       ];
     }
@@ -136,20 +255,41 @@ export const appReducer: Reducer<AppState, AppAction, AppDependencies> = (
       return [
         { ...state, auth: { ...state.auth, isLoading: true, error: null } },
         Effect.run(async (dispatch) => {
-          const result = await deps.api.post<{ user: User; token: string }>('/api/v2/auth/verify', {
+          // Backend returns: { session_id, session_token, user_id, email, expires_at }
+          interface VerifyResponse {
+            session_id: string;
+            session_token: string;
+            user_id: string;
+            email: string;
+            expires_at: string;
+          }
+          const result = await deps.api.post<VerifyResponse>('/auth/magic-link/verify', {
             token: action.token
           });
           if (result.ok && result.data) {
-            deps.storage.setItem('auth_token', result.data.token);
-            dispatch({ type: 'auth/verified', user: result.data.user, token: result.data.token });
+            // Store the session token and user info for persistence
+            deps.storage.setItem('auth_token', result.data.session_token);
+            // Create user object from response - use user_id which persists across sessions
+            const user: User = {
+              id: result.data.user_id,
+              email: result.data.email
+            };
+            // Also store user info for hydration on page reload
+            deps.storage.setItem('auth_user', JSON.stringify(user));
+            dispatch({ type: 'auth/verified', user, token: result.data.session_token });
           } else {
-            dispatch({ type: 'auth/failed', error: result.error?.message ?? 'Invalid token' });
+            dispatch({ type: 'auth/failed', error: result.error?.message ?? 'Invalid or expired token' });
           }
         })
       ];
     }
 
     case 'auth/verified': {
+      const toast = {
+        id: crypto.randomUUID(),
+        message: 'Welcome back!',
+        type: 'success' as const
+      };
       return [
         {
           ...state,
@@ -161,21 +301,32 @@ export const appReducer: Reducer<AppState, AppAction, AppDependencies> = (
             isLoading: false,
             error: null
           },
-          destination: { type: 'dashboard', state: {} }
+          destination: { type: 'dashboard', state: {} },
+          ui: { ...state.ui, toasts: [...state.ui.toasts, toast] }
         },
         Effect.none()
       ];
     }
 
     case 'auth/failed': {
+      const toast = {
+        id: crypto.randomUUID(),
+        message: action.error,
+        type: 'error' as const
+      };
       return [
-        { ...state, auth: { ...state.auth, isLoading: false, error: action.error } },
+        {
+          ...state,
+          auth: { ...state.auth, isLoading: false, error: action.error },
+          ui: { ...state.ui, toasts: [...state.ui.toasts, toast] }
+        },
         Effect.none()
       ];
     }
 
     case 'auth/logout': {
       deps.storage.removeItem('auth_token');
+      deps.storage.removeItem('auth_user');
       return [
         {
           ...state,
@@ -185,7 +336,8 @@ export const appReducer: Reducer<AppState, AppAction, AppDependencies> = (
             isAuthenticated: false,
             isLoading: false,
             error: null,
-            magicLinkSent: false
+            magicLinkSent: false,
+            testMagicLink: null
           },
           destination: { type: 'home', state: {} }
         },
@@ -194,10 +346,89 @@ export const appReducer: Reducer<AppState, AppAction, AppDependencies> = (
     }
 
     case 'auth/hydrate': {
-      return [
-        { ...state, auth: { ...state.auth, token: action.token, isAuthenticated: true } },
-        Effect.none()
-      ];
+      const newAuthState = {
+        ...state,
+        auth: {
+          ...state.auth,
+          token: action.token,
+          user: action.user,
+          isAuthenticated: true
+        }
+      };
+
+      // After hydrating auth, check if current destination needs data loading
+      // This handles the page refresh case where navigate action wasn't dispatched
+      const destType = state.destination.type;
+
+      if (destType === 'dashboard' || destType === 'myReservations') {
+        // Load reservations AND events for dashboard/myReservations pages
+        // Events are needed to display event names in the reservations list
+        return [
+          { ...newAuthState, reservationsLoading: true, eventsLoading: true },
+          Effect.run(async (dispatch) => {
+            // Load both in parallel
+            const [reservationsResult, eventsResult] = await Promise.all([
+              deps.api.get<{ reservations: Reservation[]; total: number }>('/api/v2/reservations'),
+              deps.api.get<{ events: EventSummary[] }>('/api/v2/events')
+            ]);
+
+            if (reservationsResult.ok && reservationsResult.data) {
+              dispatch({ type: 'reservations/mineLoaded', reservations: reservationsResult.data.reservations });
+            } else {
+              dispatch({ type: 'reservations/mineLoaded', reservations: [] });
+            }
+
+            if (eventsResult.ok && eventsResult.data) {
+              dispatch({ type: 'events/listLoaded', events: eventsResult.data.events });
+            }
+          })
+        ];
+      }
+
+      if (destType === 'organizerEvents') {
+        // Load organizer events
+        return [
+          { ...newAuthState, organizer: { ...state.organizer, myEventsLoading: true, myEventsError: null } },
+          Effect.run(async (dispatch) => {
+            const result = await deps.api.get<{ events: EventSummary[] }>('/api/v2/events');
+            if (result.ok && result.data) {
+              const userId = action.user?.id;
+              const myEvents = userId
+                ? result.data.events.filter((e) => e.owner_id === userId)
+                : [];
+              dispatch({ type: 'organizer/myEventsLoaded', events: myEvents });
+            } else {
+              dispatch({
+                type: 'organizer/myEventsFailed',
+                error: 'Failed to load events'
+              });
+            }
+          })
+        ];
+      }
+
+      if (destType === 'myPayments') {
+        // Load payment history
+        const userId = action.user?.id;
+        if (!userId) {
+          return [{ ...newAuthState, paymentsLoading: false, payments: [] }, Effect.none()];
+        }
+        return [
+          { ...newAuthState, paymentsLoading: true },
+          Effect.run(async (dispatch) => {
+            const result = await deps.api.get<{ payments: Payment[]; total: number }>(
+              `/api/v2/customers/${userId}/payments`
+            );
+            if (result.ok && result.data) {
+              dispatch({ type: 'payments/historyLoaded', payments: result.data.payments });
+            } else {
+              dispatch({ type: 'payments/historyLoaded', payments: [] });
+            }
+          })
+        ];
+      }
+
+      return [newAuthState, Effect.none()];
     }
 
     // -------------------------------------------------------------------------
@@ -207,7 +438,7 @@ export const appReducer: Reducer<AppState, AppAction, AppDependencies> = (
       return [
         { ...state, eventsLoading: true, eventsError: null },
         Effect.run(async (dispatch) => {
-          const result = await deps.api.get<{ events: Event[] }>('/api/v2/events');
+          const result = await deps.api.get<{ events: EventSummary[] }>('/api/v2/events');
           if (result.ok && result.data) {
             dispatch({ type: 'events/listLoaded', events: result.data.events });
           } else {
@@ -274,6 +505,18 @@ export const appReducer: Reducer<AppState, AppAction, AppDependencies> = (
     }
 
     case 'events/detailFailed': {
+      // If user is not authenticated, redirect to login instead of showing error
+      if (!state.auth.isAuthenticated) {
+        return [
+          {
+            ...state,
+            eventsLoading: false,
+            eventsError: null,
+            destination: { type: 'login', state: {} }
+          },
+          Effect.none()
+        ];
+      }
       return [
         { ...state, eventsLoading: false, eventsError: action.error },
         Effect.none()
@@ -352,20 +595,20 @@ export const appReducer: Reducer<AppState, AppAction, AppDependencies> = (
       if (!state.currentReservation) return [state, Effect.none()];
       const { eventId, selectedSeats } = state.currentReservation;
 
+      // Get section from first selected seat (all seats in same reservation are same section)
+      const section = selectedSeats.length > 0 ? selectedSeats[0].section : 'General';
+
       return [
         { ...state, reservationsLoading: true },
         Effect.run(async (dispatch) => {
-          const result = await deps.api.post<Reservation>('/api/v2/reservations', {
+          const result = await deps.api.post<CreateReservationResponse>('/api/v2/reservations', {
             event_id: eventId,
-            seats: selectedSeats.map((s) => ({
-              seat_id: s.seatId,
-              section: s.section,
-              tier_type: s.tierType
-            }))
+            section,
+            quantity: selectedSeats.length
           });
 
           if (result.ok && result.data) {
-            dispatch({ type: 'reservations/created', reservation: result.data });
+            dispatch({ type: 'reservations/created', response: result.data });
           } else {
             dispatch({
               type: 'reservations/createFailed',
@@ -378,15 +621,18 @@ export const appReducer: Reducer<AppState, AppAction, AppDependencies> = (
 
     case 'reservations/created': {
       if (!state.currentReservation) return [state, Effect.none()];
+      // The backend saga automatically processes payment synchronously when a reservation
+      // is created. The saga completes (including payment) before the HTTP response is sent,
+      // so we can skip directly to the complete step.
       return [
         {
           ...state,
           reservationsLoading: false,
           currentReservation: {
             ...state.currentReservation,
-            step: 'payment',
-            reservationId: action.reservation.id,
-            expiresAt: action.reservation.expires_at
+            step: 'complete',
+            reservationId: action.response.reservation_id,
+            expiresAt: null // Expiration is handled server-side
           }
         },
         Effect.none()
@@ -404,9 +650,12 @@ export const appReducer: Reducer<AppState, AppAction, AppDependencies> = (
       return [
         { ...state, reservationsLoading: true },
         Effect.run(async (dispatch) => {
-          const result = await deps.api.get<{ reservations: Reservation[] }>('/api/v2/my-reservations');
+          const result = await deps.api.get<{ reservations: Reservation[]; total: number }>('/api/v2/reservations');
           if (result.ok && result.data) {
             dispatch({ type: 'reservations/mineLoaded', reservations: result.data.reservations });
+          } else {
+            // Clear loading state even on error
+            dispatch({ type: 'reservations/mineLoaded', reservations: [] });
           }
         })
       ];
@@ -495,12 +744,26 @@ export const appReducer: Reducer<AppState, AppAction, AppDependencies> = (
     }
 
     case 'payments/loadHistory': {
+      // Get user ID from auth state to use as customer_id
+      const userId = state.auth.user?.id;
+      if (!userId) {
+        // Not authenticated, can't load payments
+        return [
+          { ...state, paymentsLoading: false, payments: [] },
+          Effect.none()
+        ];
+      }
+
       return [
         { ...state, paymentsLoading: true },
         Effect.run(async (dispatch) => {
-          const result = await deps.api.get<{ payments: Payment[] }>('/api/v2/my-payments');
+          const result = await deps.api.get<{ payments: Payment[]; total: number }>(
+            `/api/v2/customers/${userId}/payments`
+          );
           if (result.ok && result.data) {
             dispatch({ type: 'payments/historyLoaded', payments: result.data.payments });
+          } else {
+            dispatch({ type: 'payments/historyLoaded', payments: [] });
           }
         })
       ];
@@ -541,6 +804,390 @@ export const appReducer: Reducer<AppState, AppAction, AppDependencies> = (
     case 'ui/setLoading': {
       return [
         { ...state, ui: { ...state.ui, isLoading: action.isLoading } },
+        Effect.none()
+      ];
+    }
+
+    // -------------------------------------------------------------------------
+    // Organizer
+    // -------------------------------------------------------------------------
+    case 'organizer/loadMyEvents': {
+      return [
+        {
+          ...state,
+          organizer: { ...state.organizer, myEventsLoading: true, myEventsError: null }
+        },
+        Effect.run(async (dispatch) => {
+          // Load all events - in production, would filter by owner_id on backend
+          const result = await deps.api.get<{ events: EventSummary[] }>('/api/v2/events');
+          if (result.ok && result.data) {
+            // Filter to only show user's events (by owner_id matching session id)
+            const userId = state.auth.user?.id;
+            const myEvents = userId
+              ? result.data.events.filter((e) => e.owner_id === userId)
+              : [];
+            dispatch({ type: 'organizer/myEventsLoaded', events: myEvents });
+          } else {
+            dispatch({
+              type: 'organizer/myEventsFailed',
+              error: result.error?.message ?? 'Failed to load events'
+            });
+          }
+        })
+      ];
+    }
+
+    case 'organizer/myEventsLoaded': {
+      return [
+        {
+          ...state,
+          organizer: {
+            ...state.organizer,
+            myEvents: action.events,
+            myEventsLoading: false,
+            myEventsError: null
+          }
+        },
+        Effect.none()
+      ];
+    }
+
+    case 'organizer/myEventsFailed': {
+      const toast = {
+        id: crypto.randomUUID(),
+        message: action.error,
+        type: 'error' as const
+      };
+      return [
+        {
+          ...state,
+          organizer: {
+            ...state.organizer,
+            myEventsLoading: false,
+            myEventsError: action.error
+          },
+          ui: { ...state.ui, toasts: [...state.ui.toasts, toast] }
+        },
+        Effect.none()
+      ];
+    }
+
+    case 'organizer/updateForm': {
+      return [
+        {
+          ...state,
+          organizer: {
+            ...state.organizer,
+            eventForm: {
+              ...state.organizer.eventForm,
+              [action.field]: action.value
+            }
+          }
+        },
+        Effect.none()
+      ];
+    }
+
+    case 'organizer/resetForm': {
+      return [
+        {
+          ...state,
+          organizer: {
+            ...state.organizer,
+            eventForm: initialEventForm,
+            formError: null
+          }
+        },
+        Effect.none()
+      ];
+    }
+
+    case 'organizer/loadEventForEdit': {
+      return [
+        {
+          ...state,
+          organizer: { ...state.organizer, formLoading: true, formError: null }
+        },
+        Effect.run(async (dispatch) => {
+          const result = await deps.api.get<Event>(`/api/v2/events/${action.eventId}`);
+          if (result.ok && result.data) {
+            dispatch({ type: 'organizer/eventLoadedForEdit', event: result.data });
+          } else {
+            dispatch({
+              type: 'organizer/createFailed',
+              error: result.error?.message ?? 'Failed to load event'
+            });
+          }
+        })
+      ];
+    }
+
+    case 'organizer/eventLoadedForEdit': {
+      const event = action.event;
+      return [
+        {
+          ...state,
+          organizer: {
+            ...state.organizer,
+            formLoading: false,
+            eventForm: {
+              title: event.title,
+              description: event.description ?? '',
+              startTime: event.start_time.slice(0, 16), // Format for datetime-local input
+              venueName: event.venue.name,
+              capacity: event.venue.sections.reduce((sum, s) => sum + s.capacity, 0),
+              price: event.pricing_tiers.length > 0
+                ? event.pricing_tiers[0].price_cents / 100
+                : 25.0
+            }
+          }
+        },
+        Effect.none()
+      ];
+    }
+
+    case 'organizer/createEvent': {
+      const form = state.organizer.eventForm;
+      return [
+        {
+          ...state,
+          organizer: { ...state.organizer, formLoading: true, formError: null }
+        },
+        Effect.run(async (dispatch) => {
+          const result = await deps.api.post<CreateEventApiResponse>('/api/v2/events', {
+            title: form.title,
+            description: form.description || undefined,
+            start_time: new Date(form.startTime).toISOString(),
+            venue_name: form.venueName,
+            capacity: form.capacity,
+            price: form.price
+          });
+
+          if (result.ok && result.data) {
+            dispatch({ type: 'organizer/eventCreated', eventId: result.data.event_id });
+          } else {
+            dispatch({
+              type: 'organizer/createFailed',
+              error: result.error?.message ?? 'Failed to create event'
+            });
+          }
+        })
+      ];
+    }
+
+    case 'organizer/eventCreated': {
+      const toast = {
+        id: crypto.randomUUID(),
+        message: 'Event created successfully!',
+        type: 'success' as const
+      };
+      return [
+        {
+          ...state,
+          organizer: {
+            ...state.organizer,
+            formLoading: false,
+            eventForm: initialEventForm
+          },
+          destination: { type: 'organizerEvents', state: {} },
+          ui: { ...state.ui, toasts: [...state.ui.toasts, toast] }
+        },
+        Effect.none()
+      ];
+    }
+
+    case 'organizer/createFailed': {
+      const toast = {
+        id: crypto.randomUUID(),
+        message: action.error,
+        type: 'error' as const
+      };
+      return [
+        {
+          ...state,
+          organizer: {
+            ...state.organizer,
+            formLoading: false,
+            formError: action.error
+          },
+          ui: { ...state.ui, toasts: [...state.ui.toasts, toast] }
+        },
+        Effect.none()
+      ];
+    }
+
+    case 'organizer/updateEvent': {
+      const form = state.organizer.eventForm;
+      return [
+        {
+          ...state,
+          organizer: { ...state.organizer, formLoading: true, formError: null }
+        },
+        Effect.run(async (dispatch) => {
+          const result = await deps.api.put<UpdateEventApiResponse>(
+            `/api/v2/events/${action.eventId}`,
+            {
+              name: form.title,
+              venue_name: form.venueName,
+              date: new Date(form.startTime).toISOString()
+            }
+          );
+
+          if (result.ok && result.data) {
+            dispatch({ type: 'organizer/eventUpdated', eventId: result.data.event_id });
+          } else {
+            dispatch({
+              type: 'organizer/updateFailed',
+              error: result.error?.message ?? 'Failed to update event'
+            });
+          }
+        })
+      ];
+    }
+
+    case 'organizer/eventUpdated': {
+      const toast = {
+        id: crypto.randomUUID(),
+        message: 'Event updated successfully!',
+        type: 'success' as const
+      };
+      return [
+        {
+          ...state,
+          organizer: {
+            ...state.organizer,
+            formLoading: false
+          },
+          destination: { type: 'organizerEvents', state: {} },
+          ui: { ...state.ui, toasts: [...state.ui.toasts, toast] }
+        },
+        Effect.none()
+      ];
+    }
+
+    case 'organizer/updateFailed': {
+      const toast = {
+        id: crypto.randomUUID(),
+        message: action.error,
+        type: 'error' as const
+      };
+      return [
+        {
+          ...state,
+          organizer: {
+            ...state.organizer,
+            formLoading: false,
+            formError: action.error
+          },
+          ui: { ...state.ui, toasts: [...state.ui.toasts, toast] }
+        },
+        Effect.none()
+      ];
+    }
+
+    case 'organizer/publishEvent': {
+      return [
+        { ...state, organizer: { ...state.organizer, myEventsLoading: true } },
+        Effect.run(async (dispatch) => {
+          const result = await deps.api.post(`/api/v2/events/${action.eventId}/publish`);
+          if (result.ok) {
+            dispatch({ type: 'organizer/eventPublished', eventId: action.eventId });
+          } else {
+            dispatch({ type: 'organizer/myEventsFailed', error: 'Failed to publish event' });
+          }
+        })
+      ];
+    }
+
+    case 'organizer/eventPublished': {
+      const toast = {
+        id: crypto.randomUUID(),
+        message: 'Event published successfully!',
+        type: 'success' as const
+      };
+      return [
+        {
+          ...state,
+          organizer: {
+            ...state.organizer,
+            myEventsLoading: false,
+            myEvents: state.organizer.myEvents.map((e) =>
+              e.id === action.eventId ? { ...e, status: 'published' as const } : e
+            )
+          },
+          ui: { ...state.ui, toasts: [...state.ui.toasts, toast] }
+        },
+        Effect.none()
+      ];
+    }
+
+    case 'organizer/cancelEvent': {
+      return [
+        { ...state, organizer: { ...state.organizer, myEventsLoading: true } },
+        Effect.run(async (dispatch) => {
+          const result = await deps.api.post(`/api/v2/events/${action.eventId}/cancel`);
+          if (result.ok) {
+            dispatch({ type: 'organizer/eventCancelled', eventId: action.eventId });
+          } else {
+            dispatch({ type: 'organizer/myEventsFailed', error: 'Failed to cancel event' });
+          }
+        })
+      ];
+    }
+
+    case 'organizer/eventCancelled': {
+      const toast = {
+        id: crypto.randomUUID(),
+        message: 'Event cancelled',
+        type: 'info' as const
+      };
+      return [
+        {
+          ...state,
+          organizer: {
+            ...state.organizer,
+            myEventsLoading: false,
+            myEvents: state.organizer.myEvents.map((e) =>
+              e.id === action.eventId ? { ...e, status: 'cancelled' as const } : e
+            )
+          },
+          ui: { ...state.ui, toasts: [...state.ui.toasts, toast] }
+        },
+        Effect.none()
+      ];
+    }
+
+    case 'organizer/deleteEvent': {
+      return [
+        { ...state, organizer: { ...state.organizer, myEventsLoading: true } },
+        Effect.run(async (dispatch) => {
+          const result = await deps.api.delete(`/api/v2/events/${action.eventId}`);
+          if (result.ok) {
+            dispatch({ type: 'organizer/eventDeleted', eventId: action.eventId });
+          } else {
+            dispatch({ type: 'organizer/myEventsFailed', error: 'Failed to delete event' });
+          }
+        })
+      ];
+    }
+
+    case 'organizer/eventDeleted': {
+      const toast = {
+        id: crypto.randomUUID(),
+        message: 'Event deleted',
+        type: 'info' as const
+      };
+      return [
+        {
+          ...state,
+          organizer: {
+            ...state.organizer,
+            myEventsLoading: false,
+            myEvents: state.organizer.myEvents.filter((e) => e.id !== action.eventId)
+          },
+          destination: { type: 'organizerEvents', state: {} },
+          ui: { ...state.ui, toasts: [...state.ui.toasts, toast] }
+        },
         Effect.none()
       ];
     }

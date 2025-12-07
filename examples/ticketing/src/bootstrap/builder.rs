@@ -345,17 +345,44 @@ impl ApplicationBuilder {
         );
 
         // ───────────────────────────────────────────────────────────────────────
-        // Query-Enabled Payment Handler
+        // Full Inventory Handler (Query + Projection)
         // ───────────────────────────────────────────────────────────────────────
+        // This handler has BOTH query fetcher (for validation) AND projector (for writes).
+        // Used by the Reservation Saga to validate availability AND update inventory.
+        let full_inventory_projection_queries = InventoryProjectionQueries::new(
+            projections_pool.clone(),
+        );
+        let full_inventory_env: TicketingEnvironment<NextSystemClock, NextPostgresEventStore, InventoryProjector, NoOpEventBus, InventoryProjectionQueries> = TicketingEnvironment::with_projections(
+            NextSystemClock,
+            next_event_store.clone(),
+            Some(InventoryProjector::new(projections_pool.clone())),
+            None::<NoOpEventBus>,
+            "ticketing-inventory",
+            full_inventory_projection_queries,
+        );
+        let full_inventory_handler = Arc::new(
+            HandlerBuilder::new(InventoryBusinessLogic)
+                .call_executor(NoOpCallExecutor)
+                .query_fetcher(InventoryQueryFetcher)
+                .environment(full_inventory_env)
+                .build()
+        );
+
+        // ───────────────────────────────────────────────────────────────────────
+        // Query-Enabled Payment Handler (with Projector for saga use)
+        // ───────────────────────────────────────────────────────────────────────
+        // NOTE: The saga uses this handler for payment processing, so it MUST have
+        // the PaymentProjector attached to project payment events to the read model.
         let payment_projection_queries = PaymentProjectionQueries::new(
             projections_pool.clone(),
         );
-        let query_payment_env: TicketingEnvironment<NextSystemClock, NextPostgresEventStore, NoOpProjector, NoOpEventBus, PaymentProjectionQueries> = TicketingEnvironment::with_projections(
+        let query_payment_projector = PaymentProjector::new(projections_pool.clone());
+        let query_payment_env: TicketingEnvironment<NextSystemClock, NextPostgresEventStore, PaymentProjector, NoOpEventBus, PaymentProjectionQueries> = TicketingEnvironment::with_projections(
             NextSystemClock,
             next_event_store.clone(),
-            None::<NoOpProjector>,
+            Some(query_payment_projector),
             None::<NoOpEventBus>,
-            "ticketing-events",
+            "ticketing-payments",
             payment_projection_queries,
         );
         let query_payment_handler = Arc::new(
@@ -413,7 +440,10 @@ impl ApplicationBuilder {
         // ───────────────────────────────────────────────────────────────────────
         // Reservation Saga Handler (orchestrates Inventory + Payment)
         // ───────────────────────────────────────────────────────────────────────
-        let saga_inventory_handler: Arc<dyn InventoryHandlerTrait> = query_inventory_handler.clone();
+        // NOTE: We use full_inventory_handler here because the saga needs BOTH:
+        // 1. Query fetcher to validate seat availability before reserving
+        // 2. Projector to update the inventory table when seats are reserved/confirmed
+        let saga_inventory_handler: Arc<dyn InventoryHandlerTrait> = full_inventory_handler.clone();
         let saga_payment_handler: Arc<dyn PaymentHandlerTrait> = query_payment_handler.clone();
         let reservation_saga_call_executor = ReservationSagaCallExecutor::new(
             saga_inventory_handler,

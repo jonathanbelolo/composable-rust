@@ -523,6 +523,9 @@ impl InventoryProjector {
                 confirmed_at,
                 ..
             } => {
+                #[allow(clippy::cast_possible_wrap)]
+                let seat_count = seats.len() as i32;
+
                 // Bulk update all seat records to sold (single query instead of N)
                 let seat_ids: Vec<uuid::Uuid> = seats.iter().map(|s| *s.as_uuid()).collect();
                 sqlx::query(
@@ -553,11 +556,51 @@ impl InventoryProjector {
                 .await
                 .map_err(|e| ProjectionError::Database(e.to_string()))?;
 
-                tracing::debug!(
-                    reservation_id = %reservation_id,
-                    seats = seats.len(),
-                    "Projected SeatsConfirmed"
-                );
+                // Look up the reservation to get event_id and section for inventory update
+                let reservation: Option<(uuid::Uuid, String)> = sqlx::query_as(
+                    r"
+                    SELECT event_id, section FROM reservations
+                    WHERE reservation_id = $1
+                    ",
+                )
+                .bind(reservation_id.as_uuid())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| ProjectionError::Database(e.to_string()))?;
+
+                if let Some((event_id, section)) = reservation {
+                    // Update inventory counts - seats move from reserved to sold
+                    // reserved_seats decreases, available_seats stays the same (already decremented when reserved)
+                    sqlx::query(
+                        r"
+                        UPDATE inventory
+                        SET reserved_seats = reserved_seats - $3,
+                            updated_at = $4
+                        WHERE event_id = $1 AND section = $2
+                        ",
+                    )
+                    .bind(event_id)
+                    .bind(&section)
+                    .bind(seat_count)
+                    .bind(confirmed_at)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| ProjectionError::Database(e.to_string()))?;
+
+                    tracing::debug!(
+                        reservation_id = %reservation_id,
+                        event_id = %event_id,
+                        section = %section,
+                        seats = seat_count,
+                        "Projected SeatsConfirmed - inventory updated"
+                    );
+                } else {
+                    tracing::warn!(
+                        reservation_id = %reservation_id,
+                        seats = seats.len(),
+                        "SeatsConfirmed for unknown reservation - inventory not updated"
+                    );
+                }
             }
 
             // SeatsReleased: update reservation status and return seats to available pool

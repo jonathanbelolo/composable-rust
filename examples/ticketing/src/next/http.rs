@@ -643,35 +643,125 @@ pub async fn cancel_event(
 // Query Handlers
 // ───────────────────────────────────────────────────────────────────────────
 
+/// Venue response for API
+#[derive(Debug, Serialize)]
+pub struct VenueResponse {
+    /// Venue name
+    pub name: String,
+    /// Venue address (placeholder for now)
+    pub address: String,
+    /// Venue sections
+    pub sections: Vec<VenueSectionResponse>,
+}
+
+/// Venue section response for API
+#[derive(Debug, Serialize)]
+pub struct VenueSectionResponse {
+    /// Section name
+    pub name: String,
+    /// Section capacity
+    pub capacity: u32,
+    /// Seat type: "numbered" or "general_admission"
+    pub seat_type: String,
+}
+
+/// Pricing tier response for API
+#[derive(Debug, Serialize)]
+pub struct PricingTierResponse {
+    /// Tier type: "vip", "standard", "early_bird", "group"
+    pub tier_type: String,
+    /// Display name for the tier
+    pub name: String,
+    /// Price in cents
+    pub price_cents: u64,
+    /// Quantity available (null for unlimited)
+    pub quantity_available: Option<u32>,
+}
+
 /// Response for a single event query.
 #[derive(Debug, Serialize)]
 pub struct GetEventQueryResponse {
     /// Event ID
     pub id: Uuid,
-    /// Event name
-    pub name: String,
+    /// Event title/name
+    pub title: String,
+    /// Event description
+    pub description: Option<String>,
     /// Owner ID
     pub owner_id: Uuid,
-    /// Venue name
-    pub venue_name: String,
-    /// Event date
-    pub date: DateTime<Utc>,
-    /// Event status
+    /// Full venue details
+    pub venue: VenueResponse,
+    /// Event start time
+    pub start_time: DateTime<Utc>,
+    /// Event end time (null if not specified)
+    pub end_time: Option<DateTime<Utc>>,
+    /// Event status: "draft", "published", or "cancelled"
     pub status: String,
-    /// Pricing tiers count
-    pub pricing_tiers_count: usize,
+    /// Full pricing tiers
+    pub pricing_tiers: Vec<PricingTierResponse>,
+    /// When the event was created
+    pub created_at: DateTime<Utc>,
+    /// When the event was last updated
+    pub updated_at: DateTime<Utc>,
 }
 
 impl From<EventDto> for GetEventQueryResponse {
     fn from(dto: EventDto) -> Self {
+        let venue = VenueResponse {
+            name: dto.venue.name.clone(),
+            address: String::new(), // Placeholder - backend doesn't have address yet
+            sections: dto
+                .venue
+                .sections
+                .iter()
+                .map(|s| VenueSectionResponse {
+                    name: s.name.clone(),
+                    capacity: s.capacity.value(),
+                    seat_type: match s.seat_type {
+                        SeatType::Numbered { .. } => "numbered".to_string(),
+                        SeatType::GeneralAdmission => "general_admission".to_string(),
+                    },
+                })
+                .collect(),
+        };
+
+        let pricing_tiers = dto
+            .pricing_tiers
+            .iter()
+            .map(|p| PricingTierResponse {
+                tier_type: match p.tier_type {
+                    TierType::EarlyBird => "early_bird".to_string(),
+                    TierType::Regular => "standard".to_string(),
+                    TierType::LastMinute => "standard".to_string(), // Map to standard
+                },
+                name: p.section.clone(), // Use section as display name
+                price_cents: p.base_price.cents(),
+                quantity_available: None, // Would need inventory data
+            })
+            .collect();
+
+        let now = Utc::now();
+        let status = match dto.status {
+            crate::types::EventStatus::Draft => "draft",
+            crate::types::EventStatus::Published => "published",
+            crate::types::EventStatus::Cancelled => "cancelled",
+            crate::types::EventStatus::SalesOpen => "published",
+            crate::types::EventStatus::SalesClosed => "published",
+            crate::types::EventStatus::Completed => "cancelled",
+        };
+
         Self {
             id: *dto.id.as_uuid(),
-            name: dto.name,
+            title: dto.name,
+            description: None, // Backend doesn't have description yet
             owner_id: dto.owner_id.0,
-            venue_name: dto.venue.name,
-            date: dto.date.inner(),
-            status: format!("{:?}", dto.status),
-            pricing_tiers_count: dto.pricing_tiers.len(),
+            venue,
+            start_time: dto.date.inner(),
+            end_time: None, // Backend doesn't have end_time yet
+            status: status.to_string(),
+            pricing_tiers,
+            created_at: now, // Would need actual created_at from event
+            updated_at: now, // Would need actual updated_at from event
         }
     }
 }
@@ -810,9 +900,14 @@ pub struct AuthQuery {
 
 /// Session user extractor that parses Bearer tokens.
 ///
-/// Supports two formats:
-/// 1. Bearer token: `Authorization: Bearer test-user-{uuid}`
-/// 2. Query parameter fallback: `?user_id={uuid}` (for backwards compatibility)
+/// Supports multiple token formats:
+/// 1. Combined token: `Authorization: Bearer {session_id}:{user_id}` (preferred)
+/// 2. Test token: `Authorization: Bearer test-user-{uuid}`
+/// 3. Query parameter fallback: `?user_id={uuid}` (for backwards compatibility)
+///
+/// The combined token format allows the backend to use the persistent `user_id`
+/// for lookups (e.g., reservations) while still having access to the `session_id`
+/// for potential session validation.
 ///
 /// # Example
 ///
@@ -831,7 +926,7 @@ where
     type Rejection = AppError;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        // Try Bearer token first (format: "test-user-{uuid}")
+        // Try Bearer token first
         if let Some(auth_header) = parts.headers.get("authorization") {
             if let Ok(auth_str) = auth_header.to_str() {
                 if let Some(token) = auth_str.strip_prefix("Bearer ") {
@@ -841,7 +936,15 @@ where
                             return Ok(Self(UserId(uuid)));
                         }
                     }
-                    // Try parsing the whole token as UUID (for other token formats)
+                    // Check for combined token format: "session_id:user_id"
+                    // This is the format returned by magic link verification
+                    if let Some((_session_part, user_part)) = token.split_once(':') {
+                        if let Ok(user_uuid) = Uuid::parse_str(user_part) {
+                            return Ok(Self(UserId(user_uuid)));
+                        }
+                    }
+                    // Legacy: Try parsing the whole token as UUID
+                    // (for backwards compatibility with old tokens)
                     if let Ok(uuid) = Uuid::parse_str(token) {
                         return Ok(Self(UserId(uuid)));
                     }
@@ -1040,16 +1143,7 @@ pub struct GetPricingResponse {
     pub pricing_tiers: Vec<PricingTierResponse>,
 }
 
-/// Pricing tier in response.
-#[derive(Debug, Serialize)]
-pub struct PricingTierResponse {
-    /// Tier type
-    pub tier_type: String,
-    /// Section name
-    pub section: String,
-    /// Price in cents
-    pub price_cents: u64,
-}
+// PricingTierResponse is defined above with the other response types
 
 /// Get pricing tiers for an event.
 ///
@@ -1079,9 +1173,14 @@ pub async fn get_event_pricing(
             let tiers: Vec<PricingTierResponse> = pricing_tiers
                 .into_iter()
                 .map(|t| PricingTierResponse {
-                    tier_type: format!("{:?}", t.tier_type),
-                    section: t.section.clone(),
+                    tier_type: match t.tier_type {
+                        TierType::EarlyBird => "early_bird".to_string(),
+                        TierType::Regular => "standard".to_string(),
+                        TierType::LastMinute => "standard".to_string(),
+                    },
+                    name: t.section.clone(),
                     price_cents: t.base_price.cents(),
+                    quantity_available: None,
                 })
                 .collect();
             Ok(Json(GetPricingResponse {
@@ -1242,10 +1341,11 @@ pub type QueryEnabledInventoryHandler = Handler<
 >;
 
 /// Environment type with payment projection queries enabled.
+/// Uses `PaymentProjector` to project payment events to the read model.
 pub type PaymentQueryEnvironment = TicketingEnvironment<
     SystemClock,
     PostgresEventStore,
-    NoOpProjector,
+    PaymentProjector,
     NoOpEventBus,
     PaymentProjectionQueries,
 >;

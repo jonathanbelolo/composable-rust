@@ -14,7 +14,7 @@ import App from '../shared/App.svelte';
 import { appReducer } from '../shared/reducer';
 import type { AppDependencies } from '../shared/reducer';
 import { initialState } from '../shared/types';
-import type { AppState, EventSummary } from '../shared/types';
+import type { EventSummary } from '../shared/types';
 import { parseDestinationFromURL } from '../shared/routing';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -159,6 +159,7 @@ app.get('/events/:id', renderApp);
 app.get('/events/:id/reserve', renderApp);
 app.get('/auth/login', renderApp);
 app.get('/auth/verify', renderApp);
+app.get('/auth/magic-link/verify', renderApp);
 app.get('/dashboard', renderApp);
 app.get('/dashboard/reservations', renderApp);
 app.get('/dashboard/payments', renderApp);
@@ -168,9 +169,9 @@ app.get('/organizer/:id', renderApp);
 app.get('/organizer/:id/analytics', renderApp);
 
 /**
- * Proxy API requests to the Rust backend.
+ * Proxy helper function to forward requests to the Rust backend.
  */
-app.all('/api/*', async (request, reply) => {
+async function proxyToBackend(request: any, reply: any) {
   try {
     const url = `${API_BASE_URL}${request.url}`;
     const headers: Record<string, string> = {};
@@ -195,7 +196,17 @@ app.all('/api/*', async (request, reply) => {
     request.log.error(error);
     reply.status(502).send({ error: 'Bad Gateway', message: 'Failed to reach backend API' });
   }
-});
+}
+
+/**
+ * Proxy API requests to the Rust backend.
+ */
+app.all('/api/*', proxyToBackend);
+
+/**
+ * Proxy auth requests to the Rust backend.
+ */
+app.all('/auth/*', proxyToBackend);
 
 /**
  * Health check endpoint

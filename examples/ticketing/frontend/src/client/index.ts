@@ -4,6 +4,9 @@
  * This hydrates the server-rendered HTML and makes the application interactive.
  */
 
+// Import CSS for Tailwind and shadcn theme variables
+import '../shared/app.css';
+
 import { hydrate as hydrateComponent } from 'svelte';
 import { hydrateStore } from '@composable-svelte/core';
 import App from '../shared/App.svelte';
@@ -116,13 +119,7 @@ async function hydrate() {
       dependencies
     });
 
-    // 4. Hydrate auth state from localStorage
-    const token = localStorage.getItem('auth_token');
-    if (token) {
-      store.dispatch({ type: 'auth/hydrate', token });
-    }
-
-    // 5. Sync browser history with state (URL routing!)
+    // 4. Sync browser history with state (URL routing!)
     syncBrowserHistory(store, {
       parse: parseDestinationFromURL,
       serialize: (state: AppState) => destinationURL(state.destination),
@@ -134,11 +131,28 @@ async function hydrate() {
       }
     });
 
-    // 6. Hydrate the app (reuse existing DOM from SSR)
+    // 5. Hydrate the app (reuse existing DOM from SSR)
     const app = hydrateComponent(App, {
       target: document.body,
       props: { store }
     });
+
+    // 6. Hydrate auth state from localStorage AFTER component hydration
+    // This must happen after hydrateComponent to avoid hydration mismatches
+    const token = localStorage.getItem('auth_token');
+    if (token) {
+      // Try to restore user info as well
+      let user = null;
+      const userJson = localStorage.getItem('auth_user');
+      if (userJson) {
+        try {
+          user = JSON.parse(userJson);
+        } catch {
+          // Invalid JSON, ignore
+        }
+      }
+      store.dispatch({ type: 'auth/hydrate', token, user });
+    }
 
     // Log successful hydration
     console.log('✅ Ticketing frontend hydrated successfully');

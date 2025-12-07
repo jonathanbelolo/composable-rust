@@ -26,12 +26,12 @@ export interface Event {
 /** Event summary for list view (from GET /api/v2/events) */
 export interface EventSummary {
   id: string;
-  name: string;
+  title: string;
   owner_id: string;
-  venue_name: string;
-  date: string;
-  status: 'Draft' | 'Published' | 'Cancelled';
-  pricing_tiers_count: number;
+  venue: Venue;
+  start_time: string;
+  status: 'draft' | 'published' | 'cancelled';
+  pricing_tiers: PricingTier[];
 }
 
 export interface Venue {
@@ -56,20 +56,34 @@ export interface PricingTier {
 export interface SectionAvailability {
   section: string;
   total_capacity: number;
-  available: number;
-  reserved: number;
-  sold: number;
+  available_seats: number;
+  reserved_seats: number;
+  sold_seats: number;
 }
 
+/** Reservation from list view (from GET /api/v2/reservations) */
 export interface Reservation {
   id: string;
   event_id: string;
-  user_id: string;
-  status: 'pending' | 'payment_pending' | 'confirmed' | 'cancelled' | 'expired';
-  seats: ReservedSeat[];
+  section: string;
+  quantity: number;
+  status: string;
+  total_amount_cents: number;
+  created_at: string;
+}
+
+/** Full reservation detail (from GET /api/v2/reservations/:id) */
+export interface ReservationDetail {
+  id: string;
+  event_id: string;
+  customer_id: string;
+  section: string;
+  quantity: number;
+  status: string;
   total_amount_cents: number;
   expires_at: string | null;
   created_at: string;
+  completed_at: string | null;
 }
 
 export interface ReservedSeat {
@@ -79,19 +93,23 @@ export interface ReservedSeat {
   price_cents: number;
 }
 
+/** Response from POST /api/v2/reservations (create reservation) */
+export interface CreateReservationResponse {
+  reservation_id: string;
+  seats_reserved: number;
+  status: string;
+  message: string;
+}
+
 export interface Payment {
   id: string;
   reservation_id: string;
   customer_id: string;
   amount_cents: number;
-  status: 'pending' | 'processing' | 'succeeded' | 'failed' | 'refunded';
-  payment_method: PaymentMethod;
-  created_at: string;
-}
-
-export interface PaymentMethod {
-  type: 'credit_card' | 'apple_pay' | 'google_pay';
-  last_four?: string;
+  status: string;
+  payment_method: string;
+  transaction_id: string | null;
+  failure_reason: string | null;
 }
 
 export interface User {
@@ -161,6 +179,9 @@ export interface AppState {
   paymentsLoading: boolean;
   paymentsError: string | null;
 
+  // Organizer
+  organizer: OrganizerState;
+
   // Meta (for SSR)
   meta: MetaState;
 
@@ -175,6 +196,7 @@ export interface AuthState {
   isLoading: boolean;
   error: string | null;
   magicLinkSent: boolean;
+  testMagicLink: string | null; // Only set when AUTH_EXPOSE_MAGIC_LINKS_FOR_TESTING=true
 }
 
 export interface ReservationFlow {
@@ -211,6 +233,77 @@ export interface Toast {
 }
 
 // ============================================================================
+// Organizer Types
+// ============================================================================
+
+/** Form data for creating/editing events */
+export interface EventFormData {
+  title: string;
+  description: string;
+  startTime: string; // ISO datetime-local string
+  venueName: string;
+  capacity: number;
+  price: number; // in dollars
+}
+
+/** Request to create an event (matches backend CreateEventRequest) */
+export interface CreateEventRequest {
+  title: string;
+  description?: string;
+  start_time: string; // ISO datetime string
+  venue_name: string;
+  capacity: number;
+  price: number;
+}
+
+/** Response from creating an event */
+export interface CreateEventApiResponse {
+  event_id: string;
+  message: string;
+}
+
+/** Request to update an event (matches backend UpdateEventRequest) */
+export interface UpdateEventRequest {
+  name?: string;
+  venue_name?: string;
+  date?: string; // ISO datetime string
+}
+
+/** Response from updating an event */
+export interface UpdateEventApiResponse {
+  event_id: string;
+  message: string;
+}
+
+/** Organizer state for managing events */
+export interface OrganizerState {
+  myEvents: EventSummary[];
+  myEventsLoading: boolean;
+  myEventsError: string | null;
+  eventForm: EventFormData;
+  formLoading: boolean;
+  formError: string | null;
+}
+
+export const initialEventForm: EventFormData = {
+  title: '',
+  description: '',
+  startTime: '',
+  venueName: '',
+  capacity: 100,
+  price: 25.0
+};
+
+export const initialOrganizerState: OrganizerState = {
+  myEvents: [],
+  myEventsLoading: false,
+  myEventsError: null,
+  eventForm: initialEventForm,
+  formLoading: false,
+  formError: null
+};
+
+// ============================================================================
 // Initial State
 // ============================================================================
 
@@ -220,7 +313,8 @@ export const initialAuthState: AuthState = {
   isAuthenticated: false,
   isLoading: false,
   error: null,
-  magicLinkSent: false
+  magicLinkSent: false,
+  testMagicLink: null
 };
 
 export const initialState: AppState = {
@@ -238,6 +332,7 @@ export const initialState: AppState = {
   payments: [],
   paymentsLoading: false,
   paymentsError: null,
+  organizer: initialOrganizerState,
   meta: {
     title: 'Ticketing - Event Tickets Made Easy',
     description: 'Find and book tickets for your favorite events'

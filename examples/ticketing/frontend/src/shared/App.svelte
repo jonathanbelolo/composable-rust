@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { onMount, onDestroy } from 'svelte';
   import type { Store } from '@composable-svelte/core';
   import type { AppState, Event, EventSummary } from './types';
+  import { initialState } from './types';
   import type { AppAction } from './reducer';
   import { urls } from './routing';
 
@@ -16,8 +18,10 @@
     Badge,
     Spinner,
     Skeleton,
-    Progress
+    Progress,
+    DropdownMenu
   } from '@composable-svelte/core/components/ui';
+  import type { MenuItem } from '@composable-svelte/core/components/ui/dropdown-menu';
 
   // Navigation components can be imported from '@composable-svelte/core/navigation-components' when needed
   // Available: Modal, Sheet, Alert, Drawer, Popover, Sidebar, Tabs, NavigationStack
@@ -29,32 +33,128 @@
 
   let { store }: Props = $props();
 
-  // Reactive state from store using $store auto-subscription
-  const destination = $derived($store.destination);
-  const auth = $derived($store.auth);
-  const meta = $derived($store.meta);
-  const events = $derived($store.events);
-  const eventsLoading = $derived($store.eventsLoading);
-  const eventsError = $derived($store.eventsError);
-  const selectedEvent = $derived($store.selectedEvent);
-  const availability = $derived($store.availability);
-  const reservations = $derived($store.reservations);
-  const currentReservation = $derived($store.currentReservation);
-  const reservationsLoading = $derived($store.reservationsLoading);
-  const reservationsError = $derived($store.reservationsError);
-  const payments = $derived($store.payments);
-  const paymentsLoading = $derived($store.paymentsLoading);
-  const paymentsError = $derived($store.paymentsError);
+  // ============================================================================
+  // Reactive State Bridge
+  // ============================================================================
+  // The store uses a subscription-based pattern, not $state runes internally.
+  // Per composable-svelte examples (product-gallery/App.svelte):
+  // "Use onMount + subscribe instead of $derived to avoid infinite loops"
+  // We bridge the store's updates to Svelte 5's reactive system via $state.
+  let state = $state<AppState>(store.state);
+
+  onMount(() => {
+    // Subscribe to store updates
+    const unsubscribe = store.subscribe((s) => (state = s));
+
+    // Handle magic link verification on mount (after hydration)
+    // This runs once when the component mounts on the client
+    const currentState = store.state;
+    if (currentState.destination.type === 'verify' && !currentState.auth.isAuthenticated) {
+      const params = new URLSearchParams(window.location.search);
+      const token = params.get('token');
+      if (token) {
+        console.log('[Auth] Verifying magic link token...');
+        verificationAttempted = true;
+        store.dispatch({ type: 'auth/verifyToken', token });
+      }
+    }
+
+    return unsubscribe;
+  });
+
+  // Derived values for convenience (now reactive via state)
+  const destination = $derived(state.destination);
+  const auth = $derived(state.auth);
+  const meta = $derived(state.meta);
+  const events = $derived(state.events);
+  const eventsLoading = $derived(state.eventsLoading);
+  const eventsError = $derived(state.eventsError);
+  const selectedEvent = $derived(state.selectedEvent);
+  const availability = $derived(state.availability);
+  const reservations = $derived(state.reservations);
+  const currentReservation = $derived(state.currentReservation);
+  const reservationsLoading = $derived(state.reservationsLoading);
+  const reservationsError = $derived(state.reservationsError);
+  const payments = $derived(state.payments);
+  const paymentsLoading = $derived(state.paymentsLoading);
+  const paymentsError = $derived(state.paymentsError);
+  const organizer = $derived(state.organizer);
+  const toasts = $derived(state.ui.toasts);
+
+  // Track if we've already attempted verification to prevent loops
+  let verificationAttempted = $state(false);
+
+  // Track toasts we've already set auto-dismiss timers for
+  let toastTimersSet = $state(new Set<string>());
+
+  // User dropdown menu items (dynamically updated based on auth)
+  // Note: icon property renders as text content, so use Unicode/emoji symbols
+  const userMenuItems = $derived<MenuItem[]>([
+    { id: 'user-email', label: auth.user?.email ?? 'User', disabled: true },
+    { id: 'sep1', label: '', isSeparator: true },
+    { id: 'dashboard', label: 'Dashboard', icon: '📊' },
+    { id: 'organize', label: 'Organize Events', icon: '📅' },
+    { id: 'sep2', label: '', isSeparator: true },
+    { id: 'logout', label: 'Sign out', icon: '🚪' }
+  ]);
+
+  // Handle user menu item selection
+  function handleUserMenuSelect(item: MenuItem) {
+    switch (item.id) {
+      case 'dashboard':
+        navigate({ type: 'dashboard', state: {} });
+        break;
+      case 'organize':
+        navigate({ type: 'organizerEvents', state: {} });
+        break;
+      case 'logout':
+        store.dispatch({ type: 'auth/logout' });
+        break;
+    }
+  }
 
   // Auto-load data when navigating to certain pages
+  // Note: Dashboard/myReservations and organizerEvents data loading is handled
+  // by the reducer when processing 'navigate' actions (proper composable architecture)
   $effect(() => {
     // Load events list when navigating to events page (including direct URL access)
     if (destination.type === 'events' && events.length === 0 && !eventsLoading && !eventsError) {
       store.dispatch({ type: 'events/loadList' });
     }
     // Load event detail when navigating to event detail page
-    if (destination.type === 'eventDetail' && destination.state.eventId && !selectedEvent && !eventsLoading) {
+    if (destination.type === 'eventDetail' && destination.state.eventId && !selectedEvent && !eventsLoading && !eventsError) {
       store.dispatch({ type: 'events/loadDetail', eventId: destination.state.eventId });
+    }
+    // Note: Magic link verification is handled in onMount to ensure it runs after hydration
+    // Auto-load event for editing
+    if (destination.type === 'editEvent' &&
+        destination.state.eventId &&
+        !organizer.formLoading) {
+      store.dispatch({ type: 'organizer/loadEventForEdit', eventId: destination.state.eventId });
+    }
+    // Reset form when entering create event page
+    if (destination.type === 'createEvent' && organizer.eventForm.title !== '') {
+      store.dispatch({ type: 'organizer/resetForm' });
+    }
+  });
+
+  // Auto-dismiss toasts after 5 seconds
+  $effect(() => {
+    if (typeof window === 'undefined') return; // Only run in browser
+    if (toasts.length === 0) return;
+
+    for (const toast of toasts) {
+      if (toastTimersSet.has(toast.id)) continue;
+
+      // Mark this toast as having a timer set
+      toastTimersSet = new Set([...toastTimersSet, toast.id]);
+
+      const toastId = toast.id;
+      setTimeout(() => {
+        store.dispatch({ type: 'ui/dismissToast', id: toastId });
+        // Clean up the tracked ID
+        toastTimersSet = new Set([...toastTimersSet].filter((id) => id !== toastId));
+      }, 5000);
     }
   });
 
@@ -86,6 +186,11 @@
   function getLowestPrice(event: Event): number {
     const prices = event.pricing_tiers.map(t => t.price_cents);
     return Math.min(...prices);
+  }
+
+  function getEventName(eventId: string): string {
+    const event = events.find(e => e.id === eventId);
+    return event?.title ?? 'Unknown Event';
   }
 </script>
 
@@ -131,22 +236,26 @@
 
         <div class="flex items-center space-x-4">
           {#if auth.isAuthenticated}
-            <a
-              href={urls.dashboard()}
-              class="text-gray-600 hover:text-gray-900"
-              onclick={(e: MouseEvent) => {
-                e.preventDefault();
-                navigate({ type: 'dashboard', state: {} });
-              }}
+            <!-- User dropdown menu -->
+            <DropdownMenu
+              items={userMenuItems}
+              onSelect={handleUserMenuSelect}
+              align="end"
             >
-              Dashboard
-            </a>
-            <Button
-              variant="ghost"
-              onclick={() => store.dispatch({ type: 'auth/logout' })}
-            >
-              Logout
-            </Button>
+              <button
+                type="button"
+                class="flex items-center gap-2 px-3 py-2 text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                <!-- User icon -->
+                <svg class="w-6 h-6 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M17.982 18.725A7.488 7.488 0 0012 15.75a7.488 7.488 0 00-5.982 2.975m11.963 0a9 9 0 10-11.963 0m11.963 0A8.966 8.966 0 0112 21a8.966 8.966 0 01-5.982-2.275M15 9.75a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+                <!-- Chevron down -->
+                <svg class="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+            </DropdownMenu>
           {:else}
             <Button
               onclick={() => navigate({ type: 'login', state: {} })}
@@ -214,14 +323,14 @@
             {#each events as event (event.id)}
               <Card class="overflow-hidden hover:shadow-lg transition-shadow">
                 <CardHeader>
-                  <CardTitle>{event.name}</CardTitle>
+                  <CardTitle>{event.title}</CardTitle>
                   <CardDescription>
-                    {event.venue_name} &middot; {formatDate(event.date)}
+                    {event.venue.name} &middot; {formatDate(event.start_time)}
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
                   <div class="flex justify-between items-center">
-                    <Badge variant={event.status === 'Published' ? 'success' : 'secondary'}>
+                    <Badge variant={event.status === 'published' ? 'success' : 'secondary'}>
                       {event.status}
                     </Badge>
                     <Button
@@ -248,6 +357,18 @@
           <div class="flex justify-center py-12">
             <Spinner size="lg" />
           </div>
+        {:else if eventsError}
+          <Card class="max-w-md mx-auto mt-12">
+            <CardHeader>
+              <CardTitle class="text-red-600">Unable to Load Event</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p class="text-gray-600 mb-4">{eventsError}</p>
+              <Button variant="outline" onclick={() => navigate({ type: 'events', state: {} })}>
+                Back to Events
+              </Button>
+            </CardContent>
+          </Card>
         {:else if selectedEvent}
           {@const event = selectedEvent}
           <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -334,9 +455,9 @@
                       <div class="mb-3">
                         <div class="flex justify-between text-sm mb-1">
                           <span>{section.section}</span>
-                          <span>{section.available}/{section.total_capacity}</span>
+                          <span>{section.available_seats}/{section.total_capacity}</span>
                         </div>
-                        <Progress value={(section.available / section.total_capacity) * 100} />
+                        <Progress value={(section.available_seats / section.total_capacity) * 100} />
                       </div>
                     {/each}
                   </CardContent>
@@ -374,10 +495,25 @@
           <CardContent>
             {#if auth.magicLinkSent}
               <div class="text-center py-4">
-                <div class="text-green-600 mb-2">Check your email!</div>
+                <div class="text-green-600 mb-2">
+                  {auth.testMagicLink ? 'Magic link generated!' : 'Check your email!'}
+                </div>
                 <p class="text-gray-600 text-sm">
-                  We've sent you a magic link. Click it to sign in.
+                  {auth.testMagicLink
+                    ? 'Click the link below to sign in (testing mode):'
+                    : 'We\'ve sent you a magic link. Click it to sign in.'}
                 </p>
+                {#if auth.testMagicLink}
+                  <a
+                    href={auth.testMagicLink}
+                    class="mt-4 inline-block px-4 py-2 bg-primary-600 text-white rounded-md hover:bg-primary-700 transition-colors"
+                  >
+                    Click to Sign In
+                  </a>
+                  <p class="mt-2 text-xs text-gray-400 break-all">
+                    {auth.testMagicLink}
+                  </p>
+                {/if}
               </div>
             {:else}
               <form
@@ -445,27 +581,119 @@
         </div>
 
         {#if destination.state?.tab === 'payments'}
-          <Card>
-            <CardContent class="py-8 text-center text-gray-600">
-              <p>Your payment history will appear here.</p>
-            </CardContent>
-          </Card>
+          {#if paymentsLoading && payments.length === 0}
+            <div class="flex justify-center py-12">
+              <Spinner size="lg" />
+            </div>
+          {:else if !paymentsLoading && payments.length === 0}
+            <Card>
+              <CardContent class="text-center py-12">
+                <p class="text-gray-600 mb-2">No payment history yet.</p>
+                <p class="text-sm text-gray-500">Payments will appear here after you complete a purchase.</p>
+              </CardContent>
+            </Card>
+          {:else}
+            <div class="space-y-4">
+              {#each payments as payment (payment.id)}
+                <Card>
+                  <CardContent class="py-4">
+                    <div class="flex justify-between items-start">
+                      <div>
+                        <div class="font-medium">{formatPrice(payment.amount_cents)}</div>
+                        <div class="text-sm text-gray-500">
+                          {payment.payment_method}
+                        </div>
+                        {#if payment.transaction_id}
+                          <div class="text-xs text-gray-400">
+                            Transaction: {payment.transaction_id}
+                          </div>
+                        {/if}
+                      </div>
+                      <Badge variant={
+                        payment.status === 'succeeded' ? 'success' :
+                        payment.status === 'processing' ? 'warning' :
+                        payment.status === 'failed' ? 'destructive' :
+                        'secondary'
+                      }>
+                        {payment.status}
+                      </Badge>
+                    </div>
+                    {#if payment.failure_reason}
+                      <p class="mt-2 text-sm text-red-600">{payment.failure_reason}</p>
+                    {/if}
+                  </CardContent>
+                </Card>
+              {/each}
+            </div>
+          {/if}
         {:else}
-          <Card>
-            <CardContent class="py-8 text-center text-gray-600">
-              <p>Your reservations will appear here.</p>
-              <Button
-                variant="outline"
-                class="mt-4"
-                onclick={() => {
-                  navigate({ type: 'events', state: {} });
-                  store.dispatch({ type: 'events/loadList' });
-                }}
-              >
-                Browse Events
-              </Button>
-            </CardContent>
-          </Card>
+          {#if reservationsLoading && reservations.length === 0}
+            <div class="flex justify-center py-12">
+              <Spinner size="lg" />
+            </div>
+          {:else if !reservationsLoading && reservations.length === 0}
+            <Card>
+              <CardContent class="py-8 text-center text-gray-600">
+                <p>You don't have any reservations yet.</p>
+                <Button
+                  variant="outline"
+                  class="mt-4"
+                  onclick={() => {
+                    navigate({ type: 'events', state: {} });
+                    store.dispatch({ type: 'events/loadList' });
+                  }}
+                >
+                  Browse Events
+                </Button>
+              </CardContent>
+            </Card>
+          {:else}
+            <div class="space-y-4">
+              {#each reservations as reservation (reservation.id)}
+                <Card>
+                  <CardContent class="py-4">
+                    <div class="flex justify-between items-start">
+                      <div>
+                        <div class="font-medium text-lg">{getEventName(reservation.event_id)}</div>
+                        <div class="text-sm text-gray-500">
+                          {reservation.quantity} ticket(s) in {reservation.section} - {formatPrice(reservation.total_amount_cents)}
+                        </div>
+                        <div class="text-sm text-gray-400">
+                          {new Date(reservation.created_at).toLocaleDateString()} &middot; #{reservation.id.slice(0, 8)}
+                        </div>
+                      </div>
+                      <Badge variant={
+                        reservation.status === 'Confirmed' || reservation.status === 'confirmed' || reservation.status === 'completed' ? 'success' :
+                        reservation.status === 'Pending' || reservation.status === 'pending' || reservation.status === 'PaymentPending' ? 'warning' :
+                        'secondary'
+                      }>
+                        {reservation.status}
+                      </Badge>
+                    </div>
+                    {#if reservation.status === 'Pending' || reservation.status === 'pending' || reservation.status === 'PaymentPending'}
+                      <div class="mt-3 flex gap-2">
+                        <Button
+                          size="sm"
+                          onclick={() => {
+                            navigate({ type: 'reserve', state: { eventId: reservation.event_id } });
+                          }}
+                        >
+                          Complete Payment
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onclick={() => store.dispatch({ type: 'reservations/cancel', reservationId: reservation.id })}
+                        >
+                          Cancel
+                        </Button>
+                      </div>
+                    {/if}
+                  </CardContent>
+                </Card>
+              {/each}
+            </div>
+          {/if}
         {/if}
       </div>
 
@@ -690,8 +918,19 @@
       <div class="max-w-md mx-auto">
         <Card>
           <CardHeader class="text-center">
-            <CardTitle>Verifying...</CardTitle>
-            <CardDescription>Please wait while we verify your login</CardDescription>
+            {#if auth.isAuthenticated}
+              <CardTitle>Welcome!</CardTitle>
+              <CardDescription>You've been logged in successfully</CardDescription>
+            {:else if auth.error}
+              <CardTitle>Verification Failed</CardTitle>
+              <CardDescription>We couldn't verify your login</CardDescription>
+            {:else if auth.isLoading}
+              <CardTitle>Verifying...</CardTitle>
+              <CardDescription>Please wait while we verify your login</CardDescription>
+            {:else}
+              <CardTitle>Magic Link</CardTitle>
+              <CardDescription>Waiting for verification token</CardDescription>
+            {/if}
           </CardHeader>
           <CardContent class="text-center">
             {#if auth.isLoading}
@@ -705,9 +944,16 @@
               </div>
             {:else if auth.isAuthenticated}
               <div>
-                <p class="text-green-600 mb-4">Successfully logged in!</p>
+                <p class="text-green-600 mb-4">Welcome, {auth.user?.email}!</p>
                 <Button onclick={() => navigate({ type: 'dashboard', state: {} })}>
                   Go to Dashboard
+                </Button>
+              </div>
+            {:else}
+              <div>
+                <p class="text-gray-600 mb-4">No token found in the URL. Please check your email for the magic link.</p>
+                <Button variant="outline" onclick={() => navigate({ type: 'login', state: {} })}>
+                  Request New Link
                 </Button>
               </div>
             {/if}
@@ -747,21 +993,21 @@
                     <div>
                       <div class="font-medium">Reservation #{reservation.id.slice(0, 8)}</div>
                       <div class="text-sm text-gray-500">
-                        {reservation.seats.length} ticket(s) - {formatPrice(reservation.total_amount_cents)}
+                        {reservation.quantity} ticket(s) in {reservation.section} - {formatPrice(reservation.total_amount_cents)}
                       </div>
                       <div class="text-sm text-gray-500">
                         {new Date(reservation.created_at).toLocaleDateString()}
                       </div>
                     </div>
                     <Badge variant={
-                      reservation.status === 'confirmed' ? 'success' :
-                      reservation.status === 'pending' || reservation.status === 'payment_pending' ? 'warning' :
+                      reservation.status === 'Confirmed' || reservation.status === 'confirmed' ? 'success' :
+                      reservation.status === 'Pending' || reservation.status === 'pending' || reservation.status === 'PaymentPending' ? 'warning' :
                       'secondary'
                     }>
                       {reservation.status}
                     </Badge>
                   </div>
-                  {#if reservation.status === 'pending' || reservation.status === 'payment_pending'}
+                  {#if reservation.status === 'Pending' || reservation.status === 'pending' || reservation.status === 'PaymentPending'}
                     <div class="mt-3 flex gap-2">
                       <Button
                         size="sm"
@@ -799,7 +1045,8 @@
         {:else if payments.length === 0}
           <Card>
             <CardContent class="text-center py-12">
-              <p class="text-gray-600">No payment history yet.</p>
+              <p class="text-gray-600 mb-2">No payment history yet.</p>
+              <p class="text-sm text-gray-500">Payments will appear here after you complete a purchase.</p>
             </CardContent>
           </Card>
         {:else}
@@ -811,23 +1058,26 @@
                     <div>
                       <div class="font-medium">{formatPrice(payment.amount_cents)}</div>
                       <div class="text-sm text-gray-500">
-                        {payment.payment_method.type}
-                        {#if payment.payment_method.last_four}
-                          ending in {payment.payment_method.last_four}
-                        {/if}
+                        {payment.payment_method}
                       </div>
-                      <div class="text-sm text-gray-500">
-                        {new Date(payment.created_at).toLocaleDateString()}
-                      </div>
+                      {#if payment.transaction_id}
+                        <div class="text-xs text-gray-400">
+                          Transaction: {payment.transaction_id}
+                        </div>
+                      {/if}
                     </div>
                     <Badge variant={
                       payment.status === 'succeeded' ? 'success' :
-                      payment.status === 'pending' || payment.status === 'processing' ? 'warning' :
+                      payment.status === 'processing' ? 'warning' :
+                      payment.status === 'failed' ? 'destructive' :
                       'secondary'
                     }>
                       {payment.status}
                     </Badge>
                   </div>
+                  {#if payment.failure_reason}
+                    <p class="mt-2 text-sm text-red-600">{payment.failure_reason}</p>
+                  {/if}
                 </CardContent>
               </Card>
             {/each}
@@ -845,32 +1095,257 @@
           </Button>
         </div>
 
-        <Card>
-          <CardContent class="text-center py-12">
-            <p class="text-gray-600 mb-4">Event organizer features coming soon.</p>
-            <p class="text-sm text-gray-500">
-              You'll be able to create and manage events, view analytics, and more.
-            </p>
-          </CardContent>
-        </Card>
+        {#if organizer.myEventsLoading}
+          <div class="space-y-4">
+            {#each [1, 2, 3] as _}
+              <Card>
+                <CardContent class="py-4">
+                  <Skeleton class="h-6 w-1/2 mb-2" />
+                  <Skeleton class="h-4 w-1/3" />
+                </CardContent>
+              </Card>
+            {/each}
+          </div>
+        {:else if organizer.myEventsError}
+          <Card>
+            <CardContent class="text-center py-8">
+              <p class="text-red-600 mb-4">{organizer.myEventsError}</p>
+              <Button variant="outline" onclick={() => store.dispatch({ type: 'organizer/loadMyEvents' })}>
+                Try Again
+              </Button>
+            </CardContent>
+          </Card>
+        {:else if organizer.myEvents.length === 0}
+          <Card>
+            <CardContent class="text-center py-12">
+              <p class="text-gray-600 mb-4">You haven't created any events yet.</p>
+              <Button onclick={() => navigate({ type: 'createEvent', state: {} })}>
+                Create Your First Event
+              </Button>
+            </CardContent>
+          </Card>
+        {:else}
+          <div class="space-y-4">
+            {#each organizer.myEvents as event}
+              <Card>
+                <CardContent class="py-4">
+                  <div class="flex justify-between items-start">
+                    <div class="flex-1">
+                      <h3 class="text-lg font-semibold text-gray-900">{event.title}</h3>
+                      <p class="text-sm text-gray-500">{event.venue.name}</p>
+                      <p class="text-sm text-gray-500">{formatDate(event.start_time)} at {formatTime(event.start_time)}</p>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <Badge variant={
+                        event.status === 'published' ? 'success' :
+                        event.status === 'draft' ? 'secondary' :
+                        'destructive'
+                      }>
+                        {event.status}
+                      </Badge>
+                    </div>
+                  </div>
+                  <div class="flex gap-2 mt-4">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onclick={() => navigate({ type: 'editEvent', state: { eventId: event.id } })}
+                    >
+                      Edit
+                    </Button>
+                    {#if event.status === 'draft'}
+                      <Button
+                        variant="default"
+                        size="sm"
+                        onclick={() => store.dispatch({ type: 'organizer/publishEvent', eventId: event.id })}
+                      >
+                        Publish
+                      </Button>
+                    {/if}
+                    {#if event.status === 'published'}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onclick={() => navigate({ type: 'eventAnalytics', state: { eventId: event.id } })}
+                      >
+                        Analytics
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onclick={() => store.dispatch({ type: 'organizer/cancelEvent', eventId: event.id })}
+                      >
+                        Cancel
+                      </Button>
+                    {/if}
+                  </div>
+                </CardContent>
+              </Card>
+            {/each}
+          </div>
+        {/if}
       </div>
 
     {:else if destination.type === 'createEvent'}
       <!-- CREATE EVENT PAGE -->
       <div class="max-w-2xl mx-auto">
-        <h1 class="text-3xl font-bold text-gray-900 mb-6">Create Event</h1>
+        <div class="flex items-center gap-4 mb-6">
+          <Button
+            variant="ghost"
+            size="sm"
+            onclick={() => navigate({ type: 'organizerEvents', state: {} })}
+          >
+            &larr; Back
+          </Button>
+          <h1 class="text-3xl font-bold text-gray-900">Create Event</h1>
+        </div>
 
         <Card>
-          <CardContent class="py-8">
-            <p class="text-center text-gray-600 mb-4">Event creation form coming soon.</p>
-            <div class="text-center">
-              <Button
-                variant="outline"
-                onclick={() => navigate({ type: 'organizerEvents', state: {} })}
-              >
-                Back to My Events
-              </Button>
-            </div>
+          <CardContent class="py-6">
+            <form
+              onsubmit={(e: Event) => {
+                e.preventDefault();
+                store.dispatch({ type: 'organizer/createEvent' });
+              }}
+            >
+              <div class="space-y-5">
+                <div>
+                  <label for="title" class="block text-sm font-medium text-gray-700 mb-1">
+                    Event Title *
+                  </label>
+                  <Input
+                    id="title"
+                    type="text"
+                    value={organizer.eventForm.title}
+                    placeholder="Concert at Madison Square Garden"
+                    required
+                    disabled={organizer.formLoading}
+                    oninput={(e: InputEvent) => {
+                      const target = e.target as HTMLInputElement;
+                      store.dispatch({ type: 'organizer/updateForm', field: 'title', value: target.value });
+                    }}
+                  />
+                </div>
+
+                <div>
+                  <label for="description" class="block text-sm font-medium text-gray-700 mb-1">
+                    Description
+                  </label>
+                  <textarea
+                    id="description"
+                    class="w-full min-h-[100px] px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                    value={organizer.eventForm.description}
+                    placeholder="Tell attendees about your event..."
+                    disabled={organizer.formLoading}
+                    oninput={(e: InputEvent) => {
+                      const target = e.target as HTMLTextAreaElement;
+                      store.dispatch({ type: 'organizer/updateForm', field: 'description', value: target.value });
+                    }}
+                  ></textarea>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label for="startTime" class="block text-sm font-medium text-gray-700 mb-1">
+                      Date & Time *
+                    </label>
+                    <Input
+                      id="startTime"
+                      type="datetime-local"
+                      value={organizer.eventForm.startTime}
+                      required
+                      disabled={organizer.formLoading}
+                      oninput={(e: InputEvent) => {
+                        const target = e.target as HTMLInputElement;
+                        store.dispatch({ type: 'organizer/updateForm', field: 'startTime', value: target.value });
+                      }}
+                    />
+                  </div>
+
+                  <div>
+                    <label for="venueName" class="block text-sm font-medium text-gray-700 mb-1">
+                      Venue *
+                    </label>
+                    <Input
+                      id="venueName"
+                      type="text"
+                      value={organizer.eventForm.venueName}
+                      placeholder="Madison Square Garden"
+                      required
+                      disabled={organizer.formLoading}
+                      oninput={(e: InputEvent) => {
+                        const target = e.target as HTMLInputElement;
+                        store.dispatch({ type: 'organizer/updateForm', field: 'venueName', value: target.value });
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label for="capacity" class="block text-sm font-medium text-gray-700 mb-1">
+                      Capacity *
+                    </label>
+                    <Input
+                      id="capacity"
+                      type="number"
+                      min="1"
+                      value={organizer.eventForm.capacity.toString()}
+                      required
+                      disabled={organizer.formLoading}
+                      oninput={(e: InputEvent) => {
+                        const target = e.target as HTMLInputElement;
+                        store.dispatch({ type: 'organizer/updateForm', field: 'capacity', value: parseInt(target.value) || 0 });
+                      }}
+                    />
+                  </div>
+
+                  <div>
+                    <label for="price" class="block text-sm font-medium text-gray-700 mb-1">
+                      Ticket Price ($) *
+                    </label>
+                    <Input
+                      id="price"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={organizer.eventForm.price.toString()}
+                      required
+                      disabled={organizer.formLoading}
+                      oninput={(e: InputEvent) => {
+                        const target = e.target as HTMLInputElement;
+                        store.dispatch({ type: 'organizer/updateForm', field: 'price', value: parseFloat(target.value) || 0 });
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {#if organizer.formError}
+                  <p class="text-red-600 text-sm">{organizer.formError}</p>
+                {/if}
+
+                <div class="flex gap-3 pt-4">
+                  <Button
+                    variant="outline"
+                    type="button"
+                    onclick={() => navigate({ type: 'organizerEvents', state: {} })}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="submit"
+                    class="flex-1"
+                    disabled={organizer.formLoading || !organizer.eventForm.title || !organizer.eventForm.startTime || !organizer.eventForm.venueName}
+                  >
+                    {#if organizer.formLoading}
+                      <Spinner size="sm" /> Creating...
+                    {:else}
+                      Create Event
+                    {/if}
+                  </Button>
+                </div>
+              </div>
+            </form>
           </CardContent>
         </Card>
       </div>
@@ -878,24 +1353,196 @@
     {:else if destination.type === 'editEvent'}
       <!-- EDIT EVENT PAGE -->
       <div class="max-w-2xl mx-auto">
-        <h1 class="text-3xl font-bold text-gray-900 mb-6">Edit Event</h1>
+        <div class="flex items-center gap-4 mb-6">
+          <Button
+            variant="ghost"
+            size="sm"
+            onclick={() => navigate({ type: 'organizerEvents', state: {} })}
+          >
+            &larr; Back
+          </Button>
+          <h1 class="text-3xl font-bold text-gray-900">Edit Event</h1>
+        </div>
 
-        <Card>
-          <CardContent class="py-8">
-            <p class="text-center text-gray-600 mb-4">
-              Editing event: {destination.state.eventId}
-            </p>
-            <p class="text-center text-sm text-gray-500 mb-4">Event editing form coming soon.</p>
-            <div class="text-center">
-              <Button
-                variant="outline"
-                onclick={() => navigate({ type: 'organizerEvents', state: {} })}
+        {#if organizer.formLoading && !organizer.eventForm.title}
+          <!-- Loading event data -->
+          <Card>
+            <CardContent class="py-12">
+              <div class="flex justify-center">
+                <Spinner size="lg" />
+              </div>
+              <p class="text-center text-gray-600 mt-4">Loading event details...</p>
+            </CardContent>
+          </Card>
+        {:else}
+          <Card>
+            <CardContent class="py-6">
+              <form
+                onsubmit={(e: Event) => {
+                  e.preventDefault();
+                  store.dispatch({ type: 'organizer/updateEvent', eventId: destination.state.eventId });
+                }}
               >
-                Back to My Events
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+                <div class="space-y-5">
+                  <div>
+                    <label for="edit-title" class="block text-sm font-medium text-gray-700 mb-1">
+                      Event Title *
+                    </label>
+                    <Input
+                      id="edit-title"
+                      type="text"
+                      value={organizer.eventForm.title}
+                      placeholder="Concert at Madison Square Garden"
+                      required
+                      disabled={organizer.formLoading}
+                      oninput={(e: InputEvent) => {
+                        const target = e.target as HTMLInputElement;
+                        store.dispatch({ type: 'organizer/updateForm', field: 'title', value: target.value });
+                      }}
+                    />
+                  </div>
+
+                  <div>
+                    <label for="edit-description" class="block text-sm font-medium text-gray-700 mb-1">
+                      Description
+                    </label>
+                    <textarea
+                      id="edit-description"
+                      class="w-full min-h-[100px] px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                      value={organizer.eventForm.description}
+                      placeholder="Tell attendees about your event..."
+                      disabled={organizer.formLoading}
+                      oninput={(e: InputEvent) => {
+                        const target = e.target as HTMLTextAreaElement;
+                        store.dispatch({ type: 'organizer/updateForm', field: 'description', value: target.value });
+                      }}
+                    ></textarea>
+                  </div>
+
+                  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label for="edit-startTime" class="block text-sm font-medium text-gray-700 mb-1">
+                        Date & Time *
+                      </label>
+                      <Input
+                        id="edit-startTime"
+                        type="datetime-local"
+                        value={organizer.eventForm.startTime}
+                        required
+                        disabled={organizer.formLoading}
+                        oninput={(e: InputEvent) => {
+                          const target = e.target as HTMLInputElement;
+                          store.dispatch({ type: 'organizer/updateForm', field: 'startTime', value: target.value });
+                        }}
+                      />
+                    </div>
+
+                    <div>
+                      <label for="edit-venueName" class="block text-sm font-medium text-gray-700 mb-1">
+                        Venue *
+                      </label>
+                      <Input
+                        id="edit-venueName"
+                        type="text"
+                        value={organizer.eventForm.venueName}
+                        placeholder="Madison Square Garden"
+                        required
+                        disabled={organizer.formLoading}
+                        oninput={(e: InputEvent) => {
+                          const target = e.target as HTMLInputElement;
+                          store.dispatch({ type: 'organizer/updateForm', field: 'venueName', value: target.value });
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label for="edit-capacity" class="block text-sm font-medium text-gray-700 mb-1">
+                        Capacity *
+                      </label>
+                      <Input
+                        id="edit-capacity"
+                        type="number"
+                        min="1"
+                        value={organizer.eventForm.capacity.toString()}
+                        required
+                        disabled={organizer.formLoading}
+                        oninput={(e: InputEvent) => {
+                          const target = e.target as HTMLInputElement;
+                          store.dispatch({ type: 'organizer/updateForm', field: 'capacity', value: parseInt(target.value) || 0 });
+                        }}
+                      />
+                    </div>
+
+                    <div>
+                      <label for="edit-price" class="block text-sm font-medium text-gray-700 mb-1">
+                        Ticket Price ($) *
+                      </label>
+                      <Input
+                        id="edit-price"
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={organizer.eventForm.price.toString()}
+                        required
+                        disabled={organizer.formLoading}
+                        oninput={(e: InputEvent) => {
+                          const target = e.target as HTMLInputElement;
+                          store.dispatch({ type: 'organizer/updateForm', field: 'price', value: parseFloat(target.value) || 0 });
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  {#if organizer.formError}
+                    <p class="text-red-600 text-sm">{organizer.formError}</p>
+                  {/if}
+
+                  <div class="flex gap-3 pt-4">
+                    <Button
+                      variant="outline"
+                      type="button"
+                      onclick={() => navigate({ type: 'organizerEvents', state: {} })}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      type="submit"
+                      class="flex-1"
+                      disabled={organizer.formLoading || !organizer.eventForm.title || !organizer.eventForm.startTime || !organizer.eventForm.venueName}
+                    >
+                      {#if organizer.formLoading}
+                        <Spinner size="sm" /> Saving...
+                      {:else}
+                        Save Changes
+                      {/if}
+                    </Button>
+                  </div>
+
+                  <!-- Danger zone for delete -->
+                  <div class="mt-8 pt-6 border-t border-gray-200">
+                    <h3 class="text-sm font-medium text-gray-900 mb-2">Danger Zone</h3>
+                    <p class="text-sm text-gray-500 mb-3">
+                      Permanently delete this event. This action cannot be undone.
+                    </p>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onclick={() => {
+                        if (confirm('Are you sure you want to delete this event? This cannot be undone.')) {
+                          store.dispatch({ type: 'organizer/deleteEvent', eventId: destination.state.eventId });
+                        }
+                      }}
+                    >
+                      Delete Event
+                    </Button>
+                  </div>
+                </div>
+              </form>
+            </CardContent>
+          </Card>
+        {/if}
       </div>
 
     {:else if destination.type === 'eventAnalytics'}
@@ -946,6 +1593,46 @@
     </div>
   </footer>
 </div>
+
+<!-- Toast Container -->
+{#if toasts.length > 0}
+  <div class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm">
+    {#each toasts as toast (toast.id)}
+      <div
+        class="flex items-start gap-3 p-4 rounded-lg shadow-lg border {
+          toast.type === 'success' ? 'bg-green-50 border-green-200 text-green-800' :
+          toast.type === 'error' ? 'bg-red-50 border-red-200 text-red-800' :
+          toast.type === 'warning' ? 'bg-yellow-50 border-yellow-200 text-yellow-800' :
+          'bg-blue-50 border-blue-200 text-blue-800'
+        }"
+        role="alert"
+      >
+        <!-- Icon -->
+        <span class="flex-shrink-0 text-lg">
+          {#if toast.type === 'success'}
+            &#10003;
+          {:else if toast.type === 'error'}
+            &#10007;
+          {:else if toast.type === 'warning'}
+            &#9888;
+          {:else}
+            &#8505;
+          {/if}
+        </span>
+        <!-- Message -->
+        <p class="flex-1 text-sm">{toast.message}</p>
+        <!-- Dismiss button -->
+        <button
+          type="button"
+          class="flex-shrink-0 text-gray-400 hover:text-gray-600"
+          onclick={() => store.dispatch({ type: 'ui/dismissToast', id: toast.id })}
+        >
+          &#10005;
+        </button>
+      </div>
+    {/each}
+  </div>
+{/if}
 
 <style>
   @import 'tailwindcss/base';

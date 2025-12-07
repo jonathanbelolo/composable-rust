@@ -22,10 +22,6 @@ export interface BrowserHistoryConfig<State, Action, Dest> {
   destinationToAction: (destination: Dest | null) => Action | null;
 }
 
-interface ComposableSvelteHistoryState {
-  composableSvelteSync?: boolean;
-}
-
 /**
  * Sync browser history with store state.
  *
@@ -137,7 +133,9 @@ function matchPath(pattern: string, path: string): Record<string, string> | null
  * - / → Home
  */
 export function parseDestinationFromURL(path: string): AppDestination {
-  const normalizedPath = path.replace(/^\/|\/$/g, '');
+  // Strip query string before parsing
+  const pathWithoutQuery = path.split('?')[0];
+  const normalizedPath = pathWithoutQuery.replace(/^\/|\/$/g, '');
 
   // Organizer routes (most specific first)
   let params = matchPath('organizer/:id/analytics', normalizedPath);
@@ -187,7 +185,7 @@ export function parseDestinationFromURL(path: string): AppDestination {
   }
 
   // Auth routes
-  if (normalizedPath === 'auth/verify') {
+  if (normalizedPath === 'auth/magic-link/verify' || normalizedPath === 'auth/verify') {
     return { type: 'verify', state: {} };
   }
 
@@ -220,7 +218,7 @@ export function destinationURL(destination: AppDestination): string {
     case 'login':
       return '/auth/login';
     case 'verify':
-      return '/auth/verify';
+      return '/auth/magic-link/verify';
     case 'dashboard':
       return '/dashboard';
     case 'myReservations':
@@ -247,7 +245,7 @@ export const urls = {
   eventDetail: (eventId: string) => `/events/${eventId}`,
   reserve: (eventId: string) => `/events/${eventId}/reserve`,
   login: () => '/auth/login',
-  verify: () => '/auth/verify',
+  verify: () => '/auth/magic-link/verify',
   dashboard: () => '/dashboard',
   myReservations: () => '/dashboard/reservations',
   myPayments: () => '/dashboard/payments',

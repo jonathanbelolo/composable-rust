@@ -52,5 +52,13 @@ reqwest = { version = "0.12", features = ["json"] }
 tokio-tungstenite = "0.24"
 tokio-stream = "0.1"
 
+[[bin]]
+name = "ticketing"
+path = "src/main.rs"
+
+[[bin]]
+name = "replay-payments"
+path = "src/bin/replay_payments.rs"
+
 [lints]
 workspace = true

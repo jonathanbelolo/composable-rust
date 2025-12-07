@@ -26,7 +26,7 @@ export const extname = (p: string) => {
   return idx > 0 ? base.slice(idx) : '';
 };
 export const resolve = (...args: string[]) => args.join('/');
-export const relative = (from: string, to: string) => to;
+export const relative = (_from: string, to: string) => to;
 export const normalize = (p: string) => p;
 export const isAbsolute = (p: string) => p.startsWith('/');
 export const sep = '/';
