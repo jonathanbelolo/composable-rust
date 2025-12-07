@@ -8,7 +8,891 @@
 
 ---
 
-## 1. The Problem with One Events Table
+## 1. Two-Layer Event Architecture
+
+### 1.1 The Insight: Global Log + Typed Context Views
+
+We want BOTH:
+- **Global event log**: Single source of truth, complete history, JSONB for flexibility
+- **Context event tables**: Narrow, typed, efficient for context-specific queries
+
+The solution is a **two-layer architecture**:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         GLOBAL EVENT LOG                                 │
+│                    (Single source of truth)                              │
+│                                                                          │
+│  global.event_log                                                        │
+│  ├── id: BIGSERIAL (global ordering)                                     │
+│  ├── stream_id: TEXT                                                     │
+│  ├── version: INTEGER                                                    │
+│  ├── context: TEXT ('sales', 'inventory', 'shipping')                   │
+│  ├── event_type: TEXT                                                    │
+│  ├── payload: JSONB (opaque, complete event data)                       │
+│  ├── metadata: JSONB (correlation, causation, actor)                    │
+│  └── created_at: TIMESTAMPTZ                                             │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    │ Triggers project to typed tables
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                      TYPED CONTEXT EVENTS                                │
+│               (Narrow, efficient, strongly typed)                        │
+│                                                                          │
+│  sales.events              inventory.events         shipping.events      │
+│  ├── id: FK→global         ├── id: FK→global        ├── id: FK→global   │
+│  ├── order_id              ├── product_id           ├── shipment_id     │
+│  ├── customer_id           ├── warehouse_id         ├── carrier         │
+│  ├── quantity              ├── quantity             ├── tracking_number │
+│  └── ... (typed)           └── ... (typed)          └── ... (typed)     │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    │ Triggers update projections
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         PROJECTIONS                                      │
+│                    (Read models per context)                             │
+│                                                                          │
+│  sales.orders_projection   inventory.stock_projection  shipping.shipments│
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### 1.2 Benefits of Two-Layer Architecture
+
+| Benefit | Description |
+|---------|-------------|
+| **Single source of truth** | Global log is THE event store; everything derives from it |
+| **Global ordering** | `global.event_log.id` provides total ordering across all contexts |
+| **Complete audit trail** | One table to query for "what happened" |
+| **Type safety** | Context tables provide typed columns for efficient queries |
+| **Rebuild capability** | Can rebuild any context table from global log |
+| **Minimal duplication** | Context tables are narrow; only denormalize needed fields |
+| **Cross-cutting queries** | Analytics across all events without joining contexts |
+
+### 1.3 Trade-offs
+
+| Trade-off | Mitigation |
+|-----------|------------|
+| **Storage overhead** | Context tables are narrow; global log is the "fat" table |
+| **Write amplification** | Single INSERT to global triggers typed INSERT; acceptable |
+| **Two places to query** | Clear semantics: global for audit, context for business |
+
+---
+
+## 2. Global Event Log Schema
+
+```sql
+-- ═══════════════════════════════════════════════════════════════════════════
+-- GLOBAL SCHEMA
+-- The single source of truth for all events across all bounded contexts
+-- ═══════════════════════════════════════════════════════════════════════════
+
+CREATE SCHEMA global;
+
+-- ───────────────────────────────────────────────────────────────────────────
+-- Event Log: Append-only, immutable, complete history
+-- ───────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE global.event_log (
+    -- Identity (global ordering)
+    id              BIGSERIAL PRIMARY KEY,
+
+    -- Stream identity
+    stream_id       TEXT NOT NULL,
+    version         INTEGER NOT NULL,
+
+    -- Context routing
+    context         TEXT NOT NULL,          -- 'sales', 'inventory', 'shipping'
+    aggregate_type  TEXT NOT NULL,          -- 'order', 'stock', 'shipment'
+
+    -- Event identity
+    event_type      TEXT NOT NULL,
+
+    -- Event data (opaque JSONB - complete event)
+    payload         JSONB NOT NULL,
+
+    -- Metadata (also JSONB for flexibility)
+    metadata        JSONB NOT NULL DEFAULT '{}',
+
+    -- Timestamps
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    -- Constraints
+    UNIQUE (stream_id, version)
+);
+
+-- Metadata typically contains:
+COMMENT ON COLUMN global.event_log.metadata IS
+'Standard metadata fields:
+  - correlation_id: TEXT - Request correlation
+  - causation_id: TEXT - Causing event ID
+  - actor_id: TEXT - User/system that caused the event
+  - actor_type: TEXT - "user", "system", "saga"
+  - timestamp: TIMESTAMPTZ - When the event occurred (may differ from created_at)
+  - schema_version: INTEGER - For event versioning
+';
+
+-- ───────────────────────────────────────────────────────────────────────────
+-- Indexes for common access patterns
+-- ───────────────────────────────────────────────────────────────────────────
+
+-- Primary access: load events for a stream (used by aggregates)
+CREATE INDEX idx_global_events_stream
+    ON global.event_log (stream_id, version);
+
+-- Context-based queries (used by context projectors)
+CREATE INDEX idx_global_events_context
+    ON global.event_log (context, id);
+
+-- Event type queries (used by event handlers)
+CREATE INDEX idx_global_events_type
+    ON global.event_log (event_type, id);
+
+-- Time-based queries (used by audit, analytics)
+CREATE INDEX idx_global_events_created
+    ON global.event_log (created_at);
+
+-- Correlation tracking (used by debugging, saga tracking)
+CREATE INDEX idx_global_events_correlation
+    ON global.event_log ((metadata->>'correlation_id'))
+    WHERE metadata->>'correlation_id' IS NOT NULL;
+
+-- ───────────────────────────────────────────────────────────────────────────
+-- Aggregate type index for cross-context queries
+-- ───────────────────────────────────────────────────────────────────────────
+
+CREATE INDEX idx_global_events_aggregate
+    ON global.event_log (aggregate_type, id);
+```
+
+### 2.1 Global Log Helper Functions
+
+```sql
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Global Event Log Functions
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- Append an event to the global log
+CREATE OR REPLACE FUNCTION global.append_event(
+    p_stream_id TEXT,
+    p_version INTEGER,
+    p_context TEXT,
+    p_aggregate_type TEXT,
+    p_event_type TEXT,
+    p_payload JSONB,
+    p_metadata JSONB DEFAULT '{}'
+)
+RETURNS BIGINT
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_event_id BIGINT;
+BEGIN
+    INSERT INTO global.event_log (
+        stream_id, version, context, aggregate_type,
+        event_type, payload, metadata
+    ) VALUES (
+        p_stream_id, p_version, p_context, p_aggregate_type,
+        p_event_type, p_payload, p_metadata
+    )
+    RETURNING id INTO v_event_id;
+
+    RETURN v_event_id;
+END;
+$$;
+
+-- Load events for a stream (generic, works across contexts)
+CREATE OR REPLACE FUNCTION global.load_stream(
+    p_stream_id TEXT,
+    p_from_version INTEGER DEFAULT 0
+)
+RETURNS TABLE (
+    id          BIGINT,
+    version     INTEGER,
+    event_type  TEXT,
+    payload     JSONB,
+    metadata    JSONB,
+    created_at  TIMESTAMPTZ
+)
+LANGUAGE sql STABLE AS $$
+    SELECT id, version, event_type, payload, metadata, created_at
+    FROM global.event_log
+    WHERE stream_id = p_stream_id
+      AND version > p_from_version
+    ORDER BY version;
+$$;
+
+-- Get all events in global order (for replay, analytics)
+CREATE OR REPLACE FUNCTION global.get_all_events(
+    p_from_id BIGINT DEFAULT 0,
+    p_limit INTEGER DEFAULT 1000,
+    p_context TEXT DEFAULT NULL,
+    p_event_type TEXT DEFAULT NULL
+)
+RETURNS TABLE (
+    id              BIGINT,
+    stream_id       TEXT,
+    version         INTEGER,
+    context         TEXT,
+    aggregate_type  TEXT,
+    event_type      TEXT,
+    payload         JSONB,
+    metadata        JSONB,
+    created_at      TIMESTAMPTZ
+)
+LANGUAGE sql STABLE AS $$
+    SELECT id, stream_id, version, context, aggregate_type,
+           event_type, payload, metadata, created_at
+    FROM global.event_log
+    WHERE id > p_from_id
+      AND (p_context IS NULL OR context = p_context)
+      AND (p_event_type IS NULL OR event_type = p_event_type)
+    ORDER BY id
+    LIMIT p_limit;
+$$;
+
+-- Get event count by context (for monitoring)
+CREATE OR REPLACE FUNCTION global.event_stats()
+RETURNS TABLE (
+    context         TEXT,
+    aggregate_type  TEXT,
+    event_type      TEXT,
+    event_count     BIGINT,
+    last_event_at   TIMESTAMPTZ
+)
+LANGUAGE sql STABLE AS $$
+    SELECT
+        context,
+        aggregate_type,
+        event_type,
+        COUNT(*) as event_count,
+        MAX(created_at) as last_event_at
+    FROM global.event_log
+    GROUP BY context, aggregate_type, event_type
+    ORDER BY context, aggregate_type, event_type;
+$$;
+```
+
+---
+
+## 3. Context Event Tables (Typed Projections)
+
+Each bounded context has a typed events table that references the global log.
+These are **projections** of the global log, not independent stores.
+
+### 3.1 Sales Context Events
+
+```sql
+-- ═══════════════════════════════════════════════════════════════════════════
+-- SALES CONTEXT: Typed Events (projected from global.event_log)
+-- ═══════════════════════════════════════════════════════════════════════════
+
+CREATE SCHEMA IF NOT EXISTS sales;
+
+-- Context-specific types
+CREATE TYPE sales.order_status AS ENUM (
+    'pending', 'submitted', 'confirmed', 'cancelled', 'completed'
+);
+
+-- Typed events table (narrow, efficient)
+CREATE TABLE sales.events (
+    -- Foreign key to global log (this IS the event ID)
+    global_event_id     BIGINT PRIMARY KEY REFERENCES global.event_log(id),
+
+    -- Stream identity (denormalized for efficient queries)
+    stream_id           TEXT NOT NULL,
+    version             INTEGER NOT NULL,
+    event_type          TEXT NOT NULL,
+    created_at          TIMESTAMPTZ NOT NULL,
+
+    -- ───────────────────────────────────────────────────────────────────
+    -- Typed columns (extracted from global payload)
+    -- ───────────────────────────────────────────────────────────────────
+
+    -- OrderCreated / common fields
+    order_id            TEXT,
+    customer_id         TEXT,
+
+    -- ItemAdded fields
+    product_id          TEXT,
+    product_name        TEXT,
+    quantity            INTEGER CHECK (quantity IS NULL OR quantity >= 1),
+    unit_price          DECIMAL(12, 2) CHECK (unit_price IS NULL OR unit_price >= 0),
+
+    -- OrderSubmitted
+    submitted_at        TIMESTAMPTZ,
+
+    -- OrderCancelled
+    reason              TEXT,
+
+    -- OrderCompleted
+    completed_at        TIMESTAMPTZ,
+
+    -- Constraints
+    UNIQUE (stream_id, version)
+);
+
+-- Indexes for context-specific queries
+CREATE INDEX idx_sales_events_stream ON sales.events (stream_id, version);
+CREATE INDEX idx_sales_events_order ON sales.events (order_id) WHERE order_id IS NOT NULL;
+CREATE INDEX idx_sales_events_customer ON sales.events (customer_id) WHERE customer_id IS NOT NULL;
+CREATE INDEX idx_sales_events_type ON sales.events (event_type, created_at);
+```
+
+### 3.2 Projection Trigger (Global → Context)
+
+```sql
+-- ═══════════════════════════════════════════════════════════════════════════
+-- SALES: Project from Global Log to Typed Events
+-- ═══════════════════════════════════════════════════════════════════════════
+
+CREATE OR REPLACE FUNCTION sales.project_from_global()
+RETURNS TRIGGER
+LANGUAGE plpgsql AS $$
+BEGIN
+    -- Only process sales context events
+    IF NEW.context != 'sales' THEN
+        RETURN NEW;
+    END IF;
+
+    -- Extract typed fields from JSONB payload
+    INSERT INTO sales.events (
+        global_event_id,
+        stream_id,
+        version,
+        event_type,
+        created_at,
+        -- Typed fields extracted from payload
+        order_id,
+        customer_id,
+        product_id,
+        product_name,
+        quantity,
+        unit_price,
+        submitted_at,
+        reason,
+        completed_at
+    ) VALUES (
+        NEW.id,
+        NEW.stream_id,
+        NEW.version,
+        NEW.event_type,
+        NEW.created_at,
+        -- Extract from JSONB
+        NEW.payload->>'order_id',
+        NEW.payload->>'customer_id',
+        NEW.payload->>'product_id',
+        NEW.payload->>'product_name',
+        (NEW.payload->>'quantity')::INTEGER,
+        (NEW.payload->>'unit_price')::DECIMAL(12,2),
+        (NEW.payload->>'submitted_at')::TIMESTAMPTZ,
+        NEW.payload->>'reason',
+        (NEW.payload->>'completed_at')::TIMESTAMPTZ
+    );
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER sales_project_global
+    AFTER INSERT ON global.event_log
+    FOR EACH ROW
+    WHEN (NEW.context = 'sales')
+    EXECUTE FUNCTION sales.project_from_global();
+```
+
+### 3.3 Inventory Context Events
+
+```sql
+-- ═══════════════════════════════════════════════════════════════════════════
+-- INVENTORY CONTEXT: Typed Events
+-- ═══════════════════════════════════════════════════════════════════════════
+
+CREATE SCHEMA IF NOT EXISTS inventory;
+
+CREATE TYPE inventory.reservation_status AS ENUM (
+    'pending', 'confirmed', 'released', 'fulfilled'
+);
+
+CREATE TABLE inventory.events (
+    global_event_id     BIGINT PRIMARY KEY REFERENCES global.event_log(id),
+
+    stream_id           TEXT NOT NULL,
+    version             INTEGER NOT NULL,
+    event_type          TEXT NOT NULL,
+    created_at          TIMESTAMPTZ NOT NULL,
+
+    -- Typed columns
+    product_id          TEXT,
+    warehouse_id        TEXT,
+    quantity            INTEGER,
+    reservation_id      TEXT,
+    order_id            TEXT,           -- Reference to sales context
+    reason              TEXT,
+
+    UNIQUE (stream_id, version)
+);
+
+CREATE INDEX idx_inventory_events_stream ON inventory.events (stream_id, version);
+CREATE INDEX idx_inventory_events_product ON inventory.events (product_id);
+CREATE INDEX idx_inventory_events_order ON inventory.events (order_id) WHERE order_id IS NOT NULL;
+
+-- Projection trigger
+CREATE OR REPLACE FUNCTION inventory.project_from_global()
+RETURNS TRIGGER
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.context != 'inventory' THEN
+        RETURN NEW;
+    END IF;
+
+    INSERT INTO inventory.events (
+        global_event_id, stream_id, version, event_type, created_at,
+        product_id, warehouse_id, quantity, reservation_id, order_id, reason
+    ) VALUES (
+        NEW.id, NEW.stream_id, NEW.version, NEW.event_type, NEW.created_at,
+        NEW.payload->>'product_id',
+        NEW.payload->>'warehouse_id',
+        (NEW.payload->>'quantity')::INTEGER,
+        NEW.payload->>'reservation_id',
+        NEW.payload->>'order_id',
+        NEW.payload->>'reason'
+    );
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER inventory_project_global
+    AFTER INSERT ON global.event_log
+    FOR EACH ROW
+    WHEN (NEW.context = 'inventory')
+    EXECUTE FUNCTION inventory.project_from_global();
+```
+
+### 3.4 Shipping Context Events
+
+```sql
+-- ═══════════════════════════════════════════════════════════════════════════
+-- SHIPPING CONTEXT: Typed Events
+-- ═══════════════════════════════════════════════════════════════════════════
+
+CREATE SCHEMA IF NOT EXISTS shipping;
+
+CREATE TYPE shipping.shipment_status AS ENUM (
+    'pending', 'picked', 'packed', 'shipped', 'in_transit', 'delivered', 'failed'
+);
+
+CREATE TYPE shipping.carrier AS ENUM ('fedex', 'ups', 'usps', 'dhl');
+
+CREATE TABLE shipping.events (
+    global_event_id     BIGINT PRIMARY KEY REFERENCES global.event_log(id),
+
+    stream_id           TEXT NOT NULL,
+    version             INTEGER NOT NULL,
+    event_type          TEXT NOT NULL,
+    created_at          TIMESTAMPTZ NOT NULL,
+
+    -- Typed columns
+    shipment_id         TEXT,
+    order_id            TEXT,
+    carrier             shipping.carrier,
+    tracking_number     TEXT,
+    location            TEXT,
+    notes               TEXT,
+    event_timestamp     TIMESTAMPTZ,
+
+    UNIQUE (stream_id, version)
+);
+
+CREATE INDEX idx_shipping_events_stream ON shipping.events (stream_id, version);
+CREATE INDEX idx_shipping_events_order ON shipping.events (order_id);
+CREATE INDEX idx_shipping_events_tracking ON shipping.events (tracking_number)
+    WHERE tracking_number IS NOT NULL;
+
+-- Projection trigger
+CREATE OR REPLACE FUNCTION shipping.project_from_global()
+RETURNS TRIGGER
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.context != 'shipping' THEN
+        RETURN NEW;
+    END IF;
+
+    INSERT INTO shipping.events (
+        global_event_id, stream_id, version, event_type, created_at,
+        shipment_id, order_id, carrier, tracking_number, location, notes, event_timestamp
+    ) VALUES (
+        NEW.id, NEW.stream_id, NEW.version, NEW.event_type, NEW.created_at,
+        NEW.payload->>'shipment_id',
+        NEW.payload->>'order_id',
+        (NEW.payload->>'carrier')::shipping.carrier,
+        NEW.payload->>'tracking_number',
+        NEW.payload->>'location',
+        NEW.payload->>'notes',
+        (NEW.payload->>'event_timestamp')::TIMESTAMPTZ
+    );
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER shipping_project_global
+    AFTER INSERT ON global.event_log
+    FOR EACH ROW
+    WHEN (NEW.context = 'shipping')
+    EXECUTE FUNCTION shipping.project_from_global();
+```
+
+---
+
+## 4. Writing Events (Single Entry Point)
+
+All event writes go through the global log. The typed context tables are populated automatically.
+
+### 4.1 Context-Aware Append Function
+
+```sql
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Unified Event Append
+-- Single entry point for all event writes
+-- ═══════════════════════════════════════════════════════════════════════════
+
+CREATE OR REPLACE FUNCTION global.append_events(
+    p_stream_id TEXT,
+    p_context TEXT,
+    p_aggregate_type TEXT,
+    p_expected_version INTEGER,  -- For optimistic concurrency
+    p_events JSONB[],            -- Array of {event_type, payload} objects
+    p_metadata JSONB DEFAULT '{}'
+)
+RETURNS TABLE (
+    global_event_id BIGINT,
+    version INTEGER
+)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_current_version INTEGER;
+    v_new_version INTEGER;
+    v_event JSONB;
+    v_event_id BIGINT;
+BEGIN
+    -- Lock the stream for optimistic concurrency
+    SELECT COALESCE(MAX(version), 0)
+    INTO v_current_version
+    FROM global.event_log
+    WHERE stream_id = p_stream_id
+    FOR UPDATE;
+
+    -- Check version
+    IF p_expected_version IS NOT NULL AND v_current_version != p_expected_version THEN
+        RAISE EXCEPTION 'Version conflict: expected %, actual %',
+            p_expected_version, v_current_version
+            USING ERRCODE = 'serialization_failure';
+    END IF;
+
+    v_new_version := v_current_version;
+
+    -- Append each event
+    FOREACH v_event IN ARRAY p_events
+    LOOP
+        v_new_version := v_new_version + 1;
+
+        INSERT INTO global.event_log (
+            stream_id,
+            version,
+            context,
+            aggregate_type,
+            event_type,
+            payload,
+            metadata
+        ) VALUES (
+            p_stream_id,
+            v_new_version,
+            p_context,
+            p_aggregate_type,
+            v_event->>'event_type',
+            v_event->'payload',
+            p_metadata
+        )
+        RETURNING id INTO v_event_id;
+
+        -- Return the event info
+        global_event_id := v_event_id;
+        version := v_new_version;
+        RETURN NEXT;
+    END LOOP;
+
+    -- Notify for real-time subscriptions
+    PERFORM pg_notify(
+        p_context || '_events',
+        json_build_object(
+            'stream_id', p_stream_id,
+            'from_version', v_current_version + 1,
+            'to_version', v_new_version,
+            'context', p_context
+        )::text
+    );
+
+    -- Also notify global channel
+    PERFORM pg_notify(
+        'global_events',
+        json_build_object(
+            'stream_id', p_stream_id,
+            'context', p_context,
+            'event_count', array_length(p_events, 1)
+        )::text
+    );
+END;
+$$;
+```
+
+### 4.2 Sales Context Handler (Uses Global Append)
+
+```sql
+-- ═══════════════════════════════════════════════════════════════════════════
+-- SALES: Order Handler (writes to global log)
+-- ═══════════════════════════════════════════════════════════════════════════
+
+CREATE OR REPLACE FUNCTION sales.order_handle(
+    p_order_id TEXT,
+    p_command sales.order_command,
+    p_correlation_id TEXT DEFAULT NULL,
+    p_actor_id TEXT DEFAULT NULL
+)
+RETURNS sales.order_result
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_stream_id TEXT;
+    v_state sales.order_state;
+    v_result sales.order_result;
+    v_events JSONB[] := ARRAY[]::JSONB[];
+    v_event sales.order_event;
+    v_metadata JSONB;
+    v_current_version INTEGER;
+    v_timestamp TIMESTAMPTZ := now();
+BEGIN
+    v_stream_id := 'order-' || p_order_id;
+
+    -- Build metadata
+    v_metadata := jsonb_build_object(
+        'correlation_id', p_correlation_id,
+        'actor_id', p_actor_id,
+        'timestamp', v_timestamp
+    );
+
+    -- Load current state from projection
+    v_state := sales.order_load_state(p_order_id);
+
+    -- Get current version
+    SELECT COALESCE(MAX(version), 0)
+    INTO v_current_version
+    FROM global.event_log
+    WHERE stream_id = v_stream_id;
+
+    -- Process command (pure function)
+    v_result := sales.order_process(v_state, p_command, v_timestamp);
+
+    -- If failed, return immediately
+    IF NOT v_result.success THEN
+        RETURN v_result;
+    END IF;
+
+    -- Convert events to JSONB array for global append
+    FOREACH v_event IN ARRAY v_result.events
+    LOOP
+        v_events := array_append(v_events, jsonb_build_object(
+            'event_type', v_event.event_type,
+            'payload', jsonb_build_object(
+                'order_id', v_event.order_id,
+                'customer_id', v_event.customer_id,
+                'product_id', v_event.product_id,
+                'product_name', v_event.product_name,
+                'quantity', v_event.quantity,
+                'unit_price', v_event.unit_price,
+                'submitted_at', v_event.submitted_at,
+                'reason', v_event.reason,
+                'completed_at', v_event.completed_at
+            )
+        ));
+    END LOOP;
+
+    -- Append to global log (triggers will populate sales.events)
+    PERFORM global.append_events(
+        v_stream_id,
+        'sales',
+        'order',
+        v_current_version,
+        v_events,
+        v_metadata
+    );
+
+    RETURN v_result;
+END;
+$$;
+```
+
+---
+
+## 5. Rebuilding Context Events from Global Log
+
+One of the key benefits: we can rebuild any context's typed events table from the global log.
+
+```sql
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Rebuild Sales Events from Global Log
+-- ═══════════════════════════════════════════════════════════════════════════
+
+CREATE OR REPLACE FUNCTION sales.rebuild_events_from_global()
+RETURNS INTEGER
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_count INTEGER := 0;
+BEGIN
+    -- Clear existing typed events
+    TRUNCATE sales.events;
+
+    -- Replay from global log
+    INSERT INTO sales.events (
+        global_event_id, stream_id, version, event_type, created_at,
+        order_id, customer_id, product_id, product_name,
+        quantity, unit_price, submitted_at, reason, completed_at
+    )
+    SELECT
+        g.id,
+        g.stream_id,
+        g.version,
+        g.event_type,
+        g.created_at,
+        g.payload->>'order_id',
+        g.payload->>'customer_id',
+        g.payload->>'product_id',
+        g.payload->>'product_name',
+        (g.payload->>'quantity')::INTEGER,
+        (g.payload->>'unit_price')::DECIMAL(12,2),
+        (g.payload->>'submitted_at')::TIMESTAMPTZ,
+        g.payload->>'reason',
+        (g.payload->>'completed_at')::TIMESTAMPTZ
+    FROM global.event_log g
+    WHERE g.context = 'sales'
+    ORDER BY g.id;
+
+    GET DIAGNOSTICS v_count = ROW_COUNT;
+
+    RETURN v_count;
+END;
+$$;
+
+-- Generic rebuild function
+CREATE OR REPLACE FUNCTION global.rebuild_context_events(p_context TEXT)
+RETURNS INTEGER
+LANGUAGE plpgsql AS $$
+BEGIN
+    CASE p_context
+        WHEN 'sales' THEN
+            RETURN sales.rebuild_events_from_global();
+        WHEN 'inventory' THEN
+            RETURN inventory.rebuild_events_from_global();
+        WHEN 'shipping' THEN
+            RETURN shipping.rebuild_events_from_global();
+        ELSE
+            RAISE EXCEPTION 'Unknown context: %', p_context;
+    END CASE;
+END;
+$$;
+```
+
+---
+
+## 6. Cross-Cutting Queries on Global Log
+
+The global log enables powerful cross-context queries:
+
+```sql
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Global Query Functions
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- Get complete timeline for an order (across all contexts)
+CREATE OR REPLACE FUNCTION global.order_timeline(p_order_id TEXT)
+RETURNS TABLE (
+    event_id        BIGINT,
+    context         TEXT,
+    event_type      TEXT,
+    payload         JSONB,
+    created_at      TIMESTAMPTZ
+)
+LANGUAGE sql STABLE AS $$
+    SELECT id, context, event_type, payload, created_at
+    FROM global.event_log
+    WHERE payload->>'order_id' = p_order_id
+       OR stream_id = 'order-' || p_order_id
+    ORDER BY id;
+$$;
+
+-- Get all events for a correlation (saga tracking)
+CREATE OR REPLACE FUNCTION global.correlation_timeline(p_correlation_id TEXT)
+RETURNS TABLE (
+    event_id        BIGINT,
+    context         TEXT,
+    stream_id       TEXT,
+    event_type      TEXT,
+    payload         JSONB,
+    created_at      TIMESTAMPTZ
+)
+LANGUAGE sql STABLE AS $$
+    SELECT id, context, stream_id, event_type, payload, created_at
+    FROM global.event_log
+    WHERE metadata->>'correlation_id' = p_correlation_id
+    ORDER BY id;
+$$;
+
+-- Event rate by context (monitoring)
+CREATE OR REPLACE FUNCTION global.event_rate_by_context(
+    p_interval INTERVAL DEFAULT '1 hour'
+)
+RETURNS TABLE (
+    context         TEXT,
+    event_count     BIGINT,
+    events_per_min  NUMERIC
+)
+LANGUAGE sql STABLE AS $$
+    SELECT
+        context,
+        COUNT(*) as event_count,
+        ROUND(COUNT(*)::numeric / (EXTRACT(EPOCH FROM p_interval) / 60), 2)
+    FROM global.event_log
+    WHERE created_at > now() - p_interval
+    GROUP BY context
+    ORDER BY event_count DESC;
+$$;
+
+-- Find related entities across contexts
+CREATE OR REPLACE FUNCTION global.find_related_events(
+    p_field TEXT,       -- 'order_id', 'customer_id', etc.
+    p_value TEXT
+)
+RETURNS TABLE (
+    event_id        BIGINT,
+    context         TEXT,
+    stream_id       TEXT,
+    event_type      TEXT,
+    created_at      TIMESTAMPTZ
+)
+LANGUAGE sql STABLE AS $$
+    SELECT id, context, stream_id, event_type, created_at
+    FROM global.event_log
+    WHERE payload->>p_field = p_value
+    ORDER BY id;
+$$;
+```
+
+---
+
+## 7. The Problem with One Events Table
 
 The fully-typed architecture creates a single events table with columns for
 all event types:
@@ -1437,19 +2321,33 @@ $$;
 
 ## 11. Summary
 
-### Architecture Overview
+### Architecture Overview: Two-Layer Event System
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                        PostgreSQL Database                               │
 │                                                                          │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │                      global.event_log                              │  │
+│  │               (Single source of truth, JSONB)                      │  │
+│  │                                                                    │  │
+│  │  id │ stream_id │ version │ context │ event_type │ payload(JSONB) │  │
+│  │ ────┼───────────┼─────────┼─────────┼────────────┼──────────────── │  │
+│  │  1  │ order-123 │    1    │ sales   │ Submitted  │ {...}          │  │
+│  │  2  │ stock-456 │    1    │ invntry │ Reserved   │ {...}          │  │
+│  │  3  │ order-123 │    2    │ sales   │ Confirmed  │ {...}          │  │
+│  └──────────────────────────┬────────────────────────────────────────┘  │
+│                             │                                            │
+│            Triggers project │ to typed context tables                    │
+│                             ▼                                            │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐    │
 │  │   sales.*   │  │ inventory.* │  │ shipping.*  │  │ reporting.* │    │
 │  │             │  │             │  │             │  │             │    │
 │  │ ┌─────────┐ │  │ ┌─────────┐ │  │ ┌─────────┐ │  │ Cross-ctx   │    │
 │  │ │ events  │ │  │ │ events  │ │  │ │ events  │ │  │ read models │    │
 │  │ │ (typed) │ │  │ │ (typed) │ │  │ │ (typed) │ │  │             │    │
-│  │ └────┬────┘ │  │ └────┬────┘ │  │ └────┬────┘ │  └─────────────┘    │
+│  │ │ FK→glbl │ │  │ │ FK→glbl │ │  │ │ FK→glbl │ │  └─────────────┘    │
+│  │ └────┬────┘ │  │ └────┬────┘ │  │ └────┬────┘ │                      │
 │  │      │      │  │      │      │  │      │      │                      │
 │  │ projections │  │ projections │  │ projections │                      │
 │  └──────┼──────┘  └──────┼──────┘  └──────┼──────┘                      │
@@ -1471,29 +2369,52 @@ $$;
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
+### Data Flow
+
+```
+                    Write Path                          Query Path
+                    ──────────                          ──────────
+
+    Command ──► global.append_event()                 sales.orders_projection
+                        │                                     ▲
+                        ▼                                     │
+                global.event_log ─────► sales.events ─────────┤
+                (JSONB, id=N)          (typed, FK=N)          │
+                        │                                     │
+                        └──────────────────────────────────────┘
+                         Cross-cutting: SELECT * FROM global.event_log
+```
+
 ### Key Decisions
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
+| **Global event log** | JSONB in `global.event_log` | Single source of truth, complete history, flexible schema |
+| **Context events** | Typed tables with FK to global | Narrow tables, efficient queries, rebuild from global |
 | **Context isolation** | PostgreSQL schemas | Clear boundaries, same database, transactional within context |
-| **Context events** | Fully typed per-schema | Narrow tables, context-specific types |
+| **Event ordering** | Global `BIGSERIAL id` | Total ordering across all contexts |
 | **Integration events** | JSONB payload | Flexibility for cross-context contracts |
 | **Communication** | `pg_notify` + polling | Real-time hints, reliable polling |
 | **Cross-context reads** | Dedicated projections | Avoid runtime coupling |
 
 ### Benefits Achieved
 
-1. **Type safety within contexts**: Each bounded context has narrow, focused event schemas
-2. **Clear boundaries**: Schema = bounded context is visible in database
-3. **Independent evolution**: Change internal events without coordination
-4. **Published language**: Integration events are explicit contracts
-5. **Eventual consistency**: Cross-context is always async (correct semantics)
-6. **Single database simplicity**: No distributed transactions within context
-7. **Natural event bus**: `integration.domain_events` + `pg_notify`
+1. **Single source of truth**: Global event log is THE event store; everything derives from it
+2. **Global ordering**: `global.event_log.id` provides total ordering across all contexts
+3. **Complete audit trail**: One table to query for "what happened across the system"
+4. **Type safety within contexts**: Each bounded context has narrow, focused event schemas
+5. **Rebuild capability**: Can rebuild any context table from global log
+6. **Clear boundaries**: Schema = bounded context is visible in database
+7. **Independent evolution**: Change internal events without coordination
+8. **Published language**: Integration events are explicit contracts
+9. **Eventual consistency**: Cross-context is always async (correct semantics)
+10. **Single database simplicity**: No distributed transactions within context
+11. **Natural event bus**: `integration.domain_events` + `pg_notify`
 
 ### Trade-offs Accepted
 
-1. **Some duplication**: Integration events duplicate some data from context events
-2. **Eventual consistency**: Cross-context operations are not immediately consistent
-3. **More schemas**: Database has more objects to manage
-4. **JSONB in integration**: Not fully typed, but provides flexibility for contracts
+1. **Storage overhead**: Context tables duplicate some data from global log (mitigated: narrow tables)
+2. **Write amplification**: INSERT to global triggers INSERT to context (acceptable overhead)
+3. **Eventual consistency**: Cross-context operations are not immediately consistent
+4. **More schemas**: Database has more objects to manage
+5. **JSONB in global/integration**: Not fully typed (but provides flexibility and rebuild capability)
