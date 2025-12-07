@@ -43,6 +43,9 @@ pub struct VerifyMagicLinkResponse {
     /// Session token for authentication.
     pub session_token: String,
 
+    /// User ID (persistent across sessions).
+    pub user_id: String,
+
     /// User's email.
     pub email: String,
 
@@ -216,13 +219,15 @@ where
     // Map result to HTTP response
     match result {
         AuthAction::SessionCreated { session, .. } => {
-            // Session ID acts as the bearer token for authentication
-            let session_token = session.session_id.0.to_string();
+            // Token format: "session_id:user_id" - allows extracting persistent user_id
+            // while keeping session_id for potential future session validation
+            let session_token = format!("{}:{}", session.session_id.0, session.user_id.0);
             Ok((
                 StatusCode::OK,
                 Json(VerifyMagicLinkResponse {
                     session_id: session.session_id.0.to_string(),
                     session_token,
+                    user_id: session.user_id.0.to_string(),
                     email: session.email.clone(),
                     expires_at: session.expires_at.to_rfc3339(),
                 }),

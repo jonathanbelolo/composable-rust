@@ -554,6 +554,30 @@ where
                     match event_store.append_events(stream_id, None, serialized_events).await {
                         Ok(_version) => {
                             // Events persisted successfully
+
+                            // If this is a new user, immediately populate the projection.
+                            // This is critical for user identity persistence - without this,
+                            // each login would create a new user_id because the projection
+                            // lookup would always fail.
+                            if existing_user.is_none() {
+                                let user = crate::providers::User {
+                                    user_id: final_user_id,
+                                    email: email_clone.clone(),
+                                    name: None,
+                                    email_verified: true,
+                                    created_at: now,
+                                    updated_at: now,
+                                };
+                                // Ignore errors - projection update should not fail login.
+                                // The projection can be rebuilt from events if needed.
+                                if let Err(e) = users.create_user(&user).await {
+                                    tracing::warn!(
+                                        "Failed to create user in projection (will retry on next login): {}",
+                                        e
+                                    );
+                                }
+                            }
+
                             // Now create ephemeral session in Redis
                             if let Err(e) = sessions.create_session(&session, session_duration, max_concurrent_sessions).await {
                                 tracing::error!("Failed to create session in Redis for user {}: {}", final_user_id.0, e);
