@@ -85,7 +85,7 @@ INSERT INTO order_status_transitions (from_status, to_status) VALUES
     ('submitted', 'completed'),
     ('submitted', 'cancelled');
 
--- Pure function to validate transitions (IMMUTABLE - can be tested without tables)
+-- Function to validate transitions (STABLE - reads from transition table)
 CREATE OR REPLACE FUNCTION valid_order_transition(
     p_from order_status,
     p_to order_status
@@ -420,7 +420,8 @@ CREATE INDEX idx_order_items_product ON order_items (product_id);
 
 CREATE OR REPLACE FUNCTION order_process(
     current_state order_state,
-    command order_command
+    command order_command,
+    p_timestamp TIMESTAMPTZ DEFAULT NULL  -- Caller provides timestamp for determinism
 ) RETURNS order_result
 LANGUAGE plpgsql IMMUTABLE AS $$
 DECLARE
@@ -527,9 +528,9 @@ BEGIN
             RETURN (false, 'EmptyOrder', 'Cannot submit an empty order', NULL)::order_result;
         END IF;
 
-        -- Produce event
+        -- Produce event (timestamp provided by caller for determinism)
         v_event.event_type := 'OrderSubmitted';
-        v_event.submitted_at := now();
+        v_event.submitted_at := p_timestamp;
         v_result.events := array_append(v_result.events, v_event);
 
     -- ───────────────────────────────────────────────────────────────────
@@ -575,9 +576,9 @@ BEGIN
             )::order_result;
         END IF;
 
-        -- Produce event
+        -- Produce event (timestamp provided by caller for determinism)
         v_event.event_type := 'OrderCompleted';
-        v_event.completed_at := now();
+        v_event.completed_at := p_timestamp;
         v_result.events := array_append(v_result.events, v_event);
 
     -- ───────────────────────────────────────────────────────────────────
@@ -597,11 +598,12 @@ BEGIN
 END;
 $$;
 
-COMMENT ON FUNCTION order_process(order_state, order_command) IS
+COMMENT ON FUNCTION order_process(order_state, order_command, TIMESTAMPTZ) IS
 'Pure command processor for Order aggregate.
-Input: Current state + Command
+Input: Current state + Command + Timestamp (for events that need it)
 Output: Result with success flag and produced events (or error)
-Properties: IMMUTABLE, no side effects, deterministic';
+Properties: IMMUTABLE, no side effects, deterministic
+Note: Timestamp is passed in (not computed) to maintain immutability';
 ```
 
 ### 4.2 Apply Function (State + Event → State)
@@ -735,7 +737,7 @@ BEGIN
         NULL                -- reason
     )::order_command;
 
-    v_result := order_process(v_state, v_command);
+    v_result := order_process(v_state, v_command, NULL);  -- No timestamp needed for CreateOrder
 
     IF v_result.success
        AND array_length(v_result.events, 1) = 1
@@ -775,7 +777,7 @@ BEGIN
     -- ═══════════════════════════════════════════════════════════════════
     v_test_count := v_test_count + 1;
     v_command := ROW('CreateOrder', 'order-999', 'cust-999', NULL, NULL, NULL, NULL)::order_command;
-    v_result := order_process(v_state, v_command);
+    v_result := order_process(v_state, v_command, NULL);
 
     IF NOT v_result.success AND v_result.error_code = 'OrderAlreadyExists' THEN
         v_pass_count := v_pass_count + 1;
@@ -796,7 +798,7 @@ BEGIN
         NULL                -- reason
     )::order_command;
 
-    v_result := order_process(v_state, v_command);
+    v_result := order_process(v_state, v_command, NULL);  -- No timestamp needed for AddItem
 
     IF v_result.success
        AND v_result.events[1].event_type = 'ItemAdded'
@@ -836,7 +838,7 @@ BEGIN
     -- ═══════════════════════════════════════════════════════════════════
     v_test_count := v_test_count + 1;
     v_command := ROW('AddItem', NULL, NULL, 'prod-2', 0, 5.00, NULL)::order_command;
-    v_result := order_process(v_state, v_command);
+    v_result := order_process(v_state, v_command, NULL);
 
     IF NOT v_result.success AND v_result.error_code = 'InvalidQuantity' THEN
         v_pass_count := v_pass_count + 1;
@@ -853,7 +855,7 @@ BEGIN
     -- Create fresh state with no items
     v_state := ROW('order-empty', 'cust-1', 'pending', 0, 0, ARRAY[]::order_item[])::order_state;
     v_command := ROW('SubmitOrder', NULL, NULL, NULL, NULL, NULL, NULL)::order_command;
-    v_result := order_process(v_state, v_command);
+    v_result := order_process(v_state, v_command, '2024-01-01 12:00:00+00'::TIMESTAMPTZ);
 
     IF NOT v_result.success AND v_result.error_code = 'EmptyOrder' THEN
         v_pass_count := v_pass_count + 1;
@@ -871,17 +873,17 @@ BEGIN
     -- Create order
     v_state := NULL;
     v_command := ROW('CreateOrder', 'order-workflow', 'cust-wf', NULL, NULL, NULL, NULL)::order_command;
-    v_result := order_process(v_state, v_command);
+    v_result := order_process(v_state, v_command, NULL);
     v_state := order_apply(v_state, v_result.events[1]);
 
     -- Add item
     v_command := ROW('AddItem', NULL, NULL, 'prod-wf', 3, 15.00, NULL)::order_command;
-    v_result := order_process(v_state, v_command);
+    v_result := order_process(v_state, v_command, NULL);
     v_state := order_apply(v_state, v_result.events[1]);
 
-    -- Submit
+    -- Submit (timestamp required)
     v_command := ROW('SubmitOrder', NULL, NULL, NULL, NULL, NULL, NULL)::order_command;
-    v_result := order_process(v_state, v_command);
+    v_result := order_process(v_state, v_command, '2024-01-01 12:00:00+00'::TIMESTAMPTZ);
     v_state := order_apply(v_state, v_result.events[1]);
 
     IF v_state.status = 'submitted'
@@ -900,7 +902,7 @@ BEGIN
     -- ═══════════════════════════════════════════════════════════════════
     v_test_count := v_test_count + 1;
     v_command := ROW('AddItem', NULL, NULL, 'prod-x', 1, 10.00, NULL)::order_command;
-    v_result := order_process(v_state, v_command);
+    v_result := order_process(v_state, v_command, NULL);
 
     IF NOT v_result.success AND v_result.error_code = 'InvalidOrderStatus' THEN
         v_pass_count := v_pass_count + 1;
@@ -915,7 +917,7 @@ BEGIN
     -- ═══════════════════════════════════════════════════════════════════
     v_test_count := v_test_count + 1;
     v_command := ROW('CompleteOrder', NULL, NULL, NULL, NULL, NULL, NULL)::order_command;
-    v_result := order_process(v_state, v_command);
+    v_result := order_process(v_state, v_command, '2024-01-01 14:00:00+00'::TIMESTAMPTZ);
     v_state := order_apply(v_state, v_result.events[1]);
 
     IF v_state.status = 'completed' THEN
@@ -1028,9 +1030,9 @@ BEGIN
     WHERE stream_id = p_stream_id;
 
     -- ───────────────────────────────────────────────────────────────────
-    -- 2. PROCESS: Call pure function
+    -- 2. PROCESS: Call pure function (pass timestamp for determinism)
     -- ───────────────────────────────────────────────────────────────────
-    v_result := order_process(v_state, p_command);
+    v_result := order_process(v_state, p_command, v_timestamp);
 
     -- If processing failed, return immediately (no persistence)
     IF NOT v_result.success THEN
@@ -1239,6 +1241,132 @@ CREATE TRIGGER orders_projection_trigger
     EXECUTE FUNCTION orders_project();
 ```
 
+### 6.4 Rebuild Projection
+
+```sql
+-- ═══════════════════════════════════════════════════════════════════════════
+-- ORDERS_REBUILD_PROJECTION
+-- Rebuilds the entire projection from events (for recovery/repair)
+-- ═══════════════════════════════════════════════════════════════════════════
+
+CREATE OR REPLACE FUNCTION orders_rebuild_projection()
+RETURNS INTEGER
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_count INTEGER := 0;
+    v_event RECORD;
+BEGIN
+    -- Clear existing projection data
+    TRUNCATE order_items CASCADE;
+    TRUNCATE orders_projection CASCADE;
+
+    -- Disable trigger during rebuild
+    ALTER TABLE events DISABLE TRIGGER orders_projection_trigger;
+
+    -- Replay all order events in order
+    FOR v_event IN
+        SELECT *
+        FROM events
+        WHERE stream_id LIKE 'order-%'
+        ORDER BY stream_id, version
+    LOOP
+        -- Simulate the trigger by manually calling project logic
+        PERFORM orders_project_event(v_event);
+        v_count := v_count + 1;
+    END LOOP;
+
+    -- Re-enable trigger
+    ALTER TABLE events ENABLE TRIGGER orders_projection_trigger;
+
+    RETURN v_count;
+END;
+$$;
+
+-- Helper function for rebuild (same logic as trigger but takes record)
+CREATE OR REPLACE FUNCTION orders_project_event(p_event RECORD)
+RETURNS VOID
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_order_id TEXT;
+BEGIN
+    IF p_event.stream_id NOT LIKE 'order-%' THEN
+        RETURN;
+    END IF;
+
+    v_order_id := SUBSTRING(p_event.stream_id FROM 7);
+
+    CASE p_event.event_type
+
+    WHEN 'OrderCreated' THEN
+        INSERT INTO orders_projection (
+            order_id, status, customer_id, total_amount, item_count,
+            created_at, updated_at, last_event_id
+        ) VALUES (
+            p_event.order_id, 'pending', p_event.customer_id, 0, 0,
+            p_event.created_at, p_event.created_at, p_event.id
+        )
+        ON CONFLICT (order_id) DO UPDATE SET
+            status = 'pending',
+            customer_id = EXCLUDED.customer_id,
+            updated_at = p_event.created_at,
+            last_event_id = p_event.id;
+
+    WHEN 'ItemAdded' THEN
+        INSERT INTO order_items (
+            order_id, product_id, quantity, unit_price, added_at, added_event_id
+        ) VALUES (
+            v_order_id, p_event.product_id, p_event.quantity,
+            p_event.unit_price, p_event.created_at, p_event.id
+        );
+
+        UPDATE orders_projection SET
+            item_count = item_count + 1,
+            total_amount = total_amount + (p_event.quantity * p_event.unit_price),
+            updated_at = p_event.created_at,
+            last_event_id = p_event.id
+        WHERE order_id = v_order_id;
+
+    WHEN 'OrderSubmitted' THEN
+        UPDATE orders_projection SET
+            status = 'submitted',
+            submitted_at = p_event.submitted_at,
+            updated_at = p_event.created_at,
+            last_event_id = p_event.id
+        WHERE order_id = v_order_id;
+
+    WHEN 'OrderCancelled' THEN
+        UPDATE orders_projection SET
+            status = 'cancelled',
+            cancelled_at = p_event.created_at,
+            cancel_reason = p_event.reason,
+            updated_at = p_event.created_at,
+            last_event_id = p_event.id
+        WHERE order_id = v_order_id;
+
+    WHEN 'OrderCompleted' THEN
+        UPDATE orders_projection SET
+            status = 'completed',
+            completed_at = p_event.completed_at,
+            updated_at = p_event.created_at,
+            last_event_id = p_event.id
+        WHERE order_id = v_order_id;
+
+    ELSE
+        NULL;
+
+    END CASE;
+END;
+$$;
+
+COMMENT ON FUNCTION orders_rebuild_projection() IS
+'Rebuilds the orders projection from scratch by replaying all events.
+Use for:
+  - Recovery after data corruption
+  - Schema changes that affect projection structure
+  - Adding new derived fields
+Returns: Number of events processed';
+```
+
 ---
 
 ## 7. Query Functions
@@ -1402,13 +1530,15 @@ For each aggregate defined in YAML, generate:
    └── {aggregate}_status_transitions (if has state machine)
 
 3. Functions
-   ├── {aggregate}_process(state, command) → result     -- Pure, IMMUTABLE
-   ├── {aggregate}_apply(state, event) → state          -- Pure, IMMUTABLE
-   ├── {aggregate}_load_state(id) → state               -- STABLE
-   ├── {aggregate}_handle(stream_id, command) → result  -- Full I/O
+   ├── {aggregate}_process(state, command, timestamp) → result  -- Pure, IMMUTABLE
+   ├── {aggregate}_apply(state, event) → state                  -- Pure, IMMUTABLE
+   ├── {aggregate}_load_state(id) → state                       -- STABLE
+   ├── {aggregate}_handle(stream_id, command) → result          -- Full I/O
    ├── {aggregate}_project() → trigger function
-   ├── {aggregate}_get(id) → row                        -- Query
-   └── {aggregate}_list(...) → rows                     -- Query
+   ├── {aggregate}_project_event(event) → void                  -- For rebuild
+   ├── {aggregate}_rebuild_projection() → count                 -- Disaster recovery
+   ├── {aggregate}_get(id) → row                                -- Query
+   └── {aggregate}_list(...) → rows                             -- Query
 
 4. Triggers
    └── {aggregate}_projection_trigger ON events
@@ -1487,6 +1617,22 @@ aggregates:
         produces:
           - event: OrderSubmitted
 
+      CancelOrder:
+        fields:
+          reason: { type: string, optional: true }
+        guards:
+          - condition: "state.status IN ('pending', 'submitted')"
+            error: InvalidOrderStatus
+        produces:
+          - event: OrderCancelled
+
+      CompleteOrder:
+        guards:
+          - condition: "state.status = 'submitted'"
+            error: InvalidOrderStatus
+        produces:
+          - event: OrderCompleted
+
     events:
       OrderCreated:
         fields:
@@ -1515,6 +1661,18 @@ aggregates:
           submitted_at: { type: timestamp, default: now }
         applies:
           status: submitted
+
+      OrderCancelled:
+        fields:
+          reason: { from: command, default: "No reason provided" }
+        applies:
+          status: cancelled
+
+      OrderCompleted:
+        fields:
+          completed_at: { type: timestamp, default: now }
+        applies:
+          status: completed
 
     projection:
       table: orders_projection
@@ -1626,6 +1784,44 @@ impl OrderCommand {
             reason: None,
         }
     }
+
+    pub fn cancel_order(reason: Option<impl Into<String>>) -> Self {
+        Self {
+            command_type: "CancelOrder".into(),
+            order_id: None,
+            customer_id: None,
+            product_id: None,
+            quantity: None,
+            unit_price: None,
+            reason: reason.map(Into::into),
+        }
+    }
+
+    pub fn complete_order() -> Self {
+        Self {
+            command_type: "CompleteOrder".into(),
+            order_id: None,
+            customer_id: None,
+            product_id: None,
+            quantity: None,
+            unit_price: None,
+            reason: None,
+        }
+    }
+}
+
+/// Order event - matches PostgreSQL composite type
+#[derive(Debug, Clone)]
+pub struct OrderEvent {
+    pub event_type: String,
+    pub order_id: Option<String>,
+    pub customer_id: Option<String>,
+    pub product_id: Option<String>,
+    pub quantity: Option<i32>,
+    pub unit_price: Option<Decimal>,
+    pub submitted_at: Option<DateTime<Utc>>,
+    pub reason: Option<String>,
+    pub completed_at: Option<DateTime<Utc>>,
 }
 
 /// Order result - matches PostgreSQL composite type
@@ -1637,7 +1833,7 @@ pub struct OrderResult {
     pub events: Vec<OrderEvent>,
 }
 
-/// Order projection row
+/// Order projection row (from order_get function)
 #[derive(Debug, Clone, FromRow)]
 pub struct OrderRow {
     pub order_id: String,
@@ -1651,6 +1847,7 @@ pub struct OrderRow {
     pub completed_at: Option<DateTime<Utc>>,
     pub cancelled_at: Option<DateTime<Utc>>,
     pub cancel_reason: Option<String>,
+    pub items: Vec<OrderItem>,  // From normalized order_items table
 }
 ```
 
