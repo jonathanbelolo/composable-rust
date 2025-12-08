@@ -15,7 +15,11 @@ SpacetimeDB is a compelling compilation target for Composable Rust due to remark
 - **Both have built-in identity** management
 - **Both support time-travel** via event/transaction history
 
-The key insight: **pure business logic functions are fully testable with standard `cargo test`**, while thin SpacetimeDB reducers handle persistence. This mirrors our PostgreSQL monolith architecture.
+### Key Insights
+
+1. **Pure business logic functions are fully testable with standard `cargo test`**, while thin SpacetimeDB reducers handle persistence. This mirrors our PostgreSQL monolith architecture.
+
+2. **SpacetimeDB modules map to DDD bounded contexts**: Each module gets full ACID transactions, while cross-module coordination uses the Composable Rust server as a saga orchestrator via the event bus. This enforces DDD's principle that bounded contexts should be autonomous and communicate via events.
 
 ---
 
@@ -63,6 +67,51 @@ pub fn submit_order(ctx: &ReducerContext, order_id: u64) -> Result<(), String> {
 - [Rust SDK Reference](https://spacetimedb.com/docs/sdks/rust)
 - [docs.rs API Reference](https://docs.rs/spacetimedb/latest/spacetimedb/)
 - [GitHub Repository](https://github.com/clockworklabs/SpacetimeDB)
+
+### Local Development Setup
+
+**Docker (recommended):**
+
+```bash
+# Start SpacetimeDB server
+docker run -d --name spacetimedb \
+  -p 3000:3000 \
+  -v spacetime-data:/stdb \
+  clockworklabs/spacetime start
+
+# Verify it's running
+curl http://localhost:3000/health
+```
+
+**Docker Compose:**
+
+```yaml
+# docker-compose.yml
+services:
+  spacetimedb:
+    image: clockworklabs/spacetime
+    ports:
+      - "3000:3000"
+    volumes:
+      - spacetime-data:/stdb
+    command: start
+
+volumes:
+  spacetime-data:
+```
+
+**CLI Installation:**
+
+```bash
+# Install the SpacetimeDB CLI (for publishing modules)
+curl -sSf https://install.spacetimedb.com | sh
+
+# Publish a module to local instance
+spacetime publish my-module --server http://localhost:3000
+
+# Generate client bindings
+spacetime generate --lang rust --out-dir ./client --project-path ./module
+```
 
 ---
 
@@ -571,58 +620,156 @@ connection.on('domain_events', (event) => {
 
 ---
 
-## 8. Multi-Aggregate Coordination (Sagas)
+## 8. Bounded Context Deployment Model
 
-### Option 1: Scheduled Reducers
+SpacetimeDB modules map naturally to DDD bounded contexts. This is the recommended architectural pattern.
 
-```rust
-#[reducer]
-pub fn order_submitted_handler(ctx: &ReducerContext, order_id: u64) -> Result<(), String> {
-    // React to OrderSubmitted event
-    let order = ctx.db.orders().id().find(order_id).ok_or("Order not found")?;
+### The Key Insight
 
-    // Trigger inventory reservation
-    reserve_inventory(ctx, order_id, order.items_json)?;
+| Scope | Transaction Support | Coordination |
+|-------|---------------------|--------------|
+| **Within a module** | ✅ Full ACID | Single reducer call |
+| **Across modules** | ❌ None | Rust server + event bus |
 
-    Ok(())
-}
+This aligns with DDD principles: bounded contexts should be autonomous and communicate via events, not shared transactions.
 
-// Schedule via client or from another reducer
-ctx.db.scheduled_reducers().insert(ScheduledCall {
-    reducer: "order_submitted_handler",
-    args: order_id.to_string(),
-    run_at: ctx.timestamp,
-});
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                 Composable Rust Server                              │
+│  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐        │
+│  │ Event Bus      │  │ Saga           │  │ API Gateway    │        │
+│  │ (Redpanda)     │  │ Coordinators   │  │ (Axum)         │        │
+│  └───────┬────────┘  └────────────────┘  └────────────────┘        │
+│          │  Subscribes & Publishes                                  │
+└──────────┼──────────────────────────────────────────────────────────┘
+           │
+     ┌─────┴─────┬─────────────┬─────────────┐
+     ▼           ▼             ▼             ▼
+┌─────────┐ ┌─────────┐ ┌──────────┐ ┌───────────┐
+│ Orders  │ │Payments │ │Inventory │ │ Shipping  │
+│ Context │ │ Context │ │ Context  │ │ Context   │
+├─────────┤ ├─────────┤ ├──────────┤ ├───────────┤
+│ Order   │ │ Payment │ │ Stock    │ │ Shipment  │
+│ LineItem│ │ Refund  │ │ Reserve  │ │ Tracking  │
+│ Customer│ │ Ledger  │ │ Location │ │ Carrier   │
+└─────────┘ └─────────┘ └──────────┘ └───────────┘
+  Module 1    Module 2    Module 3     Module 4
 ```
 
-### Option 2: Event-Driven via Subscriptions
+### Concept Mapping
 
-Client-side saga coordinator subscribes to events and dispatches commands:
+| DDD Concept | SpacetimeDB Target |
+|-------------|-------------------|
+| Bounded Context | SpacetimeDB Module |
+| Aggregates (within context) | Tables with shared transactions |
+| Context boundary | Module boundary (enforced isolation) |
+| Anti-corruption layer | Rust server translates events |
+| Domain events (cross-context) | Rust event bus (Redpanda) |
+| Sagas (cross-context) | Rust server coordinators |
 
-```typescript
-// Saga coordinator (runs as client)
-connection.on('domain_events', async (event) => {
-    if (event.event_type === 'OrderSubmitted') {
-        const payload = JSON.parse(event.payload);
-        await connection.reducers.reserve_inventory(payload.order_id, payload.items);
-    }
+### Responsibilities
 
-    if (event.event_type === 'InventoryReserved') {
-        const payload = JSON.parse(event.payload);
-        await connection.reducers.process_payment(payload.order_id, payload.total);
-    }
+**SpacetimeDB Modules**:
+- Domain logic (pure reducers)
+- Real-time subscriptions for clients
+- Low-latency reads/writes
+- Full ACID within bounded context
 
-    // Compensation
-    if (event.event_type === 'PaymentFailed') {
-        const payload = JSON.parse(event.payload);
-        await connection.reducers.release_inventory(payload.order_id);
-    }
-});
-```
+**Composable Rust Server**:
+- Cross-context coordination (saga orchestration)
+- External service integration (Stripe, email, etc.)
+- Event bus (Redpanda) for context communication
+- API gateway and authentication
 
 ---
 
-## 9. Comparison: Compilation Targets
+## 9. Multi-Aggregate Coordination
+
+### Within a Bounded Context: Use Transactions
+
+When aggregates are in the same module, use a single reducer for atomic operations:
+
+```rust
+#[reducer]
+pub fn checkout(ctx: &ReducerContext, order_id: u64) -> Result<(), String> {
+    // All operations are atomic - automatic rollback on failure
+
+    let order = ctx.db.orders().id().find(order_id).ok_or("Not found")?;
+
+    // Reserve inventory (same module)
+    let inv = ctx.db.inventory().sku().find(&order.sku).ok_or("No stock")?;
+    if inv.quantity < order.quantity {
+        return Err("Insufficient inventory".into()); // Rollback everything
+    }
+    ctx.db.inventory().sku().update(Inventory {
+        quantity: inv.quantity - order.quantity, ..inv
+    });
+
+    // Update customer loyalty points (same module)
+    let customer = ctx.db.customers().id().find(order.customer_id).ok_or("?")?;
+    ctx.db.customers().id().update(Customer {
+        points: customer.points + order.loyalty_points, ..customer
+    });
+
+    // Complete order
+    ctx.db.orders().id().update(Order { status: "completed".into(), ..order });
+
+    Ok(())
+}
+```
+
+**No saga compensation needed** - if any step fails, the entire transaction rolls back automatically.
+
+### Across Bounded Contexts: Use Rust Server Sagas
+
+When coordination spans modules, the Rust server orchestrates via the event bus:
+
+```rust
+// Rust server saga coordinator
+impl CheckoutSaga {
+    async fn handle_order_submitted(&self, event: OrderSubmitted) -> Result<()> {
+        // Call Payments module (different SpacetimeDB instance)
+        self.payments_client
+            .reducers()
+            .charge(event.order_id, event.total)
+            .await?;
+
+        // On success, call Shipping module
+        self.shipping_client
+            .reducers()
+            .create_shipment(event.order_id, event.address)
+            .await?;
+
+        Ok(())
+    }
+
+    async fn handle_payment_failed(&self, event: PaymentFailed) -> Result<()> {
+        // Compensation: release inventory in Orders module
+        self.orders_client
+            .reducers()
+            .release_inventory(event.order_id)
+            .await?;
+
+        Ok(())
+    }
+}
+```
+
+### When to Use Each Pattern
+
+| Scenario | Pattern | Why |
+|----------|---------|-----|
+| Order + LineItems + Customer | Single reducer | Same bounded context |
+| Order + Payment + Shipping | Rust saga | Different contexts |
+| External payment (Stripe) | Rust saga | Can't rollback external calls |
+| Real-time game state | Single reducer | Need atomic consistency |
+| E-commerce checkout | Rust saga | Payment is separate context |
+
+---
+
+## 10. Comparison: Compilation Targets
 
 | Feature | WASM Browser | SpacetimeDB | PostgreSQL Monolith |
 |---------|--------------|-------------|---------------------|
@@ -632,19 +779,21 @@ connection.on('domain_events', async (event) => {
 | **Multi-tenant** | Manual | Built-in Identity | RLS policies |
 | **Scaling** | N/A (local) | Automatic | Manual (replicas) |
 | **Latency** | Instant | ~100μs | ~1-10ms |
+| **Cross-context txn** | N/A | ❌ (by design, use Rust server) | ✅ Single transaction |
 | **Testing** | Pure fns + browser | Pure fns + integration | Pure fns + pgTAP |
 | **Use case** | Prototyping, offline | Multiplayer, real-time | Enterprise, existing infra |
 
 ---
 
-## 10. Limitations and Considerations
+## 11. Limitations and Considerations
 
 ### Current Limitations
 
-1. **No `cargo test` for modules**: Must use pure function separation
+1. **No `cargo test` for modules**: Must use pure function separation (see Section 4)
 2. **No `spacetime test` command**: Integration tests require running instance
-3. **Limited schema migrations**: Some changes require `--delete-data`
-4. **Young ecosystem**: Less mature than PostgreSQL
+3. **No cross-module transactions**: Unlike PostgreSQL which can span schemas in one transaction, SpacetimeDB modules are isolated. Cross-module coordination requires the Rust server (see Section 8-9). This aligns with DDD bounded context principles.
+4. **Limited schema migrations**: Some changes require `--delete-data`
+5. **Young ecosystem**: Less mature than PostgreSQL
 
 ### When to Use SpacetimeDB Target
 
@@ -669,7 +818,7 @@ Local Development     →    SpacetimeDB Cloud    →    Self-hosted
 
 ---
 
-## 11. Next Steps
+## 12. Next Steps
 
 1. **Create proof-of-concept**: Generate SpacetimeDB module from simple Composable Rust aggregate
 2. **Validate testing strategy**: Confirm pure functions work with cargo test
@@ -679,7 +828,7 @@ Local Development     →    SpacetimeDB Cloud    →    Self-hosted
 
 ---
 
-## 12. References
+## 13. References
 
 - [SpacetimeDB Documentation](https://spacetimedb.com/docs/)
 - [Rust Module Quickstart](https://spacetimedb.com/docs/modules/rust/quickstart/)
