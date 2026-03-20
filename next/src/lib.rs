@@ -283,6 +283,29 @@ pub trait Projector: Send + Sync {
     ) -> impl std::future::Future<Output = Result<(), ProjectionError>> + Send;
 }
 
+/// Per-event projection trait for read model maintenance.
+///
+/// Implementations receive deserialized domain events and update
+/// their read model (typically a PostgreSQL table). Each projection
+/// has a unique name for checkpoint tracking.
+///
+/// This is a higher-level abstraction than `Projector` — it works
+/// with typed domain events instead of raw `SerializedEvent`s.
+pub trait Projection<E: Send + Sync>: Send + Sync {
+    /// Unique name for this projection (used for checkpoint tracking).
+    fn name(&self) -> &'static str;
+
+    /// Apply a single domain event to the read model.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProjectionError` if the database update fails.
+    fn apply_event(
+        &mut self,
+        event: &E,
+    ) -> impl std::future::Future<Output = Result<(), ProjectionError>> + Send;
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Handler Environment
 // ═══════════════════════════════════════════════════════════════════
