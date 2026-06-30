@@ -67,7 +67,7 @@ fn ser<T: serde::Serialize>(event: &T, typ: &str) -> SerializedEvent {
 
 async fn reset(pool: &PgPool) {
     sqlx::query(
-        "TRUNCATE TABLE events, inventory, reservations, reservations_projection,
+        "TRUNCATE TABLE events_projection, inventory, reservations, reservations_projection,
          payments, sales_analytics_projection, sales_analytics_sections,
          customer_profiles, customer_event_attendance, customer_purchases, seats
          RESTART IDENTITY CASCADE",
@@ -95,10 +95,16 @@ async fn all_projection_tests() {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     };
 
-    sqlx::raw_sql(include_str!("../migrations_projections/001_projections_schema.sql"))
-        .execute(&pool).await.expect("migration 001");
-    sqlx::raw_sql(include_str!("../migrations_projections/002_seats_table.sql"))
-        .execute(&pool).await.expect("migration 002");
+    // Single-DB merged migrations (same schema the application runs).
+    for sql in [
+        include_str!("../migrations/001_events_log.sql"),
+        include_str!("../migrations/002_projections.sql"),
+        include_str!("../migrations/003_seats.sql"),
+        include_str!("../migrations/004_saga_state.sql"),
+        include_str!("../migrations/005_idempotency_keys.sql"),
+    ] {
+        sqlx::raw_sql(sql).execute(&pool).await.expect("migration");
+    }
 
     let now = Utc::now();
 

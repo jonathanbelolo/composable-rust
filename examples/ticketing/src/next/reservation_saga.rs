@@ -583,9 +583,15 @@ impl BusinessLogic for ReservationSagaLogic {
         }
     }
 
-    fn feedback_input(results: Vec<Self::CallResult>) -> Self::Input {
-        // Extract reservation_id from results to enable state lookup
-        let reservation_id = Self::extract_reservation_id_from_results(&results);
+    fn feedback_input_from(prior: &Self::Input, results: Vec<Self::CallResult>) -> Self::Input {
+        // The prior input always carries the reservation_id, so read it directly
+        // rather than mining it from the (possibly failed) call results.
+        let reservation_id = match prior {
+            ReservationSagaInput::InitiateReservation { reservation_id, .. }
+            | ReservationSagaInput::CancelReservation { reservation_id, .. }
+            | ReservationSagaInput::ExpireReservation { reservation_id, .. }
+            | ReservationSagaInput::Feedback { reservation_id, .. } => *reservation_id,
+        };
 
         ReservationSagaInput::Feedback {
             reservation_id,
@@ -892,31 +898,6 @@ impl ReservationSagaLogic {
         ]))
     }
 
-    /// Extract reservation_id from call results.
-    ///
-    /// The Handler calls this via `feedback_input()` to get the reservation_id
-    /// needed for state lookup in the feedback loop.
-    ///
-    /// Now that `ReservationSagaCallResult` includes the reservation_id directly
-    /// (not just in events), we can always extract it even when calls fail.
-    fn extract_reservation_id_from_results(results: &[ReservationSagaCallResult]) -> ReservationId {
-        for result in results {
-            match result {
-                ReservationSagaCallResult::Inventory { reservation_id, .. }
-                | ReservationSagaCallResult::Payment { reservation_id, .. } => {
-                    // Skip nil UUIDs (from commands that don't have a reservation_id)
-                    if !reservation_id.is_nil() {
-                        return *reservation_id;
-                    }
-                }
-            }
-        }
-
-        // This should not happen in normal operation - fall back to nil UUID
-        // The saga state lookup will fail, which gives a proper error message
-        tracing::warn!("Could not extract reservation_id from call results - using nil UUID");
-        ReservationId::nil()
-    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

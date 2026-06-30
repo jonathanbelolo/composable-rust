@@ -40,9 +40,9 @@
 //! ```
 
 use crate::{
-    AtomicError, Clock, EventBus, EventBusError, EventStore, EventStoreError, HandlerEnvironment,
-    MetadataContext, NoOpProjectionQueries, ProjectionError, ProjectionQueries, Projector,
-    SerializedEvent, StreamId, SubscriptionHandle, Version,
+    AtomicError, Clock, DynAtomicPersist, EventBus, EventBusError, EventStore, EventStoreError,
+    HandlerEnvironment, MetadataContext, NoOpProjectionQueries, ProjectionError, ProjectionQueries,
+    Projector, SerializedEvent, StreamId, SubscriptionHandle, Version,
 };
 use futures::future::BoxFuture;
 use std::collections::HashMap;
@@ -558,7 +558,7 @@ impl Projector for InMemoryProjector {
 /// let projected = env.projector().projected_events();
 /// let published = env.event_bus().published_events();
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TestEnvironment<C: Clock, P: ProjectionQueries = NoOpProjectionQueries> {
     clock: C,
     event_store: InMemoryEventStore,
@@ -567,6 +567,24 @@ pub struct TestEnvironment<C: Clock, P: ProjectionQueries = NoOpProjectionQuerie
     broadcast_topic: String,
     projections: P,
     metadata: MetadataContext,
+    atomic_persist: Option<Arc<dyn DynAtomicPersist>>,
+}
+
+impl<C: Clock + std::fmt::Debug, P: ProjectionQueries + std::fmt::Debug> std::fmt::Debug
+    for TestEnvironment<C, P>
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TestEnvironment")
+            .field("clock", &self.clock)
+            .field("event_store", &self.event_store)
+            .field("projector", &self.projector)
+            .field("event_bus", &self.event_bus)
+            .field("broadcast_topic", &self.broadcast_topic)
+            .field("projections", &self.projections)
+            .field("metadata", &self.metadata)
+            .field("atomic_persist", &self.atomic_persist.is_some())
+            .finish()
+    }
 }
 
 impl<C: Clock> TestEnvironment<C, NoOpProjectionQueries> {
@@ -584,6 +602,7 @@ impl<C: Clock> TestEnvironment<C, NoOpProjectionQueries> {
             broadcast_topic: "test-events".to_string(),
             projections: NoOpProjectionQueries,
             metadata: MetadataContext::new(),
+            atomic_persist: None,
         }
     }
 }
@@ -614,7 +633,16 @@ impl<C: Clock, P: ProjectionQueries> TestEnvironment<C, P> {
             broadcast_topic: "test-events".to_string(),
             projections,
             metadata: MetadataContext::new(),
+            atomic_persist: None,
         }
+    }
+
+    /// Attach an atomic append+projection capability (exercises the Handler's
+    /// transactional path instead of the separate append-then-project path).
+    #[must_use]
+    pub fn with_atomic_persist(mut self, atomic_persist: Arc<dyn DynAtomicPersist>) -> Self {
+        self.atomic_persist = Some(atomic_persist);
+        self
     }
 
     /// Create with a custom broadcast topic.
@@ -698,6 +726,64 @@ impl<C: Clock + Send + Sync, P: ProjectionQueries> HandlerEnvironment for TestEn
     fn metadata(&self) -> &MetadataContext {
         &self.metadata
     }
+
+    fn atomic_persist(&self) -> Option<&dyn DynAtomicPersist> {
+        self.atomic_persist.as_deref()
+    }
+}
+
+/// In-memory [`DynAtomicPersist`] for exercising the Handler's transactional path.
+///
+/// Appends to an [`InMemoryEventStore`] and runs the projection into an
+/// [`InMemoryProjector`] within the same (simulated) transaction — the append
+/// rolls back if the projection fails. Both stores are exposed for assertions.
+#[derive(Clone, Default)]
+pub struct InMemoryAtomicPersist {
+    event_store: InMemoryEventStore,
+    projector: InMemoryProjector,
+}
+
+impl InMemoryAtomicPersist {
+    /// Create an adapter over the given event store and projector.
+    #[must_use]
+    pub const fn new(event_store: InMemoryEventStore, projector: InMemoryProjector) -> Self {
+        Self {
+            event_store,
+            projector,
+        }
+    }
+
+    /// The event store events were appended to (for assertions).
+    #[must_use]
+    pub const fn event_store(&self) -> &InMemoryEventStore {
+        &self.event_store
+    }
+
+    /// The projector that received the in-transaction projection (for assertions).
+    #[must_use]
+    pub const fn projector(&self) -> &InMemoryProjector {
+        &self.projector
+    }
+}
+
+impl DynAtomicPersist for InMemoryAtomicPersist {
+    fn append_and_project<'a>(
+        &'a self,
+        stream_id: &'a StreamId,
+        expected_version: Option<Version>,
+        events: Vec<SerializedEvent>,
+    ) -> BoxFuture<'a, Result<Version, AtomicError>> {
+        Box::pin(async move {
+            self.event_store
+                .append_with_projection(
+                    stream_id,
+                    expected_version,
+                    events,
+                    |_version, versioned| async move { self.projector.project(&versioned).await },
+                )
+                .await
+        })
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -708,7 +794,9 @@ impl<C: Clock + Send + Sync, P: ProjectionQueries> HandlerEnvironment for TestEn
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::FixedClock;
+    use crate::{
+        BusinessLogic, BusinessResult, CallExecutor, FixedClock, Handler, NoOpQueryFetcher,
+    };
     use chrono::Utc;
 
     fn make_event(event_type: &str) -> SerializedEvent {
@@ -919,5 +1007,126 @@ mod tests {
             Err(AtomicError::Append(EventStoreError::VersionConflict { .. }))
         ));
         assert_eq!(store.events_for_stream("saga-1").len(), 1);
+    }
+
+    // ── Minimal saga to exercise the Handler's atomic-persist + feedback path ──
+
+    #[derive(Clone)]
+    #[allow(dead_code)] // `results` is carried for realism; this minimal saga ignores it
+    enum SagaIn {
+        Start { id: u64 },
+        Feedback { id: u64, results: Vec<()> },
+    }
+
+    #[derive(Clone, serde::Serialize, serde::Deserialize)]
+    enum SagaEv {
+        Started(u64),
+        Finished(u64),
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("saga error")]
+    struct SagaErr;
+
+    #[derive(Default)]
+    struct SagaState {
+        started: bool,
+    }
+
+    struct SagaLogic;
+
+    impl BusinessLogic for SagaLogic {
+        type State = SagaState;
+        type Input = SagaIn;
+        type Event = SagaEv;
+        type Error = SagaErr;
+        type Call = ();
+        type CallResult = ();
+        type Response = ();
+
+        fn stream_id(input: &SagaIn) -> StreamId {
+            let id = match input {
+                SagaIn::Start { id } | SagaIn::Feedback { id, .. } => *id,
+            };
+            StreamId::new(format!("saga-{id}"))
+        }
+
+        fn process(
+            &self,
+            input: SagaIn,
+            _clock: &dyn Clock,
+        ) -> Result<BusinessResult<SagaEv, (), ()>, SagaErr> {
+            match input {
+                SagaIn::Start { id } => Ok(BusinessResult::Continue {
+                    events: vec![SagaEv::Started(id)],
+                    calls: vec![()],
+                }),
+                SagaIn::Feedback { id, .. } => Ok(BusinessResult::Done(vec![SagaEv::Finished(id)])),
+            }
+        }
+
+        fn apply(&self, state: &mut SagaState, event: &SagaEv) {
+            if matches!(event, SagaEv::Started(_)) {
+                state.started = true;
+            }
+        }
+
+        fn feedback_input_from(prior: &SagaIn, results: Vec<()>) -> SagaIn {
+            let id = match prior {
+                SagaIn::Start { id } | SagaIn::Feedback { id, .. } => *id,
+            };
+            SagaIn::Feedback { id, results }
+        }
+
+        fn event_type_name(event: &SagaEv) -> &'static str {
+            match event {
+                SagaEv::Started(_) => "Started",
+                SagaEv::Finished(_) => "Finished",
+            }
+        }
+    }
+
+    struct OneCallExecutor;
+
+    impl CallExecutor<(), ()> for OneCallExecutor {
+        async fn execute(&self, calls: Vec<()>) -> Vec<()> {
+            calls
+        }
+    }
+
+    #[tokio::test]
+    async fn handler_uses_atomic_persist_and_threads_feedback_input() {
+        let store = InMemoryEventStore::new();
+        let projector = InMemoryProjector::new();
+        let ap = InMemoryAtomicPersist::new(store.clone(), projector.clone());
+
+        let env =
+            TestEnvironment::new(FixedClock::new(Utc::now())).with_atomic_persist(Arc::new(ap));
+        let env_handle = env.clone();
+
+        let handler = Handler::new(SagaLogic, OneCallExecutor, NoOpQueryFetcher, env);
+        let result = handler.handle(SagaIn::Start { id: 42 }).await;
+
+        // Start -> Continue -> feedback -> Done.
+        assert!(
+            matches!(
+                result,
+                Ok(crate::HandleResult::Command { event_count: 1, .. })
+            ),
+            "expected the saga to finish via Done, got {result:?}"
+        );
+
+        // Both events were persisted via the ATOMIC path onto the SAME id-derived
+        // stream — which only holds if feedback_input_from threaded id 42 from the
+        // prior input (not from the empty call results).
+        assert_eq!(
+            store.events_for_stream("saga-42").len(),
+            2,
+            "Started + Finished persisted on the id-derived stream via atomic_persist"
+        );
+        // The in-transaction projection ran for both events.
+        assert_eq!(projector.projection_count(), 2);
+        // The environment's own (non-atomic) projector was bypassed entirely.
+        assert_eq!(env_handle.projector().projection_count(), 0);
     }
 }
