@@ -12,11 +12,13 @@
 
 #![allow(clippy::expect_used)]
 
-use composable_rust_next::{EventStore, EventStoreError, SerializedEvent, StreamId, Version};
-use composable_rust_postgres_next::PostgresEventStore;
-use sqlx::postgres::PgPoolOptions;
+use composable_rust_next::{
+    AtomicError, EventStore, EventStoreError, ProjectionError, SerializedEvent, StreamId, Version,
+};
+use composable_rust_postgres_next::{PgTransactionalProjector, PostgresEventStore};
 use sqlx::PgPool;
-use testcontainers::{runners::AsyncRunner, ContainerAsync};
+use sqlx::postgres::PgPoolOptions;
+use testcontainers::{ContainerAsync, runners::AsyncRunner};
 use testcontainers_modules::postgres::Postgres;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -51,8 +53,8 @@ impl TestDb {
                     if sqlx::query("SELECT 1").execute(&p).await.is_ok() {
                         break p;
                     }
-                }
-                Err(_) => {}
+                },
+                Err(_) => {},
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         };
@@ -114,7 +116,11 @@ async fn postgres_event_store_integration() {
         let id = StreamId::new("stream-1");
 
         let v = store
-            .append(&id, None, vec![event("E1", b"data1"), event("E2", b"data2")])
+            .append(
+                &id,
+                None,
+                vec![event("E1", b"data1"), event("E2", b"data2")],
+            )
             .await
             .unwrap();
         assert_eq!(v, Version::new(2), "append should return final version");
@@ -132,7 +138,10 @@ async fn postgres_event_store_integration() {
     {
         db.reset().await;
         let store = db.store();
-        let events = store.load(&StreamId::new("nonexistent"), None).await.unwrap();
+        let events = store
+            .load(&StreamId::new("nonexistent"), None)
+            .await
+            .unwrap();
         assert!(events.is_empty(), "nonexistent stream should return empty");
         println!("  [PASS] load_empty_stream");
     }
@@ -168,7 +177,10 @@ async fn postgres_event_store_integration() {
         let store = db.store();
         let id = StreamId::new("stream-1");
 
-        store.append(&id, None, vec![event("E1", b"1")]).await.unwrap();
+        store
+            .append(&id, None, vec![event("E1", b"1")])
+            .await
+            .unwrap();
 
         // Version 0 is before the first event (version 1)
         // From SQL: WHERE version >= 0 should return all events
@@ -202,10 +214,16 @@ async fn postgres_event_store_integration() {
         let store = db.store();
         let id = StreamId::new("stream-1");
 
-        store.append(&id, None, vec![event("E1", b"1")]).await.unwrap();
+        store
+            .append(&id, None, vec![event("E1", b"1")])
+            .await
+            .unwrap();
 
         let from_v100 = store.load(&id, Some(Version::new(100))).await.unwrap();
-        assert!(from_v100.is_empty(), "version beyond max should return empty");
+        assert!(
+            from_v100.is_empty(),
+            "version beyond max should return empty"
+        );
         println!("  [PASS] load_from_version_beyond_max");
     }
 
@@ -219,7 +237,10 @@ async fn postgres_event_store_integration() {
         let store = db.store();
         let id = StreamId::new("stream-1");
 
-        let v1 = store.append(&id, None, vec![event("E1", b"1")]).await.unwrap();
+        let v1 = store
+            .append(&id, None, vec![event("E1", b"1")])
+            .await
+            .unwrap();
         assert_eq!(v1, Version::new(1));
 
         let v2 = store
@@ -236,7 +257,10 @@ async fn postgres_event_store_integration() {
         let store = db.store();
         let id = StreamId::new("stream-1");
 
-        store.append(&id, None, vec![event("E1", b"1")]).await.unwrap();
+        store
+            .append(&id, None, vec![event("E1", b"1")])
+            .await
+            .unwrap();
 
         let result = store
             .append(&id, Some(Version::new(99)), vec![event("E2", b"2")])
@@ -246,7 +270,7 @@ async fn postgres_event_store_integration() {
             Err(EventStoreError::VersionConflict { expected, actual }) => {
                 assert_eq!(expected, Some(Version::new(99)));
                 assert_eq!(actual, Version::new(1));
-            }
+            },
             other => panic!("Expected VersionConflict, got: {other:?}"),
         }
         println!("  [PASS] optimistic_concurrency_conflict");
@@ -263,7 +287,10 @@ async fn postgres_event_store_integration() {
         let result = store
             .append(&id, Some(Version::initial()), vec![event("E1", b"1")])
             .await;
-        assert!(result.is_ok(), "expected_version 0 on empty stream should succeed");
+        assert!(
+            result.is_ok(),
+            "expected_version 0 on empty stream should succeed"
+        );
         assert_eq!(result.unwrap(), Version::new(1));
         println!("  [PASS] expected_version_zero_on_empty_stream");
     }
@@ -274,7 +301,10 @@ async fn postgres_event_store_integration() {
         let store = db.store();
         let id = StreamId::new("stream-1");
 
-        store.append(&id, None, vec![event("E1", b"1")]).await.unwrap();
+        store
+            .append(&id, None, vec![event("E1", b"1")])
+            .await
+            .unwrap();
 
         let result = store
             .append(&id, Some(Version::initial()), vec![event("E2", b"2")])
@@ -294,14 +324,23 @@ async fn postgres_event_store_integration() {
         let id = StreamId::new("stream-1");
 
         // First write
-        store.append(&id, None, vec![event("E1", b"1")]).await.unwrap();
+        store
+            .append(&id, None, vec![event("E1", b"1")])
+            .await
+            .unwrap();
 
         // Second write without expected_version - should succeed
-        let v2 = store.append(&id, None, vec![event("E2", b"2")]).await.unwrap();
+        let v2 = store
+            .append(&id, None, vec![event("E2", b"2")])
+            .await
+            .unwrap();
         assert_eq!(v2, Version::new(2));
 
         // Third write without expected_version - should succeed
-        let v3 = store.append(&id, None, vec![event("E3", b"3")]).await.unwrap();
+        let v3 = store
+            .append(&id, None, vec![event("E3", b"3")])
+            .await
+            .unwrap();
         assert_eq!(v3, Version::new(3));
         println!("  [PASS] expected_version_none_skips_check");
     }
@@ -531,7 +570,10 @@ async fn postgres_event_store_integration() {
 
         for stream_id in special_ids {
             let id = StreamId::new(stream_id);
-            store.append(&id, None, vec![event("E1", b"1")]).await.unwrap();
+            store
+                .append(&id, None, vec![event("E1", b"1")])
+                .await
+                .unwrap();
 
             let events = store.load(&id, None).await.unwrap();
             assert_eq!(events.len(), 1, "failed for stream_id: {stream_id}");
@@ -597,7 +639,10 @@ async fn postgres_event_store_integration() {
         let store = PostgresEventStore::from_pool(db.pool.clone());
         let id = StreamId::new("stream-1");
 
-        store.append(&id, None, vec![event("E1", b"1")]).await.unwrap();
+        store
+            .append(&id, None, vec![event("E1", b"1")])
+            .await
+            .unwrap();
         let events = store.load(&id, None).await.unwrap();
         assert_eq!(events.len(), 1);
         println!("  [PASS] from_pool");
@@ -609,7 +654,10 @@ async fn postgres_event_store_integration() {
         let store = PostgresEventStore::new(db.url()).await.unwrap();
         let id = StreamId::new("stream-1");
 
-        store.append(&id, None, vec![event("E1", b"1")]).await.unwrap();
+        store
+            .append(&id, None, vec![event("E1", b"1")])
+            .await
+            .unwrap();
         let events = store.load(&id, None).await.unwrap();
         assert_eq!(events.len(), 1);
         println!("  [PASS] new_with_url");
@@ -620,17 +668,20 @@ async fn postgres_event_store_integration() {
         db.reset().await;
         let store = PostgresEventStore::with_options(
             db.url(),
-            5,  // max_connections
-            1,  // min_connections
-            30, // connect_timeout_secs
-            60, // idle_timeout_secs
+            5,   // max_connections
+            1,   // min_connections
+            30,  // connect_timeout_secs
+            60,  // idle_timeout_secs
             300, // max_lifetime_secs
         )
         .await
         .unwrap();
         let id = StreamId::new("stream-1");
 
-        store.append(&id, None, vec![event("E1", b"1")]).await.unwrap();
+        store
+            .append(&id, None, vec![event("E1", b"1")])
+            .await
+            .unwrap();
         let events = store.load(&id, None).await.unwrap();
         assert_eq!(events.len(), 1);
         println!("  [PASS] with_options");
@@ -638,7 +689,8 @@ async fn postgres_event_store_integration() {
 
     // Test 29: invalid_url_fails
     {
-        let result = PostgresEventStore::new("postgres://invalid:invalid@nonexistent:5432/db").await;
+        let result =
+            PostgresEventStore::new("postgres://invalid:invalid@nonexistent:5432/db").await;
         assert!(result.is_err(), "invalid URL should fail");
         println!("  [PASS] invalid_url_fails");
     }
@@ -710,7 +762,10 @@ async fn postgres_event_store_integration() {
         }
 
         // At least one should succeed
-        assert!(successes >= 1, "at least one concurrent append should succeed");
+        assert!(
+            successes >= 1,
+            "at least one concurrent append should succeed"
+        );
 
         let events = store.load(&id, None).await.unwrap();
         // The number of events should equal the number of successes
@@ -719,7 +774,9 @@ async fn postgres_event_store_integration() {
             successes,
             "event count should match successful appends"
         );
-        println!("  [PASS] concurrent_appends_same_stream_no_version ({successes} succeeded, {conflicts} conflicted)");
+        println!(
+            "  [PASS] concurrent_appends_same_stream_no_version ({successes} succeeded, {conflicts} conflicted)"
+        );
     }
 
     // Test 32: concurrent_appends_same_stream_with_version - one wins
@@ -729,7 +786,10 @@ async fn postgres_event_store_integration() {
         let id = StreamId::new("stream-1");
 
         // First, create initial event
-        store.append(&id, None, vec![event("E0", b"0")]).await.unwrap();
+        store
+            .append(&id, None, vec![event("E0", b"0")])
+            .await
+            .unwrap();
 
         // Now try concurrent appends with same expected_version
         let handles: Vec<_> = (0..5)
@@ -763,7 +823,11 @@ async fn postgres_event_store_integration() {
         assert_eq!(conflicts, 4, "four should get conflict or tx error");
 
         let events = store.load(&id, None).await.unwrap();
-        assert_eq!(events.len(), 2, "should have original + one successful append");
+        assert_eq!(
+            events.len(),
+            2,
+            "should have original + one successful append"
+        );
         println!("  [PASS] concurrent_appends_same_stream_with_version");
     }
 
@@ -782,7 +846,10 @@ async fn postgres_event_store_integration() {
 
         // Store should still work
         let id = StreamId::new("stream-1");
-        store.append(&id, None, vec![event("E1", b"1")]).await.unwrap();
+        store
+            .append(&id, None, vec![event("E1", b"1")])
+            .await
+            .unwrap();
         println!("  [PASS] run_migrations");
     }
 
@@ -842,4 +909,91 @@ async fn postgres_event_store_integration() {
     println!("\n═══════════════════════════════════════");
     println!("All 35 PostgresEventStore tests passed!");
     println!("═══════════════════════════════════════");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Transactional append + projection
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Projector that always fails — used to assert the append rolls back.
+struct FailingProjector;
+
+impl PgTransactionalProjector for FailingProjector {
+    async fn project_in_tx<'a>(
+        &'a self,
+        _conn: &'a mut sqlx::PgConnection,
+        _final_version: Version,
+        _events: &'a [SerializedEvent],
+    ) -> Result<(), ProjectionError> {
+        Err(ProjectionError::Custom("boom".to_string()))
+    }
+}
+
+/// Projector that writes a marker row into a side table in the same transaction.
+struct SideTableProjector;
+
+impl PgTransactionalProjector for SideTableProjector {
+    async fn project_in_tx<'a>(
+        &'a self,
+        conn: &'a mut sqlx::PgConnection,
+        final_version: Version,
+        events: &'a [SerializedEvent],
+    ) -> Result<(), ProjectionError> {
+        sqlx::query("INSERT INTO saga_marker (stream_count, version) VALUES ($1, $2)")
+            .bind(i64::try_from(events.len()).unwrap_or(0))
+            .bind(i64::try_from(final_version.as_u64()).unwrap_or(0))
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| ProjectionError::Database(e.to_string()))?;
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn append_with_projection_atomicity() {
+    let db = TestDb::new().await;
+    sqlx::query("CREATE TABLE IF NOT EXISTS saga_marker (stream_count BIGINT, version BIGINT)")
+        .execute(&db.pool)
+        .await
+        .expect("create marker table");
+
+    // Projection failure rolls the append back: nothing is committed.
+    db.reset().await;
+    let store = db.store();
+    let id = StreamId::new("saga-x");
+    let res = store
+        .append_with_projection(&id, None, vec![event("E1", b"d")], &FailingProjector)
+        .await;
+    assert!(
+        matches!(res, Err(AtomicError::Projection(_))),
+        "projection failure should surface as AtomicError::Projection"
+    );
+    let loaded = store.load(&id, None).await.unwrap();
+    assert!(
+        loaded.is_empty(),
+        "append must be rolled back when the projection fails"
+    );
+
+    // Success commits events AND the projection together.
+    let v = store
+        .append_with_projection(
+            &id,
+            None,
+            vec![event("E1", b"d"), event("E2", b"d")],
+            &SideTableProjector,
+        )
+        .await
+        .unwrap();
+    assert_eq!(v, Version::new(2));
+    let loaded = store.load(&id, None).await.unwrap();
+    assert_eq!(loaded.len(), 2, "events committed on success");
+    let marker: (i64, i64) = sqlx::query_as("SELECT stream_count, version FROM saga_marker")
+        .fetch_one(&db.pool)
+        .await
+        .expect("marker row should be committed in the same tx");
+    assert_eq!(
+        marker,
+        (2, 2),
+        "projection committed atomically with the events"
+    );
 }

@@ -25,6 +25,23 @@ pub enum ProjectionError {
     Custom(String),
 }
 
+/// Error from an atomic append-and-project operation.
+///
+/// Distinguishes a failed event-store append (which may be a recoverable
+/// [`EventStoreError::VersionConflict`]) from a failed in-transaction projection,
+/// so the `Handler` can map each to the right [`HandlerError`] and preserve
+/// optimistic-concurrency retries.
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum AtomicError {
+    /// The event-store append failed; carries `VersionConflict` for retry.
+    #[error("append failed: {0}")]
+    Append(#[from] EventStoreError),
+
+    /// The in-transaction projection failed; the append was rolled back.
+    #[error("projection failed: {0}")]
+    Projection(#[from] ProjectionError),
+}
+
 /// Errors that can occur during handler execution
 ///
 /// This enum distinguishes between business errors (from the `BusinessLogic` trait)
@@ -139,10 +156,7 @@ impl<E: std::error::Error> HandlerError<E> {
     /// Check if this is a version conflict (retryable)
     #[must_use]
     pub const fn is_version_conflict(&self) -> bool {
-        matches!(
-            self,
-            Self::Persist(EventStoreError::VersionConflict { .. })
-        )
+        matches!(self, Self::Persist(EventStoreError::VersionConflict { .. }))
     }
 }
 

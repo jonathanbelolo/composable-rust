@@ -33,9 +33,9 @@
 //! ```
 
 use crate::{
-    BusinessLogic, BusinessResult, CallExecutor, EventBus, EventStore, EventStoreError,
-    FetchResult, HandlerEnvironment, HandlerError, Projector, QueryFetcher, SerializationError,
-    SerializedEvent, StreamId, Version,
+    AtomicError, BusinessLogic, BusinessResult, CallExecutor, EventBus, EventStore,
+    EventStoreError, FetchResult, HandlerEnvironment, HandlerError, Projector, QueryFetcher,
+    SerializationError, SerializedEvent, StreamId, Version,
 };
 
 /// Default maximum retry attempts for version conflicts
@@ -307,7 +307,7 @@ where
                 BusinessResult::Respond(data) => {
                     // Query: return immediately, no persistence
                     return Ok(HandleResult::Query(data));
-                }
+                },
 
                 BusinessResult::Done(events) => {
                     if events.is_empty() {
@@ -320,22 +320,20 @@ where
                     let stream_id = T::stream_id(&prepared_input);
                     let serialized = self.serialize_events(&events)?;
 
-                    // Step 3: Persist with version check
-                    match self.persist_events(&stream_id, &serialized, expected_version).await {
-                        Ok(final_version) => {
-                            // Update events with their actual versions for projection/broadcast
-                            let versioned =
-                                Self::assign_versions(serialized, final_version, events.len());
-
-                            // Step 4: Project and broadcast (after successful persist)
-                            self.project_and_wait(&versioned).await?;
+                    // Step 3+4: Persist and project (atomically if the environment
+                    // provides it, otherwise append-then-project).
+                    match self
+                        .persist_and_project(&stream_id, serialized, expected_version)
+                        .await
+                    {
+                        Ok((final_version, versioned)) => {
                             self.broadcast(&versioned).await?;
 
                             return Ok(HandleResult::Command {
                                 version: final_version,
                                 event_count: events.len(),
                             });
-                        }
+                        },
                         Err(HandlerError::Persist(EventStoreError::VersionConflict { .. }))
                             if attempts < self.max_retries =>
                         {
@@ -343,49 +341,46 @@ where
                             attempts += 1;
                             current_input = prepared_input;
                             // Continue to next loop iteration
-                        }
+                        },
                         Err(e) => return Err(e),
                     }
-                }
+                },
 
                 BusinessResult::Continue { events, calls } => {
                     if !events.is_empty() {
                         let stream_id = T::stream_id(&prepared_input);
                         let serialized = self.serialize_events(&events)?;
-                        let event_count = events.len();
 
-                        // Persist with retry
-                        match self.persist_events(&stream_id, &serialized, expected_version).await
+                        // Persist and project (atomically if available) with retry
+                        match self
+                            .persist_and_project(&stream_id, serialized, expected_version)
+                            .await
                         {
-                            Ok(final_version) => {
-                                // Update events with their actual versions for projection/broadcast
-                                let versioned =
-                                    Self::assign_versions(serialized, final_version, event_count);
-                                self.project_and_wait(&versioned).await?;
+                            Ok((_final_version, versioned)) => {
                                 self.broadcast(&versioned).await?;
-                            }
-                            Err(HandlerError::Persist(EventStoreError::VersionConflict { .. }))
-                                if attempts < self.max_retries =>
-                            {
+                            },
+                            Err(HandlerError::Persist(EventStoreError::VersionConflict {
+                                ..
+                            })) if attempts < self.max_retries => {
                                 // Retry: re-fetch from projections
                                 attempts += 1;
                                 current_input = prepared_input;
                                 continue; // Must continue here to avoid falling through to call executor
-                            }
+                            },
                             Err(e) => return Err(e),
                         }
                     }
 
                     // Execute calls and feed results back
                     let feedback = self.call_executor.execute(calls).await;
-                    current_input = T::feedback_input(feedback);
+                    current_input = T::feedback_input_from(&prepared_input, feedback);
 
                     // Track saga iterations for loop safety
                     saga_iterations += 1;
 
                     // For saga continuation, the next iteration will re-fetch from
                     // projections to get updated state and version
-                }
+                },
             }
         }
     }
@@ -427,6 +422,41 @@ where
             .append(stream_id, expected_version, events.to_vec())
             .await
             .map_err(HandlerError::Persist)
+    }
+
+    /// Persist events and update the read model, returning the final version and
+    /// the version-stamped events (for broadcasting).
+    ///
+    /// If the environment provides [`atomic_persist`](HandlerEnvironment::atomic_persist),
+    /// the append and projection commit in a single transaction and `project_and_wait`
+    /// is NOT called. Otherwise it falls back to the separate append-then-project flow.
+    async fn persist_and_project(
+        &self,
+        stream_id: &StreamId,
+        serialized: Vec<SerializedEvent>,
+        expected_version: Option<Version>,
+    ) -> Result<(Version, Vec<SerializedEvent>), HandlerError<T::Error>> {
+        let event_count = serialized.len();
+
+        if let Some(atomic) = self.env.atomic_persist() {
+            // Atomic path: projection happens inside the append transaction.
+            let final_version = atomic
+                .append_and_project(stream_id, expected_version, serialized.clone())
+                .await
+                .map_err(|e| match e {
+                    AtomicError::Append(es) => HandlerError::Persist(es),
+                    AtomicError::Projection(pe) => HandlerError::Projection(pe),
+                })?;
+            let versioned = Self::assign_versions(serialized, final_version, event_count);
+            Ok((final_version, versioned))
+        } else {
+            let final_version = self
+                .persist_events(stream_id, &serialized, expected_version)
+                .await?;
+            let versioned = Self::assign_versions(serialized, final_version, event_count);
+            self.project_and_wait(&versioned).await?;
+            Ok((final_version, versioned))
+        }
     }
 
     /// Project events to read model (synchronous completion)

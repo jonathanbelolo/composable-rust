@@ -271,7 +271,7 @@ pub enum ReservationSagaEvent {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// State machine phase for the saga.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum ReservationSagaPhase {
     /// Not started
     #[default]
@@ -291,7 +291,7 @@ pub enum ReservationSagaPhase {
 }
 
 /// State for the Reservation saga.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReservationSagaState {
     /// Reservation ID
     pub reservation_id: Option<ReservationId>,

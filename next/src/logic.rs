@@ -1,7 +1,7 @@
 //! The unified `BusinessLogic` trait for aggregates and sagas
 
-use crate::{BusinessResult, Clock, StreamId};
-use serde::{de::DeserializeOwned, Serialize};
+use crate::{BusinessResult, Clock, SerializationError, SerializedEvent, StreamId};
+use serde::{Serialize, de::DeserializeOwned};
 
 /// Unified trait for all business logic—aggregates and sagas alike
 ///
@@ -297,6 +297,57 @@ pub trait BusinessLogic: Send + Sync + 'static {
     #[allow(clippy::panic)] // Intentional: this should never be called for aggregates
     fn feedback_input(_results: Vec<Self::CallResult>) -> Self::Input {
         panic!("Aggregates don't use Continue, so feedback_input should never be called")
+    }
+
+    /// Build the next saga input from the prior input plus the call results.
+    ///
+    /// The `prior` input is the command/feedback that produced the `Continue`, so it
+    /// already carries the saga's typed correlation key (e.g. an aggregate id). Reading
+    /// the key from `prior` is exact and avoids reverse-engineering it from
+    /// [`CallResult`](Self::CallResult)s — which is fragile when a call *fails* (an error
+    /// result may carry no id).
+    ///
+    /// The default delegates to [`feedback_input`](Self::feedback_input), preserving
+    /// existing behavior; sagas that need the correlation key should override this.
+    #[must_use]
+    fn feedback_input_from(_prior: &Self::Input, results: Vec<Self::CallResult>) -> Self::Input {
+        Self::feedback_input(results)
+    }
+
+    /// Rebuild state by folding decoded events through [`apply`](Self::apply).
+    ///
+    /// This is for projection rebuilding and recovery (replaying a stream to
+    /// reconstruct `State`), not the normal command flow.
+    #[must_use]
+    fn rebuild_state(&self, events: &[Self::Event]) -> Self::State {
+        let mut state = Self::State::default();
+        for event in events {
+            self.apply(&mut state, event);
+        }
+        state
+    }
+
+    /// Rebuild state by decoding bincode [`SerializedEvent`] payloads into
+    /// [`Event`](Self::Event)s and folding them through [`apply`](Self::apply).
+    ///
+    /// Replay hard-fails on a decode error rather than silently dropping events
+    /// (which would yield a wrong `State`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SerializationError::Decode`] (tagged with the event type) if any
+    /// payload fails to decode.
+    fn rebuild_state_from_serialized(
+        &self,
+        events: &[SerializedEvent],
+    ) -> Result<Self::State, SerializationError> {
+        let mut state = Self::State::default();
+        for event in events {
+            let decoded: Self::Event = bincode::deserialize(&event.payload)
+                .map_err(|e| SerializationError::Decode(format!("{}: {e}", event.event_type)))?;
+            self.apply(&mut state, &decoded);
+        }
+        Ok(state)
     }
 
     /// Event type name for serialization

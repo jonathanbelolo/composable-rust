@@ -24,10 +24,10 @@
 #![warn(missing_docs)]
 
 use composable_rust_next::{
-    EventStore, EventStoreError, SerializedEvent, StreamId, Version,
+    AtomicError, EventStore, EventStoreError, ProjectionError, SerializedEvent, StreamId, Version,
 };
-use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx::Row;
+use sqlx::postgres::{PgPool, PgPoolOptions};
 use std::time::Duration;
 use tracing::Instrument;
 
@@ -162,6 +162,183 @@ impl PostgresEventStore {
         tracing::info!("Database migrations completed successfully");
         Ok(())
     }
+
+    /// Append events and run an in-transaction projection atomically.
+    ///
+    /// The events are inserted and `projector.project_in_tx` runs inside the **same**
+    /// transaction; it commits only if both succeed, so the projection can never
+    /// diverge from the event stream. A projection error rolls the append back.
+    ///
+    /// This is the single-database counterpart to the [`EventStore::append`] +
+    /// `Projector::project` two-step used by aggregates; sagas use it (via
+    /// `DynAtomicPersist`) to keep their durable state consistent with their stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AtomicError::Append`] (including [`EventStoreError::VersionConflict`])
+    /// if the append fails, or [`AtomicError::Projection`] (after rollback) if the
+    /// projection fails.
+    pub async fn append_with_projection<P: PgTransactionalProjector>(
+        &self,
+        stream_id: &StreamId,
+        expected_version: Option<Version>,
+        events: Vec<SerializedEvent>,
+        projector: &P,
+    ) -> Result<Version, AtomicError> {
+        if events.is_empty() {
+            return Err(AtomicError::Append(EventStoreError::Connection(
+                "Cannot append empty event list".to_string(),
+            )));
+        }
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| AtomicError::Append(EventStoreError::Connection(e.to_string())))?;
+
+        let final_version =
+            insert_events_tx(&mut tx, stream_id.as_str(), expected_version, &events)
+                .await
+                .map_err(AtomicError::Append)?;
+
+        // Stamp versions so the projector sees the same versioned events the caller
+        // will broadcast.
+        let versioned = stamp_versions(events, final_version);
+
+        projector
+            .project_in_tx(&mut tx, final_version, &versioned)
+            .await
+            .map_err(AtomicError::Projection)?;
+
+        tx.commit()
+            .await
+            .map_err(|e| AtomicError::Append(EventStoreError::Connection(e.to_string())))?;
+
+        Ok(final_version)
+    }
+}
+
+/// A projection that runs INSIDE the event-append transaction.
+///
+/// Implemented by infrastructure that must update a read model atomically with the
+/// event append (see [`PostgresEventStore::append_with_projection`]). All borrows
+/// share `'a`, so the returned future may hold the connection borrow until it is
+/// awaited; `append_with_projection` retains ownership of the transaction and commits
+/// afterward.
+pub trait PgTransactionalProjector: Send + Sync {
+    /// Apply the just-appended `events` to the read model within the open transaction.
+    ///
+    /// `final_version` is the stream's new `MAX(version)` after this append. Use the
+    /// provided `conn` (the transaction's connection) for all writes so they commit
+    /// or roll back atomically with the events.
+    ///
+    /// # Errors
+    ///
+    /// Return [`ProjectionError`] to abort and roll back the entire transaction.
+    fn project_in_tx<'a>(
+        &'a self,
+        conn: &'a mut sqlx::PgConnection,
+        final_version: Version,
+        events: &'a [SerializedEvent],
+    ) -> impl std::future::Future<Output = Result<(), ProjectionError>> + Send + 'a;
+}
+
+/// Version-check and insert `events` on an open transaction/connection (no commit).
+///
+/// Shared core used by [`PostgresEventStore::append_with_projection`]; mirrors the
+/// concurrency check and insert loop of [`EventStore::append`]. Returns the final
+/// stream version.
+async fn insert_events_tx(
+    conn: &mut sqlx::PgConnection,
+    stream_id: &str,
+    expected_version: Option<Version>,
+    events: &[SerializedEvent],
+) -> Result<Version, EventStoreError> {
+    let current_version_i64: i64 =
+        sqlx::query_scalar("SELECT COALESCE(MAX(version), -1) FROM events WHERE stream_id = $1")
+            .bind(stream_id)
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(|e| EventStoreError::Connection(e.to_string()))?;
+
+    let current_version = if current_version_i64 == -1 {
+        Version::initial()
+    } else {
+        Version::new(current_version_i64.try_into().unwrap_or(0))
+    };
+
+    if let Some(expected) = expected_version {
+        if current_version != expected {
+            return Err(EventStoreError::VersionConflict {
+                expected: Some(expected),
+                actual: current_version,
+            });
+        }
+    }
+
+    let mut next_version = current_version.next();
+    for event in events {
+        let version_i64 = i64::try_from(next_version.as_u64())
+            .map_err(|e| EventStoreError::Connection(format!("Version overflow: {e}")))?;
+
+        let result = sqlx::query(
+            r"
+            INSERT INTO events (stream_id, version, event_type, event_version, event_data, metadata, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, now())
+            ",
+        )
+        .bind(stream_id)
+        .bind(version_i64)
+        .bind(&event.event_type)
+        .bind(1i32)
+        .bind(&event.payload)
+        .bind::<Option<serde_json::Value>>(None)
+        .execute(&mut *conn)
+        .await;
+
+        if let Err(e) = result {
+            if let Some(db_err) = e.as_database_error() {
+                if db_err.code().as_deref() == Some("23505") {
+                    let actual_i64: Option<i64> =
+                        sqlx::query_scalar("SELECT MAX(version) FROM events WHERE stream_id = $1")
+                            .bind(stream_id)
+                            .fetch_optional(&mut *conn)
+                            .await
+                            .map_err(|e| EventStoreError::Connection(e.to_string()))?;
+
+                    let actual = actual_i64.map_or_else(Version::initial, |v| {
+                        Version::new(v.try_into().unwrap_or(0))
+                    });
+
+                    return Err(EventStoreError::VersionConflict {
+                        expected: expected_version,
+                        actual,
+                    });
+                }
+            }
+            return Err(EventStoreError::Connection(e.to_string()));
+        }
+
+        next_version = next_version.next();
+    }
+
+    Ok(next_version.prev())
+}
+
+/// Stamp sequential stream versions onto freshly-appended events.
+///
+/// The last event gets `final_version`; earlier events count back from it.
+fn stamp_versions(
+    mut events: Vec<SerializedEvent>,
+    final_version: Version,
+) -> Vec<SerializedEvent> {
+    let count = events.len() as u64;
+    let start = final_version.as_u64() - count + 1;
+    for (i, event) in events.iter_mut().enumerate() {
+        event.version = Some(Version::new(start + i as u64));
+    }
+    events
 }
 
 impl EventStore for PostgresEventStore {
@@ -190,9 +367,8 @@ impl EventStore for PostgresEventStore {
             );
 
             let rows = if let Some(from_ver) = from_version {
-                let from_version_i64 = i64::try_from(from_ver.as_u64()).map_err(|e| {
-                    EventStoreError::Connection(format!("Version overflow: {e}"))
-                })?;
+                let from_version_i64 = i64::try_from(from_ver.as_u64())
+                    .map_err(|e| EventStoreError::Connection(format!("Version overflow: {e}")))?;
 
                 sqlx::query(
                     r"
@@ -244,8 +420,7 @@ impl EventStore for PostgresEventStore {
 
             // Metrics
             let duration = start.elapsed();
-            metrics::histogram!("event_store.load.duration_seconds")
-                .record(duration.as_secs_f64());
+            metrics::histogram!("event_store.load.duration_seconds").record(duration.as_secs_f64());
             #[allow(clippy::cast_precision_loss)]
             metrics::histogram!("event_store.load.event_count").record(events.len() as f64);
 

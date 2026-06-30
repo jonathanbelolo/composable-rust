@@ -40,7 +40,7 @@
 //! ```
 
 use crate::{
-    Clock, EventBus, EventBusError, EventStore, EventStoreError, HandlerEnvironment,
+    AtomicError, Clock, EventBus, EventBusError, EventStore, EventStoreError, HandlerEnvironment,
     MetadataContext, NoOpProjectionQueries, ProjectionError, ProjectionQueries, Projector,
     SerializedEvent, StreamId, SubscriptionHandle, Version,
 };
@@ -167,6 +167,88 @@ impl InMemoryEventStore {
             .map(Vec::len)
             .sum()
     }
+
+    /// Append events and run an in-"transaction" projection atomically.
+    ///
+    /// Models a transactional store for tests: the events are appended, then
+    /// `project` is awaited with the final version and the version-stamped events;
+    /// if `project` returns `Err`, the appended events are rolled back (truncated)
+    /// and [`AtomicError::Projection`] is returned, so callers observe all-or-nothing
+    /// semantics without a real database.
+    ///
+    /// The internal lock is never held across the `.await`, so a small visibility
+    /// window exists between append and projection under true concurrency — this is
+    /// irrelevant for deterministic single-threaded tests.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AtomicError::Append`] on a version conflict, or
+    /// [`AtomicError::Projection`] (after rolling the append back) if `project` fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal `RwLock` is poisoned.
+    #[allow(clippy::expect_used)] // Test infrastructure
+    pub async fn append_with_projection<F, Fut>(
+        &self,
+        stream_id: &StreamId,
+        expected_version: Option<Version>,
+        events: Vec<SerializedEvent>,
+        project: F,
+    ) -> Result<Version, AtomicError>
+    where
+        F: FnOnce(Version, Vec<SerializedEvent>) -> Fut,
+        Fut: std::future::Future<Output = Result<(), ProjectionError>>,
+    {
+        let key = stream_id.as_str().to_string();
+
+        // Phase 1: append under the lock (no `.await` held), recording prior length.
+        let (prior_len, final_version, versioned) = {
+            let mut streams = self
+                .streams
+                .write()
+                .expect("InMemoryEventStore lock poisoned");
+            let stream = streams.entry(key.clone()).or_default();
+            let prior_len = stream.len();
+            let current_version = if stream.is_empty() {
+                Version::initial()
+            } else {
+                Version::new(stream.len() as u64)
+            };
+            if let Some(expected) = expected_version {
+                if expected != current_version {
+                    return Err(AtomicError::Append(EventStoreError::VersionConflict {
+                        expected: Some(expected),
+                        actual: current_version,
+                    }));
+                }
+            }
+            let start_version = current_version.as_u64() + 1;
+            let mut versioned = Vec::with_capacity(events.len());
+            for (i, mut event) in events.into_iter().enumerate() {
+                event.version = Some(Version::new(start_version + i as u64));
+                versioned.push(event.clone());
+                stream.push(event);
+            }
+            let final_version = Version::new(stream.len() as u64);
+            (prior_len, final_version, versioned)
+        };
+
+        // Phase 2: run the projection with the lock released.
+        if let Err(e) = project(final_version, versioned).await {
+            // Phase 3: roll the appended events back.
+            let mut streams = self
+                .streams
+                .write()
+                .expect("InMemoryEventStore lock poisoned");
+            if let Some(stream) = streams.get_mut(&key) {
+                stream.truncate(prior_len);
+            }
+            return Err(AtomicError::Projection(e));
+        }
+
+        Ok(final_version)
+    }
 }
 
 impl EventStore for InMemoryEventStore {
@@ -203,9 +285,7 @@ impl EventStore for InMemoryEventStore {
             .write()
             .expect("InMemoryEventStore lock poisoned");
 
-        let stream = streams
-            .entry(stream_id.as_str().to_string())
-            .or_default();
+        let stream = streams.entry(stream_id.as_str().to_string()).or_default();
         let current_version = if stream.is_empty() {
             Version::initial()
         } else {
@@ -670,10 +750,7 @@ mod tests {
         assert_eq!(events[1].event_type, "Event2");
 
         // Load from version
-        let events = store
-            .load(&stream_id, Some(Version::new(1)))
-            .await
-            .unwrap();
+        let events = store.load(&stream_id, Some(Version::new(1))).await.unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, "Event2");
     }
@@ -741,9 +818,7 @@ mod tests {
 
         let result = projector.project(&[make_event("Event1")]).await;
 
-        assert!(
-            matches!(result, Err(ProjectionError::Custom(msg)) if msg == "Database down")
-        );
+        assert!(matches!(result, Err(ProjectionError::Custom(msg)) if msg == "Database down"));
     }
 
     #[test]
@@ -765,10 +840,84 @@ mod tests {
 
         let env = TestEnvironment::new(clock).with_metadata(metadata);
 
-        assert_eq!(
-            env.metadata().correlation_id,
-            Some("test-123".to_string())
-        );
+        assert_eq!(env.metadata().correlation_id, Some("test-123".to_string()));
         assert_eq!(env.metadata().user_id, Some("user-abc".to_string()));
+    }
+
+    #[tokio::test]
+    async fn append_with_projection_commits_on_success() {
+        let store = InMemoryEventStore::new();
+        let stream_id = StreamId::new("saga-1");
+
+        let version = store
+            .append_with_projection(
+                &stream_id,
+                None,
+                vec![make_event("E1"), make_event("E2")],
+                |final_version, events| async move {
+                    assert_eq!(final_version, Version::new(2));
+                    assert_eq!(events.len(), 2);
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(version, Version::new(2));
+        assert_eq!(store.events_for_stream("saga-1").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn append_with_projection_rolls_back_on_failure() {
+        let store = InMemoryEventStore::new();
+        let stream_id = StreamId::new("saga-1");
+
+        // Seed one committed event.
+        store
+            .append(&stream_id, None, vec![make_event("Seed")])
+            .await
+            .unwrap();
+
+        let result = store
+            .append_with_projection(
+                &stream_id,
+                Some(Version::new(1)),
+                vec![make_event("E2")],
+                |_version, _events| async { Err(ProjectionError::Custom("boom".to_string())) },
+            )
+            .await;
+
+        // The projection failed → the append was rolled back atomically.
+        assert!(matches!(
+            result,
+            Err(AtomicError::Projection(ProjectionError::Custom(msg))) if msg == "boom"
+        ));
+        assert_eq!(store.events_for_stream("saga-1").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn append_with_projection_version_conflict_skips_projection() {
+        let store = InMemoryEventStore::new();
+        let stream_id = StreamId::new("saga-1");
+        store
+            .append(&stream_id, None, vec![make_event("Seed")])
+            .await
+            .unwrap();
+
+        // Wrong expected version → conflict before the projection runs.
+        let result = store
+            .append_with_projection(
+                &stream_id,
+                Some(Version::initial()),
+                vec![make_event("E2")],
+                |_version, _events| async { Ok(()) },
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(AtomicError::Append(EventStoreError::VersionConflict { .. }))
+        ));
+        assert_eq!(store.events_for_stream("saga-1").len(), 1);
     }
 }

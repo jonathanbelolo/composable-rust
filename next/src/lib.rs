@@ -92,13 +92,13 @@ mod version;
 
 // Re-export core types from modules
 pub use clock::{Clock, FixedClock, SystemClock};
-pub use error::{HandlerError, ProjectionError, SerializationError};
+pub use error::{AtomicError, HandlerError, ProjectionError, SerializationError};
 pub use executor::{CallExecutor, NoOpCallExecutor};
 pub use fetcher::{FetchResult, NoOpQueryFetcher, QueryFetcher};
 pub use handler::{
-    HandleResult, Handler, HandlerBuilder, DEFAULT_MAX_RETRIES, DEFAULT_MAX_SAGA_ITERATIONS,
+    DEFAULT_MAX_RETRIES, DEFAULT_MAX_SAGA_ITERATIONS, HandleResult, Handler, HandlerBuilder,
 };
-pub use in_process_event_bus::{InProcessEventBus, DEFAULT_CHANNEL_CAPACITY};
+pub use in_process_event_bus::{DEFAULT_CHANNEL_CAPACITY, InProcessEventBus};
 pub use logic::BusinessLogic;
 pub use multi_projector::{DynProjector, MultiProjector};
 pub use projections::{GetById, NoOpProjectionQueries, ProjectionQueries};
@@ -486,6 +486,50 @@ pub trait HandlerEnvironment: Send + Sync {
     ///
     /// Provides correlation IDs, user IDs, etc. for event metadata.
     fn metadata(&self) -> &MetadataContext;
+
+    /// Optional atomic append-and-project capability.
+    ///
+    /// Return `Some` to make the [`Handler`] persist events and update the read
+    /// model in a single transaction (so the projection can never diverge from the
+    /// event stream). When `Some`, the `Handler` uses
+    /// [`DynAtomicPersist::append_and_project`] instead of the separate append +
+    /// [`Projector::project`] steps.
+    ///
+    /// The default returns `None`, preserving the separate append-then-project flow.
+    fn atomic_persist(&self) -> Option<&dyn DynAtomicPersist> {
+        None
+    }
+}
+
+/// Atomically append events and update a projection in one transaction.
+///
+/// `Projector::project` runs *after* a separate append, leaving a window where the
+/// events are committed but the read model is not. When a [`HandlerEnvironment`]
+/// returns `Some` from [`atomic_persist`](HandlerEnvironment::atomic_persist), the
+/// [`Handler`] instead persists events and updates the projection inside a single
+/// storage transaction, so the read model can never drift from the event stream.
+///
+/// This trait is object-safe (it returns a boxed future) and storage-agnostic:
+/// concrete implementations (e.g. a `PostgreSQL` transaction) live in infrastructure
+/// crates, keeping the storage type out of the generic [`Handler`].
+pub trait DynAtomicPersist: Send + Sync {
+    /// Append `events` to `stream_id` and update the projection in one transaction.
+    ///
+    /// Returns the new stream version. The projection has already been applied when
+    /// this resolves `Ok`, so the caller must not project again.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AtomicError::Append`] (including
+    /// [`EventStoreError::VersionConflict`]) if the append fails, or
+    /// [`AtomicError::Projection`] if the in-transaction projection fails — in which
+    /// case the append is rolled back and nothing is committed.
+    fn append_and_project<'a>(
+        &'a self,
+        stream_id: &'a StreamId,
+        expected_version: Option<Version>,
+        events: Vec<SerializedEvent>,
+    ) -> futures::future::BoxFuture<'a, Result<Version, AtomicError>>;
 }
 
 /// Serialized event for persistence and transport
