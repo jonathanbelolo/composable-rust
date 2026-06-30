@@ -83,6 +83,7 @@ mod fetcher;
 mod handler;
 mod in_process_event_bus;
 mod logic;
+mod multi_projector;
 mod projections;
 mod result;
 mod stream;
@@ -99,6 +100,7 @@ pub use handler::{
 };
 pub use in_process_event_bus::{InProcessEventBus, DEFAULT_CHANNEL_CAPACITY};
 pub use logic::BusinessLogic;
+pub use multi_projector::{DynProjector, MultiProjector};
 pub use projections::{GetById, NoOpProjectionQueries, ProjectionQueries};
 pub use result::BusinessResult;
 pub use stream::StreamId;
@@ -286,7 +288,7 @@ pub trait Projector: Send + Sync {
 /// Per-event projection trait for read model maintenance.
 ///
 /// Implementations receive deserialized domain events and update
-/// their read model (typically a PostgreSQL table). Each projection
+/// their read model (typically a `PostgreSQL` table). Each projection
 /// has a unique name for checkpoint tracking.
 ///
 /// This is a higher-level abstraction than `Projector` — it works
