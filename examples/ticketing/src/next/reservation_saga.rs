@@ -126,21 +126,17 @@ pub enum ReservationSagaCall {
 
 /// Results from aggregate calls.
 ///
-/// Each result includes the reservation_id so that feedback can be routed correctly
-/// even when calls fail (errors don't contain events to extract the ID from).
+/// The saga correlates feedback via the prior input (see `feedback_input_from`),
+/// so results carry only the call outcome.
 #[derive(Debug, Clone)]
 pub enum ReservationSagaCallResult {
     /// Result from Inventory aggregate.
     Inventory {
-        /// The reservation ID from the original command
-        reservation_id: ReservationId,
         /// The result of the inventory operation
         result: Result<Vec<InventoryEvent>, InventoryError>,
     },
     /// Result from Payment aggregate.
     Payment {
-        /// The reservation ID from the original command
-        reservation_id: ReservationId,
         /// The result of the payment operation
         result: Result<Vec<PaymentEvent>, PaymentError>,
     },
@@ -1054,7 +1050,6 @@ mod tests {
             reservation_id,
             results: vec![
                 ReservationSagaCallResult::Inventory {
-                    reservation_id,
                     result: Ok(vec![
                         InventoryEvent::SeatsReserved {
                             reservation_id,
@@ -1114,7 +1109,6 @@ mod tests {
             reservation_id,
             results: vec![
                 ReservationSagaCallResult::Payment {
-                    reservation_id,
                     result: Ok(vec![
                         PaymentEvent::PaymentProcessed {
                             payment_id,
@@ -1182,7 +1176,6 @@ mod tests {
             reservation_id,
             results: vec![
                 ReservationSagaCallResult::Payment {
-                    reservation_id,
                     result: Ok(vec![PaymentEvent::PaymentFailed {
                         payment_id,
                         reason: "Card declined".to_string(),

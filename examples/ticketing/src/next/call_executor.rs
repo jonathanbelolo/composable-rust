@@ -45,7 +45,6 @@ use composable_rust_next::{
 };
 use futures::future::BoxFuture;
 
-use crate::types::ReservationId;
 use super::{
     EventBusinessLogic, EventCommand, EventError, EventEvent, InventoryBusinessLogic,
     InventoryCommand, InventoryError, InventoryEvent, InventoryResponse, PaymentBusinessLogic,
@@ -342,7 +341,6 @@ where
         before_version: Version,
     ) -> ReservationSagaCallResult {
         let stream_id = InventoryBusinessLogic::stream_id(&command);
-        let reservation_id = extract_reservation_id_from_inventory_command(&command);
 
         match self.inventory_handler.handle(command).await {
             Ok(_result) => {
@@ -353,12 +351,10 @@ where
                 )
                 .await;
                 ReservationSagaCallResult::Inventory {
-                    reservation_id,
                     result: Ok(events),
                 }
             }
             Err(e) => ReservationSagaCallResult::Inventory {
-                reservation_id,
                 result: Err(map_inventory_error(e)),
             },
         }
@@ -371,7 +367,6 @@ where
         before_version: Version,
     ) -> ReservationSagaCallResult {
         let stream_id = PaymentBusinessLogic::stream_id(&command);
-        let reservation_id = extract_reservation_id_from_payment_command(&command);
 
         match self.payment_handler.handle(command).await {
             Ok(_result) => {
@@ -382,12 +377,10 @@ where
                 )
                 .await;
                 ReservationSagaCallResult::Payment {
-                    reservation_id,
                     result: Ok(events),
                 }
             }
             Err(e) => ReservationSagaCallResult::Payment {
-                reservation_id,
                 result: Err(map_payment_error(e)),
             },
         }
@@ -588,40 +581,6 @@ where
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Reservation ID Extraction Helpers
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Extract reservation_id from an inventory command.
-///
-/// Returns a nil UUID for commands that don't have a reservation_id.
-fn extract_reservation_id_from_inventory_command(command: &InventoryCommand) -> ReservationId {
-    match command {
-        InventoryCommand::Reserve { reservation_id, .. }
-        | InventoryCommand::Confirm { reservation_id, .. }
-        | InventoryCommand::Release { reservation_id, .. } => *reservation_id,
-        // Initialize and query commands don't have a reservation_id
-        InventoryCommand::Initialize { .. }
-        | InventoryCommand::GetSectionAvailability { .. }
-        | InventoryCommand::GetEventAvailability { .. }
-        | InventoryCommand::GetTotalAvailable { .. } => ReservationId::nil(),
-    }
-}
-
-/// Extract reservation_id from a payment command.
-///
-/// Returns a nil UUID for commands that don't have a reservation_id.
-fn extract_reservation_id_from_payment_command(command: &PaymentCommand) -> ReservationId {
-    match command {
-        PaymentCommand::ProcessPayment { reservation_id, .. } => *reservation_id,
-        // Other payment commands don't have a reservation_id
-        PaymentCommand::RefundPayment { .. }
-        | PaymentCommand::SimulatePaymentFailure { .. }
-        | PaymentCommand::GetPayment { .. }
-        | PaymentCommand::ListCustomerPayments { .. } => ReservationId::nil(),
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -753,9 +712,7 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         match &results[0] {
-            ReservationSagaCallResult::Inventory { reservation_id, result } => {
-                // This command doesn't have a reservation_id
-                assert!(reservation_id.is_nil());
+            ReservationSagaCallResult::Inventory { result } => {
                 assert!(result.is_ok());
                 // Should have loaded events
                 let events = result.as_ref().unwrap();
