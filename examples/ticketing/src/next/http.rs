@@ -51,7 +51,9 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, Utc};
-use composable_rust_next::{Handler, HandlerError, NoOpCallExecutor, NoOpQueryFetcher};
+use composable_rust_next::{
+    EventStoreError, Handler, HandlerError, NoOpCallExecutor, NoOpQueryFetcher,
+};
 use composable_rust_web::error::AppError;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -963,6 +965,30 @@ where
         }
 
         Err(AppError::unauthorized("Authentication required: provide Bearer token or user_id query parameter"))
+    }
+}
+
+/// Optional `Idempotency-Key` request header.
+///
+/// When present, callers get idempotent command initiation (see `create_reservation`).
+/// Absent → `None` (non-idempotent, fresh id per request).
+#[derive(Debug, Clone)]
+pub struct IdempotencyKey(pub Option<String>);
+
+impl<S> FromRequestParts<S> for IdempotencyKey
+where
+    S: Send + Sync,
+{
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let key = parts
+            .headers
+            .get("idempotency-key")
+            .and_then(|v| v.to_str().ok())
+            .filter(|s| !s.is_empty())
+            .map(ToOwned::to_owned);
+        Ok(Self(key))
     }
 }
 
@@ -2037,9 +2063,19 @@ fn saga_to_app_error(err: HandlerError<ReservationSagaError>) -> AppError {
 pub async fn create_reservation(
     State(state): State<ReservationAppState>,
     user: SessionUser,
+    idempotency_key: IdempotencyKey,
     Json(request): Json<CreateReservationRequest>,
 ) -> Result<(StatusCode, Json<CreateReservationResponse>), AppError> {
-    let reservation_id = ReservationId::new();
+    // With an `Idempotency-Key`, derive a deterministic reservation id so retries map
+    // to the SAME saga stream; create-time optimistic concurrency then dedups them.
+    // Without one, mint a fresh id (non-idempotent, prior behavior).
+    let reservation_id = match idempotency_key.0.as_deref() {
+        Some(key) => ReservationId::from_uuid(Uuid::new_v5(
+            &RESERVATION_IDEMPOTENCY_NAMESPACE,
+            format!("reservations.create:{key}").as_bytes(),
+        )),
+        None => ReservationId::new(),
+    };
 
     // Get customer_id from auth or request (request is for backwards compatibility)
     let customer_id = request
@@ -2055,22 +2091,37 @@ pub async fn create_reservation(
         quantity: request.quantity,
     };
 
-    let _result = state
-        .saga_handler
-        .handle(input)
-        .await
-        .map_err(saga_to_app_error)?;
-
-    Ok((
-        StatusCode::CREATED,
-        Json(CreateReservationResponse {
-            reservation_id: *reservation_id.as_uuid(),
-            seats_reserved: request.quantity,
-            status: "initiated".to_string(),
-            message: "Reservation initiated. Seats are being reserved.".to_string(),
-        }),
-    ))
+    match state.saga_handler.handle(input).await {
+        Ok(_) => Ok((
+            StatusCode::CREATED,
+            Json(CreateReservationResponse {
+                reservation_id: *reservation_id.as_uuid(),
+                seats_reserved: request.quantity,
+                status: "initiated".to_string(),
+                message: "Reservation initiated. Seats are being reserved.".to_string(),
+            }),
+        )),
+        // Idempotent replay: the same key resolved to a stream that already exists.
+        Err(HandlerError::Persist(EventStoreError::VersionConflict { .. }))
+            if idempotency_key.0.is_some() =>
+        {
+            Ok((
+                StatusCode::OK,
+                Json(CreateReservationResponse {
+                    reservation_id: *reservation_id.as_uuid(),
+                    seats_reserved: request.quantity,
+                    status: "already_initiated".to_string(),
+                    message: "Reservation already initiated for this idempotency key."
+                        .to_string(),
+                }),
+            ))
+        }
+        Err(e) => Err(saga_to_app_error(e)),
+    }
 }
+
+/// Namespace for deterministic reservation ids derived from idempotency keys.
+const RESERVATION_IDEMPOTENCY_NAMESPACE: Uuid = Uuid::from_bytes(*b"reservation-idem");
 
 /// Cancel a reservation.
 ///

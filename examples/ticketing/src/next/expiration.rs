@@ -1,7 +1,9 @@
 //! Reservation expiration worker.
 //!
-//! This module provides [`ReservationExpirationWorker`] which periodically
-//! checks for expired reservations and releases their seats.
+//! Periodically finds reservation sagas whose deadline has passed and drives them
+//! to a terminal state **through the saga** (so seat release runs via the saga's
+//! own compensation and `saga_state` reaches a terminal phase), rather than poking
+//! the inventory aggregate directly.
 //!
 //! # Architecture
 //!
@@ -9,216 +11,141 @@
 //! ┌────────────────────────────────────────────────────────────┐
 //! │              ReservationExpirationWorker                   │
 //! ├────────────────────────────────────────────────────────────┤
+//! │  1. On startup: expire all overdue non-terminal sagas      │
+//! │     (this is the expire-only boot recovery)                │
 //! │                                                            │
-//! │  1. On startup: release all expired reservations           │
-//! │                                                            │
-//! │  2. Loop every check_interval:                             │
-//! │     ┌──────────────────────────────────────────────┐      │
-//! │     │ SELECT * FROM reservations                    │      │
-//! │     │ WHERE status = 'active'                       │      │
-//! │     │   AND expires_at < NOW()                      │      │
-//! │     └──────────────────────┬───────────────────────┘      │
+//! │  2. Loop every check_interval (until shutdown):            │
+//! │     SELECT reservation_id FROM saga_state                  │
+//! │     WHERE phase NOT IN ('Completed','Failed')              │
+//! │       AND expires_at < now()                               │
 //! │                            │                               │
 //! │                            ▼                               │
-//! │     For each expired reservation:                          │
-//! │     ┌──────────────────────────────────────────────┐      │
-//! │     │ InventoryHandler.handle(Release { ... })      │      │
-//! │     └──────────────────────────────────────────────┘      │
-//! │                                                            │
+//! │     saga_handler.handle(ExpireReservation { .. })          │
 //! └────────────────────────────────────────────────────────────┘
 //! ```
 //!
 //! # Durability
 //!
-//! Because reservations are tracked in a durable database table:
-//! - Server crashes don't lose reservation expiration info
-//! - On restart, the worker catches up on any missed expirations
-//! - No in-memory state required
-//!
-//! # Usage
-//!
-//! ```rust,ignore
-//! use ticketing::next::{ReservationExpirationWorker, InventoryHandler};
-//! use std::time::Duration;
-//!
-//! // Create the worker
-//! let worker = ReservationExpirationWorker::new(
-//!     projections_pool,
-//!     inventory_handler,
-//!     Duration::from_secs(30), // Check every 30 seconds
-//! );
-//!
-//! // Spawn as a background task
-//! tokio::spawn(worker.run());
-//! ```
+//! `saga_state` is written transactionally with the saga's events, so it is the
+//! authoritative, restart-safe source of overdue sagas — the startup sweep catches
+//! anything that expired while the process was down. Expiring an already-terminal
+//! saga is a phase-guarded no-op, so re-firing is safe.
 
-use chrono::{DateTime, Utc};
-use composable_rust_next::{Handler, HandlerEnvironment, NoOpCallExecutor, NoOpQueryFetcher};
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::broadcast;
 use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
-use super::{InventoryBusinessLogic, InventoryCommand, ReleaseReason};
+use super::{ReservationSagaHandler, ReservationSagaInput};
 use crate::types::ReservationId;
 
-/// Record of an expired reservation from the database.
-#[derive(Debug, sqlx::FromRow)]
-struct ExpiredReservation {
-    reservation_id: Uuid,
-    event_id: Uuid,
-    section: String,
-    #[allow(dead_code)] // Part of query result, may be useful for metrics
-    seat_count: i32,
-    expires_at: DateTime<Utc>,
-}
-
-/// Worker that periodically releases expired reservations.
-///
-/// This worker ensures that reservations that aren't confirmed within
-/// their expiration window have their seats returned to the available pool.
-///
-/// # Crash Recovery
-///
-/// On startup, the worker immediately checks for and releases any
-/// reservations that expired while the server was down. This ensures
-/// no seats are permanently stuck in a reserved state.
-pub struct ReservationExpirationWorker<Env>
-where
-    Env: HandlerEnvironment,
-{
-    /// Database pool for querying reservations
+/// Worker that drives overdue reservation sagas to expiry through the saga handler.
+pub struct ReservationExpirationWorker {
+    /// Database pool for querying `saga_state`.
     pool: PgPool,
-    /// Handler to issue Release commands
-    inventory_handler: Arc<Handler<InventoryBusinessLogic, NoOpCallExecutor, NoOpQueryFetcher, Env>>,
-    /// How often to check for expired reservations
+    /// The reservation saga handler used to issue `ExpireReservation`.
+    saga_handler: Arc<ReservationSagaHandler>,
+    /// How often to check for overdue sagas.
     check_interval: Duration,
 }
 
-impl<Env> ReservationExpirationWorker<Env>
-where
-    Env: HandlerEnvironment + Send + Sync + 'static,
-{
+impl ReservationExpirationWorker {
     /// Create a new expiration worker.
-    ///
-    /// # Arguments
-    ///
-    /// * `pool` - Database pool for the projections database (where reservations table lives)
-    /// * `inventory_handler` - Handler for issuing Release commands
-    /// * `check_interval` - How often to check for expired reservations
     #[must_use]
     pub fn new(
         pool: PgPool,
-        inventory_handler: Arc<Handler<InventoryBusinessLogic, NoOpCallExecutor, NoOpQueryFetcher, Env>>,
+        saga_handler: Arc<ReservationSagaHandler>,
         check_interval: Duration,
     ) -> Self {
         Self {
             pool,
-            inventory_handler,
+            saga_handler,
             check_interval,
         }
     }
 
     /// Create a worker with the default 30-second check interval.
     #[must_use]
-    pub fn with_default_interval(
-        pool: PgPool,
-        inventory_handler: Arc<Handler<InventoryBusinessLogic, NoOpCallExecutor, NoOpQueryFetcher, Env>>,
-    ) -> Self {
-        Self::new(pool, inventory_handler, Duration::from_secs(30))
+    pub fn with_default_interval(pool: PgPool, saga_handler: Arc<ReservationSagaHandler>) -> Self {
+        Self::new(pool, saga_handler, Duration::from_secs(30))
     }
 
-    /// Run the expiration worker.
+    /// Run the expiration worker until `shutdown_rx` fires.
     ///
-    /// This method runs indefinitely, checking for expired reservations
-    /// at the configured interval. It should be spawned as a background task.
-    ///
-    /// # Startup Recovery
-    ///
-    /// On startup, immediately checks for and releases any reservations
-    /// that expired while the server was down.
-    #[instrument(skip(self), name = "expiration_worker")]
-    pub async fn run(self) {
+    /// On startup it immediately expires any overdue non-terminal sagas (expire-only
+    /// boot recovery), then polls at `check_interval`. Spawn this as a background task.
+    #[instrument(skip(self, shutdown_rx), name = "expiration_worker")]
+    pub async fn run(self, mut shutdown_rx: broadcast::Receiver<()>) {
         info!(
             check_interval_secs = self.check_interval.as_secs(),
             "Starting reservation expiration worker"
         );
 
-        // Immediate check on startup for crash recovery
-        info!("Performing startup recovery - checking for expired reservations");
-        let recovered = self.release_expired_reservations().await;
+        // Startup sweep == expire-only boot recovery.
+        let recovered = self.expire_due_sagas().await;
         if recovered > 0 {
-            info!(count = recovered, "Released reservations that expired during downtime");
+            info!(count = recovered, "Expired overdue sagas on startup");
         }
 
-        // Main loop
         let mut interval = tokio::time::interval(self.check_interval);
         loop {
-            interval.tick().await;
-
-            let released = self.release_expired_reservations().await;
-            if released > 0 {
-                debug!(count = released, "Released expired reservations");
+            tokio::select! {
+                _ = interval.tick() => {
+                    let expired = self.expire_due_sagas().await;
+                    if expired > 0 {
+                        debug!(count = expired, "Expired overdue sagas");
+                    }
+                }
+                _ = shutdown_rx.recv() => {
+                    info!("Reservation expiration worker shutting down");
+                    break;
+                }
             }
         }
     }
 
-    /// Check for and release all expired reservations.
-    ///
-    /// Returns the number of reservations released.
+    /// Expire all overdue non-terminal sagas. Returns the number expired.
     #[instrument(skip(self))]
-    async fn release_expired_reservations(&self) -> usize {
-        // Query for expired active reservations
-        let expired = match self.query_expired_reservations().await {
-            Ok(reservations) => reservations,
+    async fn expire_due_sagas(&self) -> usize {
+        let due = match self.query_due_sagas().await {
+            Ok(ids) => ids,
             Err(e) => {
-                error!(error = %e, "Failed to query expired reservations");
+                error!(error = %e, "Failed to query overdue sagas");
                 return 0;
-            }
+            },
         };
 
-        if expired.is_empty() {
+        if due.is_empty() {
             return 0;
         }
+        debug!(count = due.len(), "Found overdue sagas");
 
-        debug!(count = expired.len(), "Found expired reservations");
-
-        let mut released_count = 0;
-        for reservation in expired {
-            match self.release_reservation(&reservation).await {
+        let mut expired_count = 0;
+        for reservation_id in due {
+            match self.expire_one(reservation_id).await {
                 Ok(()) => {
-                    released_count += 1;
-                    debug!(
-                        reservation_id = %reservation.reservation_id,
-                        event_id = %reservation.event_id,
-                        section = %reservation.section,
-                        expired_at = %reservation.expires_at,
-                        "Released expired reservation"
-                    );
-                }
+                    expired_count += 1;
+                    debug!(reservation_id = %reservation_id, "Expired overdue saga");
+                },
                 Err(e) => {
-                    // Log but continue - don't let one failure stop others
-                    warn!(
-                        reservation_id = %reservation.reservation_id,
-                        error = %e,
-                        "Failed to release expired reservation"
-                    );
-                }
+                    // Log and continue — one failure must not stop the rest.
+                    warn!(reservation_id = %reservation_id, error = %e, "Failed to expire saga");
+                },
             }
         }
-
-        released_count
+        expired_count
     }
 
-    /// Query the database for active reservations that have expired.
-    async fn query_expired_reservations(&self) -> Result<Vec<ExpiredReservation>, sqlx::Error> {
-        sqlx::query_as::<_, ExpiredReservation>(
+    /// Query `saga_state` for non-terminal sagas whose deadline has passed.
+    async fn query_due_sagas(&self) -> Result<Vec<Uuid>, sqlx::Error> {
+        sqlx::query_scalar::<_, Uuid>(
             r"
-            SELECT reservation_id, event_id, section, seat_count, expires_at
-            FROM reservations
-            WHERE status = 'active'
-              AND expires_at < NOW()
+            SELECT reservation_id
+            FROM saga_state
+            WHERE phase NOT IN ('Completed', 'Failed')
+              AND expires_at < now()
             ORDER BY expires_at ASC
             LIMIT 100
             ",
@@ -227,44 +154,15 @@ where
         .await
     }
 
-    /// Release a single expired reservation by issuing a Release command.
-    async fn release_reservation(&self, reservation: &ExpiredReservation) -> Result<(), String> {
-        let command = InventoryCommand::Release {
-            reservation_id: ReservationId::from_uuid(reservation.reservation_id),
-            reason: ReleaseReason::Expired,
-            fetched: None,
-        };
-
-        self.inventory_handler
-            .handle(command)
+    /// Drive a single saga to expiry through the saga handler.
+    async fn expire_one(&self, reservation_id: Uuid) -> Result<(), String> {
+        self.saga_handler
+            .handle(ReservationSagaInput::ExpireReservation {
+                reservation_id: ReservationId::from_uuid(reservation_id),
+                fetched: None,
+            })
             .await
             .map_err(|e| format!("Handler error: {e}"))?;
-
         Ok(())
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Tests
-// ═══════════════════════════════════════════════════════════════════════════
-
-#[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-mod tests {
-    use super::*;
-
-    // Note: Full integration tests require a real database.
-    // These tests verify the basic structure compiles.
-
-    #[test]
-    fn expired_reservation_struct_has_expected_fields() {
-        // This test ensures the struct matches our SQL query
-        let _reservation = ExpiredReservation {
-            reservation_id: Uuid::new_v4(),
-            event_id: Uuid::new_v4(),
-            section: "VIP".to_string(),
-            seat_count: 5,
-            expires_at: Utc::now(),
-        };
     }
 }

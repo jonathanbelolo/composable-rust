@@ -8,11 +8,15 @@
 #![allow(clippy::expect_used)]
 #![allow(clippy::unwrap_used)]
 
-use chrono::Utc;
-use composable_rust_next::{BusinessLogic, DynAtomicPersist, SerializedEvent, StreamId, Version};
+use chrono::{Duration, Utc};
+use composable_rust_next::{
+    AtomicError, BusinessLogic, DynAtomicPersist, EventStore, EventStoreError, SerializedEvent,
+    StreamId, Version,
+};
 use composable_rust_postgres_next::PostgresEventStore;
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
+use testcontainers::ContainerAsync;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::postgres::Postgres;
 use ticketing::next::{
@@ -20,6 +24,7 @@ use ticketing::next::{
     ReservationSagaProjectionQueries,
 };
 use ticketing::types::{CustomerId, EventId, Money, ReservationId, SeatId};
+use uuid::Uuid;
 
 /// Wrap a saga event as a `SerializedEvent` (bincode payload, like the Handler).
 fn serialized(event: &ReservationSagaEvent) -> SerializedEvent {
@@ -38,10 +43,26 @@ async fn migrate(pool: &PgPool) {
         include_str!("../migrations/002_projections.sql"),
         include_str!("../migrations/003_seats.sql"),
         include_str!("../migrations/004_saga_state.sql"),
-        include_str!("../migrations/005_idempotency_keys.sql"),
     ] {
         sqlx::raw_sql(sql).execute(pool).await.expect("migration");
     }
+}
+
+/// Start a fresh Postgres container, connect, and apply the migrations.
+async fn fresh_db() -> (ContainerAsync<Postgres>, PgPool) {
+    let container = Postgres::default().start().await.expect("start postgres");
+    let port = container.get_host_port_ipv4(5432).await.expect("port");
+    let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
+    let pool = loop {
+        if let Ok(p) = PgPoolOptions::new().connect(&url).await {
+            if sqlx::query("SELECT 1").execute(&p).await.is_ok() {
+                break p;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    migrate(&pool).await;
+    (container, pool)
 }
 
 #[tokio::test]
@@ -107,7 +128,11 @@ async fn saga_state_survives_restart_and_enforces_occ() {
         .expect("query saga_state")
         .expect("saga_state row must exist after restart");
 
-    assert_eq!(version, Version::new(2), "rehydrated version == stream version");
+    assert_eq!(
+        version,
+        Version::new(2),
+        "rehydrated version == stream version"
+    );
     assert_eq!(
         state.phase,
         ReservationSagaPhase::AwaitingPayment,
@@ -152,5 +177,98 @@ async fn saga_state_survives_restart_and_enforces_occ() {
         .await
         .expect("query")
         .expect("row");
-    assert_eq!(version_after, Version::new(2), "conflict left state untouched");
+    assert_eq!(
+        version_after,
+        Version::new(2),
+        "conflict left state untouched"
+    );
+}
+
+#[tokio::test]
+async fn create_time_occ_dedups_duplicate_initiation() {
+    let (_container, pool) = fresh_db().await;
+
+    let reservation_id = ReservationId::new();
+    let stream = StreamId::new(format!("saga-reservation-{}", reservation_id.as_uuid()));
+    let store = PostgresEventStore::from_pool(pool.clone());
+    let ap = PgAtomicPersist::new(store.clone());
+    let now = Utc::now();
+
+    let initiated = || {
+        serialized(&ReservationSagaEvent::ReservationInitiated {
+            reservation_id,
+            event_id: EventId::new(),
+            customer_id: CustomerId::new(),
+            section: "A".to_string(),
+            quantity: 1,
+            expires_at: now + Duration::minutes(5),
+            initiated_at: now,
+        })
+    };
+
+    // First initiation expects an empty stream (Version::initial()) — succeeds.
+    let v = ap
+        .append_and_project(&stream, Some(Version::initial()), vec![initiated()])
+        .await
+        .expect("first initiate");
+    assert_eq!(v, Version::new(1));
+
+    // A duplicate (same deterministic id → same stream) conflicts at create time,
+    // exactly how idempotent initiation dedups a double-submit.
+    let dup = ap
+        .append_and_project(&stream, Some(Version::initial()), vec![initiated()])
+        .await;
+    assert!(
+        matches!(
+            dup,
+            Err(AtomicError::Append(EventStoreError::VersionConflict { .. }))
+        ),
+        "duplicate initiation must conflict (create-time OCC)"
+    );
+
+    // Exactly one ReservationInitiated survived.
+    assert_eq!(store.load(&stream, None).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn expiration_query_selects_overdue_non_terminal_sagas() {
+    let (_container, pool) = fresh_db().await;
+    let now = Utc::now();
+
+    let overdue = Uuid::new_v4(); // non-terminal, past due → selected
+    let not_due = Uuid::new_v4(); // non-terminal, future → excluded
+    let terminal = Uuid::new_v4(); // terminal, past due → excluded
+
+    for (id, phase, expires_at) in [
+        (overdue, "AwaitingPayment", now - Duration::minutes(1)),
+        (not_due, "AwaitingPayment", now + Duration::minutes(10)),
+        (terminal, "Failed", now - Duration::minutes(1)),
+    ] {
+        sqlx::query(
+            "INSERT INTO saga_state (reservation_id, version, phase, expires_at, state) \
+             VALUES ($1, 1, $2, $3, '{}'::jsonb)",
+        )
+        .bind(id)
+        .bind(phase)
+        .bind(expires_at)
+        .execute(&pool)
+        .await
+        .expect("insert saga_state");
+    }
+
+    // The expiration worker's selection query, verbatim.
+    let due: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT reservation_id FROM saga_state \
+         WHERE phase NOT IN ('Completed', 'Failed') AND expires_at < now() \
+         ORDER BY expires_at ASC LIMIT 100",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("query due sagas");
+
+    assert_eq!(
+        due,
+        vec![overdue],
+        "only the overdue, non-terminal saga is selected"
+    );
 }

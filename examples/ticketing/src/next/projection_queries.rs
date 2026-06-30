@@ -1942,8 +1942,12 @@ impl QueryFetcher<ReservationSagaInput, ReservationSagaProjectionQueries>
         projections: &ReservationSagaProjectionQueries,
     ) -> Result<FetchResult<ReservationSagaInput>, Self::Error> {
         match input {
-            // Initiation opens a new stream — no state, no expected version.
-            ReservationSagaInput::InitiateReservation { .. } => Ok(FetchResult::new_entity(input)),
+            // Initiation opens a new stream — expect it to be empty, so a duplicate
+            // (same deterministic id from an idempotency key) conflicts instead of
+            // initiating twice.
+            ReservationSagaInput::InitiateReservation { .. } => {
+                Ok(FetchResult::new(input, Some(Version::initial())))
+            }
 
             ReservationSagaInput::CancelReservation { reservation_id, .. } => {
                 let loaded = projections.get_saga_state(reservation_id).await?;

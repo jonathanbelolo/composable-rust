@@ -101,7 +101,6 @@ async fn all_projection_tests() {
         include_str!("../migrations/002_projections.sql"),
         include_str!("../migrations/003_seats.sql"),
         include_str!("../migrations/004_saga_state.sql"),
-        include_str!("../migrations/005_idempotency_keys.sql"),
     ] {
         sqlx::raw_sql(sql).execute(&pool).await.expect("migration");
     }

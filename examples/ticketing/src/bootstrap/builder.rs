@@ -31,7 +31,7 @@ use crate::bootstrap::ResourceManager;
 use crate::config::Config;
 use crate::next::{
     AnalyticsBusinessLogic, EventBusinessLogic, EventInventorySagaLogic, InventoryBusinessLogic,
-    PaymentBusinessLogic, ReservationQueryLogic, ReservationSagaLogic,
+    PaymentBusinessLogic, ReservationExpirationWorker, ReservationQueryLogic, ReservationSagaLogic,
     call_executor::{
         EventHandler as EventHandlerTrait,
         EventInventorySagaCallExecutor,
@@ -483,6 +483,18 @@ impl ApplicationBuilder {
                 .query_fetcher(reservation_saga_query_fetcher)
                 .environment(saga_env)
                 .build(),
+        );
+
+        // Spawn the reservation expiration worker. It drives overdue sagas to a
+        // terminal state THROUGH the saga (compensation + terminal saga_state), and
+        // its startup sweep is the expire-only boot recovery. Shut down with the app.
+        tokio::spawn(
+            ReservationExpirationWorker::new(
+                next_event_store.pool().clone(),
+                saga_handler.clone(),
+                std::time::Duration::from_secs(30),
+            )
+            .run(self.shutdown_tx.subscribe()),
         );
 
         // ───────────────────────────────────────────────────────────────────────
