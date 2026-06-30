@@ -91,30 +91,20 @@ impl ResourceManager {
     /// let resources = ResourceManager::from_config(&config).await?;
     /// ```
     pub async fn from_config(config: &Config) -> Result<Self, Box<dyn std::error::Error>> {
-        // Setup event store (write side) WITH MIGRATIONS
-        info!("Connecting to event store database...");
-        let event_store_pool = PgPool::connect(&config.postgres.url).await?;
+        // Single PostgreSQL database for the event log, all projections, and the
+        // durable saga_state (so a saga's events and state commit in one transaction).
+        info!("Connecting to database...");
+        let pool = PgPool::connect(&config.postgres.url).await?;
 
-        // Run event store migrations
-        info!("Running event store migrations...");
-        sqlx::migrate!("../../migrations")
-            .run(&event_store_pool)
-            .await?;
-        info!("Event store migrations complete");
+        // Run the merged migrations: event log + projections + saga_state + idempotency.
+        info!("Running database migrations...");
+        sqlx::migrate!("./migrations").run(&pool).await?;
+        info!("Database migrations complete");
 
-        let event_store = Arc::new(PostgresEventStore::from_pool(event_store_pool));
-        info!("Event store connected");
-
-        // Setup projections database WITH MIGRATIONS
-        info!("Connecting to projections database...");
-        let projections_pool = PgPool::connect(&config.projections.url).await?;
-
-        // Run projection migrations
-        info!("Running projection migrations...");
-        sqlx::migrate!("./migrations_projections")
-            .run(&projections_pool)
-            .await?;
-        info!("Projection migrations complete");
+        let event_store = Arc::new(PostgresEventStore::from_pool(pool.clone()));
+        // Projections share the same pool/database as the event log.
+        let projections_pool = pool;
+        info!("Database connected");
 
         // Setup system clock
         let clock = Arc::new(SystemClock);

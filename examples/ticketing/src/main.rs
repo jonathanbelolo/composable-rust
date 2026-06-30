@@ -44,7 +44,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env();
     info!(
         postgres_url = %config.postgres.url,
-        projections_url = %config.projections.url,
         server_address = %format!("{}:{}", config.server.host, config.server.port),
         "Configuration loaded"
     );
