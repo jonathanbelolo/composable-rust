@@ -365,7 +365,7 @@ pub enum ReservationSagaError {
 ///
 /// This saga coordinates Inventory reservation with Payment processing.
 /// It uses `BusinessResult::Continue` to orchestrate child aggregates.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ReservationSagaLogic;
 
 impl BusinessLogic for ReservationSagaLogic {

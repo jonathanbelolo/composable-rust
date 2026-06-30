@@ -28,7 +28,7 @@
 use std::future::Future;
 
 use composable_rust_auth::state::UserId;
-use composable_rust_next::{FetchResult, ProjectionQueries, QueryFetcher};
+use composable_rust_next::{FetchResult, ProjectionQueries, QueryFetcher, Version};
 use sqlx::PgPool;
 
 use super::event::{EventCommand, EventDto};
@@ -79,7 +79,7 @@ impl EventProjectionQueries {
             SELECT
                 event_id, name, owner_id, venue, event_date,
                 pricing_tiers, status
-            FROM events
+            FROM events_projection
             WHERE event_id = $1
             ",
         )
@@ -103,7 +103,7 @@ impl EventProjectionQueries {
             SELECT
                 event_id, name, owner_id, venue, event_date,
                 pricing_tiers, status
-            FROM events
+            FROM events_projection
             WHERE owner_id = $1
             ORDER BY event_date DESC
             ",
@@ -146,12 +146,12 @@ impl EventProjectionQueries {
         // Get total count
         let total: i64 = if let Some(status) = status_filter {
             let status_str = status_to_string(status);
-            sqlx::query_scalar("SELECT COUNT(*)::BIGINT FROM events WHERE status = $1")
+            sqlx::query_scalar("SELECT COUNT(*)::BIGINT FROM events_projection WHERE status = $1")
                 .bind(status_str)
                 .fetch_one(&self.pool)
                 .await?
         } else {
-            sqlx::query_scalar("SELECT COUNT(*)::BIGINT FROM events")
+            sqlx::query_scalar("SELECT COUNT(*)::BIGINT FROM events_projection")
                 .fetch_one(&self.pool)
                 .await?
         };
@@ -165,7 +165,7 @@ impl EventProjectionQueries {
                 SELECT
                     event_id, name, owner_id, venue, event_date,
                     pricing_tiers, status
-                FROM events
+                FROM events_projection
                 WHERE status = $1
                 ORDER BY event_date DESC
                 LIMIT $2 OFFSET $3
@@ -182,7 +182,7 @@ impl EventProjectionQueries {
                 SELECT
                     event_id, name, owner_id, venue, event_date,
                     pricing_tiers, status
-                FROM events
+                FROM events_projection
                 ORDER BY event_date DESC
                 LIMIT $1 OFFSET $2
                 ",
@@ -1862,132 +1862,145 @@ impl QueryFetcher<SagaInput, SagaProjectionQueries> for SagaQueryFetcher {
 // Reservation Saga Query Fetcher
 // ═══════════════════════════════════════════════════════════════════════════
 
-use super::projector::InMemoryReservationSagaProjection;
 use super::reservation_saga::{ReservationSagaInput, ReservationSagaState};
 
-/// In-memory projection queries for the Reservation saga.
+/// `PostgreSQL`-backed projection queries for the Reservation saga.
 ///
-/// This is a thin wrapper around [`InMemoryReservationSagaProjection`] that implements
-/// [`ProjectionQueries`]. It enables the [`ReservationSagaQueryFetcher`] to look up
-/// saga state during feedback loops.
+/// Reads the durable `saga_state` table (written transactionally with the saga's
+/// event append), so it is restart-safe and always consistent with the event stream.
 #[derive(Clone)]
 pub struct ReservationSagaProjectionQueries {
-    state: InMemoryReservationSagaProjection,
+    pool: PgPool,
 }
 
 impl ReservationSagaProjectionQueries {
-    /// Create new reservation saga projection queries with the given shared state.
+    /// Create new reservation saga projection queries over the shared pool.
     #[must_use]
-    pub const fn new(state: InMemoryReservationSagaProjection) -> Self {
-        Self { state }
+    pub const fn new(pool: PgPool) -> Self {
+        Self { pool }
     }
 
-    /// Get the current state for a saga by reservation_id.
+    /// Load the durable saga state and its version for a reservation.
     ///
-    /// Returns `None` if no saga exists for this reservation_id.
-    pub async fn get_saga_state(&self, reservation_id: ReservationId) -> Option<ReservationSagaState> {
-        self.state.read().await.get(&reservation_id).cloned()
+    /// The `version` equals the saga stream's `MAX(version)` (the row is written in
+    /// the append transaction), so it can be used directly for optimistic concurrency.
+    /// Returns `None` if no saga exists for this reservation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails or the stored state cannot be decoded.
+    pub async fn get_saga_state(
+        &self,
+        reservation_id: ReservationId,
+    ) -> Result<Option<(ReservationSagaState, Version)>, sqlx::Error> {
+        let row: Option<(serde_json::Value, i64)> =
+            sqlx::query_as("SELECT state, version FROM saga_state WHERE reservation_id = $1")
+                .bind(reservation_id.as_uuid())
+                .fetch_optional(&self.pool)
+                .await?;
+
+        match row {
+            Some((json, version)) => {
+                let state: ReservationSagaState =
+                    serde_json::from_value(json).map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
+                Ok(Some((state, Version::new(u64::try_from(version).unwrap_or(0)))))
+            }
+            None => Ok(None),
+        }
     }
 }
 
 impl ProjectionQueries for ReservationSagaProjectionQueries {
-    type Error = std::convert::Infallible;
+    type Error = sqlx::Error;
 }
 
 /// Query fetcher for the Reservation saga.
 ///
-/// This fetcher populates the `fetched` field in [`ReservationSagaInput::Feedback`]
-/// with the current saga state from the in-memory projection.
-///
-/// # Flow
-///
-/// ```text
-/// Handler.handle(input)
-///     │
-///     ├─► ReservationSagaQueryFetcher.fetch(Feedback { reservation_id, fetched: None })
-///     │         │
-///     │         └─► ReservationSagaProjectionQueries.get_saga_state(reservation_id)
-///     │                  │
-///     │                  └─► InMemoryReservationSagaProjection (HashMap)
-///     │
-///     └─► BusinessLogic.process(Feedback { reservation_id, fetched: Some(state) })
-/// ```
-#[derive(Clone)]
-pub struct ReservationSagaQueryFetcher {
-    state: InMemoryReservationSagaProjection,
-}
+/// Rehydrates saga state from the durable `saga_state` table and returns the stream
+/// version as `expected_version`, so the saga stream gets optimistic-concurrency
+/// protection. `InitiateReservation` opens a new stream (no version). Resume inputs
+/// (`Feedback`/`Cancel`/`Expire`) carry the loaded state in `fetched`.
+#[derive(Clone, Copy, Default)]
+pub struct ReservationSagaQueryFetcher;
 
 impl ReservationSagaQueryFetcher {
-    /// Create a new reservation saga query fetcher with the given shared state.
-    ///
-    /// # Arguments
-    ///
-    /// * `state` - Shared state with the [`ReservationSagaProjector`](super::projector::ReservationSagaProjector)
+    /// Create a new reservation saga query fetcher.
     #[must_use]
-    pub const fn new(state: InMemoryReservationSagaProjection) -> Self {
-        Self { state }
+    pub const fn new() -> Self {
+        Self
     }
 }
 
-impl QueryFetcher<ReservationSagaInput, ReservationSagaProjectionQueries> for ReservationSagaQueryFetcher {
-    type Error = std::convert::Infallible;
+impl QueryFetcher<ReservationSagaInput, ReservationSagaProjectionQueries>
+    for ReservationSagaQueryFetcher
+{
+    type Error = sqlx::Error;
 
     async fn fetch(
         &self,
         input: ReservationSagaInput,
-        _projections: &ReservationSagaProjectionQueries,
+        projections: &ReservationSagaProjectionQueries,
     ) -> Result<FetchResult<ReservationSagaInput>, Self::Error> {
         match input {
-            // For initial commands, pass through - no state to fetch
-            ReservationSagaInput::InitiateReservation { .. } => {
-                Ok(FetchResult::new_entity(input))
+            // Initiation opens a new stream — no state, no expected version.
+            ReservationSagaInput::InitiateReservation { .. } => Ok(FetchResult::new_entity(input)),
+
+            ReservationSagaInput::CancelReservation { reservation_id, .. } => {
+                let loaded = projections.get_saga_state(reservation_id).await?;
+                let (fetched, version) = split_loaded(loaded);
+                Ok(FetchResult::new(
+                    ReservationSagaInput::CancelReservation {
+                        reservation_id,
+                        fetched,
+                    },
+                    version,
+                ))
             }
 
-            // Cancel/Expire commands already have reservation_id for lookup
-            ReservationSagaInput::CancelReservation {
-                reservation_id,
-                fetched: _,
-            } => {
-                let fetched = self.state.read().await.get(&reservation_id).cloned();
-                Ok(FetchResult::new_entity(ReservationSagaInput::CancelReservation {
-                    reservation_id,
-                    fetched,
-                }))
+            ReservationSagaInput::ExpireReservation { reservation_id, .. } => {
+                let loaded = projections.get_saga_state(reservation_id).await?;
+                let (fetched, version) = split_loaded(loaded);
+                Ok(FetchResult::new(
+                    ReservationSagaInput::ExpireReservation {
+                        reservation_id,
+                        fetched,
+                    },
+                    version,
+                ))
             }
 
-            ReservationSagaInput::ExpireReservation {
-                reservation_id,
-                fetched: _,
-            } => {
-                let fetched = self.state.read().await.get(&reservation_id).cloned();
-                Ok(FetchResult::new_entity(ReservationSagaInput::ExpireReservation {
-                    reservation_id,
-                    fetched,
-                }))
-            }
-
-            // For feedback, look up saga state by reservation_id
             ReservationSagaInput::Feedback {
                 reservation_id,
                 results,
-                fetched: _,
+                ..
             } => {
-                // Read state from the shared in-memory projection
-                let fetched = self.state.read().await.get(&reservation_id).cloned();
-
+                let loaded = projections.get_saga_state(reservation_id).await?;
                 tracing::debug!(
                     reservation_id = %reservation_id,
-                    found = fetched.is_some(),
-                    phase = ?fetched.as_ref().map(|s| &s.phase),
-                    "Fetched reservation saga state for feedback"
+                    found = loaded.is_some(),
+                    "Rehydrated reservation saga state for feedback"
                 );
-
-                Ok(FetchResult::new_entity(ReservationSagaInput::Feedback {
-                    reservation_id,
-                    results,
-                    fetched,
-                }))
+                let (fetched, version) = split_loaded(loaded);
+                Ok(FetchResult::new(
+                    ReservationSagaInput::Feedback {
+                        reservation_id,
+                        results,
+                        fetched,
+                    },
+                    version,
+                ))
             }
         }
+    }
+}
+
+/// Split an optional `(state, version)` into the `fetched` field value and the
+/// optional `expected_version` for the fetch result.
+fn split_loaded(
+    loaded: Option<(ReservationSagaState, Version)>,
+) -> (Option<ReservationSagaState>, Option<Version>) {
+    match loaded {
+        Some((state, version)) => (Some(state), Some(version)),
+        None => (None, None),
     }
 }

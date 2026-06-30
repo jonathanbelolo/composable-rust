@@ -10,7 +10,11 @@
 //! - [`PaymentProjector`]: Updates the payment history read model
 //! - [`EventInventorySagaProjector`]: In-memory projection for saga state
 
-use composable_rust_next::{BusinessLogic, ProjectionError, Projector, SerializedEvent};
+use composable_rust_next::{
+    AtomicError, BusinessLogic, DynAtomicPersist, ProjectionError, Projector, SerializedEvent,
+    StreamId, Version,
+};
+use composable_rust_postgres_next::{PgTransactionalProjector, PostgresEventStore};
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -82,7 +86,7 @@ impl EventProjector {
 
                 sqlx::query(
                     r"
-                    INSERT INTO events (
+                    INSERT INTO events_projection (
                         event_id, name, owner_id, venue, event_date,
                         pricing_tiers, status, created_at, updated_at
                     )
@@ -128,7 +132,7 @@ impl EventProjector {
                 }
 
                 let query = format!(
-                    "UPDATE events SET {} WHERE event_id = $1",
+                    "UPDATE events_projection SET {} WHERE event_id = $1",
                     updates.join(", ")
                 );
 
@@ -163,7 +167,7 @@ impl EventProjector {
             } => {
                 sqlx::query(
                     r"
-                    UPDATE events
+                    UPDATE events_projection
                     SET status = 'published', updated_at = $2
                     WHERE event_id = $1
                     ",
@@ -184,7 +188,7 @@ impl EventProjector {
             } => {
                 sqlx::query(
                     r"
-                    UPDATE events
+                    UPDATE events_projection
                     SET status = 'cancelled', cancellation_reason = $2, updated_at = $3
                     WHERE event_id = $1
                     ",
@@ -210,7 +214,7 @@ impl EventProjector {
 
                 sqlx::query(
                     r"
-                    UPDATE events
+                    UPDATE events_projection
                     SET pricing_tiers = $2, updated_at = $3
                     WHERE event_id = $1
                     ",
@@ -232,7 +236,7 @@ impl EventProjector {
             } => {
                 // Fetch existing venue to update it
                 let existing_venue: Option<serde_json::Value> = sqlx::query_scalar(
-                    "SELECT venue FROM events WHERE event_id = $1",
+                    "SELECT venue FROM events_projection WHERE event_id = $1",
                 )
                 .bind(event_id.as_uuid())
                 .fetch_optional(&self.pool)
@@ -268,7 +272,7 @@ impl EventProjector {
 
                     sqlx::query(
                         r"
-                        UPDATE events
+                        UPDATE events_projection
                         SET venue = $2, updated_at = $3
                         WHERE event_id = $1
                         ",
@@ -1041,308 +1045,270 @@ impl Projector for EventInventorySagaProjector {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Reservation Saga In-Memory Projector
+// Reservation Saga Transactional State Projector
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Shared in-memory state for the Reservation saga.
-///
-/// This is shared between the [`ReservationSagaProjector`] (writer) and
-/// [`ReservationSagaQueryFetcher`](super::ReservationSagaQueryFetcher) (reader).
-///
-/// # Thread Safety
-///
-/// Uses `RwLock` for interior mutability, wrapped in `Arc` for sharing.
-/// The projector writes after events are persisted, and the query fetcher
-/// reads during the feedback loop.
-pub type InMemoryReservationSagaProjection = Arc<RwLock<HashMap<ReservationId, ReservationSagaState>>>;
+/// Extract the reservation id (the saga correlation key) from a saga event.
+fn reservation_saga_id_of(event: &ReservationSagaEvent) -> ReservationId {
+    match event {
+        ReservationSagaEvent::ReservationInitiated { reservation_id, .. }
+        | ReservationSagaEvent::SeatsAllocated { reservation_id, .. }
+        | ReservationSagaEvent::PaymentRequested { reservation_id, .. }
+        | ReservationSagaEvent::PaymentSucceeded { reservation_id, .. }
+        | ReservationSagaEvent::PaymentFailed { reservation_id, .. }
+        | ReservationSagaEvent::ReservationCompleted { reservation_id, .. }
+        | ReservationSagaEvent::ReservationExpired { reservation_id, .. }
+        | ReservationSagaEvent::ReservationCancelled { reservation_id, .. }
+        | ReservationSagaEvent::ReservationCompensated { reservation_id, .. }
+        | ReservationSagaEvent::InventoryReservationFailed { reservation_id, .. } => *reservation_id,
+    }
+}
 
-/// In-memory projector for the Reservation saga.
+/// Update the customer-facing `reservations_projection` read model for one saga
+/// event, running on the supplied transaction connection (so it commits atomically
+/// with the event append).
+async fn update_reservations_projection_tx(
+    conn: &mut sqlx::PgConnection,
+    event: &ReservationSagaEvent,
+) -> Result<(), ProjectionError> {
+    let db_err = |e: sqlx::Error| ProjectionError::Database(e.to_string());
+
+    match event {
+        ReservationSagaEvent::ReservationInitiated {
+            reservation_id,
+            event_id,
+            customer_id,
+            section,
+            quantity,
+            expires_at,
+            initiated_at,
+        } => {
+            sqlx::query(
+                r"
+                INSERT INTO reservations_projection (
+                    id, event_id, customer_id, section, quantity,
+                    status, total_amount_cents, expires_at, created_at
+                )
+                VALUES ($1, $2, $3, $4, $5, 'initiated', 0, $6, $7)
+                ON CONFLICT (id) DO NOTHING
+                ",
+            )
+            .bind(reservation_id.as_uuid())
+            .bind(event_id.as_uuid())
+            .bind(customer_id.as_uuid())
+            .bind(section)
+            .bind(i32::try_from(*quantity).unwrap_or(i32::MAX))
+            .bind(expires_at)
+            .bind(initiated_at)
+            .execute(&mut *conn)
+            .await
+            .map_err(db_err)?;
+        }
+        ReservationSagaEvent::SeatsAllocated {
+            reservation_id,
+            total_amount,
+            ..
+        } => {
+            sqlx::query(
+                r"
+                UPDATE reservations_projection
+                SET status = 'seats_reserved', total_amount_cents = $2
+                WHERE id = $1
+                ",
+            )
+            .bind(reservation_id.as_uuid())
+            .bind(i64::try_from(total_amount.cents()).unwrap_or(i64::MAX))
+            .execute(&mut *conn)
+            .await
+            .map_err(db_err)?;
+        }
+        ReservationSagaEvent::PaymentRequested { reservation_id, .. } => {
+            set_reservation_status(conn, *reservation_id, "payment_pending").await?;
+        }
+        ReservationSagaEvent::PaymentSucceeded { reservation_id, .. } => {
+            set_reservation_status(conn, *reservation_id, "payment_completed").await?;
+        }
+        ReservationSagaEvent::PaymentFailed { reservation_id, .. }
+        | ReservationSagaEvent::ReservationCancelled { reservation_id, .. }
+        | ReservationSagaEvent::ReservationCompensated { reservation_id, .. }
+        | ReservationSagaEvent::InventoryReservationFailed { reservation_id, .. } => {
+            set_reservation_status(conn, *reservation_id, "cancelled").await?;
+        }
+        ReservationSagaEvent::ReservationExpired { reservation_id, .. } => {
+            set_reservation_status(conn, *reservation_id, "expired").await?;
+        }
+        ReservationSagaEvent::ReservationCompleted {
+            reservation_id,
+            completed_at,
+            ..
+        } => {
+            sqlx::query(
+                r"
+                UPDATE reservations_projection
+                SET status = 'completed', completed_at = $2
+                WHERE id = $1
+                ",
+            )
+            .bind(reservation_id.as_uuid())
+            .bind(completed_at)
+            .execute(&mut *conn)
+            .await
+            .map_err(db_err)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Set the `reservations_projection.status` for a reservation on a tx connection.
+async fn set_reservation_status(
+    conn: &mut sqlx::PgConnection,
+    reservation_id: ReservationId,
+    status: &str,
+) -> Result<(), ProjectionError> {
+    sqlx::query("UPDATE reservations_projection SET status = $2 WHERE id = $1")
+        .bind(reservation_id.as_uuid())
+        .bind(status)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| ProjectionError::Database(e.to_string()))?;
+    Ok(())
+}
+
+/// Transactional projector for the Reservation saga's durable state.
 ///
-/// This projector maintains saga state in memory, eliminating the need for
-/// database-backed saga projections. State is derived by replaying saga
-/// events through the `BusinessLogic::apply` method.
-///
-/// # Architecture
-///
-/// ```text
-/// Handler ──persist──► EventStore
-///                          │
-///                          ▼
-///                    Projector.project()
-///                          │
-///                          ▼
-///              ┌─────────────────────────────────┐
-///              │  InMemoryReservationSagaProjection │
-///              │  (HashMap<ReservationId, State>) │
-///              └─────────────────────────────────┘
-///                          │
-///                          ▼ (next iteration)
-///              QueryFetcher.fetch() reads state
-/// ```
-///
-/// # Lifecycle
-///
-/// - State is created when `ReservationInitiated` is projected
-/// - State is updated on each subsequent saga event
-/// - State can be cleaned up after saga completes (terminal state)
-#[derive(Clone)]
-pub struct ReservationSagaProjector {
-    state: InMemoryReservationSagaProjection,
+/// Runs inside the saga's event-append transaction (via
+/// [`PostgresEventStore::append_with_projection`]): it folds the just-appended
+/// events into the full [`ReservationSagaState`], upserts the authoritative
+/// `saga_state` row (`version` == stream version), and updates the customer-facing
+/// `reservations_projection` — all committed atomically with the events. Because
+/// `saga_state` is written in the same transaction, it can never drift from the
+/// event stream and is a trustworthy resume source.
+#[derive(Clone, Default)]
+pub struct PgReservationSagaStateProjector {
     logic: ReservationSagaLogic,
-    pool: PgPool,
 }
 
-impl ReservationSagaProjector {
-    /// Create a new reservation saga projector with the given shared state.
-    ///
-    /// # Arguments
-    ///
-    /// * `state` - Shared state with the query fetcher
-    /// * `pool` - PostgreSQL connection pool for persisting to reservations_projection
+impl PgReservationSagaStateProjector {
+    /// Create a new transactional saga-state projector.
     #[must_use]
-    pub fn new(state: InMemoryReservationSagaProjection, pool: PgPool) -> Self {
+    pub fn new() -> Self {
         Self {
-            state,
             logic: ReservationSagaLogic,
-            pool,
-        }
-    }
-
-    /// Project a single saga event to the in-memory state AND PostgreSQL.
-    async fn project_event(&self, event: &SerializedEvent) -> Result<(), ProjectionError> {
-        // Deserialize the saga event
-        let saga_event: ReservationSagaEvent = bincode::deserialize(&event.payload).map_err(|e| {
-            ProjectionError::Deserialization(format!("failed to deserialize reservation saga event: {e}"))
-        })?;
-
-        // Extract reservation_id from the saga event
-        let reservation_id = Self::extract_reservation_id(&saga_event);
-
-        // Get or create state for this saga
-        let mut states = self.state.write().await;
-        let state = states.entry(reservation_id).or_default();
-
-        // Apply the event to the state using BusinessLogic::apply
-        self.logic.apply(state, &saga_event);
-
-        tracing::debug!(
-            reservation_id = %reservation_id,
-            event_type = %event.event_type,
-            phase = ?state.phase,
-            "Projected reservation saga event to in-memory state"
-        );
-
-        // Also project to PostgreSQL for the query API
-        self.project_to_postgres(&saga_event).await?;
-
-        Ok(())
-    }
-
-    /// Project a saga event to the PostgreSQL reservations_projection table.
-    async fn project_to_postgres(&self, event: &ReservationSagaEvent) -> Result<(), ProjectionError> {
-        match event {
-            ReservationSagaEvent::ReservationInitiated {
-                reservation_id,
-                event_id,
-                customer_id,
-                section,
-                quantity,
-                expires_at,
-                initiated_at,
-            } => {
-                sqlx::query(
-                    r"
-                    INSERT INTO reservations_projection (
-                        id, event_id, customer_id, section, quantity,
-                        status, total_amount_cents, expires_at, created_at
-                    )
-                    VALUES ($1, $2, $3, $4, $5, 'initiated', 0, $6, $7)
-                    ON CONFLICT (id) DO NOTHING
-                    ",
-                )
-                .bind(reservation_id.as_uuid())
-                .bind(event_id.as_uuid())
-                .bind(customer_id.as_uuid())
-                .bind(section)
-                .bind(i32::try_from(*quantity).unwrap_or(i32::MAX))
-                .bind(expires_at)
-                .bind(initiated_at)
-                .execute(&self.pool)
-                .await
-                .map_err(|e| ProjectionError::Database(e.to_string()))?;
-            }
-
-            ReservationSagaEvent::SeatsAllocated {
-                reservation_id,
-                total_amount,
-                ..
-            } => {
-                sqlx::query(
-                    r"
-                    UPDATE reservations_projection
-                    SET status = 'seats_reserved',
-                        total_amount_cents = $2
-                    WHERE id = $1
-                    ",
-                )
-                .bind(reservation_id.as_uuid())
-                .bind(i64::try_from(total_amount.cents()).unwrap_or(i64::MAX))
-                .execute(&self.pool)
-                .await
-                .map_err(|e| ProjectionError::Database(e.to_string()))?;
-            }
-
-            ReservationSagaEvent::PaymentRequested { reservation_id, .. } => {
-                sqlx::query(
-                    r"
-                    UPDATE reservations_projection
-                    SET status = 'payment_pending'
-                    WHERE id = $1
-                    ",
-                )
-                .bind(reservation_id.as_uuid())
-                .execute(&self.pool)
-                .await
-                .map_err(|e| ProjectionError::Database(e.to_string()))?;
-            }
-
-            ReservationSagaEvent::PaymentSucceeded { reservation_id, .. } => {
-                sqlx::query(
-                    r"
-                    UPDATE reservations_projection
-                    SET status = 'payment_completed'
-                    WHERE id = $1
-                    ",
-                )
-                .bind(reservation_id.as_uuid())
-                .execute(&self.pool)
-                .await
-                .map_err(|e| ProjectionError::Database(e.to_string()))?;
-            }
-
-            ReservationSagaEvent::PaymentFailed { reservation_id, .. } => {
-                sqlx::query(
-                    r"
-                    UPDATE reservations_projection
-                    SET status = 'cancelled'
-                    WHERE id = $1
-                    ",
-                )
-                .bind(reservation_id.as_uuid())
-                .execute(&self.pool)
-                .await
-                .map_err(|e| ProjectionError::Database(e.to_string()))?;
-            }
-
-            ReservationSagaEvent::ReservationCompleted { reservation_id, completed_at, .. } => {
-                sqlx::query(
-                    r"
-                    UPDATE reservations_projection
-                    SET status = 'completed',
-                        completed_at = $2
-                    WHERE id = $1
-                    ",
-                )
-                .bind(reservation_id.as_uuid())
-                .bind(completed_at)
-                .execute(&self.pool)
-                .await
-                .map_err(|e| ProjectionError::Database(e.to_string()))?;
-            }
-
-            ReservationSagaEvent::ReservationExpired { reservation_id, .. } => {
-                sqlx::query(
-                    r"
-                    UPDATE reservations_projection
-                    SET status = 'expired'
-                    WHERE id = $1
-                    ",
-                )
-                .bind(reservation_id.as_uuid())
-                .execute(&self.pool)
-                .await
-                .map_err(|e| ProjectionError::Database(e.to_string()))?;
-            }
-
-            ReservationSagaEvent::ReservationCancelled { reservation_id, .. } => {
-                sqlx::query(
-                    r"
-                    UPDATE reservations_projection
-                    SET status = 'cancelled'
-                    WHERE id = $1
-                    ",
-                )
-                .bind(reservation_id.as_uuid())
-                .execute(&self.pool)
-                .await
-                .map_err(|e| ProjectionError::Database(e.to_string()))?;
-            }
-
-            ReservationSagaEvent::ReservationCompensated { reservation_id, .. } => {
-                sqlx::query(
-                    r"
-                    UPDATE reservations_projection
-                    SET status = 'cancelled'
-                    WHERE id = $1
-                    ",
-                )
-                .bind(reservation_id.as_uuid())
-                .execute(&self.pool)
-                .await
-                .map_err(|e| ProjectionError::Database(e.to_string()))?;
-            }
-
-            ReservationSagaEvent::InventoryReservationFailed { reservation_id, .. } => {
-                sqlx::query(
-                    r"
-                    UPDATE reservations_projection
-                    SET status = 'cancelled'
-                    WHERE id = $1
-                    ",
-                )
-                .bind(reservation_id.as_uuid())
-                .execute(&self.pool)
-                .await
-                .map_err(|e| ProjectionError::Database(e.to_string()))?;
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Extract reservation_id from a saga event.
-    fn extract_reservation_id(event: &ReservationSagaEvent) -> ReservationId {
-        match event {
-            ReservationSagaEvent::ReservationInitiated { reservation_id, .. }
-            | ReservationSagaEvent::SeatsAllocated { reservation_id, .. }
-            | ReservationSagaEvent::PaymentRequested { reservation_id, .. }
-            | ReservationSagaEvent::PaymentSucceeded { reservation_id, .. }
-            | ReservationSagaEvent::PaymentFailed { reservation_id, .. }
-            | ReservationSagaEvent::ReservationCompleted { reservation_id, .. }
-            | ReservationSagaEvent::ReservationExpired { reservation_id, .. }
-            | ReservationSagaEvent::ReservationCancelled { reservation_id, .. }
-            | ReservationSagaEvent::ReservationCompensated { reservation_id, .. }
-            | ReservationSagaEvent::InventoryReservationFailed { reservation_id, .. } => *reservation_id,
         }
     }
 }
 
-impl Projector for ReservationSagaProjector {
-    #[instrument(skip(self, events), fields(event_count = events.len()))]
-    fn project(
-        &self,
-        events: &[SerializedEvent],
-    ) -> impl std::future::Future<Output = Result<(), ProjectionError>> + Send {
-        let events_owned: Vec<SerializedEvent> = events.to_vec();
-        let this = self.clone();
+impl PgTransactionalProjector for PgReservationSagaStateProjector {
+    async fn project_in_tx<'a>(
+        &'a self,
+        conn: &'a mut sqlx::PgConnection,
+        final_version: Version,
+        events: &'a [SerializedEvent],
+    ) -> Result<(), ProjectionError> {
+        // Decode the just-appended events (all share one saga stream).
+        let mut decoded = Vec::with_capacity(events.len());
+        for event in events {
+            let saga_event: ReservationSagaEvent =
+                bincode::deserialize(&event.payload).map_err(|e| {
+                    ProjectionError::Deserialization(format!("reservation saga event: {e}"))
+                })?;
+            decoded.push(saga_event);
+        }
+        let Some(first) = decoded.first() else {
+            return Ok(());
+        };
+        let reservation_id = reservation_saga_id_of(first);
 
-        async move {
-            for event in &events_owned {
-                this.project_event(event).await?;
-            }
+        // Load the prior authoritative state (locked) and fold the new events onto it.
+        let prior: Option<serde_json::Value> =
+            sqlx::query_scalar("SELECT state FROM saga_state WHERE reservation_id = $1 FOR UPDATE")
+                .bind(reservation_id.as_uuid())
+                .fetch_optional(&mut *conn)
+                .await
+                .map_err(|e| ProjectionError::Database(e.to_string()))?;
 
-            tracing::debug!(count = events_owned.len(), "Projected all reservation saga events");
-            Ok(())
+        let mut state: ReservationSagaState = match prior {
+            Some(json) => serde_json::from_value(json)
+                .map_err(|e| ProjectionError::Deserialization(format!("saga_state: {e}")))?,
+            None => ReservationSagaState::default(),
+        };
+        for saga_event in &decoded {
+            self.logic.apply(&mut state, saga_event);
+        }
+
+        // Upsert the authoritative row (monotonic: ignore stale replays).
+        let state_json = serde_json::to_value(&state)
+            .map_err(|e| ProjectionError::Custom(format!("serialize saga_state: {e}")))?;
+        let phase = serde_json::to_value(&state.phase)
+            .ok()
+            .and_then(|v| v.as_str().map(ToOwned::to_owned))
+            .unwrap_or_else(|| format!("{:?}", state.phase));
+        let version_i64 = i64::try_from(final_version.as_u64()).unwrap_or(i64::MAX);
+
+        sqlx::query(
+            r"
+            INSERT INTO saga_state (reservation_id, version, phase, expires_at, state, updated_at)
+            VALUES ($1, $2, $3, $4, $5, now())
+            ON CONFLICT (reservation_id) DO UPDATE
+                SET version = EXCLUDED.version,
+                    phase = EXCLUDED.phase,
+                    expires_at = EXCLUDED.expires_at,
+                    state = EXCLUDED.state,
+                    updated_at = now()
+            WHERE saga_state.version < EXCLUDED.version
+            ",
+        )
+        .bind(reservation_id.as_uuid())
+        .bind(version_i64)
+        .bind(&phase)
+        .bind(state.expires_at)
+        .bind(&state_json)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| ProjectionError::Database(e.to_string()))?;
+
+        // Update the customer-facing read model in the same transaction.
+        for saga_event in &decoded {
+            update_reservations_projection_tx(&mut *conn, saga_event).await?;
+        }
+
+        Ok(())
+    }
+}
+
+/// Adapts a [`PostgresEventStore`] + [`PgReservationSagaStateProjector`] into the
+/// framework's [`DynAtomicPersist`] seam, so the saga's `Handler` appends events
+/// and updates `saga_state` in a single transaction.
+#[derive(Clone)]
+pub struct PgAtomicPersist {
+    event_store: PostgresEventStore,
+    projector: PgReservationSagaStateProjector,
+}
+
+impl PgAtomicPersist {
+    /// Create a new atomic-persist adapter over the given event store.
+    #[must_use]
+    pub fn new(event_store: PostgresEventStore) -> Self {
+        Self {
+            event_store,
+            projector: PgReservationSagaStateProjector::new(),
         }
     }
 }
+
+impl DynAtomicPersist for PgAtomicPersist {
+    fn append_and_project<'a>(
+        &'a self,
+        stream_id: &'a StreamId,
+        expected_version: Option<Version>,
+        events: Vec<SerializedEvent>,
+    ) -> futures::future::BoxFuture<'a, Result<Version, AtomicError>> {
+        Box::pin(async move {
+            self.event_store
+                .append_with_projection(stream_id, expected_version, events, &self.projector)
+                .await
+        })
+    }
+}
+

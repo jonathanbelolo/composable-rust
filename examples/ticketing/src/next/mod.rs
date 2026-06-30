@@ -101,8 +101,8 @@ pub use projection_queries::{
     ReservationSagaQueryFetcher, SagaProjectionQueries, SagaQueryFetcher,
 };
 pub use projector::{
-    EventInventorySagaProjector, EventProjector, InMemoryReservationSagaProjection,
-    InMemorySagaProjection, InventoryProjector, PaymentProjector, ReservationSagaProjector,
+    EventInventorySagaProjector, EventProjector, InMemorySagaProjection, InventoryProjector,
+    PaymentProjector, PgAtomicPersist, PgReservationSagaStateProjector,
 };
 pub use reservation::{
     ReservationDto, ReservationListDto, ReservationQueryCommand, ReservationQueryError,

@@ -1871,16 +1871,18 @@ pub async fn readiness_check() -> StatusCode {
 // ───────────────────────────────────────────────────────────────────────────
 
 use super::{
-    ReservationSagaCallExecutor, ReservationSagaInput, ReservationSagaLogic,
-    ReservationSagaPhase, ReservationSagaProjectionQueries, ReservationSagaProjector,
-    ReservationSagaQueryFetcher, ReservationSagaState,
+    ReservationSagaCallExecutor, ReservationSagaInput, ReservationSagaLogic, ReservationSagaPhase,
+    ReservationSagaProjectionQueries, ReservationSagaQueryFetcher, ReservationSagaState,
 };
 
-/// Type alias for the Reservation Saga environment with in-memory projection.
+/// Type alias for the Reservation Saga environment.
+///
+/// The saga's read model is updated transactionally via the environment's
+/// `atomic_persist` capability, so the environment's projector is a no-op.
 type ReservationSagaEnv = TicketingEnvironment<
     SystemClock,
     PostgresEventStore,
-    ReservationSagaProjector,
+    NoOpProjector,
     NoOpEventBus,
     ReservationSagaProjectionQueries,
 >;

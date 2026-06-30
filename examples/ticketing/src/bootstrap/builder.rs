@@ -50,7 +50,7 @@ use crate::next::{
         ReservationQueryFetcher, ReservationSagaProjectionQueries, ReservationSagaQueryFetcher,
         SagaProjectionQueries, SagaQueryFetcher,
     },
-    projector::{EventInventorySagaProjector, EventProjector, InventoryProjector, PaymentProjector, ReservationSagaProjector},
+    projector::{EventInventorySagaProjector, EventProjector, InventoryProjector, PaymentProjector, PgAtomicPersist},
     TicketingEnvironment, NoOpEventBus, NoOpProjector,
 };
 use crate::server::routes::AuthAppState;
@@ -451,36 +451,38 @@ impl ApplicationBuilder {
             next_event_store.clone(),
         );
 
-        // Create in-memory reservation saga projection state
-        let reservation_saga_projection_state: crate::next::InMemoryReservationSagaProjection =
-            std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+        // The saga's durable state lives in the SAME database as the event log, so
+        // its events and `saga_state` commit in one transaction (no in-memory map).
+        // The fetcher reads `saga_state` (restart-safe, OCC); the projection happens
+        // transactionally via `atomic_persist`, so the env's Projector is a no-op.
+        let reservation_saga_query_fetcher = ReservationSagaQueryFetcher::new();
+        let reservation_saga_projection_queries =
+            ReservationSagaProjectionQueries::new(next_event_store.pool().clone());
+        let reservation_saga_atomic_persist =
+            Arc::new(PgAtomicPersist::new(next_event_store.clone()));
 
-        // Create reservation saga projector
-        let reservation_saga_projector = ReservationSagaProjector::new(
-            reservation_saga_projection_state.clone(),
-            projections_pool.clone(),
-        );
-
-        // Create reservation saga query fetcher
-        let reservation_saga_query_fetcher = ReservationSagaQueryFetcher::new(reservation_saga_projection_state.clone());
-
-        // Create saga projection queries for the environment
-        let reservation_saga_projection_queries = ReservationSagaProjectionQueries::new(reservation_saga_projection_state);
-
-        let saga_env: TicketingEnvironment<NextSystemClock, NextPostgresEventStore, ReservationSagaProjector, NoOpEventBus, ReservationSagaProjectionQueries> = TicketingEnvironment::with_projections(
+        let saga_env: TicketingEnvironment<
+            NextSystemClock,
+            NextPostgresEventStore,
+            NoOpProjector,
+            NoOpEventBus,
+            ReservationSagaProjectionQueries,
+        > = TicketingEnvironment::with_projections(
             NextSystemClock,
             next_event_store.clone(),
-            Some(reservation_saga_projector),
+            None::<NoOpProjector>,
             None::<NoOpEventBus>,
             "ticketing-sagas",
             reservation_saga_projection_queries,
-        );
+        )
+        .with_atomic_persist(reservation_saga_atomic_persist);
+
         let saga_handler = Arc::new(
             HandlerBuilder::new(ReservationSagaLogic)
                 .call_executor(reservation_saga_call_executor)
                 .query_fetcher(reservation_saga_query_fetcher)
                 .environment(saga_env)
-                .build()
+                .build(),
         );
 
         // ───────────────────────────────────────────────────────────────────────

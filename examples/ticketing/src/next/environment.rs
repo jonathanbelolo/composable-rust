@@ -31,12 +31,13 @@
 //! ```
 
 use composable_rust_next::{
-    Clock, EventBus, EventBusError, EventStore, HandlerEnvironment, MetadataContext,
-    NoOpProjectionQueries, ProjectionError, ProjectionQueries, Projector, SerializedEvent,
-    SubscriptionHandle, SystemClock,
+    Clock, DynAtomicPersist, EventBus, EventBusError, EventStore, HandlerEnvironment,
+    MetadataContext, NoOpProjectionQueries, ProjectionError, ProjectionQueries, Projector,
+    SerializedEvent, SubscriptionHandle, SystemClock,
 };
-use futures::future::BoxFuture;
 use composable_rust_postgres_next::PostgresEventStore;
+use futures::future::BoxFuture;
+use std::sync::Arc;
 
 use super::EventProjector;
 
@@ -148,6 +149,9 @@ pub struct TicketingEnvironment<
     broadcast_topic: String,
     projections: PQ,
     metadata: MetadataContext,
+    /// Optional atomic append+projection capability (used by sagas to persist
+    /// events and their durable `saga_state` in one transaction).
+    atomic_persist: Option<Arc<dyn DynAtomicPersist>>,
 }
 
 impl<C, ES, P, EB> TicketingEnvironment<C, ES, P, EB, NoOpProjectionQueries>
@@ -187,6 +191,7 @@ where
             broadcast_topic: broadcast_topic.into(),
             projections: NoOpProjectionQueries,
             metadata: MetadataContext::new(),
+            atomic_persist: None,
         }
     }
 }
@@ -229,7 +234,19 @@ where
             broadcast_topic: broadcast_topic.into(),
             projections,
             metadata: MetadataContext::new(),
+            atomic_persist: None,
         }
+    }
+
+    /// Attach an atomic append+projection capability.
+    ///
+    /// When set, the [`Handler`](composable_rust_next::Handler) persists events and
+    /// updates the read model in a single transaction (used by the reservation saga
+    /// to keep its durable `saga_state` consistent with the event stream).
+    #[must_use]
+    pub fn with_atomic_persist(mut self, atomic_persist: Arc<dyn DynAtomicPersist>) -> Self {
+        self.atomic_persist = Some(atomic_persist);
+        self
     }
 
     /// Get a reference to the clock.
@@ -298,6 +315,10 @@ where
     fn metadata(&self) -> &MetadataContext {
         &self.metadata
     }
+
+    fn atomic_persist(&self) -> Option<&dyn DynAtomicPersist> {
+        self.atomic_persist.as_deref()
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -356,6 +377,7 @@ impl
             broadcast_topic: String::new(),
             projections: NoOpProjectionQueries,
             metadata: MetadataContext::new(),
+            atomic_persist: None,
         }
     }
 }
@@ -381,6 +403,7 @@ impl
             broadcast_topic: String::new(),
             projections: NoOpProjectionQueries,
             metadata: MetadataContext::new(),
+            atomic_persist: None,
         }
     }
 }
