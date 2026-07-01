@@ -99,7 +99,6 @@ pub enum EventCommand {
     // ═══════════════════════════════════════════════════════════════════════
     // Query Commands
     // ═══════════════════════════════════════════════════════════════════════
-
     /// Get a single event by ID
     ///
     /// The `fetched` field is populated by the Handler before calling process().
@@ -440,10 +439,10 @@ impl BusinessLogic for EventBusinessLogic {
             // Query-only commands don't load a single aggregate - uses placeholder
             EventCommand::ListMyEvents { user_id, .. } => {
                 return StreamId::new(format!("query-events-user-{}", user_id.0));
-            }
+            },
             EventCommand::ListEvents { .. } => {
                 return StreamId::new("query-events-all".to_string());
-            }
+            },
         };
         StreamId::new(format!("event-{event_id}"))
     }
@@ -494,7 +493,7 @@ impl BusinessLogic for EventBusinessLogic {
                     pricing_tiers,
                     created_at: now,
                 }]))
-            }
+            },
 
             EventCommand::Update {
                 event_id,
@@ -543,7 +542,7 @@ impl BusinessLogic for EventBusinessLogic {
                     date,
                     updated_at: now,
                 }]))
-            }
+            },
 
             EventCommand::Publish { event_id, fetched } => {
                 // Validate: event must exist (fetched = Some means it exists)
@@ -561,9 +560,13 @@ impl BusinessLogic for EventBusinessLogic {
                     event_id,
                     published_at: now,
                 }]))
-            }
+            },
 
-            EventCommand::Cancel { event_id, reason, fetched } => {
+            EventCommand::Cancel {
+                event_id,
+                reason,
+                fetched,
+            } => {
                 // Validate: event must exist (fetched = Some means it exists)
                 let event_data = fetched.ok_or(EventError::NotFound)?;
 
@@ -587,12 +590,11 @@ impl BusinessLogic for EventBusinessLogic {
                     reason,
                     cancelled_at: now,
                 }]))
-            }
+            },
 
             // ═══════════════════════════════════════════════════════════════
             // Query Commands
             // ═══════════════════════════════════════════════════════════════
-
             EventCommand::GetEvent {
                 event_id: _,
                 requesting_user_id: _,
@@ -604,13 +606,16 @@ impl BusinessLogic for EventBusinessLogic {
                 // Events are publicly viewable - no authorization required
                 // (Write operations like Update/Delete still require ownership)
                 Ok(BusinessResult::Respond(EventResponse::Single(event)))
-            }
+            },
 
-            EventCommand::ListMyEvents { user_id: _, fetched } => {
+            EventCommand::ListMyEvents {
+                user_id: _,
+                fetched,
+            } => {
                 // Data was pre-fetched by Handler, already scoped to user
                 // No additional authorization needed - query was already scoped
                 Ok(BusinessResult::Respond(EventResponse::List(fetched)))
-            }
+            },
 
             EventCommand::ListEvents {
                 status_filter: _,
@@ -626,7 +631,7 @@ impl BusinessLogic for EventBusinessLogic {
                     page,
                     page_size,
                 }))
-            }
+            },
 
             EventCommand::GetEventPricing { event_id, fetched } => {
                 // Data was pre-fetched by Handler
@@ -635,12 +640,11 @@ impl BusinessLogic for EventBusinessLogic {
                     event_id,
                     pricing_tiers: event.pricing_tiers,
                 }))
-            }
+            },
 
             // ═══════════════════════════════════════════════════════════════
             // Write Commands (validation data from fetched projections)
             // ═══════════════════════════════════════════════════════════════
-
             EventCommand::UpdatePricing {
                 event_id,
                 requesting_user_id,
@@ -675,7 +679,7 @@ impl BusinessLogic for EventBusinessLogic {
                     pricing_tiers,
                     updated_at: now,
                 }]))
-            }
+            },
 
             EventCommand::AddVenueSections {
                 event_id,
@@ -711,7 +715,7 @@ impl BusinessLogic for EventBusinessLogic {
                     sections,
                     added_at: now,
                 }]))
-            }
+            },
 
             EventCommand::Delete {
                 event_id,
@@ -739,7 +743,7 @@ impl BusinessLogic for EventBusinessLogic {
                     reason: "Deleted by owner".to_string(),
                     cancelled_at: now,
                 }]))
-            }
+            },
         }
     }
 
@@ -761,7 +765,7 @@ impl BusinessLogic for EventBusinessLogic {
                 state.date = Some(*date);
                 state.pricing_tiers.clone_from(pricing_tiers);
                 state.status = EventStatus::Draft;
-            }
+            },
 
             EventEvent::Updated {
                 event_id: _,
@@ -779,14 +783,14 @@ impl BusinessLogic for EventBusinessLogic {
                 if let Some(d) = date {
                     state.date = Some(*d);
                 }
-            }
+            },
 
             EventEvent::Published {
                 event_id: _,
                 published_at: _,
             } => {
                 state.status = EventStatus::Published;
-            }
+            },
 
             EventEvent::Cancelled {
                 event_id: _,
@@ -794,7 +798,7 @@ impl BusinessLogic for EventBusinessLogic {
                 cancelled_at: _,
             } => {
                 state.status = EventStatus::Cancelled;
-            }
+            },
 
             EventEvent::PricingUpdated {
                 event_id: _,
@@ -802,7 +806,7 @@ impl BusinessLogic for EventBusinessLogic {
                 updated_at: _,
             } => {
                 state.pricing_tiers.clone_from(pricing_tiers);
-            }
+            },
 
             EventEvent::VenueSectionsAdded {
                 event_id: _,
@@ -815,10 +819,9 @@ impl BusinessLogic for EventBusinessLogic {
                     // Update total capacity
                     let additional_capacity: u32 =
                         sections.iter().map(|s| s.capacity.value()).sum();
-                    venue.capacity =
-                        Capacity::new(venue.capacity.value() + additional_capacity);
+                    venue.capacity = Capacity::new(venue.capacity.value() + additional_capacity);
                 }
-            }
+            },
         }
     }
 
@@ -1029,12 +1032,8 @@ mod handler_tests {
     }
 
     /// Test environment type with all in-memory dependencies.
-    type TestEnv = TicketingEnvironment<
-        FixedClock,
-        InMemoryEventStore,
-        InMemoryProjector,
-        InMemoryEventBus,
-    >;
+    type TestEnv =
+        TicketingEnvironment<FixedClock, InMemoryEventStore, InMemoryProjector, InMemoryEventBus>;
 
     /// Type alias for a test handler using in-memory dependencies.
     type TestHandler = Handler<EventBusinessLogic, NoOpCallExecutor, NoOpQueryFetcher, TestEnv>;

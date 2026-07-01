@@ -78,20 +78,21 @@
 use super::WsMessage;
 use axum::{
     extract::{
-        ws::{Message, WebSocket},
         WebSocketUpgrade,
+        ws::{Message, WebSocket},
     },
     response::Response,
 };
-use futures::{stream::StreamExt, SinkExt};
+use futures::{SinkExt, stream::StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{RwLock, broadcast};
 use tracing::{debug, error, info, warn};
 
 /// Type alias for the channels map to reduce complexity.
-type ChannelsMap<A> = Arc<RwLock<std::collections::HashMap<String, broadcast::Sender<(String, A)>>>>;
+type ChannelsMap<A> =
+    Arc<RwLock<std::collections::HashMap<String, broadcast::Sender<(String, A)>>>>;
 
 /// Topic broadcaster for multi-channel WebSocket communication.
 ///
@@ -265,7 +266,7 @@ where
                             // Send confirmation (note: can't use sender here due to split)
                             // Confirmation will be sent by the main loop
                             debug!(count = topics.len(), "Topics added to subscription");
-                        }
+                        },
                         Ok(WsMessage::Unsubscribe { topics }) => {
                             debug!(?topics, "Client unsubscribing from topics");
 
@@ -276,38 +277,38 @@ where
                             }
 
                             debug!(count = topics.len(), "Topics removed from subscription");
-                        }
+                        },
                         Ok(WsMessage::Command { action, topic }) => {
                             debug!(?topic, "Received command from client");
                             // Publish command to topic if specified
                             if let Some(t) = topic {
                                 recv_broadcaster.publish(t, action).await;
                             }
-                        }
+                        },
                         Ok(WsMessage::Ping) => {
                             debug!("Received ping from client");
-                        }
+                        },
                         Ok(msg) => {
                             warn!(?msg, "Unexpected message type from client");
-                        }
+                        },
                         Err(e) => {
                             error!(error = %e, "Failed to parse WebSocket message");
-                        }
+                        },
                     }
-                }
+                },
                 Message::Ping(_) => {
                     debug!("Received ping");
-                }
+                },
                 Message::Pong(_) => {
                     debug!("Received pong");
-                }
+                },
                 Message::Close(_) => {
                     info!("Client requested close");
                     break;
-                }
+                },
                 Message::Binary(_) => {
                     warn!("Received unexpected binary message");
-                }
+                },
             }
         }
 
@@ -362,16 +363,16 @@ where
                             }
                             received_event = true;
                         }
-                    }
+                    },
                     Err(broadcast::error::TryRecvError::Empty) => {
                         // No events right now, continue
-                    }
+                    },
                     Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
                         warn!(topic = %topic, skipped, "Client lagging, skipped events");
-                    }
+                    },
                     Err(broadcast::error::TryRecvError::Closed) => {
                         debug!(topic = %topic, "Topic channel closed");
-                    }
+                    },
                 }
             }
 

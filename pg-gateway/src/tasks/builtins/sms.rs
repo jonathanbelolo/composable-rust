@@ -125,9 +125,8 @@ impl<P: SmsProvider + 'static> TaskExecutor for SmsExecutor<P> {
     fn execute(
         &self,
         payload: serde_json::Value,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<(), TaskError>> + Send + '_>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), TaskError>> + Send + '_>>
+    {
         Box::pin(async move {
             let task: SmsTask = serde_json::from_value(payload)
                 .map_err(|e| TaskError::permanent(format!("Invalid payload: {e}")))?;
@@ -173,11 +172,7 @@ impl SmsProvider for ConsoleSmsProvider {
             body = %task.body,
             "SMS (console): Would send message"
         );
-        println!(
-            "📱 SMS to {}: {}",
-            task.to,
-            task.body
-        );
+        println!("📱 SMS to {}: {}", task.to, task.body);
         Ok(())
     }
 }
@@ -207,9 +202,8 @@ impl TaskExecutor for DynSmsExecutor {
     fn execute(
         &self,
         payload: serde_json::Value,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<(), TaskError>> + Send + '_>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), TaskError>> + Send + '_>>
+    {
         Box::pin(async move {
             let task: SmsTask = serde_json::from_value(payload)
                 .map_err(|e| TaskError::permanent(format!("Invalid payload: {e}")))?;

@@ -94,7 +94,10 @@ impl AgentMetrics {
 
         // Increment success/failure
         if success {
-            *self.tool_successes.entry(tool_name.to_string()).or_insert(0) += 1;
+            *self
+                .tool_successes
+                .entry(tool_name.to_string())
+                .or_insert(0) += 1;
         } else {
             *self.tool_failures.entry(tool_name.to_string()).or_insert(0) += 1;
         }

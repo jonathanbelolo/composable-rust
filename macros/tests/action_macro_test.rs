@@ -1,22 +1,18 @@
 //! Tests for #[derive(Action)] macro
 
-use composable_rust_macros::Action;
 use chrono::{DateTime, Utc};
+use composable_rust_macros::Action;
 
 #[derive(Action, Clone, Debug, PartialEq)]
 enum TodoAction {
     #[command]
-    CreateTodo {
-        title: String,
-    },
+    CreateTodo { title: String },
 
     #[command]
     ToggleTodo,
 
     #[command]
-    UpdateTitle {
-        new_title: String,
-    },
+    UpdateTitle { new_title: String },
 
     #[event]
     TodoCreated {

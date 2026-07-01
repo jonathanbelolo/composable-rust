@@ -13,11 +13,11 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // Test code
 
 use composable_rust_pg_gateway::{
-    check_database, create_pool, execute_with_identity, set_identity_context, DbConfig,
-    HealthChecks, HealthResponse, HealthStatus, Identity,
+    DbConfig, HealthChecks, HealthResponse, HealthStatus, Identity, check_database, create_pool,
+    execute_with_identity, set_identity_context,
 };
 use sqlx::PgPool;
-use testcontainers::{runners::AsyncRunner, ContainerAsync};
+use testcontainers::{ContainerAsync, runners::AsyncRunner};
 use testcontainers_modules::postgres::Postgres;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -317,8 +317,8 @@ async fn test_execute_with_identity() {
 
 #[tokio::test]
 async fn test_identity_builder() {
-    let identity = Identity::new("user-1", "tenant-1", vec!["admin".to_string()])
-        .with_session("session-1");
+    let identity =
+        Identity::new("user-1", "tenant-1", vec!["admin".to_string()]).with_session("session-1");
 
     assert_eq!(identity.user_id, "user-1");
     assert_eq!(identity.tenant_id, "tenant-1");
@@ -328,8 +328,11 @@ async fn test_identity_builder() {
 
 #[tokio::test]
 async fn test_identity_has_role() {
-    let identity =
-        Identity::new("user", "tenant", vec!["admin".to_string(), "user".to_string()]);
+    let identity = Identity::new(
+        "user",
+        "tenant",
+        vec!["admin".to_string(), "user".to_string()],
+    );
 
     assert!(identity.has_role("admin"));
     assert!(identity.has_role("user"));
@@ -357,7 +360,7 @@ async fn test_error_code_p0001_bad_request() {
     match api_error {
         ApiError::BadRequest(msg) => {
             assert!(msg.contains("Validation failed"));
-        }
+        },
         other => panic!("Expected BadRequest, got: {other:?}"),
     }
 }
@@ -396,7 +399,7 @@ async fn test_error_code_p0403_forbidden() {
     match api_error {
         ApiError::Forbidden(msg) => {
             assert!(msg.contains("Permission denied"));
-        }
+        },
         other => panic!("Expected Forbidden, got: {other:?}"),
     }
 }
@@ -435,7 +438,7 @@ async fn test_error_code_p0409_conflict() {
     match api_error {
         ApiError::Conflict(msg) => {
             assert!(msg.contains("Already exists"));
-        }
+        },
         other => panic!("Expected Conflict, got: {other:?}"),
     }
 }
@@ -469,7 +472,7 @@ async fn test_error_code_23505_unique_violation() {
     match api_error {
         ApiError::Conflict(msg) => {
             assert!(msg.contains("unique") || msg.contains("duplicate"));
-        }
+        },
         other => panic!("Expected Conflict, got: {other:?}"),
     }
 }

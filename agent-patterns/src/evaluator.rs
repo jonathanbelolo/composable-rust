@@ -22,7 +22,7 @@
 use composable_rust_core::agent::AgentEnvironment;
 use composable_rust_core::effect::Effect;
 use composable_rust_core::reducer::Reducer;
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 use std::marker::PhantomData;
 
 /// Evaluator configuration
@@ -197,7 +197,7 @@ impl<E: AgentEnvironment> Reducer for EvaluatorReducer<E> {
                     // Placeholder - would call LLM to generate
                     None
                 }))]
-            }
+            },
 
             EvaluatorAction::CandidateGenerated { candidate } => {
                 state.candidate = Some(candidate.clone());
@@ -207,7 +207,7 @@ impl<E: AgentEnvironment> Reducer for EvaluatorReducer<E> {
                     // Placeholder - would call evaluator
                     None
                 }))]
-            }
+            },
 
             EvaluatorAction::Evaluated { evaluation } => {
                 state.evaluation = Some(evaluation.clone());
@@ -253,18 +253,18 @@ impl<E: AgentEnvironment> Reducer for EvaluatorReducer<E> {
                     // Placeholder - would call LLM with feedback
                     None
                 }))]
-            }
+            },
 
             EvaluatorAction::Complete { .. } => {
                 // Already complete
                 smallvec![Effect::None]
-            }
+            },
 
             EvaluatorAction::Error { .. } => {
                 // Error occurred
                 state.completed = true;
                 smallvec![Effect::None]
-            }
+            },
         }
     }
 }
@@ -290,19 +290,35 @@ mod tests {
             &self.config
         }
 
-        fn call_claude(&self, _request: composable_rust_anthropic::MessagesRequest) -> Effect<AgentAction> {
+        fn call_claude(
+            &self,
+            _request: composable_rust_anthropic::MessagesRequest,
+        ) -> Effect<AgentAction> {
             Effect::None
         }
 
-        fn call_claude_streaming(&self, _request: composable_rust_anthropic::MessagesRequest) -> Effect<AgentAction> {
+        fn call_claude_streaming(
+            &self,
+            _request: composable_rust_anthropic::MessagesRequest,
+        ) -> Effect<AgentAction> {
             Effect::None
         }
 
-        fn execute_tool(&self, _tool_use_id: String, _tool_name: String, _tool_input: String) -> Effect<AgentAction> {
+        fn execute_tool(
+            &self,
+            _tool_use_id: String,
+            _tool_name: String,
+            _tool_input: String,
+        ) -> Effect<AgentAction> {
             Effect::None
         }
 
-        fn execute_tool_streaming(&self, _tool_use_id: String, _tool_name: String, _tool_input: String) -> Effect<AgentAction> {
+        fn execute_tool_streaming(
+            &self,
+            _tool_use_id: String,
+            _tool_name: String,
+            _tool_input: String,
+        ) -> Effect<AgentAction> {
             Effect::None
         }
     }

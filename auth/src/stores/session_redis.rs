@@ -51,9 +51,8 @@ impl RedisSessionStore {
     ///
     /// Returns error if connection to `Redis` fails.
     pub async fn new(redis_url: &str) -> Result<Self> {
-        let client = Client::open(redis_url).map_err(|e| {
-            AuthError::InternalError(format!("Failed to create Redis client: {e}"))
-        })?;
+        let client = Client::open(redis_url)
+            .map_err(|e| AuthError::InternalError(format!("Failed to create Redis client: {e}")))?;
 
         let conn_manager = ConnectionManager::new(client).await.map_err(|e| {
             AuthError::InternalError(format!("Failed to create Redis connection manager: {e}"))
@@ -74,7 +73,12 @@ impl RedisSessionStore {
 }
 
 impl SessionStore for RedisSessionStore {
-    async fn create_session(&self, session: &Session, ttl: Duration, max_concurrent_sessions: usize) -> Result<()> {
+    async fn create_session(
+        &self,
+        session: &Session,
+        ttl: Duration,
+        max_concurrent_sessions: usize,
+    ) -> Result<()> {
         let mut conn = self.conn_manager.clone();
         let session_key = Self::session_key(&session.session_id);
         let user_sessions_key = Self::user_sessions_key(&session.user_id);
@@ -123,10 +127,7 @@ impl SessionStore for RedisSessionStore {
             let mut conn = self.conn_manager.clone();
 
             // Build session keys for MGET
-            let session_keys: Vec<String> = active_sessions
-                .iter()
-                .map(Self::session_key)
-                .collect();
+            let session_keys: Vec<String> = active_sessions.iter().map(Self::session_key).collect();
 
             // Fetch all sessions in a single MGET operation
             let session_bytes_list: Vec<Option<Vec<u8>>> = conn
@@ -172,8 +173,8 @@ impl SessionStore for RedisSessionStore {
         }
 
         // Serialize session
-        let session_bytes =
-            bincode::serialize(session).map_err(|e| AuthError::SerializationError(e.to_string()))?;
+        let session_bytes = bincode::serialize(session)
+            .map_err(|e| AuthError::SerializationError(e.to_string()))?;
 
         // Convert chrono::Duration to seconds (i64)
         #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
@@ -306,7 +307,8 @@ impl SessionStore for RedisSessionStore {
                 // Recommendation: Use false (fixed expiration) for high-security apps.
                 // The idle timeout still applies regardless of this setting.
                 if session.enable_sliding_refresh {
-                    let original_duration = session.expires_at.signed_duration_since(session.created_at);
+                    let original_duration =
+                        session.expires_at.signed_duration_since(session.created_at);
                     session.expires_at = now + original_duration;
                 }
 
@@ -333,7 +335,7 @@ impl SessionStore for RedisSessionStore {
                 }
 
                 Ok(session)
-            }
+            },
             None => Err(AuthError::SessionNotFound),
         }
     }
@@ -428,8 +430,8 @@ impl SessionStore for RedisSessionStore {
         }
 
         // Serialize updated session
-        let session_bytes =
-            bincode::serialize(session).map_err(|e| AuthError::SerializationError(e.to_string()))?;
+        let session_bytes = bincode::serialize(session)
+            .map_err(|e| AuthError::SerializationError(e.to_string()))?;
 
         // ✅ SECURITY FIX: Implement sliding window expiration
         //
@@ -475,12 +477,14 @@ impl SessionStore for RedisSessionStore {
                     .srem(&user_sessions_key, session_id.0.to_string())
                     .await
                     .map_err(|e| {
-                        AuthError::InternalError(format!("Failed to remove session from user set: {e}"))
+                        AuthError::InternalError(format!(
+                            "Failed to remove session from user set: {e}"
+                        ))
                     })?;
-            }
+            },
             Err(AuthError::SessionNotFound) => {
                 // Session doesn't exist - that's okay for delete
-            }
+            },
             Err(e) => return Err(e),
         }
 
@@ -561,9 +565,10 @@ impl SessionStore for RedisSessionStore {
         let mut conn = self.conn_manager.clone();
         let session_key = Self::session_key(&session_id);
 
-        let ttl_seconds: i64 = conn.ttl(&session_key).await.map_err(|e| {
-            AuthError::InternalError(format!("Failed to get session TTL: {e}"))
-        })?;
+        let ttl_seconds: i64 = conn
+            .ttl(&session_key)
+            .await
+            .map_err(|e| AuthError::InternalError(format!("Failed to get session TTL: {e}")))?;
 
         match ttl_seconds {
             -2 | -1 => Ok(None), // Key doesn't exist (-2) or has no expiration (-1)
@@ -668,8 +673,8 @@ impl SessionStore for RedisSessionStore {
         let user_sessions_key = Self::user_sessions_key(&session.user_id);
 
         // Serialize the new session
-        let session_bytes =
-            bincode::serialize(&session).map_err(|e| AuthError::SerializationError(e.to_string()))?;
+        let session_bytes = bincode::serialize(&session)
+            .map_err(|e| AuthError::SerializationError(e.to_string()))?;
 
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let ttl_seconds = ttl.num_seconds().max(0) as u64;
@@ -839,13 +844,13 @@ mod tests {
         match result {
             Err(AuthError::SessionExpired) => {
                 // ✅ Expected: Session rejected due to expiration
-            }
+            },
             Ok(_) => {
                 panic!("Expected SessionExpired error, but got success");
-            }
+            },
             Err(e) => {
                 panic!("Expected SessionExpired error, but got: {:?}", e);
-            }
+            },
         }
 
         // Cleanup
@@ -924,7 +929,7 @@ mod tests {
 
         // Attempt to create another session with SAME session_id (session fixation attack)
         let session2 = Session {
-            session_id, // ← Same ID
+            session_id,             // ← Same ID
             user_id: UserId::new(), // Different user
             device_id: DeviceId::new(),
             email: "attacker@example.com".to_string(),
@@ -939,19 +944,24 @@ mod tests {
             enable_sliding_refresh: false,
         };
 
-        let result = store.create_session(&session2, Duration::hours(24), 5).await;
+        let result = store
+            .create_session(&session2, Duration::hours(24), 5)
+            .await;
 
         // Should fail with InternalError (session fixation prevention)
         match result {
             Err(AuthError::InternalError(msg)) if msg.contains("already exists") => {
                 // ✅ Expected: Session fixation prevented
-            }
+            },
             Ok(_) => {
                 panic!("Expected session fixation prevention, but creation succeeded");
-            }
+            },
             Err(e) => {
-                panic!("Expected InternalError for session fixation, but got: {:?}", e);
-            }
+                panic!(
+                    "Expected InternalError for session fixation, but got: {:?}",
+                    e
+                );
+            },
         }
 
         // Verify original session is still intact
@@ -1003,8 +1013,7 @@ mod tests {
         assert!(
             one_succeeded,
             "Exactly one concurrent create should succeed. Results: {:?}, {:?}",
-            result1,
-            result2
+            result1, result2
         );
 
         // Verify the session exists and is correctly stored
@@ -1219,7 +1228,7 @@ mod tests {
                 oauth_provider: None,
                 login_risk_score: 0.1,
                 idle_timeout: Duration::minutes(30),
-            enable_sliding_refresh: false,
+                enable_sliding_refresh: false,
             })
             .collect();
 
@@ -1349,7 +1358,7 @@ mod tests {
                 oauth_provider: None,
                 login_risk_score: 0.1,
                 idle_timeout: Duration::minutes(30),
-            enable_sliding_refresh: false,
+                enable_sliding_refresh: false,
             })
             .collect();
 
@@ -1433,7 +1442,7 @@ mod tests {
                     oauth_provider: None,
                     login_risk_score: 0.1,
                     idle_timeout: Duration::minutes(30),
-            enable_sliding_refresh: false,
+                    enable_sliding_refresh: false,
                 };
                 store_clone
                     .create_session(&session, Duration::hours(1), max_sessions)
@@ -1530,9 +1539,8 @@ mod tests {
         let mut handles = vec![];
         for _ in 0..5 {
             let store_clone = store.clone();
-            let handle = tokio::spawn(async move {
-                store_clone.rotate_session(old_session_id).await
-            });
+            let handle =
+                tokio::spawn(async move { store_clone.rotate_session(old_session_id).await });
             handles.push(handle);
         }
 
@@ -1669,7 +1677,11 @@ mod tests {
 
         // expires_at should be extended (approximately 24 hours from NOW, not from creation)
         let expected_expires_at = Utc::now() + Duration::hours(24);
-        let time_diff = retrieved.expires_at.signed_duration_since(expected_expires_at).num_seconds().abs();
+        let time_diff = retrieved
+            .expires_at
+            .signed_duration_since(expected_expires_at)
+            .num_seconds()
+            .abs();
 
         assert!(
             time_diff < 5, // Allow 5 seconds tolerance for test execution time
@@ -1735,7 +1747,11 @@ mod tests {
         let retrieved = store.get_session(session_id).await.unwrap();
 
         // expires_at should remain unchanged (within 1 second tolerance)
-        let time_diff = retrieved.expires_at.signed_duration_since(expires_at).num_seconds().abs();
+        let time_diff = retrieved
+            .expires_at
+            .signed_duration_since(expires_at)
+            .num_seconds()
+            .abs();
 
         assert!(
             time_diff < 1,
@@ -1803,7 +1819,11 @@ mod tests {
 
         // expires_at should be ~2 hours from now (not 24 hours)
         let expected_expires_at = Utc::now() + session_duration;
-        let time_diff = retrieved.expires_at.signed_duration_since(expected_expires_at).num_seconds().abs();
+        let time_diff = retrieved
+            .expires_at
+            .signed_duration_since(expected_expires_at)
+            .num_seconds()
+            .abs();
 
         assert!(
             time_diff < 5,
@@ -1816,7 +1836,11 @@ mod tests {
 
         // Should NOT be extended to 24 hours
         let wrong_expiration = Utc::now() + Duration::hours(24);
-        let wrong_diff = retrieved.expires_at.signed_duration_since(wrong_expiration).num_hours().abs();
+        let wrong_diff = retrieved
+            .expires_at
+            .signed_duration_since(wrong_expiration)
+            .num_hours()
+            .abs();
 
         assert!(
             wrong_diff > 20, // Should be ~22 hours different
@@ -1856,7 +1880,7 @@ mod tests {
             oauth_provider: None,
             login_risk_score: 0.1,
             idle_timeout: Duration::minutes(30), // But idle for 35min > 30min timeout
-            enable_sliding_refresh: true, // Even with sliding refresh enabled
+            enable_sliding_refresh: true,        // Even with sliding refresh enabled
         };
 
         store

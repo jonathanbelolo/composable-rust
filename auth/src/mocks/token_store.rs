@@ -76,10 +76,8 @@ impl TokenStore for MockTokenStore {
         // FIX: Always perform ALL checks, regardless of early failures
 
         // 1. Check token match (constant-time comparison)
-        let token_matches = constant_time_eq::constant_time_eq(
-            token.as_bytes(),
-            stored_data.token.as_bytes(),
-        );
+        let token_matches =
+            constant_time_eq::constant_time_eq(token.as_bytes(), stored_data.token.as_bytes());
 
         // 2. Check expiration (always execute, even if token doesn't match)
         let now = Utc::now();
@@ -256,7 +254,10 @@ mod tests {
             .filter(|r| r.is_some())
             .count();
 
-        assert_eq!(success_count, 1, "Exactly one concurrent request should succeed");
+        assert_eq!(
+            success_count, 1,
+            "Exactly one concurrent request should succeed"
+        );
 
         // Token should no longer exist
         assert!(!store.exists("token-id-1").await.unwrap());

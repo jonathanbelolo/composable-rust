@@ -45,13 +45,13 @@ use composable_rust_next::{
 };
 use futures::future::BoxFuture;
 
+use super::event_inventory_saga::{SagaCall, SagaCallResult};
+use super::reservation_saga::{ReservationSagaCall, ReservationSagaCallResult};
 use super::{
     EventBusinessLogic, EventCommand, EventError, EventEvent, InventoryBusinessLogic,
     InventoryCommand, InventoryError, InventoryEvent, InventoryResponse, PaymentBusinessLogic,
     PaymentCommand, PaymentError, PaymentEvent, PaymentResponse,
 };
-use super::event_inventory_saga::{SagaCall, SagaCallResult};
-use super::reservation_saga::{ReservationSagaCall, ReservationSagaCallResult};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Type-Erased Handler Traits
@@ -135,7 +135,8 @@ where
     fn handle(
         &self,
         command: EventCommand,
-    ) -> BoxFuture<'_, Result<HandleResult<super::event::EventResponse>, HandlerError<EventError>>> {
+    ) -> BoxFuture<'_, Result<HandleResult<super::event::EventResponse>, HandlerError<EventError>>>
+    {
         Box::pin(Handler::handle(self, command))
     }
 }
@@ -183,7 +184,11 @@ where
     }
 
     /// Execute a single Event call and load resulting events.
-    async fn execute_event_call(&self, command: EventCommand, before_version: Version) -> SagaCallResult {
+    async fn execute_event_call(
+        &self,
+        command: EventCommand,
+        before_version: Version,
+    ) -> SagaCallResult {
         let stream_id = EventBusinessLogic::stream_id(&command);
 
         match self.event_handler.handle(command).await {
@@ -196,7 +201,7 @@ where
                 )
                 .await;
                 SagaCallResult::Event(Ok(events))
-            }
+            },
             Err(e) => SagaCallResult::Event(Err(map_event_error(e))),
         }
     }
@@ -222,7 +227,7 @@ where
                     section,
                     result: Ok(events),
                 }
-            }
+            },
             Err(e) => SagaCallResult::Inventory {
                 section,
                 result: Err(map_inventory_error(e)),
@@ -242,7 +247,7 @@ where
                         .and_then(|e| e.version)
                         .unwrap_or_else(|| Version::new(events.len() as u64))
                 }
-            }
+            },
             Err(_) => Version::initial(),
         }
     }
@@ -262,13 +267,13 @@ where
                         let stream_id = EventBusinessLogic::stream_id(&cmd);
                         let before_version = self.get_current_version(&stream_id).await;
                         self.execute_event_call(cmd, before_version).await
-                    }
+                    },
                     SagaCall::Inventory { section, command } => {
                         let stream_id = InventoryBusinessLogic::stream_id(&command);
                         let before_version = self.get_current_version(&stream_id).await;
                         self.execute_inventory_call(section, command, before_version)
                             .await
-                    }
+                    },
                 }
             })
             .collect();
@@ -350,10 +355,8 @@ where
                     before_version,
                 )
                 .await;
-                ReservationSagaCallResult::Inventory {
-                    result: Ok(events),
-                }
-            }
+                ReservationSagaCallResult::Inventory { result: Ok(events) }
+            },
             Err(e) => ReservationSagaCallResult::Inventory {
                 result: Err(map_inventory_error(e)),
             },
@@ -376,10 +379,8 @@ where
                     before_version,
                 )
                 .await;
-                ReservationSagaCallResult::Payment {
-                    result: Ok(events),
-                }
-            }
+                ReservationSagaCallResult::Payment { result: Ok(events) }
+            },
             Err(e) => ReservationSagaCallResult::Payment {
                 result: Err(map_payment_error(e)),
             },
@@ -398,7 +399,7 @@ where
                         .and_then(|e| e.version)
                         .unwrap_or_else(|| Version::new(events.len() as u64))
                 }
-            }
+            },
             Err(_) => Version::initial(),
         }
     }
@@ -419,12 +420,12 @@ where
                         let stream_id = InventoryBusinessLogic::stream_id(&cmd);
                         let before_version = self.get_current_version(&stream_id).await;
                         self.execute_inventory_call(cmd, before_version).await
-                    }
+                    },
                     ReservationSagaCall::Payment(cmd) => {
                         let stream_id = PaymentBusinessLogic::stream_id(&cmd);
                         let before_version = self.get_current_version(&stream_id).await;
                         self.execute_payment_call(cmd, before_version).await
-                    }
+                    },
                 }
             })
             .collect();
@@ -491,7 +492,7 @@ where
             EventError::ValidationFailed {
                 message: business_err.to_string(),
             }
-        }
+        },
         composable_rust_next::HandlerError::Load(store_err) => EventError::ValidationFailed {
             message: format!("Load error: {store_err}"),
         },
@@ -508,7 +509,7 @@ where
             EventError::ValidationFailed {
                 message: format!("Serialization error: {ser_err}"),
             }
-        }
+        },
         composable_rust_next::HandlerError::QueryFetch(fetch_err) => EventError::ValidationFailed {
             message: format!("Query fetch error: {fetch_err}"),
         },
@@ -516,7 +517,7 @@ where
             EventError::ValidationFailed {
                 message: format!("Saga exceeded max iterations: {max_iterations}"),
             }
-        }
+        },
     }
 }
 
@@ -530,22 +531,22 @@ where
         composable_rust_next::HandlerError::Load(store_err) => format!("Load error: {store_err}"),
         composable_rust_next::HandlerError::Persist(store_err) => {
             format!("Persist error: {store_err}")
-        }
+        },
         composable_rust_next::HandlerError::Projection(proj_err) => {
             format!("Projection error: {proj_err}")
-        }
+        },
         composable_rust_next::HandlerError::Broadcast(bus_err) => {
             format!("Broadcast error: {bus_err}")
-        }
+        },
         composable_rust_next::HandlerError::Serialization(ser_err) => {
             format!("Serialization error: {ser_err}")
-        }
+        },
         composable_rust_next::HandlerError::QueryFetch(fetch_err) => {
             format!("Query fetch error: {fetch_err}")
-        }
+        },
         composable_rust_next::HandlerError::SagaIterationsExceeded { max_iterations } => {
             format!("Saga exceeded max iterations: {max_iterations}")
-        }
+        },
     };
     InventoryError::ValidationFailed(message)
 }
@@ -560,22 +561,22 @@ where
         composable_rust_next::HandlerError::Load(store_err) => format!("Load error: {store_err}"),
         composable_rust_next::HandlerError::Persist(store_err) => {
             format!("Persist error: {store_err}")
-        }
+        },
         composable_rust_next::HandlerError::Projection(proj_err) => {
             format!("Projection error: {proj_err}")
-        }
+        },
         composable_rust_next::HandlerError::Broadcast(bus_err) => {
             format!("Broadcast error: {bus_err}")
-        }
+        },
         composable_rust_next::HandlerError::Serialization(ser_err) => {
             format!("Serialization error: {ser_err}")
-        }
+        },
         composable_rust_next::HandlerError::QueryFetch(fetch_err) => {
             format!("Query fetch error: {fetch_err}")
-        }
+        },
         composable_rust_next::HandlerError::SagaIterationsExceeded { max_iterations } => {
             format!("Saga exceeded max iterations: {max_iterations}")
-        }
+        },
     };
     PaymentError::ValidationFailed(message)
 }
@@ -599,12 +600,8 @@ mod tests {
     use composable_rust_next::testing::{InMemoryEventBus, InMemoryEventStore, InMemoryProjector};
     use composable_rust_next::{FixedClock, NoOpCallExecutor, NoOpQueryFetcher};
 
-    type TestEnv = TicketingEnvironment<
-        FixedClock,
-        InMemoryEventStore,
-        InMemoryProjector,
-        InMemoryEventBus,
-    >;
+    type TestEnv =
+        TicketingEnvironment<FixedClock, InMemoryEventStore, InMemoryProjector, InMemoryEventBus>;
 
     fn create_test_env(event_store: InMemoryEventStore) -> TestEnv {
         let clock = FixedClock::new(Utc::now());
@@ -668,7 +665,7 @@ mod tests {
                 let events = result.as_ref().unwrap();
                 assert_eq!(events.len(), 1);
                 assert!(matches!(events[0], InventoryEvent::Initialized { .. }));
-            }
+            },
             _ => panic!("Expected Inventory result"),
         }
     }
@@ -718,7 +715,7 @@ mod tests {
                 let events = result.as_ref().unwrap();
                 assert_eq!(events.len(), 1);
                 assert!(matches!(events[0], InventoryEvent::Initialized { .. }));
-            }
+            },
             _ => panic!("Expected Inventory result"),
         }
     }

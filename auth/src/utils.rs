@@ -129,11 +129,15 @@ pub fn validate_email(email: &str) -> crate::error::Result<()> {
 
     // Local and domain parts must be non-empty
     if local.is_empty() {
-        return Err(AuthError::InvalidInput("Email local part cannot be empty".into()));
+        return Err(AuthError::InvalidInput(
+            "Email local part cannot be empty".into(),
+        ));
     }
 
     if domain.is_empty() {
-        return Err(AuthError::InvalidInput("Email domain cannot be empty".into()));
+        return Err(AuthError::InvalidInput(
+            "Email domain cannot be empty".into(),
+        ));
     }
 
     // Domain must contain at least one dot
@@ -167,16 +171,13 @@ pub fn validate_email(email: &str) -> crate::error::Result<()> {
     // - Ensures consistent database collation behavior
     //
     // Allows: ASCII a-z, A-Z, 0-9, dot, hyphen, plus, underscore
-    let valid_local_chars = |c: char| {
-        c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '+' || c == '_'
-    };
+    let valid_local_chars =
+        |c: char| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '+' || c == '_';
 
     // Character whitelist for domain part (after @)
     // ✅ SECURITY: Restrict to ASCII alphanumeric only (no internationalized domains)
     // Allows: ASCII a-z, A-Z, 0-9, dot, hyphen
-    let valid_domain_chars = |c: char| {
-        c.is_ascii_alphanumeric() || c == '.' || c == '-'
-    };
+    let valid_domain_chars = |c: char| c.is_ascii_alphanumeric() || c == '.' || c == '-';
 
     if !local.chars().all(valid_local_chars) {
         return Err(AuthError::InvalidInput(
@@ -270,9 +271,7 @@ pub fn normalize_email(email: &str) -> crate::error::Result<String> {
 
     // 3. Validate after normalization
     validate_email(&normalized).map_err(|_| {
-        AuthError::InvalidInput(
-            "Email address is invalid after normalization".to_string()
-        )
+        AuthError::InvalidInput("Email address is invalid after normalization".to_string())
     })?;
 
     Ok(normalized)
@@ -307,13 +306,10 @@ fn is_valid_email_legacy(email: &str) -> bool {
     }
 
     // Basic character validation (allow alphanumeric, dots, hyphens, plus, underscore)
-    let valid_local_chars = |c: char| {
-        c.is_alphanumeric() || c == '.' || c == '-' || c == '+' || c == '_'
-    };
+    let valid_local_chars =
+        |c: char| c.is_alphanumeric() || c == '.' || c == '-' || c == '+' || c == '_';
 
-    let valid_domain_chars = |c: char| {
-        c.is_alphanumeric() || c == '.' || c == '-'
-    };
+    let valid_domain_chars = |c: char| c.is_alphanumeric() || c == '.' || c == '-';
 
     if !local.chars().all(valid_local_chars) {
         return false;
@@ -362,7 +358,9 @@ pub fn validate_device_name(name: &str) -> crate::error::Result<()> {
     const DANGEROUS_CHARS: &[char] = &['<', '>', '"', '\'', '&', '\0'];
 
     if name.is_empty() {
-        return Err(AuthError::InvalidInput("Device name cannot be empty".into()));
+        return Err(AuthError::InvalidInput(
+            "Device name cannot be empty".into(),
+        ));
     }
 
     if name.len() > 255 {
@@ -426,9 +424,7 @@ pub fn validate_platform(platform: &str) -> crate::error::Result<()> {
 
     // Platform should be ASCII (user agents are ASCII)
     if !platform.is_ascii() {
-        return Err(AuthError::InvalidInput(
-            "Platform must be ASCII".into(),
-        ));
+        return Err(AuthError::InvalidInput("Platform must be ASCII".into()));
     }
 
     Ok(())
@@ -479,9 +475,7 @@ pub fn validate_user_agent(user_agent: &str) -> crate::error::Result<()> {
 
     // User-Agent should be ASCII (per HTTP spec)
     if !user_agent.is_ascii() {
-        return Err(AuthError::InvalidInput(
-            "User-Agent must be ASCII".into(),
-        ));
+        return Err(AuthError::InvalidInput("User-Agent must be ASCII".into()));
     }
 
     // Check for control characters (especially \r, \n for header injection)
@@ -554,9 +548,8 @@ pub fn validate_ip_address(ip: &str) -> crate::error::Result<()> {
 
     // Parse as IpAddr to validate format
     // This handles both IPv4 and IPv6
-    ip.parse::<std::net::IpAddr>().map_err(|_| {
-        AuthError::InvalidInput(format!("Invalid IP address format: {ip}"))
-    })?;
+    ip.parse::<std::net::IpAddr>()
+        .map_err(|_| AuthError::InvalidInput(format!("Invalid IP address format: {ip}")))?;
 
     Ok(())
 }
@@ -585,7 +578,7 @@ pub fn sanitize_ip_for_logging(ip: &str) -> String {
             // Zero out last octet
             let octets = ipv4.octets();
             format!("{}.{}.{}.0", octets[0], octets[1], octets[2])
-        }
+        },
         Ok(IpAddr::V6(ipv6)) => {
             // Zero out last 64 bits (interface identifier)
             let segments = ipv6.segments();
@@ -593,11 +586,11 @@ pub fn sanitize_ip_for_logging(ip: &str) -> String {
                 "{:x}:{:x}:{:x}:{:x}::",
                 segments[0], segments[1], segments[2], segments[3]
             )
-        }
+        },
         Err(_) => {
             // Invalid IP - return masked version
             "[invalid]".to_string()
-        }
+        },
     }
 }
 
@@ -866,38 +859,74 @@ mod tests {
 
     #[test]
     fn test_parse_device_name_mobile() {
-        assert_eq!(parse_device_name("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)"), "Mobile Browser");
-        assert_eq!(parse_device_name("Mozilla/5.0 (Linux; Android 13)"), "Mobile Browser");
+        assert_eq!(
+            parse_device_name("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)"),
+            "Mobile Browser"
+        );
+        assert_eq!(
+            parse_device_name("Mozilla/5.0 (Linux; Android 13)"),
+            "Mobile Browser"
+        );
     }
 
     #[test]
     fn test_parse_device_name_tablet() {
-        assert_eq!(parse_device_name("Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X)"), "Tablet Browser");
-        assert_eq!(parse_device_name("Mozilla/5.0 (Linux; Android 13; Tablet)"), "Tablet Browser");
+        assert_eq!(
+            parse_device_name("Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X)"),
+            "Tablet Browser"
+        );
+        assert_eq!(
+            parse_device_name("Mozilla/5.0 (Linux; Android 13; Tablet)"),
+            "Tablet Browser"
+        );
     }
 
     #[test]
     fn test_parse_device_name_desktop() {
-        assert_eq!(parse_device_name("Mozilla/5.0 (Windows NT 10.0; Win64; x64)"), "Web Browser");
-        assert_eq!(parse_device_name("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)"), "Web Browser");
+        assert_eq!(
+            parse_device_name("Mozilla/5.0 (Windows NT 10.0; Win64; x64)"),
+            "Web Browser"
+        );
+        assert_eq!(
+            parse_device_name("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)"),
+            "Web Browser"
+        );
     }
 
     #[test]
     fn test_parse_device_type_mobile() {
-        assert_eq!(parse_device_type("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)"), "mobile");
-        assert_eq!(parse_device_type("Mozilla/5.0 (Linux; Android 13)"), "mobile");
+        assert_eq!(
+            parse_device_type("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)"),
+            "mobile"
+        );
+        assert_eq!(
+            parse_device_type("Mozilla/5.0 (Linux; Android 13)"),
+            "mobile"
+        );
     }
 
     #[test]
     fn test_parse_device_type_tablet() {
-        assert_eq!(parse_device_type("Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X)"), "tablet");
-        assert_eq!(parse_device_type("Mozilla/5.0 (Linux; Android 13; Tablet)"), "tablet");
+        assert_eq!(
+            parse_device_type("Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X)"),
+            "tablet"
+        );
+        assert_eq!(
+            parse_device_type("Mozilla/5.0 (Linux; Android 13; Tablet)"),
+            "tablet"
+        );
     }
 
     #[test]
     fn test_parse_device_type_desktop() {
-        assert_eq!(parse_device_type("Mozilla/5.0 (Windows NT 10.0; Win64; x64)"), "desktop");
-        assert_eq!(parse_device_type("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)"), "desktop");
+        assert_eq!(
+            parse_device_type("Mozilla/5.0 (Windows NT 10.0; Win64; x64)"),
+            "desktop"
+        );
+        assert_eq!(
+            parse_device_type("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)"),
+            "desktop"
+        );
     }
 
     #[test]
@@ -919,7 +948,7 @@ mod tests {
         assert!(!is_valid_email("user@example."));
         assert!(!is_valid_email("user@example..com"));
         assert!(!is_valid_email(""));
-        assert!(!is_valid_email("a@b"));  // No dot in domain
+        assert!(!is_valid_email("a@b")); // No dot in domain
     }
 
     #[test]
@@ -939,18 +968,33 @@ mod tests {
     #[allow(clippy::unwrap_used)] // Test code
     fn test_email_normalization_lowercase() {
         // SECURITY: Case normalization prevents account collision
-        assert_eq!(normalize_email("User@Example.COM").unwrap(), "user@example.com");
+        assert_eq!(
+            normalize_email("User@Example.COM").unwrap(),
+            "user@example.com"
+        );
         assert_eq!(normalize_email("ADMIN@TEST.COM").unwrap(), "admin@test.com");
-        assert_eq!(normalize_email("MixedCase@Domain.ORG").unwrap(), "mixedcase@domain.org");
+        assert_eq!(
+            normalize_email("MixedCase@Domain.ORG").unwrap(),
+            "mixedcase@domain.org"
+        );
     }
 
     #[test]
     #[allow(clippy::unwrap_used)] // Test code
     fn test_email_normalization_whitespace() {
         // SECURITY: Trim whitespace prevents account collision
-        assert_eq!(normalize_email("  admin@test.com  ").unwrap(), "admin@test.com");
-        assert_eq!(normalize_email("\tuser@example.com\n").unwrap(), "user@example.com");
-        assert_eq!(normalize_email(" User@Example.COM ").unwrap(), "user@example.com");
+        assert_eq!(
+            normalize_email("  admin@test.com  ").unwrap(),
+            "admin@test.com"
+        );
+        assert_eq!(
+            normalize_email("\tuser@example.com\n").unwrap(),
+            "user@example.com"
+        );
+        assert_eq!(
+            normalize_email(" User@Example.COM ").unwrap(),
+            "user@example.com"
+        );
     }
 
     #[test]
@@ -1011,14 +1055,20 @@ mod tests {
     fn test_device_name_validation_empty() {
         let result = validate_device_name("");
         assert!(result.is_err());
-        assert!(matches!(result, Err(crate::error::AuthError::InvalidInput(_))));
+        assert!(matches!(
+            result,
+            Err(crate::error::AuthError::InvalidInput(_))
+        ));
     }
 
     #[test]
     fn test_device_name_validation_too_long() {
         let result = validate_device_name(&"A".repeat(256));
         assert!(result.is_err());
-        assert!(matches!(result, Err(crate::error::AuthError::InvalidInput(_))));
+        assert!(matches!(
+            result,
+            Err(crate::error::AuthError::InvalidInput(_))
+        ));
     }
 
     #[test]
@@ -1053,14 +1103,20 @@ mod tests {
     fn test_platform_validation_empty() {
         let result = validate_platform("");
         assert!(result.is_err());
-        assert!(matches!(result, Err(crate::error::AuthError::InvalidInput(_))));
+        assert!(matches!(
+            result,
+            Err(crate::error::AuthError::InvalidInput(_))
+        ));
     }
 
     #[test]
     fn test_platform_validation_too_long() {
         let result = validate_platform(&"A".repeat(501));
         assert!(result.is_err());
-        assert!(matches!(result, Err(crate::error::AuthError::InvalidInput(_))));
+        assert!(matches!(
+            result,
+            Err(crate::error::AuthError::InvalidInput(_))
+        ));
     }
 
     #[test]
@@ -1089,7 +1145,10 @@ mod tests {
     fn test_validate_email_empty() {
         let result = validate_email("");
         assert!(result.is_err());
-        assert!(matches!(result, Err(crate::error::AuthError::InvalidInput(_))));
+        assert!(matches!(
+            result,
+            Err(crate::error::AuthError::InvalidInput(_))
+        ));
     }
 
     #[test]
@@ -1103,7 +1162,10 @@ mod tests {
         let long_email = format!("{}@example.com", "a".repeat(250));
         let result = validate_email(&long_email);
         assert!(result.is_err());
-        assert!(matches!(result, Err(crate::error::AuthError::InvalidInput(_))));
+        assert!(matches!(
+            result,
+            Err(crate::error::AuthError::InvalidInput(_))
+        ));
     }
 
     #[test]
@@ -1207,27 +1269,54 @@ mod tests {
         // ✅ SECURITY: Reject Unicode characters to prevent homograph attacks
 
         // Cyrillic 'а' (U+0430) looks like Latin 'a' (U+0061)
-        assert!(validate_email("аdmin@example.com").is_err(), "Should reject Cyrillic characters");
+        assert!(
+            validate_email("аdmin@example.com").is_err(),
+            "Should reject Cyrillic characters"
+        );
 
         // Greek letter 'α' (U+03B1)
-        assert!(validate_email("αlpha@example.com").is_err(), "Should reject Greek characters");
+        assert!(
+            validate_email("αlpha@example.com").is_err(),
+            "Should reject Greek characters"
+        );
 
         // Chinese characters
-        assert!(validate_email("用户@example.com").is_err(), "Should reject Chinese characters");
+        assert!(
+            validate_email("用户@example.com").is_err(),
+            "Should reject Chinese characters"
+        );
 
         // Emoji (considered alphanumeric by Unicode)
-        assert!(validate_email("user😀@example.com").is_err(), "Should reject emojis");
+        assert!(
+            validate_email("user😀@example.com").is_err(),
+            "Should reject emojis"
+        );
 
         // Accented characters
-        assert!(validate_email("üser@example.com").is_err(), "Should reject accented characters");
-        assert!(validate_email("user@éxample.com").is_err(), "Should reject accented domains");
+        assert!(
+            validate_email("üser@example.com").is_err(),
+            "Should reject accented characters"
+        );
+        assert!(
+            validate_email("user@éxample.com").is_err(),
+            "Should reject accented domains"
+        );
 
         // Mixed Unicode and ASCII (more subtle attack)
-        assert!(validate_email("usеr@example.com").is_err(), "Should reject mixed Cyrillic/ASCII");
+        assert!(
+            validate_email("usеr@example.com").is_err(),
+            "Should reject mixed Cyrillic/ASCII"
+        );
 
         // Ensure ASCII is still allowed
-        assert!(validate_email("user@example.com").is_ok(), "Should allow pure ASCII");
-        assert!(validate_email("USER123@EXAMPLE.COM").is_ok(), "Should allow uppercase ASCII");
+        assert!(
+            validate_email("user@example.com").is_ok(),
+            "Should allow pure ASCII"
+        );
+        assert!(
+            validate_email("USER123@EXAMPLE.COM").is_ok(),
+            "Should allow uppercase ASCII"
+        );
     }
 
     #[test]
@@ -1260,14 +1349,20 @@ mod tests {
     fn test_validate_user_agent_empty() {
         let result = validate_user_agent("");
         assert!(result.is_err());
-        assert!(matches!(result, Err(crate::error::AuthError::InvalidInput(_))));
+        assert!(matches!(
+            result,
+            Err(crate::error::AuthError::InvalidInput(_))
+        ));
     }
 
     #[test]
     fn test_validate_user_agent_too_long() {
         let result = validate_user_agent(&"A".repeat(1001));
         assert!(result.is_err());
-        assert!(matches!(result, Err(crate::error::AuthError::InvalidInput(_))));
+        assert!(matches!(
+            result,
+            Err(crate::error::AuthError::InvalidInput(_))
+        ));
     }
 
     #[test]
@@ -1316,7 +1411,10 @@ mod tests {
     fn test_validate_ip_address_empty() {
         let result = validate_ip_address("");
         assert!(result.is_err());
-        assert!(matches!(result, Err(crate::error::AuthError::InvalidInput(_))));
+        assert!(matches!(
+            result,
+            Err(crate::error::AuthError::InvalidInput(_))
+        ));
     }
 
     #[test]
@@ -1369,7 +1467,10 @@ mod tests {
 
     #[test]
     fn test_sanitize_ip_for_logging_ipv6() {
-        assert_eq!(sanitize_ip_for_logging("2001:0db8:85a3::8a2e:0370:7334"), "2001:db8:85a3:0::");
+        assert_eq!(
+            sanitize_ip_for_logging("2001:0db8:85a3::8a2e:0370:7334"),
+            "2001:db8:85a3:0::"
+        );
         assert_eq!(sanitize_ip_for_logging("2001:db8::1"), "2001:db8:0:0::");
         assert_eq!(sanitize_ip_for_logging("::1"), "0:0:0:0::");
         assert_eq!(sanitize_ip_for_logging("fe80::1"), "fe80:0:0:0::");

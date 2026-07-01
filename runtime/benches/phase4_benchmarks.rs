@@ -81,7 +81,6 @@ fn benchmark_circuit_breaker(c: &mut Criterion) {
         });
     });
 
-
     group.bench_function("create_default", |b| {
         b.iter(|| {
             black_box(CircuitBreaker::default());

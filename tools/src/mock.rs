@@ -43,17 +43,14 @@ pub fn memory_search_tool() -> (Tool, ToolExecutorFn) {
 
     let executor = Arc::new(|input: String| {
         Box::pin(async move {
-            let parsed: serde_json::Value = serde_json::from_str(&input).map_err(|e| {
-                ToolError {
+            let parsed: serde_json::Value =
+                serde_json::from_str(&input).map_err(|e| ToolError {
                     message: format!("Invalid input JSON: {e}"),
-                }
-            })?;
-
-            let query = parsed["query"]
-                .as_str()
-                .ok_or_else(|| ToolError {
-                    message: "Missing 'query' field".to_string(),
                 })?;
+
+            let query = parsed["query"].as_str().ok_or_else(|| ToolError {
+                message: "Missing 'query' field".to_string(),
+            })?;
 
             // Generate mock results based on query
             let results = if query.to_lowercase().contains("weather") {
@@ -96,9 +93,7 @@ pub fn memory_search_tool() -> (Tool, ToolExecutorFn) {
             });
 
             Ok(output.to_string())
-        }) as std::pin::Pin<
-            Box<dyn std::future::Future<Output = ToolResult> + Send>,
-        >
+        }) as std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send>>
     }) as ToolExecutorFn;
 
     (tool, executor)
@@ -142,17 +137,14 @@ pub fn web_search_tool() -> (Tool, ToolExecutorFn) {
 
     let executor = Arc::new(|input: String| {
         Box::pin(async move {
-            let parsed: serde_json::Value = serde_json::from_str(&input).map_err(|e| {
-                ToolError {
+            let parsed: serde_json::Value =
+                serde_json::from_str(&input).map_err(|e| ToolError {
                     message: format!("Invalid input JSON: {e}"),
-                }
-            })?;
-
-            let query = parsed["query"]
-                .as_str()
-                .ok_or_else(|| ToolError {
-                    message: "Missing 'query' field".to_string(),
                 })?;
+
+            let query = parsed["query"].as_str().ok_or_else(|| ToolError {
+                message: "Missing 'query' field".to_string(),
+            })?;
 
             // Generate mock results based on query
             let results = if query.to_lowercase().contains("rust") {
@@ -192,14 +184,12 @@ pub fn web_search_tool() -> (Tool, ToolExecutorFn) {
                     }),
                 ]
             } else {
-                vec![
-                    json!({
-                        "title": format!("Search results for: {query}"),
-                        "url": "https://example.com/search",
-                        "snippet": format!("Mock search results for query: {query}"),
-                        "relevance": 0.70
-                    }),
-                ]
+                vec![json!({
+                    "title": format!("Search results for: {query}"),
+                    "url": "https://example.com/search",
+                    "snippet": format!("Mock search results for query: {query}"),
+                    "relevance": 0.70
+                })]
             };
 
             let output = json!({
@@ -208,9 +198,7 @@ pub fn web_search_tool() -> (Tool, ToolExecutorFn) {
             });
 
             Ok(output.to_string())
-        }) as std::pin::Pin<
-            Box<dyn std::future::Future<Output = ToolResult> + Send>,
-        >
+        }) as std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send>>
     }) as ToolExecutorFn;
 
     (tool, executor)
@@ -247,7 +235,8 @@ mod tests {
         let result = executor(input).await;
         assert!(result.is_ok());
 
-        let output: serde_json::Value = serde_json::from_str(&result.expect("should succeed")).expect("valid JSON");
+        let output: serde_json::Value =
+            serde_json::from_str(&result.expect("should succeed")).expect("valid JSON");
         assert_eq!(output["query"], "weather");
         assert!(output["results"].is_array());
         assert!(!output["results"].as_array().expect("is array").is_empty());
@@ -265,7 +254,8 @@ mod tests {
         let result = executor(input).await;
         assert!(result.is_ok());
 
-        let output: serde_json::Value = serde_json::from_str(&result.expect("should succeed")).expect("valid JSON");
+        let output: serde_json::Value =
+            serde_json::from_str(&result.expect("should succeed")).expect("valid JSON");
         assert_eq!(output["query"], "Rust programming");
         assert!(output["results"].is_array());
         assert!(!output["results"].as_array().expect("is array").is_empty());
@@ -290,7 +280,8 @@ mod tests {
         let result = executor(input).await;
         assert!(result.is_ok());
 
-        let output: serde_json::Value = serde_json::from_str(&result.expect("should succeed")).expect("valid JSON");
+        let output: serde_json::Value =
+            serde_json::from_str(&result.expect("should succeed")).expect("valid JSON");
         assert!(output["results"].is_array());
         assert_eq!(output["results"].as_array().expect("is array").len(), 1);
     }

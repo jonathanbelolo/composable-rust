@@ -152,7 +152,7 @@ impl CircuitBreaker {
                 } else {
                     Err(format!("Circuit breaker {} is OPEN", self.name))
                 }
-            }
+            },
         }
     }
 
@@ -164,7 +164,7 @@ impl CircuitBreaker {
             CircuitState::Closed => {
                 // Reset failure count on success
                 state.failure_count = 0;
-            }
+            },
             CircuitState::HalfOpen => {
                 state.success_count += 1;
                 if state.success_count >= self.config.success_threshold {
@@ -177,10 +177,10 @@ impl CircuitBreaker {
                     state.success_count = 0;
                     state.last_failure_time = None;
                 }
-            }
+            },
             CircuitState::Open => {
                 // Shouldn't happen (request should be rejected), but handle gracefully
-            }
+            },
         }
     }
 
@@ -199,7 +199,7 @@ impl CircuitBreaker {
                     state.state = CircuitState::Open;
                     state.last_failure_time = Some(Instant::now());
                 }
-            }
+            },
             CircuitState::HalfOpen => {
                 warn!(
                     "Circuit breaker {} transitioning: HalfOpen → Open (recovery failed)",
@@ -208,11 +208,11 @@ impl CircuitBreaker {
                 state.state = CircuitState::Open;
                 state.last_failure_time = Some(Instant::now());
                 state.success_count = 0;
-            }
+            },
             CircuitState::Open => {
                 // Update last failure time
                 state.last_failure_time = Some(Instant::now());
-            }
+            },
         }
     }
 
@@ -271,11 +271,11 @@ where
         Ok(result) => {
             circuit_breaker.record_success().await;
             Ok(result)
-        }
+        },
         Err(e) => {
             circuit_breaker.record_failure().await;
             Err(e.to_string())
-        }
+        },
     }
 }
 
@@ -286,10 +286,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_circuit_breaker_starts_closed() {
-        let cb = CircuitBreaker::new(
-            "test".to_string(),
-            CircuitBreakerConfig::default(),
-        );
+        let cb = CircuitBreaker::new("test".to_string(), CircuitBreakerConfig::default());
 
         assert_eq!(cb.get_state().await, CircuitState::Closed);
         assert!(cb.allow_request().await.is_ok());
@@ -414,14 +411,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_with_circuit_breaker_success() {
-        let cb = CircuitBreaker::new(
-            "test".to_string(),
-            CircuitBreakerConfig::default(),
-        );
+        let cb = CircuitBreaker::new("test".to_string(), CircuitBreakerConfig::default());
 
-        let result = with_circuit_breaker(&cb, async {
-            Ok::<_, String>("success")
-        }).await;
+        let result = with_circuit_breaker(&cb, async { Ok::<_, String>("success") }).await;
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "success");
@@ -437,9 +429,7 @@ mod tests {
 
         let cb = CircuitBreaker::new("test".to_string(), config);
 
-        let result = with_circuit_breaker(&cb, async {
-            Err::<String, _>("error")
-        }).await;
+        let result = with_circuit_breaker(&cb, async { Err::<String, _>("error") }).await;
 
         assert!(result.is_err());
         assert_eq!(cb.get_state().await, CircuitState::Open);
@@ -459,9 +449,8 @@ mod tests {
         cb.record_failure().await;
 
         // Should reject request
-        let result = with_circuit_breaker(&cb, async {
-            Ok::<_, String>("should not execute")
-        }).await;
+        let result =
+            with_circuit_breaker(&cb, async { Ok::<_, String>("should not execute") }).await;
 
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("OPEN"));

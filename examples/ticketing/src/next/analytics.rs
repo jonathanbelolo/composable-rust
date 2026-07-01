@@ -370,15 +370,15 @@ impl BusinessLogic for AnalyticsBusinessLogic {
         match input {
             AnalyticsCommand::GetEventSales { event_id, .. } => {
                 StreamId::new(format!("analytics-event-{}", event_id.as_uuid()))
-            }
+            },
             AnalyticsCommand::GetPopularSections { event_id, .. } => {
                 StreamId::new(format!("analytics-event-{}", event_id.as_uuid()))
-            }
+            },
             AnalyticsCommand::GetTotalRevenue { .. } => StreamId::new("analytics-global"),
             AnalyticsCommand::GetTopSpenders { .. } => StreamId::new("analytics-global"),
             AnalyticsCommand::GetCustomerProfile { customer_id, .. } => {
                 StreamId::new(format!("analytics-customer-{}", customer_id.as_uuid()))
-            }
+            },
         }
     }
 
@@ -407,7 +407,7 @@ impl BusinessLogic for AnalyticsBusinessLogic {
                 }
 
                 Ok(BusinessResult::Respond(AnalyticsResponse::EventSales(data)))
-            }
+            },
 
             AnalyticsCommand::GetPopularSections { event_id, fetched } => {
                 let data = fetched.ok_or(AnalyticsError::DataNotFetched)?;
@@ -420,7 +420,7 @@ impl BusinessLogic for AnalyticsBusinessLogic {
                 Ok(BusinessResult::Respond(AnalyticsResponse::PopularSections(
                     data,
                 )))
-            }
+            },
 
             AnalyticsCommand::GetTotalRevenue { fetched } => {
                 let data = fetched.ok_or(AnalyticsError::DataNotFetched)?;
@@ -428,7 +428,7 @@ impl BusinessLogic for AnalyticsBusinessLogic {
                 Ok(BusinessResult::Respond(AnalyticsResponse::TotalRevenue(
                     data,
                 )))
-            }
+            },
 
             AnalyticsCommand::GetTopSpenders { limit, fetched } => {
                 // Validate limit
@@ -438,8 +438,10 @@ impl BusinessLogic for AnalyticsBusinessLogic {
 
                 let data = fetched.ok_or(AnalyticsError::DataNotFetched)?;
 
-                Ok(BusinessResult::Respond(AnalyticsResponse::TopSpenders(data)))
-            }
+                Ok(BusinessResult::Respond(AnalyticsResponse::TopSpenders(
+                    data,
+                )))
+            },
 
             AnalyticsCommand::GetCustomerProfile {
                 customer_id,
@@ -465,7 +467,7 @@ impl BusinessLogic for AnalyticsBusinessLogic {
                 Ok(BusinessResult::Respond(AnalyticsResponse::CustomerProfile(
                     data,
                 )))
-            }
+            },
         }
     }
 
@@ -522,7 +524,7 @@ mod tests {
         match result.unwrap() {
             BusinessResult::Respond(AnalyticsResponse::EventSales(data)) => {
                 assert_eq!(data.tickets_sold, 50);
-            }
+            },
             _ => panic!("Expected Respond with EventSales"),
         }
     }

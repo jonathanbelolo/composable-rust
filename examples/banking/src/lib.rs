@@ -92,6 +92,6 @@ pub mod types;
 pub use account::{AccountEnvironment, AccountReducer};
 pub use transfer::{TransferEnvironment, TransferReducer};
 pub use types::{
-    Account, AccountAction, AccountId, AccountState, Money, Transfer, TransferAction,
-    TransferId, TransferState, TransferStatus,
+    Account, AccountAction, AccountId, AccountState, Money, Transfer, TransferAction, TransferId,
+    TransferState, TransferStatus,
 };

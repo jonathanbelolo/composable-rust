@@ -2,13 +2,9 @@
 //!
 //! Handles session validation, refresh, and logout.
 
-use crate::{AuthAction, AuthEnvironment, AuthReducer, AuthState};
 use crate::state::SessionId;
-use axum::{
-    extract::State,
-    http::StatusCode,
-    Json,
-};
+use crate::{AuthAction, AuthEnvironment, AuthReducer, AuthState};
+use axum::{Json, extract::State, http::StatusCode};
 use composable_rust_runtime::Store;
 use composable_rust_web::{AppError, ClientIp, CorrelationId};
 use serde::{Deserialize, Serialize};
@@ -76,7 +72,16 @@ pub struct LogoutResponse {
 /// }
 /// ```
 pub async fn get_session<O, E, W, S, T, U, D, R, OT, C, RL>(
-    State(store): State<Arc<Store<AuthState, AuthAction, AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>, AuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>>>>,
+    State(store): State<
+        Arc<
+            Store<
+                AuthState,
+                AuthAction,
+                AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>,
+                AuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>,
+            >,
+        >,
+    >,
     correlation_id: CorrelationId,
     client_ip: ClientIp,
     Json(request): Json<GetSessionRequest>,
@@ -157,7 +162,16 @@ where
 /// }
 /// ```
 pub async fn logout<O, E, W, S, T, U, D, R, OT, C, RL>(
-    State(store): State<Arc<Store<AuthState, AuthAction, AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>, AuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>>>>,
+    State(store): State<
+        Arc<
+            Store<
+                AuthState,
+                AuthAction,
+                AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>,
+                AuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>,
+            >,
+        >,
+    >,
     correlation_id: CorrelationId,
     Json(request): Json<LogoutRequest>,
 ) -> Result<(StatusCode, Json<LogoutResponse>), AppError>

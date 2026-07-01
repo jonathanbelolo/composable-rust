@@ -27,7 +27,7 @@
 
 use composable_rust_core::effect::Effect;
 use composable_rust_core::reducer::Reducer;
-use composable_rust_core::{smallvec, SmallVec};
+use composable_rust_core::{SmallVec, smallvec};
 use composable_rust_runtime::{RetryPolicy, Store, StoreConfig};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use std::time::Duration;
@@ -72,19 +72,19 @@ impl Reducer for CounterReducer {
                 state.count += 1;
                 tracing::info!(count = state.count, "Incremented");
                 smallvec![Effect::None]
-            }
+            },
             CounterAction::Decrement => {
                 state.count -= 1;
                 tracing::info!(count = state.count, "Decremented");
                 smallvec![Effect::None]
-            }
+            },
             CounterAction::ProduceDelayedIncrement => {
                 tracing::info!("Scheduling delayed increment");
                 smallvec![Effect::Delay {
                     duration: Duration::from_millis(100),
                     action: Box::new(CounterAction::Increment),
                 }]
-            }
+            },
         }
     }
 }

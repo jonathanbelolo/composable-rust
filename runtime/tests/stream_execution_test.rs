@@ -5,17 +5,15 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // Test code can use unwrap/expect/panic
 
-use composable_rust_core::{effect::Effect, reducer::Reducer, SmallVec};
+use composable_rust_core::{SmallVec, effect::Effect, reducer::Reducer};
 use composable_rust_runtime::Store;
 use futures::stream;
 use std::sync::{Arc, Mutex};
 
-#[derive(Clone, Debug, PartialEq)]
-#[derive(Default)]
+#[derive(Clone, Debug, PartialEq, Default)]
 struct StreamState {
     items_received: Vec<String>,
 }
-
 
 #[derive(Clone, Debug, PartialEq)]
 #[allow(dead_code)] // Test enum - not all variants used in every test
@@ -51,20 +49,20 @@ impl Reducer for StreamReducer {
                 )));
 
                 SmallVec::from_vec(vec![stream_effect])
-            }
+            },
             StreamAction::StreamItem { text } => {
                 // Accumulate items
                 state.items_received.push(text);
                 SmallVec::from_vec(vec![Effect::None])
-            }
+            },
             StreamAction::StreamComplete => {
                 // Stream finished
                 SmallVec::from_vec(vec![Effect::None])
-            }
+            },
             StreamAction::GetItems => {
                 // No-op action for tests
                 SmallVec::from_vec(vec![Effect::None])
-            }
+            },
         }
     }
 }
@@ -76,7 +74,11 @@ async fn test_stream_basic_execution() {
     // Start a stream with 3 items
     store
         .send(StreamAction::StartStream {
-            items: vec!["item1".to_string(), "item2".to_string(), "item3".to_string()],
+            items: vec![
+                "item1".to_string(),
+                "item2".to_string(),
+                "item3".to_string(),
+            ],
         })
         .await
         .unwrap();
@@ -162,22 +164,23 @@ impl Reducer for AsyncStreamReducer {
         match action {
             AsyncStreamAction::StartAsyncStream { count } => {
                 // Create async stream with delays
-                let stream_effect = Effect::Stream(Box::pin(stream::unfold(0, move |i| async move {
-                    if i < count {
-                        // Small delay between items
-                        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-                        Some((AsyncStreamAction::Item { value: i }, i + 1))
-                    } else {
-                        None
-                    }
-                })));
+                let stream_effect =
+                    Effect::Stream(Box::pin(stream::unfold(0, move |i| async move {
+                        if i < count {
+                            // Small delay between items
+                            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                            Some((AsyncStreamAction::Item { value: i }, i + 1))
+                        } else {
+                            None
+                        }
+                    })));
 
                 SmallVec::from_vec(vec![stream_effect])
-            }
+            },
             AsyncStreamAction::Item { value } => {
                 state.items_received.push(value);
                 SmallVec::from_vec(vec![Effect::None])
-            }
+            },
         }
     }
 }
@@ -249,27 +252,31 @@ impl Reducer for ConcurrentStreamReducer {
             ConcurrentStreamAction::StartBothStreams => {
                 // Create two streams in parallel
                 let stream_a = Effect::Stream(Box::pin(stream::iter(
-                    vec!["a1", "a2", "a3"]
-                        .into_iter()
-                        .map(|s| ConcurrentStreamAction::StreamAItem { text: s.to_string() }),
+                    vec!["a1", "a2", "a3"].into_iter().map(|s| {
+                        ConcurrentStreamAction::StreamAItem {
+                            text: s.to_string(),
+                        }
+                    }),
                 )));
 
                 let stream_b = Effect::Stream(Box::pin(stream::iter(
-                    vec!["b1", "b2", "b3"]
-                        .into_iter()
-                        .map(|s| ConcurrentStreamAction::StreamBItem { text: s.to_string() }),
+                    vec!["b1", "b2", "b3"].into_iter().map(|s| {
+                        ConcurrentStreamAction::StreamBItem {
+                            text: s.to_string(),
+                        }
+                    }),
                 )));
 
                 SmallVec::from_vec(vec![Effect::Parallel(vec![stream_a, stream_b])])
-            }
+            },
             ConcurrentStreamAction::StreamAItem { text } => {
                 state.stream_a_items.push(text);
                 SmallVec::from_vec(vec![Effect::None])
-            }
+            },
             ConcurrentStreamAction::StreamBItem { text } => {
                 state.stream_b_items.push(text);
                 SmallVec::from_vec(vec![Effect::None])
-            }
+            },
         }
     }
 }
@@ -343,22 +350,23 @@ impl Reducer for SequentialStreamReducer {
                     })
                 }));
 
-                let stream_effect = Effect::Stream(Box::pin(stream::iter(
-                    vec!["s1", "s2"]
-                        .into_iter()
-                        .map(|s| SequentialStreamAction::Item { text: s.to_string() }),
-                )));
+                let stream_effect =
+                    Effect::Stream(Box::pin(stream::iter(vec!["s1", "s2"].into_iter().map(
+                        |s| SequentialStreamAction::Item {
+                            text: s.to_string(),
+                        },
+                    ))));
 
                 SmallVec::from_vec(vec![Effect::Sequential(vec![phase_effect, stream_effect])])
-            }
+            },
             SequentialStreamAction::PhaseChanged { phase } => {
                 state.phase = phase;
                 SmallVec::from_vec(vec![Effect::None])
-            }
+            },
             SequentialStreamAction::Item { text } => {
                 state.items.push(text);
                 SmallVec::from_vec(vec![Effect::None])
-            }
+            },
         }
     }
 }
@@ -417,11 +425,12 @@ impl Reducer for BackpressureReducer {
     ) -> SmallVec<[Effect<Self::Action>; 4]> {
         match action {
             BackpressureAction::StartStream => {
-                let stream_effect =
-                    Effect::Stream(Box::pin(stream::iter((0..10).map(|id| BackpressureAction::Item { id }))));
+                let stream_effect = Effect::Stream(Box::pin(stream::iter(
+                    (0..10).map(|id| BackpressureAction::Item { id }),
+                )));
 
                 SmallVec::from_vec(vec![stream_effect])
-            }
+            },
             BackpressureAction::Item { id } => {
                 // Simulate slow processing
                 let log = state.processing_log.clone();
@@ -432,7 +441,7 @@ impl Reducer for BackpressureReducer {
                 }));
 
                 SmallVec::from_vec(vec![effect])
-            }
+            },
         }
     }
 }

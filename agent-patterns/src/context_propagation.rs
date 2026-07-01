@@ -22,7 +22,7 @@
 //! store.dispatch(AgentAction::UserMessage { content }).await;
 //! ```
 
-use tracing::{info_span, Span};
+use tracing::{Span, info_span};
 use uuid::Uuid;
 
 /// Utilities for span context management
@@ -144,9 +144,7 @@ mod tests {
 
     #[test]
     fn test_span_for_tool_creates_span() {
-        let subscriber = tracing_subscriber::fmt()
-            .with_test_writer()
-            .finish();
+        let subscriber = tracing_subscriber::fmt().with_test_writer().finish();
 
         tracing::subscriber::with_default(subscriber, || {
             let span = SpanContext::for_tool("test_tool", "tool_123");
@@ -156,9 +154,7 @@ mod tests {
 
     #[test]
     fn test_span_for_pattern_creates_span() {
-        let subscriber = tracing_subscriber::fmt()
-            .with_test_writer()
-            .finish();
+        let subscriber = tracing_subscriber::fmt().with_test_writer().finish();
 
         tracing::subscriber::with_default(subscriber, || {
             let span = SpanContext::for_pattern("prompt_chain", "chain_456");
@@ -168,9 +164,7 @@ mod tests {
 
     #[test]
     fn test_nested_spans() {
-        let subscriber = tracing_subscriber::fmt()
-            .with_test_writer()
-            .finish();
+        let subscriber = tracing_subscriber::fmt().with_test_writer().finish();
 
         tracing::subscriber::with_default(subscriber, || {
             let outer_span = SpanContext::for_action("outer");

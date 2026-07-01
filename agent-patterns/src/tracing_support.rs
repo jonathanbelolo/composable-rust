@@ -22,15 +22,11 @@
 //! // Spans are automatically created and exported
 //! ```
 
-use composable_rust_core::{
-    effect::Effect,
-    reducer::Reducer,
-    agent::AgentEnvironment,
-};
+use composable_rust_core::{agent::AgentEnvironment, effect::Effect, reducer::Reducer};
 use smallvec::SmallVec;
-use tracing::{info, span, Level, Span};
-use tracing_opentelemetry::OpenTelemetrySpanExt;
 use std::time::Instant;
+use tracing::{Level, Span, info, span};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 /// Wrapper reducer that adds distributed tracing to any reducer
 ///
@@ -149,8 +145,8 @@ pub fn init_tracing(
     service_name: &str,
     jaeger_endpoint: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use tracing_subscriber::{layer::SubscriberExt, Registry};
     use opentelemetry_jaeger::new_agent_pipeline;
+    use tracing_subscriber::{Registry, layer::SubscriberExt};
 
     // Create Jaeger tracer
     let tracer = new_agent_pipeline()
@@ -292,9 +288,7 @@ mod tests {
     #[test]
     fn test_traced_reducer_preserves_effects() {
         // Use tracing_subscriber::fmt for test output
-        let subscriber = tracing_subscriber::fmt()
-            .with_test_writer()
-            .finish();
+        let subscriber = tracing_subscriber::fmt().with_test_writer().finish();
 
         tracing::subscriber::with_default(subscriber, || {
             let inner = TestReducer { effect_count: 3 };
@@ -318,9 +312,7 @@ mod tests {
 
     #[test]
     fn test_traced_reducer_with_zero_effects() {
-        let subscriber = tracing_subscriber::fmt()
-            .with_test_writer()
-            .finish();
+        let subscriber = tracing_subscriber::fmt().with_test_writer().finish();
 
         tracing::subscriber::with_default(subscriber, || {
             let inner = TestReducer { effect_count: 0 };
@@ -344,9 +336,7 @@ mod tests {
 
     #[test]
     fn test_traced_reducer_multiple_calls() {
-        let subscriber = tracing_subscriber::fmt()
-            .with_test_writer()
-            .finish();
+        let subscriber = tracing_subscriber::fmt().with_test_writer().finish();
 
         tracing::subscriber::with_default(subscriber, || {
             let inner = TestReducer { effect_count: 1 };

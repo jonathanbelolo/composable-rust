@@ -76,11 +76,7 @@ async fn setup_postgres_event_store() -> (ContainerAsync<Postgres>, PostgresEven
 
 /// Helper to create test events.
 fn create_test_event(event_type: &str, data: Vec<u8>) -> SerializedEvent {
-    SerializedEvent::new(
-        event_type.to_string(),
-        data,
-        Some(EventMetadata::new()),
-    )
+    SerializedEvent::new(event_type.to_string(), data, Some(EventMetadata::new()))
 }
 
 #[tokio::test]
@@ -454,17 +450,23 @@ async fn test_append_batch_success_multiple_streams() {
     #[allow(clippy::expect_used)]
     {
         assert_eq!(
-            results[0].as_ref().expect("Stream 1 already verified as Ok"),
+            results[0]
+                .as_ref()
+                .expect("Stream 1 already verified as Ok"),
             &Version::new(2),
             "Stream 1 should be at version 2"
         );
         assert_eq!(
-            results[1].as_ref().expect("Stream 2 already verified as Ok"),
+            results[1]
+                .as_ref()
+                .expect("Stream 2 already verified as Ok"),
             &Version::new(1),
             "Stream 2 should be at version 1"
         );
         assert_eq!(
-            results[2].as_ref().expect("Stream 3 already verified as Ok"),
+            results[2]
+                .as_ref()
+                .expect("Stream 3 already verified as Ok"),
             &Version::new(3),
             "Stream 3 should be at version 3"
         );
@@ -536,10 +538,7 @@ async fn test_append_batch_partial_failure_concurrency_conflict() {
         "Stream 1 should fail with concurrency conflict"
     );
     assert!(
-        matches!(
-            results[0],
-            Err(EventStoreError::ConcurrencyConflict { .. })
-        ),
+        matches!(results[0], Err(EventStoreError::ConcurrencyConflict { .. })),
         "Should be concurrency conflict"
     );
     assert!(results[1].is_ok(), "Stream 2 should succeed");
@@ -785,14 +784,7 @@ async fn test_dlq_status_transitions() {
     // Add entry
     let event = create_test_event("TestEvent", b"data".to_vec());
     let dlq_id = dlq
-        .add_entry(
-            "stream-1",
-            &event,
-            chrono::Utc::now(),
-            "Error",
-            None,
-            0,
-        )
+        .add_entry("stream-1", &event, chrono::Utc::now(), "Error", None, 0)
         .await
         .expect("Should add entry");
 
@@ -806,7 +798,10 @@ async fn test_dlq_status_transitions() {
         .expect("Should update status");
 
     let entry = dlq.get_by_id(dlq_id).await.expect("Should get entry");
-    assert_eq!(entry.status, composable_rust_postgres::DLQStatus::Processing);
+    assert_eq!(
+        entry.status,
+        composable_rust_postgres::DLQStatus::Processing
+    );
 
     // Mark as resolved
     dlq.mark_resolved(dlq_id, "admin", Some("Manual reprocessing succeeded"))

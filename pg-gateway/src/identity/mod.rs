@@ -93,8 +93,8 @@ mod extractor;
 // Core Types (Always Available)
 // ═══════════════════════════════════════════════════════════════════════════
 
-pub use context::{execute_with_identity, execute_with_identity_raw, set_identity_context};
 pub use context::ExecuteError;
+pub use context::{execute_with_identity, execute_with_identity_raw, set_identity_context};
 pub use types::{Claims, Identity};
 
 // ═══════════════════════════════════════════════════════════════════════════

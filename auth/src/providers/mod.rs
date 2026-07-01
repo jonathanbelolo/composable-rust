@@ -50,36 +50,36 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 
+pub mod challenge_store;
+pub mod console_email;
+pub mod device;
+pub mod email;
+pub mod google;
 pub mod oauth;
 pub mod oauth_token_store;
-pub mod email;
-pub mod smtp_email;
-pub mod console_email;
-pub mod webauthn;
-pub mod session;
-pub mod user;
-pub mod device;
-pub mod risk;
-pub mod token_store;
-pub mod challenge_store;
 pub mod rate_limiter;
-pub mod google;
+pub mod risk;
+pub mod session;
+pub mod smtp_email;
+pub mod token_store;
+pub mod user;
+pub mod webauthn;
 
 // Re-export provider traits
-pub use oauth::{OAuth2Provider, OAuthTokenResponse};
-pub use google::GoogleOAuthProvider;
-pub use oauth_token_store::{OAuthTokenStore, OAuthTokenData};
-pub use email::EmailProvider;
-pub use smtp_email::SmtpEmailProvider;
+pub use challenge_store::{ChallengeData, ChallengeStore};
 pub use console_email::ConsoleEmailProvider;
-pub use webauthn::WebAuthnProvider;
-pub use session::SessionStore;
-pub use user::UserRepository;
 pub use device::DeviceRepository;
-pub use risk::RiskCalculator;
-pub use token_store::{TokenStore, TokenData, TokenType};
-pub use challenge_store::{ChallengeStore, ChallengeData};
+pub use email::EmailProvider;
+pub use google::GoogleOAuthProvider;
+pub use oauth::{OAuth2Provider, OAuthTokenResponse};
+pub use oauth_token_store::{OAuthTokenData, OAuthTokenStore};
 pub use rate_limiter::RateLimiter;
+pub use risk::RiskCalculator;
+pub use session::SessionStore;
+pub use smtp_email::SmtpEmailProvider;
+pub use token_store::{TokenData, TokenStore, TokenType};
+pub use user::UserRepository;
+pub use webauthn::WebAuthnProvider;
 
 /// User data model.
 ///
@@ -159,7 +159,10 @@ pub struct Device {
 /// Device type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "postgres", derive(sqlx::Type))]
-#[cfg_attr(feature = "postgres", sqlx(type_name = "device_type", rename_all = "lowercase"))]
+#[cfg_attr(
+    feature = "postgres",
+    sqlx(type_name = "device_type", rename_all = "lowercase")
+)]
 pub enum DeviceType {
     /// Mobile device (phone, tablet).
     Mobile,

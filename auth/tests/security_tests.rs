@@ -8,11 +8,11 @@
 //! - Timing attack resistance
 //! - Information disclosure prevention
 
+use chrono::{Duration, Utc};
 use composable_rust_auth::{
     mocks::MockTokenStore,
     providers::{TokenData, TokenStore, TokenType},
 };
-use chrono::{Duration, Utc};
 use std::sync::Arc;
 
 /// **BLOCKER #1 FIX: Atomic Token Consumption**
@@ -131,10 +131,7 @@ async fn test_token_replay_prevention() {
         .await
         .expect("Store operation failed");
 
-    assert!(
-        first.is_some(),
-        "First token use should succeed"
-    );
+    assert!(first.is_some(), "First token use should succeed");
 
     // Wait a bit
     tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
@@ -189,10 +186,7 @@ async fn test_expired_token_rejection() {
         .await
         .expect("Store operation failed");
 
-    assert!(
-        !exists,
-        "Expired token should be removed from store"
-    );
+    assert!(!exists, "Expired token should be removed from store");
 }
 
 /// **BLOCKER #1 VARIANT: Wrong Token Rejection**
@@ -225,10 +219,7 @@ async fn test_wrong_token_rejection() {
         .await
         .expect("Store operation failed");
 
-    assert!(
-        wrong_attempt.is_none(),
-        "Wrong token should be rejected"
-    );
+    assert!(wrong_attempt.is_none(), "Wrong token should be rejected");
 
     // Token should still exist (not consumed by failed attempt)
     let still_exists = token_store
@@ -419,10 +410,7 @@ async fn test_oauth_state_replay_prevention() {
         .await
         .expect("Store operation failed");
 
-    assert!(
-        first.is_some(),
-        "First OAuth callback should succeed"
-    );
+    assert!(first.is_some(), "First OAuth callback should succeed");
 
     // Wait a bit
     tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
@@ -601,10 +589,7 @@ async fn test_blocker_3_passkey_challenge_expiration() {
         .await
         .expect("Store operation failed");
 
-    assert!(
-        !exists,
-        "Expired challenge should be removed from store"
-    );
+    assert!(!exists, "Expired challenge should be removed from store");
 }
 
 /// **BLOCKER #7 FIX: Challenge Replay Protection**
@@ -662,10 +647,7 @@ async fn test_blocker_7_passkey_challenge_single_use() {
         .await
         .expect("Store operation failed");
 
-    assert!(
-        first_use.is_some(),
-        "First challenge use should succeed"
-    );
+    assert!(first_use.is_some(), "First challenge use should succeed");
 
     // Try to reuse challenge
     let replay = token_store
@@ -1056,10 +1038,7 @@ async fn test_blocker_5_wrong_and_expired_tokens_same_error() {
         .expect("consume_token failed");
 
     // Both should return None (same error)
-    assert!(
-        result_expired.is_none(),
-        "Expired token should return None"
-    );
+    assert!(result_expired.is_none(), "Expired token should return None");
     assert!(result_wrong.is_none(), "Wrong token should return None");
 }
 

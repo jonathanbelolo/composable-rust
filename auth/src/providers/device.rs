@@ -10,10 +10,10 @@
 //! - ❌ Writes: Use event emission (reducers emit `DeviceRegistered`, `DeviceAccessed` events)
 //! - 🔄 Projections: `AuthProjection` listens to events and updates read models
 
-use crate::error::Result;
-use crate::actions::DeviceTrustLevel;
-use crate::state::{DeviceId, UserId};
 use super::Device;
+use crate::actions::DeviceTrustLevel;
+use crate::error::Result;
+use crate::state::{DeviceId, UserId};
 
 /// Device repository (query-only).
 ///

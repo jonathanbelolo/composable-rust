@@ -248,7 +248,8 @@ impl EventMetadata {
     ///
     /// Returns error if JSON deserialization fails.
     pub fn from_json(value: &serde_json::Value) -> Result<Self, String> {
-        serde_json::from_value(value.clone()).map_err(|e| format!("Failed to deserialize metadata: {e}"))
+        serde_json::from_value(value.clone())
+            .map_err(|e| format!("Failed to deserialize metadata: {e}"))
     }
 }
 
@@ -489,7 +490,10 @@ mod tests {
         assert_eq!(SerializedEvent::extract_version("OrderPlaced.v1"), 1);
         assert_eq!(SerializedEvent::extract_version("OrderPlaced.v2"), 2);
         assert_eq!(SerializedEvent::extract_version("OrderPlaced.v10"), 10);
-        assert_eq!(SerializedEvent::extract_version("PaymentProcessed.v123"), 123);
+        assert_eq!(
+            SerializedEvent::extract_version("PaymentProcessed.v123"),
+            123
+        );
 
         // Test without version suffix (backward compatibility)
         assert_eq!(SerializedEvent::extract_version("OrderPlaced"), 1);

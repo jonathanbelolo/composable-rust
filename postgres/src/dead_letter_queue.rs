@@ -174,7 +174,12 @@ impl DeadLetterQueue {
         .bind(&event.event_type)
         .bind(event.event_version)
         .bind(&event.data)
-        .bind(event.metadata.as_ref().map(composable_rust_core::event::EventMetadata::to_json))
+        .bind(
+            event
+                .metadata
+                .as_ref()
+                .map(composable_rust_core::event::EventMetadata::to_json),
+        )
         .bind(original_timestamp)
         .bind(error_message)
         .bind(error_details)
@@ -248,9 +253,7 @@ impl DeadLetterQueue {
         .await
         .map_err(|e| EventStoreError::DatabaseError(e.to_string()))?;
 
-        rows.iter()
-            .map(Self::row_to_failed_event)
-            .collect()
+        rows.iter().map(Self::row_to_failed_event).collect()
     }
 
     /// Get a specific failed event by ID.
@@ -283,11 +286,7 @@ impl DeadLetterQueue {
     /// # Errors
     ///
     /// Returns [`EventStoreError::DatabaseError`] if the update fails.
-    pub async fn update_status(
-        &self,
-        id: i64,
-        status: DLQStatus,
-    ) -> Result<(), EventStoreError> {
+    pub async fn update_status(&self, id: i64, status: DLQStatus) -> Result<(), EventStoreError> {
         sqlx::query(
             r"
             UPDATE failed_events
@@ -301,7 +300,11 @@ impl DeadLetterQueue {
         .await
         .map_err(|e| EventStoreError::DatabaseError(e.to_string()))?;
 
-        tracing::info!(dlq_id = id, status = status.as_str(), "DLQ entry status updated");
+        tracing::info!(
+            dlq_id = id,
+            status = status.as_str(),
+            "DLQ entry status updated"
+        );
 
         Ok(())
     }
@@ -379,7 +382,11 @@ impl DeadLetterQueue {
         .await
         .map_err(|e| EventStoreError::DatabaseError(e.to_string()))?;
 
-        tracing::warn!(dlq_id = id, reason = reason, "DLQ entry marked as discarded");
+        tracing::warn!(
+            dlq_id = id,
+            reason = reason,
+            "DLQ entry marked as discarded"
+        );
 
         metrics::counter!("event_store.dlq.discarded").increment(1);
 
@@ -411,9 +418,8 @@ impl DeadLetterQueue {
     /// Convert a database row to a `FailedEvent`.
     fn row_to_failed_event(row: &sqlx::postgres::PgRow) -> Result<FailedEvent, EventStoreError> {
         let metadata_json: Option<serde_json::Value> = row.get("metadata");
-        let metadata = metadata_json.and_then(|json| {
-            composable_rust_core::event::EventMetadata::from_json(&json).ok()
-        });
+        let metadata = metadata_json
+            .and_then(|json| composable_rust_core::event::EventMetadata::from_json(&json).ok());
 
         let status_str: String = row.get("status");
         let status = DLQStatus::parse(&status_str)?;

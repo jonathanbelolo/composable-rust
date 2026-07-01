@@ -59,7 +59,10 @@ impl EmailProvider for ConsoleEmailProvider {
         println!("╠══════════════════════════════════════════════════════════════╣");
         println!("║                                                              ║");
         println!("║ Click the link below to sign in to your account.            ║");
-        println!("║ This link will expire in {expires_minutes} minutes.{:<23}║", "");
+        println!(
+            "║ This link will expire in {expires_minutes} minutes.{:<23}║",
+            ""
+        );
         println!("║                                                              ║");
         println!("║ Magic Link:                                                  ║");
         println!("║ {magic_link:<61}║");
@@ -93,7 +96,10 @@ impl EmailProvider for ConsoleEmailProvider {
         println!("╠══════════════════════════════════════════════════════════════╣");
         println!("║                                                              ║");
         println!("║ Click the link below to reset your password.                ║");
-        println!("║ This link will expire in {expires_minutes} minutes.{:<23}║", "");
+        println!(
+            "║ This link will expire in {expires_minutes} minutes.{:<23}║",
+            ""
+        );
         println!("║                                                              ║");
         println!("║ Reset Link:                                                  ║");
         println!("║ {reset_link:<61}║");

@@ -146,12 +146,21 @@ pub struct AuditEvent {
 impl AuditEvent {
     /// Create a new audit event
     #[must_use]
-    pub fn new(event_type: AuditEventType, actor: impl Into<String>, action: impl Into<String>, success: bool) -> Self {
+    pub fn new(
+        event_type: AuditEventType,
+        actor: impl Into<String>,
+        action: impl Into<String>,
+        success: bool,
+    ) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             timestamp: chrono::Utc::now().to_rfc3339(),
             event_type,
-            severity: if success { Severity::Info } else { Severity::Error },
+            severity: if success {
+                Severity::Info
+            } else {
+                Severity::Error
+            },
             actor: actor.into(),
             action: action.into(),
             resource: None,
@@ -167,19 +176,32 @@ impl AuditEvent {
 
     /// Create an authentication event
     #[must_use]
-    pub fn authentication(actor: impl Into<String>, action: impl Into<String>, success: bool) -> Self {
+    pub fn authentication(
+        actor: impl Into<String>,
+        action: impl Into<String>,
+        success: bool,
+    ) -> Self {
         Self::new(AuditEventType::Authentication, actor, action, success)
     }
 
     /// Create an authorization event
     #[must_use]
-    pub fn authorization(actor: impl Into<String>, action: impl Into<String>, success: bool) -> Self {
+    pub fn authorization(
+        actor: impl Into<String>,
+        action: impl Into<String>,
+        success: bool,
+    ) -> Self {
         Self::new(AuditEventType::Authorization, actor, action, success)
     }
 
     /// Create a data access event
     #[must_use]
-    pub fn data_access(actor: impl Into<String>, action: impl Into<String>, resource: impl Into<String>, success: bool) -> Self {
+    pub fn data_access(
+        actor: impl Into<String>,
+        action: impl Into<String>,
+        resource: impl Into<String>,
+        success: bool,
+    ) -> Self {
         let mut event = Self::new(AuditEventType::DataAccess, actor, action, success);
         event.resource = Some(resource.into());
         event
@@ -187,7 +209,11 @@ impl AuditEvent {
 
     /// Create a configuration change event
     #[must_use]
-    pub fn configuration(actor: impl Into<String>, action: impl Into<String>, resource: impl Into<String>) -> Self {
+    pub fn configuration(
+        actor: impl Into<String>,
+        action: impl Into<String>,
+        resource: impl Into<String>,
+    ) -> Self {
         let mut event = Self::new(AuditEventType::Configuration, actor, action, true);
         event.resource = Some(resource.into());
         event.severity = Severity::Warning; // Config changes are notable
@@ -196,7 +222,11 @@ impl AuditEvent {
 
     /// Create a security event
     #[must_use]
-    pub fn security(actor: impl Into<String>, action: impl Into<String>, severity: Severity) -> Self {
+    pub fn security(
+        actor: impl Into<String>,
+        action: impl Into<String>,
+        severity: Severity,
+    ) -> Self {
         let mut event = Self::new(AuditEventType::Security, actor, action, false);
         event.severity = severity;
         event
@@ -204,7 +234,11 @@ impl AuditEvent {
 
     /// Create an LLM interaction event
     #[must_use]
-    pub fn llm_interaction(actor: impl Into<String>, action: impl Into<String>, success: bool) -> Self {
+    pub fn llm_interaction(
+        actor: impl Into<String>,
+        action: impl Into<String>,
+        success: bool,
+    ) -> Self {
         Self::new(AuditEventType::LlmInteraction, actor, action, success)
     }
 
@@ -419,21 +453,30 @@ pub trait AuditLogger: Send + Sync {
     /// # Errors
     ///
     /// Returns error if logging fails
-    fn log(&self, event: AuditEvent) -> impl std::future::Future<Output = Result<(), AuditError>> + Send;
+    fn log(
+        &self,
+        event: AuditEvent,
+    ) -> impl std::future::Future<Output = Result<(), AuditError>> + Send;
 
     /// Query audit events
     ///
     /// # Errors
     ///
     /// Returns error if query fails
-    fn query(&self, filter: AuditEventFilter) -> impl std::future::Future<Output = Result<Vec<AuditEvent>, AuditError>> + Send;
+    fn query(
+        &self,
+        filter: AuditEventFilter,
+    ) -> impl std::future::Future<Output = Result<Vec<AuditEvent>, AuditError>> + Send;
 
     /// Get event by ID
     ///
     /// # Errors
     ///
     /// Returns error if query fails
-    fn get_by_id(&self, id: &str) -> impl std::future::Future<Output = Result<Option<AuditEvent>, AuditError>> + Send;
+    fn get_by_id(
+        &self,
+        id: &str,
+    ) -> impl std::future::Future<Output = Result<Option<AuditEvent>, AuditError>> + Send;
 }
 
 /// Audit error
@@ -600,16 +643,16 @@ impl PostgresAuditLogger {
             .await
             .map_err(|e| AuditError::QueryError(format!("Failed to count audit events: {e}")))?;
 
-        usize::try_from(row.0)
-            .map_err(|e| AuditError::QueryError(format!("Count overflow: {e}")))
+        usize::try_from(row.0).map_err(|e| AuditError::QueryError(format!("Count overflow: {e}")))
     }
 }
 
 #[cfg(feature = "audit-postgres")]
 impl AuditLogger for PostgresAuditLogger {
     async fn log(&self, event: AuditEvent) -> Result<(), AuditError> {
-        let metadata_json = serde_json::to_value(&event.metadata)
-            .map_err(|e| AuditError::SerializationError(format!("Failed to serialize metadata: {e}")))?;
+        let metadata_json = serde_json::to_value(&event.metadata).map_err(|e| {
+            AuditError::SerializationError(format!("Failed to serialize metadata: {e}"))
+        })?;
 
         // Parse RFC3339 timestamp string to DateTime<Utc>
         let timestamp = chrono::DateTime::parse_from_rfc3339(&event.timestamp)
@@ -624,7 +667,7 @@ impl AuditLogger for PostgresAuditLogger {
                 session_id, request_id, metadata, timestamp
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-            "
+            ",
         )
         .bind(&event.id)
         .bind(event.event_type.to_string())
@@ -746,7 +789,12 @@ impl AuditEventRow {
             "configuration" => AuditEventType::Configuration,
             "security" => AuditEventType::Security,
             "llm_interaction" => AuditEventType::LlmInteraction,
-            _ => return Err(AuditError::QueryError(format!("Unknown event type: {}", self.event_type))),
+            _ => {
+                return Err(AuditError::QueryError(format!(
+                    "Unknown event type: {}",
+                    self.event_type
+                )));
+            },
         };
 
         let severity = match self.severity.as_str() {
@@ -754,7 +802,12 @@ impl AuditEventRow {
             "warning" => Severity::Warning,
             "error" => Severity::Error,
             "critical" => Severity::Critical,
-            _ => return Err(AuditError::QueryError(format!("Unknown severity: {}", self.severity))),
+            _ => {
+                return Err(AuditError::QueryError(format!(
+                    "Unknown severity: {}",
+                    self.severity
+                )));
+            },
         };
 
         let metadata: HashMap<String, String> = serde_json::from_value(self.metadata)
@@ -805,7 +858,10 @@ mod tests {
         assert_eq!(event.source_ip, Some("192.168.1.100".to_string()));
         assert_eq!(event.user_agent, Some("Mozilla/5.0".to_string()));
         assert_eq!(event.session_id, Some("session_abc".to_string()));
-        assert_eq!(event.metadata.get("document_size"), Some(&"1024".to_string()));
+        assert_eq!(
+            event.metadata.get("document_size"),
+            Some(&"1024".to_string())
+        );
     }
 
     #[test]
@@ -852,24 +908,46 @@ mod tests {
     async fn test_audit_query_by_event_type() {
         let logger = InMemoryAuditLogger::new();
 
-        logger.log(AuditEvent::authentication("user1", "login", true)).await.unwrap();
-        logger.log(AuditEvent::authorization("user2", "check_permission", true)).await.unwrap();
-        logger.log(AuditEvent::authentication("user3", "logout", true)).await.unwrap();
+        logger
+            .log(AuditEvent::authentication("user1", "login", true))
+            .await
+            .unwrap();
+        logger
+            .log(AuditEvent::authorization("user2", "check_permission", true))
+            .await
+            .unwrap();
+        logger
+            .log(AuditEvent::authentication("user3", "logout", true))
+            .await
+            .unwrap();
 
         let filter = AuditEventFilter::new().event_type(AuditEventType::Authentication);
         let results = logger.query(filter).await.unwrap();
 
         assert_eq!(results.len(), 2);
-        assert!(results.iter().all(|e| e.event_type == AuditEventType::Authentication));
+        assert!(
+            results
+                .iter()
+                .all(|e| e.event_type == AuditEventType::Authentication)
+        );
     }
 
     #[tokio::test]
     async fn test_audit_query_by_actor() {
         let logger = InMemoryAuditLogger::new();
 
-        logger.log(AuditEvent::authentication("user1", "login", true)).await.unwrap();
-        logger.log(AuditEvent::authentication("user2", "login", true)).await.unwrap();
-        logger.log(AuditEvent::authentication("user1", "logout", true)).await.unwrap();
+        logger
+            .log(AuditEvent::authentication("user1", "login", true))
+            .await
+            .unwrap();
+        logger
+            .log(AuditEvent::authentication("user2", "login", true))
+            .await
+            .unwrap();
+        logger
+            .log(AuditEvent::authentication("user1", "logout", true))
+            .await
+            .unwrap();
 
         let filter = AuditEventFilter::new().actor("user1".to_string());
         let results = logger.query(filter).await.unwrap();
@@ -882,9 +960,18 @@ mod tests {
     async fn test_audit_query_by_success() {
         let logger = InMemoryAuditLogger::new();
 
-        logger.log(AuditEvent::authentication("user1", "login", true)).await.unwrap();
-        logger.log(AuditEvent::authentication("user2", "login", false)).await.unwrap();
-        logger.log(AuditEvent::authentication("user3", "login", false)).await.unwrap();
+        logger
+            .log(AuditEvent::authentication("user1", "login", true))
+            .await
+            .unwrap();
+        logger
+            .log(AuditEvent::authentication("user2", "login", false))
+            .await
+            .unwrap();
+        logger
+            .log(AuditEvent::authentication("user3", "login", false))
+            .await
+            .unwrap();
 
         let filter = AuditEventFilter::new().success(false);
         let results = logger.query(filter).await.unwrap();
@@ -897,9 +984,26 @@ mod tests {
     async fn test_audit_query_by_severity() {
         let logger = InMemoryAuditLogger::new();
 
-        logger.log(AuditEvent::authentication("user1", "login", true)).await.unwrap(); // Info
-        logger.log(AuditEvent::security("user2", "brute_force", Severity::Warning)).await.unwrap();
-        logger.log(AuditEvent::security("user3", "data_breach", Severity::Critical)).await.unwrap();
+        logger
+            .log(AuditEvent::authentication("user1", "login", true))
+            .await
+            .unwrap(); // Info
+        logger
+            .log(AuditEvent::security(
+                "user2",
+                "brute_force",
+                Severity::Warning,
+            ))
+            .await
+            .unwrap();
+        logger
+            .log(AuditEvent::security(
+                "user3",
+                "data_breach",
+                Severity::Critical,
+            ))
+            .await
+            .unwrap();
 
         let filter = AuditEventFilter::new().min_severity(Severity::Warning);
         let results = logger.query(filter).await.unwrap();
@@ -913,7 +1017,14 @@ mod tests {
         let logger = InMemoryAuditLogger::new();
 
         for i in 0..10 {
-            logger.log(AuditEvent::authentication(format!("user{i}"), "login", true)).await.unwrap();
+            logger
+                .log(AuditEvent::authentication(
+                    format!("user{i}"),
+                    "login",
+                    true,
+                ))
+                .await
+                .unwrap();
         }
 
         let filter = AuditEventFilter::new().limit(5);
@@ -941,8 +1052,8 @@ mod tests {
 
     #[test]
     fn test_filter_matches() {
-        let event = AuditEvent::authentication("user1", "login", true)
-            .with_severity(Severity::Info);
+        let event =
+            AuditEvent::authentication("user1", "login", true).with_severity(Severity::Info);
 
         let filter = AuditEventFilter::new()
             .event_type(AuditEventType::Authentication)

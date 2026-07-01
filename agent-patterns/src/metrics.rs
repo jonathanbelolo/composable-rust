@@ -26,8 +26,9 @@
 //! ```
 
 use prometheus::{
+    CounterVec, HistogramOpts, HistogramVec, Registry, TextEncoder,
     core::{AtomicU64, GenericGauge},
-    opts, CounterVec, HistogramOpts, HistogramVec, Registry, TextEncoder,
+    opts,
 };
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
@@ -35,7 +36,8 @@ use std::time::Duration;
 /// Global metrics registry (singleton)
 ///
 /// Initialized once on first access, uses default Prometheus registry.
-pub static AGENT_METRICS: LazyLock<AgentMetricsRegistry> = LazyLock::new(AgentMetricsRegistry::default);
+pub static AGENT_METRICS: LazyLock<AgentMetricsRegistry> =
+    LazyLock::new(AgentMetricsRegistry::default);
 
 /// Agent metrics registry for Prometheus
 ///
@@ -114,26 +116,18 @@ impl AgentMetricsRegistry {
         )?;
 
         // Active agents gauge
-        let active_agents = GenericGauge::new(
-            "agent_active_count",
-            "Number of currently executing agents",
-        )?;
+        let active_agents =
+            GenericGauge::new("agent_active_count", "Number of currently executing agents")?;
 
         // Agent errors counter
         let agent_errors = CounterVec::new(
-            opts!(
-                "agent_errors_total",
-                "Total number of agent errors"
-            ),
+            opts!("agent_errors_total", "Total number of agent errors"),
             &["error_type"],
         )?;
 
         // LLM token usage counter
         let llm_tokens = CounterVec::new(
-            opts!(
-                "agent_llm_tokens_total",
-                "Total number of LLM tokens used"
-            ),
+            opts!("agent_llm_tokens_total", "Total number of LLM tokens used"),
             &["model", "token_type"],
         )?;
 
@@ -187,9 +181,7 @@ impl AgentMetricsRegistry {
     ///
     /// * `pattern_name` - Name of the pattern (e.g., "routing", "orchestrator")
     pub fn record_pattern_usage(&self, pattern_name: &str) {
-        self.pattern_usage
-            .with_label_values(&[pattern_name])
-            .inc();
+        self.pattern_usage.with_label_values(&[pattern_name]).inc();
     }
 
     /// Increment active agents count

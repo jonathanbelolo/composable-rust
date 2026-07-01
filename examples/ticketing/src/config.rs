@@ -147,8 +147,9 @@ impl Config {
     pub fn from_env() -> Self {
         Self {
             postgres: PostgresConfig {
-                url: env::var("DATABASE_URL")
-                    .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/ticketing_events".to_string()),
+                url: env::var("DATABASE_URL").unwrap_or_else(|_| {
+                    "postgres://postgres:postgres@localhost:5432/ticketing_events".to_string()
+                }),
                 max_connections: env::var("DATABASE_MAX_CONNECTIONS")
                     .ok()
                     .and_then(|s| s.parse().ok())
@@ -169,8 +170,7 @@ impl Config {
                     .ok()
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(600),
-                ssl_mode: env::var("DATABASE_SSL_MODE")
-                    .unwrap_or_else(|_| "prefer".to_string()),
+                ssl_mode: env::var("DATABASE_SSL_MODE").unwrap_or_else(|_| "prefer".to_string()),
                 ssl_root_cert: env::var("DATABASE_SSL_ROOT_CERT").ok(),
             },
             redpanda: RedpandaConfig {
@@ -212,16 +212,13 @@ impl Config {
                     .unwrap_or(5000),
             },
             server: ServerConfig {
-                host: env::var("HOST")
-                    .unwrap_or_else(|_| "0.0.0.0".to_string()),
+                host: env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
                 port: env::var("PORT")
                     .ok()
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(8080),
-                log_level: env::var("RUST_LOG")
-                    .unwrap_or_else(|_| "info".to_string()),
-                metrics_host: env::var("METRICS_HOST")
-                    .unwrap_or_else(|_| "0.0.0.0".to_string()),
+                log_level: env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()),
+                metrics_host: env::var("METRICS_HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
                 metrics_port: env::var("METRICS_PORT")
                     .ok()
                     .and_then(|s| s.parse().ok())
@@ -232,8 +229,7 @@ impl Config {
                     .unwrap_or(30),
             },
             redis: RedisConfig {
-                url: env::var("REDIS_URL")
-                    .unwrap_or_else(|_| "redis://localhost:6379".to_string()),
+                url: env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string()),
                 max_connections: env::var("REDIS_MAX_CONNECTIONS")
                     .ok()
                     .and_then(|s| s.parse().ok())
@@ -277,7 +273,7 @@ impl Config {
     }
 
     /// Get all event topics
-    #[must_use] 
+    #[must_use]
     pub fn all_topics(&self) -> Vec<&str> {
         vec![
             &self.redpanda.inventory_topic,

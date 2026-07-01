@@ -23,15 +23,15 @@ mod types;
 use types::AgentState;
 
 use composable_rust_agent_patterns::{
-    audit::PostgresAuditLogger,
-    health::{HealthCheckable, SystemHealthCheck, HealthStatus},
     AgentMetrics,
+    audit::PostgresAuditLogger,
+    health::{HealthCheckable, HealthStatus, SystemHealthCheck},
     security::SecurityMonitor,
     shutdown::ShutdownCoordinator,
 };
 use composable_rust_postgres::PostgresEventStore;
-use composable_rust_redpanda::RedpandaEventBus;
 use composable_rust_projections::PostgresProjectionStore;
+use composable_rust_redpanda::RedpandaEventBus;
 use environment::ProductionEnvironment;
 use metrics_exporter_prometheus::PrometheusBuilder;
 use reducer::ProductionAgentReducer;
@@ -80,10 +80,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shutdown = Arc::new(ShutdownCoordinator::new(Duration::from_secs(30)));
 
     // Get database connection string
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://postgres:password@localhost:5432/composable_auth".to_string());
+    let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+        "postgres://postgres:password@localhost:5432/composable_auth".to_string()
+    });
 
-    info!("🔌 Connecting to PostgreSQL: {}", database_url.split('@').next_back().unwrap_or("unknown"));
+    info!(
+        "🔌 Connecting to PostgreSQL: {}",
+        database_url.split('@').next_back().unwrap_or("unknown")
+    );
 
     // Create database connection pool
     let db_pool = PgPoolOptions::new()
@@ -99,9 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Run database migrations
     info!("🔄 Running database migrations...");
-    sqlx::migrate!("../../migrations")
-        .run(&db_pool)
-        .await?;
+    sqlx::migrate!("../../migrations").run(&db_pool).await?;
     info!("✅ Migrations complete");
 
     // Initialize PostgreSQL audit logger
@@ -117,8 +119,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("✅ Event store initialized");
 
     // Initialize event bus (Redpanda)
-    let redpanda_brokers = std::env::var("REDPANDA_BROKERS")
-        .unwrap_or_else(|_| "localhost:9092".to_string());
+    let redpanda_brokers =
+        std::env::var("REDPANDA_BROKERS").unwrap_or_else(|_| "localhost:9092".to_string());
 
     info!("🔌 Connecting to Redpanda: {}", redpanda_brokers);
     let event_bus: Arc<dyn composable_rust_core::event_bus::EventBus> = Arc::new(
@@ -130,7 +132,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .buffer_size(1000)
             .auto_offset_reset("latest")
             .build()
-            .map_err(|e| format!("Failed to create Redpanda event bus: {e}"))?
+            .map_err(|e| format!("Failed to create Redpanda event bus: {e}"))?,
     );
     info!("✅ Redpanda event bus initialized");
 
@@ -142,7 +144,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("✅ Projection store initialized");
 
     // Create clock for timestamps
-    let clock: Arc<dyn composable_rust_core::environment::Clock> = Arc::new(composable_rust_core::environment::SystemClock);
+    let clock: Arc<dyn composable_rust_core::environment::Clock> =
+        Arc::new(composable_rust_core::environment::SystemClock);
     info!("✅ Clock initialized");
 
     // Create environment (loads Anthropic API key from ANTHROPIC_API_KEY env var)
@@ -157,10 +160,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("✅ Agent environment created with resilience features");
 
     // Create reducer
-    let reducer = ProductionAgentReducer::new(
-        audit_logger.clone(),
-        security_monitor.clone(),
-    );
+    let reducer = ProductionAgentReducer::new(audit_logger.clone(), security_monitor.clone());
     info!("✅ Agent reducer initialized");
 
     // Create initial state
@@ -225,10 +225,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await;
 
     // Start HTTP server
-    let http_port = std::env::var("HTTP_PORT")
-        .unwrap_or_else(|_| "8080".to_string());
-    let bind_addr = std::env::var("BIND_ADDR")
-        .unwrap_or_else(|_| "0.0.0.0".to_string());
+    let http_port = std::env::var("HTTP_PORT").unwrap_or_else(|_| "8080".to_string());
+    let bind_addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0".to_string());
     let addr: SocketAddr = format!("{}:{}", bind_addr, http_port).parse()?;
     info!("🌐 Starting HTTP server on {}", addr);
 
@@ -256,16 +254,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Start metrics server
-    let metrics_port = std::env::var("METRICS_PORT")
-        .unwrap_or_else(|_| "9090".to_string());
+    let metrics_port = std::env::var("METRICS_PORT").unwrap_or_else(|_| "9090".to_string());
     let metrics_addr: SocketAddr = format!("{}:{}", bind_addr, metrics_port).parse()?;
-    info!("📊 Prometheus metrics available at http://{}/metrics", metrics_addr);
+    info!(
+        "📊 Prometheus metrics available at http://{}/metrics",
+        metrics_addr
+    );
 
     let metrics_app = axum::Router::new().route(
         "/metrics",
-        axum::routing::get(|| async move {
-            prometheus_handle.render()
-        }),
+        axum::routing::get(|| async move { prometheus_handle.render() }),
     );
 
     let metrics_listener = tokio::net::TcpListener::bind(metrics_addr).await?;
@@ -287,10 +285,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match signal::ctrl_c().await {
         Ok(()) => {
             info!("🛑 Shutdown signal received, initiating graceful shutdown...");
-        }
+        },
         Err(err) => {
             error!("Unable to listen for shutdown signal: {}", err);
-        }
+        },
     }
 
     // Initiate shutdown (this broadcasts to all subscribers)
@@ -313,24 +311,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let final_snapshot = metrics.snapshot();
     info!("📈 Final metrics:");
     info!("  Total tool calls: {}", final_snapshot.total_tool_calls);
-    info!("  Successful tool calls: {}", final_snapshot.total_successes);
+    info!(
+        "  Successful tool calls: {}",
+        final_snapshot.total_successes
+    );
     info!("  Failed tool calls: {}", final_snapshot.total_failures);
 
     // Display security summary
     let security_dashboard = security_monitor.get_dashboard().await?;
     info!("🔒 Security summary:");
     info!("  Total incidents: {}", security_dashboard.total_incidents);
-    info!("  Active incidents: {}", security_dashboard.active_incidents);
+    info!(
+        "  Active incidents: {}",
+        security_dashboard.active_incidents
+    );
 
     // Display audit summary
     match audit_logger.count().await {
         Ok(count) => {
             info!("📝 Audit summary:");
             info!("  Total events logged: {}", count);
-        }
+        },
         Err(e) => {
             warn!("Failed to get audit count: {}", e);
-        }
+        },
     }
 
     info!("✅ Shutdown complete. Goodbye!");

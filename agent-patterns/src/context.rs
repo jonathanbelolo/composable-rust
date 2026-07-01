@@ -62,7 +62,9 @@ impl ContextWindow {
         use composable_rust_anthropic::ContentBlock;
 
         // Simple heuristic: ~4 characters per token
-        let message_chars: usize = self.messages.iter()
+        let message_chars: usize = self
+            .messages
+            .iter()
             .flat_map(|m| &m.content)
             .map(|c| match c {
                 ContentBlock::Text { text } => text.len(),

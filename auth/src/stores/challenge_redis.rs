@@ -57,9 +57,8 @@ impl RedisChallengeStore {
     ///
     /// Returns error if connection to `Redis` fails.
     pub async fn new(redis_url: &str) -> Result<Self> {
-        let client = Client::open(redis_url).map_err(|e| {
-            AuthError::InternalError(format!("Failed to create Redis client: {e}"))
-        })?;
+        let client = Client::open(redis_url)
+            .map_err(|e| AuthError::InternalError(format!("Failed to create Redis client: {e}")))?;
 
         let conn_manager = ConnectionManager::new(client).await.map_err(|e| {
             AuthError::InternalError(format!("Failed to create Redis connection manager: {e}"))
@@ -171,11 +170,11 @@ impl ChallengeStore for RedisChallengeStore {
                 );
 
                 Ok(Some(challenge_data))
-            }
+            },
             None => {
                 // Challenge not found (already consumed, expired, or never existed)
                 Ok(None)
-            }
+            },
         }
     }
 

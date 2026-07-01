@@ -10,15 +10,32 @@ use composable_rust_core::agent::{AgentAction, AgentConfig, AgentEnvironment};
 use composable_rust_core::effect::Effect;
 use composable_rust_core::reducer::Reducer;
 
-struct DemoEnvironment { config: AgentConfig }
+struct DemoEnvironment {
+    config: AgentConfig,
+}
 
 impl AgentEnvironment for DemoEnvironment {
-    fn tools(&self) -> &[Tool] { &[] }
-    fn config(&self) -> &AgentConfig { &self.config }
-    fn call_claude(&self, _: composable_rust_anthropic::MessagesRequest) -> Effect<AgentAction> { Effect::None }
-    fn call_claude_streaming(&self, _: composable_rust_anthropic::MessagesRequest) -> Effect<AgentAction> { Effect::None }
-    fn execute_tool(&self, _: String, _: String, _: String) -> Effect<AgentAction> { Effect::None }
-    fn execute_tool_streaming(&self, _: String, _: String, _: String) -> Effect<AgentAction> { Effect::None }
+    fn tools(&self) -> &[Tool] {
+        &[]
+    }
+    fn config(&self) -> &AgentConfig {
+        &self.config
+    }
+    fn call_claude(&self, _: composable_rust_anthropic::MessagesRequest) -> Effect<AgentAction> {
+        Effect::None
+    }
+    fn call_claude_streaming(
+        &self,
+        _: composable_rust_anthropic::MessagesRequest,
+    ) -> Effect<AgentAction> {
+        Effect::None
+    }
+    fn execute_tool(&self, _: String, _: String, _: String) -> Effect<AgentAction> {
+        Effect::None
+    }
+    fn execute_tool_streaming(&self, _: String, _: String, _: String) -> Effect<AgentAction> {
+        Effect::None
+    }
 }
 
 fn main() {
@@ -47,14 +64,20 @@ fn main() {
 
     let reducer = AggregationReducer::new();
     let mut state = AggregationState::new();
-    let env = DemoEnvironment { config: AgentConfig::default() };
+    let env = DemoEnvironment {
+        config: AgentConfig::default(),
+    };
 
     println!("📰 Querying {} sources in parallel...\n", sources.len());
 
     // Start aggregation
-    let effects = reducer.reduce(&mut state, AggregationAction::Start {
-        sources: sources.clone()
-    }, &env);
+    let effects = reducer.reduce(
+        &mut state,
+        AggregationAction::Start {
+            sources: sources.clone(),
+        },
+        &env,
+    );
 
     println!("✅ Queries dispatched: {} effects", effects.len());
     println!("   Sources: {}", state.source_count());
@@ -63,34 +86,69 @@ fn main() {
     // Simulate source responses
     println!("\n📥 Receiving responses:");
 
-    reducer.reduce(&mut state, AggregationAction::SourceResponse {
-        source_id: "tech_news".to_string(),
-        response: Ok("OpenAI releases GPT-5, Google announces Gemini 2.0...".to_string()),
-    }, &env);
+    reducer.reduce(
+        &mut state,
+        AggregationAction::SourceResponse {
+            source_id: "tech_news".to_string(),
+            response: Ok("OpenAI releases GPT-5, Google announces Gemini 2.0...".to_string()),
+        },
+        &env,
+    );
     println!("   ✅ tech_news: Success");
-    println!("      Collected: {}/{}", state.response_count(), state.source_count());
+    println!(
+        "      Collected: {}/{}",
+        state.response_count(),
+        state.source_count()
+    );
 
-    reducer.reduce(&mut state, AggregationAction::SourceResponse {
-        source_id: "research_papers".to_string(),
-        response: Ok("New transformer architecture achieves SOTA on benchmarks...".to_string()),
-    }, &env);
+    reducer.reduce(
+        &mut state,
+        AggregationAction::SourceResponse {
+            source_id: "research_papers".to_string(),
+            response: Ok("New transformer architecture achieves SOTA on benchmarks...".to_string()),
+        },
+        &env,
+    );
     println!("   ✅ research_papers: Success");
-    println!("      Collected: {}/{}", state.response_count(), state.source_count());
+    println!(
+        "      Collected: {}/{}",
+        state.response_count(),
+        state.source_count()
+    );
 
-    reducer.reduce(&mut state, AggregationAction::SourceResponse {
-        source_id: "industry_reports".to_string(),
-        response: Err("API rate limit exceeded".to_string()),
-    }, &env);
+    reducer.reduce(
+        &mut state,
+        AggregationAction::SourceResponse {
+            source_id: "industry_reports".to_string(),
+            response: Err("API rate limit exceeded".to_string()),
+        },
+        &env,
+    );
     println!("   ❌ industry_reports: Failed (rate limit)");
-    println!("      Collected: {}/{}", state.response_count(), state.source_count());
+    println!(
+        "      Collected: {}/{}",
+        state.response_count(),
+        state.source_count()
+    );
 
-    let _effects = reducer.reduce(&mut state, AggregationAction::SourceResponse {
-        source_id: "social_media".to_string(),
-        response: Ok("Community excited about multimodal capabilities...".to_string()),
-    }, &env);
+    let _effects = reducer.reduce(
+        &mut state,
+        AggregationAction::SourceResponse {
+            source_id: "social_media".to_string(),
+            response: Ok("Community excited about multimodal capabilities...".to_string()),
+        },
+        &env,
+    );
     println!("   ✅ social_media: Success");
-    println!("      Collected: {}/{}",state.response_count(), state.source_count());
-    println!("      All responses collected: {}", state.all_responses_collected());
+    println!(
+        "      Collected: {}/{}",
+        state.response_count(),
+        state.source_count()
+    );
+    println!(
+        "      All responses collected: {}",
+        state.all_responses_collected()
+    );
 
     // Synthesize
     if state.all_responses_collected() {

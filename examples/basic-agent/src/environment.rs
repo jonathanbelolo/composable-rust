@@ -5,9 +5,7 @@
 
 use composable_rust_anthropic::AnthropicClient;
 use composable_rust_core::{
-    agent::{
-        AgentAction, AgentConfig, AgentEnvironment, MessagesRequest, Tool, ToolExecutorFn,
-    },
+    agent::{AgentAction, AgentConfig, AgentEnvironment, MessagesRequest, Tool, ToolExecutorFn},
     effect::Effect,
 };
 use std::collections::HashMap;
@@ -160,7 +158,10 @@ impl AgentEnvironment for ProductionAgentEnvironment {
                 }),
             };
 
-            Some(AgentAction::ToolResult { tool_use_id, result })
+            Some(AgentAction::ToolResult {
+                tool_use_id,
+                result,
+            })
         }))
     }
 
@@ -184,7 +185,10 @@ impl AgentEnvironment for ProductionAgentEnvironment {
             };
 
             // Return complete result directly (not streaming)
-            Some(AgentAction::ToolComplete { tool_use_id, result })
+            Some(AgentAction::ToolComplete {
+                tool_use_id,
+                result,
+            })
         }))
     }
 }

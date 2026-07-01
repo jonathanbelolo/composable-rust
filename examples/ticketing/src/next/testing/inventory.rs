@@ -9,7 +9,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use composable_rust_next::{FetchResult, ProjectionError, ProjectionQueries, Projector, QueryFetcher, SerializedEvent};
+use composable_rust_next::{
+    FetchResult, ProjectionError, ProjectionQueries, Projector, QueryFetcher, SerializedEvent,
+};
 use tokio::sync::RwLock;
 
 use crate::next::inventory::{
@@ -84,12 +86,14 @@ impl InMemoryInventoryProjections {
     /// Returns `None` if inventory hasn't been initialized.
     pub async fn get_inventory(&self, event_id: EventId, section: &str) -> Option<InventoryDto> {
         let inventories = self.inventories.read().await;
-        inventories.get(&(event_id, section.to_string())).map(|data| InventoryDto {
-            initialized: true,
-            capacity: data.total_capacity,
-            available_count: data.available_seats.len() as u32,
-            available_seats: data.available_seats.clone(),
-        })
+        inventories
+            .get(&(event_id, section.to_string()))
+            .map(|data| InventoryDto {
+                initialized: true,
+                capacity: data.total_capacity,
+                available_count: data.available_seats.len() as u32,
+                available_seats: data.available_seats.clone(),
+            })
     }
 
     /// Get reservation DTO for validation.
@@ -102,10 +106,13 @@ impl InMemoryInventoryProjections {
         let inventories = self.inventories.read().await;
         let inventory = inventories.get(&(lookup.event_id, lookup.section.clone()))?;
 
-        inventory.reserved_seats.get(&reservation_id).map(|data| ReservationDto {
-            seats: data.seats.clone(),
-            expires_at: data.expires_at,
-        })
+        inventory
+            .reserved_seats
+            .get(&reservation_id)
+            .map(|data| ReservationDto {
+                seats: data.seats.clone(),
+                expires_at: data.expires_at,
+            })
     }
 
     /// Get section availability DTO.
@@ -115,17 +122,23 @@ impl InMemoryInventoryProjections {
         section: &str,
     ) -> Option<SectionAvailabilityDto> {
         let inventories = self.inventories.read().await;
-        inventories.get(&(event_id, section.to_string())).map(|data| {
-            let reserved: u32 = data.reserved_seats.values().map(|r| r.seats.len() as u32).sum();
-            SectionAvailabilityDto {
-                event_id: data.event_id,
-                section: data.section.clone(),
-                total_capacity: data.total_capacity,
-                available_seats: data.available_seats.len() as u32,
-                reserved_seats: reserved,
-                sold_seats: data.sold_seats.len() as u32,
-            }
-        })
+        inventories
+            .get(&(event_id, section.to_string()))
+            .map(|data| {
+                let reserved: u32 = data
+                    .reserved_seats
+                    .values()
+                    .map(|r| r.seats.len() as u32)
+                    .sum();
+                SectionAvailabilityDto {
+                    event_id: data.event_id,
+                    section: data.section.clone(),
+                    total_capacity: data.total_capacity,
+                    available_seats: data.available_seats.len() as u32,
+                    reserved_seats: reserved,
+                    sold_seats: data.sold_seats.len() as u32,
+                }
+            })
     }
 
     /// Get availability for all sections of an event.
@@ -135,7 +148,11 @@ impl InMemoryInventoryProjections {
             .iter()
             .filter(|((eid, _), _)| *eid == event_id)
             .map(|(_, data)| {
-                let reserved: u32 = data.reserved_seats.values().map(|r| r.seats.len() as u32).sum();
+                let reserved: u32 = data
+                    .reserved_seats
+                    .values()
+                    .map(|r| r.seats.len() as u32)
+                    .sum();
                 SectionAvailabilityDto {
                     event_id: data.event_id,
                     section: data.section.clone(),
@@ -215,10 +232,7 @@ impl InMemoryInventoryProjections {
     }
 
     /// Confirm a reservation (seats become sold).
-    pub(crate) async fn confirm_reservation(
-        &self,
-        reservation_id: ReservationId,
-    ) {
+    pub(crate) async fn confirm_reservation(&self, reservation_id: ReservationId) {
         // Look up the reservation
         let reservations = self.reservations.read().await;
         let Some(lookup) = reservations.get(&reservation_id).cloned() else {
@@ -313,8 +327,8 @@ impl Projector for InMemoryInventoryProjector {
                     continue;
                 }
 
-                let inventory_event: InventoryEvent =
-                    bincode::deserialize(&event.payload).map_err(|e| {
+                let inventory_event: InventoryEvent = bincode::deserialize(&event.payload)
+                    .map_err(|e| {
                         ProjectionError::Deserialization(format!(
                             "failed to deserialize inventory event: {e}"
                         ))
@@ -328,8 +342,10 @@ impl Projector for InMemoryInventoryProjector {
                         seats,
                         ..
                     } => {
-                        projections.initialize(event_id, section, capacity, seats).await;
-                    }
+                        projections
+                            .initialize(event_id, section, capacity, seats)
+                            .await;
+                    },
 
                     InventoryEvent::SeatsReserved {
                         reservation_id,
@@ -342,15 +358,15 @@ impl Projector for InMemoryInventoryProjector {
                         projections
                             .reserve_seats(reservation_id, event_id, section, seats, expires_at)
                             .await;
-                    }
+                    },
 
                     InventoryEvent::SeatsConfirmed { reservation_id, .. } => {
                         projections.confirm_reservation(reservation_id).await;
-                    }
+                    },
 
                     InventoryEvent::SeatsReleased { reservation_id, .. } => {
                         projections.release_reservation(reservation_id).await;
-                    }
+                    },
                 }
             }
 
@@ -409,7 +425,7 @@ impl<PQ: ProjectionQueries> QueryFetcher<InventoryCommand, PQ> for InMemoryInven
                         capacity,
                         fetched,
                     }
-                }
+                },
 
                 InventoryCommand::Reserve {
                     reservation_id,
@@ -428,7 +444,7 @@ impl<PQ: ProjectionQueries> QueryFetcher<InventoryCommand, PQ> for InMemoryInven
                         expires_at,
                         fetched,
                     }
-                }
+                },
 
                 InventoryCommand::Confirm {
                     reservation_id,
@@ -441,7 +457,7 @@ impl<PQ: ProjectionQueries> QueryFetcher<InventoryCommand, PQ> for InMemoryInven
                         customer_id,
                         fetched,
                     }
-                }
+                },
 
                 InventoryCommand::Release {
                     reservation_id,
@@ -454,7 +470,7 @@ impl<PQ: ProjectionQueries> QueryFetcher<InventoryCommand, PQ> for InMemoryInven
                         reason,
                         fetched,
                     }
-                }
+                },
 
                 // ═══════════════════════════════════════════════════════════
                 // Query Commands - need read data
@@ -464,23 +480,31 @@ impl<PQ: ProjectionQueries> QueryFetcher<InventoryCommand, PQ> for InMemoryInven
                     section,
                     fetched: _,
                 } => {
-                    let fetched = projections.get_section_availability(event_id, &section).await;
+                    let fetched = projections
+                        .get_section_availability(event_id, &section)
+                        .await;
                     InventoryCommand::GetSectionAvailability {
                         event_id,
                         section,
                         fetched,
                     }
-                }
+                },
 
-                InventoryCommand::GetEventAvailability { event_id, fetched: _ } => {
+                InventoryCommand::GetEventAvailability {
+                    event_id,
+                    fetched: _,
+                } => {
                     let fetched = projections.get_event_availability(event_id).await;
                     InventoryCommand::GetEventAvailability { event_id, fetched }
-                }
+                },
 
-                InventoryCommand::GetTotalAvailable { event_id, fetched: _ } => {
+                InventoryCommand::GetTotalAvailable {
+                    event_id,
+                    fetched: _,
+                } => {
                     let fetched = projections.get_total_available(event_id).await;
                     InventoryCommand::GetTotalAvailable { event_id, fetched }
-                }
+                },
             };
 
             Ok(FetchResult::new_entity(prepared))
@@ -493,9 +517,9 @@ impl<PQ: ProjectionQueries> QueryFetcher<InventoryCommand, PQ> for InMemoryInven
 // ═══════════════════════════════════════════════════════════════════════════
 
 use composable_rust_next::{
-    testing::{InMemoryEventBus, InMemoryEventStore},
-    Clock, Handler, HandlerEnvironment, HandlerError, HandleResult, MetadataContext,
+    Clock, HandleResult, Handler, HandlerEnvironment, HandlerError, MetadataContext,
     NoOpCallExecutor,
+    testing::{InMemoryEventBus, InMemoryEventStore},
 };
 
 use crate::next::inventory::{InventoryBusinessLogic, InventoryError, InventoryResponse};
@@ -646,8 +670,7 @@ impl InventoryTestHarness {
     pub async fn handle(
         &self,
         command: InventoryCommand,
-    ) -> Result<HandleResult<InventoryResponse>, HandlerError<InventoryError>>
-    {
+    ) -> Result<HandleResult<InventoryResponse>, HandlerError<InventoryError>> {
         self.handler.handle(command).await
     }
 
@@ -858,7 +881,7 @@ mod tests {
                 let dto = fetched.expect("fetched should be populated");
                 assert!(dto.initialized);
                 assert_eq!(dto.available_count, 10);
-            }
+            },
             _ => panic!("Expected Reserve command"),
         }
     }
@@ -867,8 +890,8 @@ mod tests {
     // Handler Integration Tests (Level 2)
     // ═══════════════════════════════════════════════════════════════════════
 
-    use crate::types::Capacity;
     use crate::next::inventory::ReleaseReason;
+    use crate::types::Capacity;
 
     #[tokio::test]
     async fn harness_initialize_and_reserve_full_flow() {
@@ -943,7 +966,7 @@ mod tests {
         assert!(result.is_err());
         // The error should be NotInitialized
         match result {
-            Err(HandlerError::Business(InventoryError::NotInitialized)) => {}
+            Err(HandlerError::Business(InventoryError::NotInitialized)) => {},
             other => panic!("Expected NotInitialized error, got: {other:?}"),
         }
     }
@@ -978,10 +1001,13 @@ mod tests {
 
         assert!(result.is_err());
         match result {
-            Err(HandlerError::Business(InventoryError::InsufficientInventory { requested, available })) => {
+            Err(HandlerError::Business(InventoryError::InsufficientInventory {
+                requested,
+                available,
+            })) => {
                 assert_eq!(requested, 20);
                 assert_eq!(available, 10);
-            }
+            },
             other => panic!("Expected InsufficientInventory error, got: {other:?}"),
         }
     }
@@ -1035,7 +1061,10 @@ mod tests {
         assert!(res_dto.is_none());
 
         // Check availability - seats moved from reserved to sold
-        let availability = harness.get_section_availability(event_id, "VIP").await.unwrap();
+        let availability = harness
+            .get_section_availability(event_id, "VIP")
+            .await
+            .unwrap();
         assert_eq!(availability.available_seats, 95);
         assert_eq!(availability.reserved_seats, 0);
         assert_eq!(availability.sold_seats, 5);
@@ -1146,7 +1175,7 @@ mod tests {
 
         assert!(result.is_err());
         match result {
-            Err(HandlerError::Business(InventoryError::AlreadyInitialized)) => {}
+            Err(HandlerError::Business(InventoryError::AlreadyInitialized)) => {},
             other => panic!("Expected AlreadyInitialized error, got: {other:?}"),
         }
     }
@@ -1200,7 +1229,9 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(HandlerError::Business(InventoryError::InsufficientInventory { .. }))
+            Err(HandlerError::Business(
+                InventoryError::InsufficientInventory { .. }
+            ))
         ));
     }
 
@@ -1233,7 +1264,7 @@ mod tests {
 
         assert!(result.is_err());
         match result {
-            Err(HandlerError::Business(InventoryError::ReservationNotFound(_))) => {}
+            Err(HandlerError::Business(InventoryError::ReservationNotFound(_))) => {},
             other => panic!("Expected ReservationNotFound error, got: {other:?}"),
         }
     }
@@ -1266,7 +1297,7 @@ mod tests {
 
         assert!(result.is_err());
         match result {
-            Err(HandlerError::Business(InventoryError::ReservationNotFound(_))) => {}
+            Err(HandlerError::Business(InventoryError::ReservationNotFound(_))) => {},
             other => panic!("Expected ReservationNotFound error, got: {other:?}"),
         }
     }
@@ -1303,7 +1334,10 @@ mod tests {
 
         // Verify: available should still be 7, reservation should be gone
         let dto = projections.get_inventory(event_id, "VIP").await.unwrap();
-        assert_eq!(dto.available_count, 7, "Available count unchanged after confirm");
+        assert_eq!(
+            dto.available_count, 7,
+            "Available count unchanged after confirm"
+        );
 
         // Reservation should no longer exist
         let res = projections.get_reservation(reservation_id).await;
@@ -1315,7 +1349,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(availability.sold_seats, 3, "Should have 3 sold seats");
-        assert_eq!(availability.reserved_seats, 0, "Should have 0 reserved seats");
+        assert_eq!(
+            availability.reserved_seats, 0,
+            "Should have 0 reserved seats"
+        );
     }
 
     #[tokio::test]
@@ -1326,7 +1363,7 @@ mod tests {
         // Create a non-inventory event (simulating a saga event)
         let fake_event = SerializedEvent {
             event_type: "SeatsAllocated".to_string(), // Saga event, NOT inventory
-            payload: vec![1, 2, 3], // Invalid payload for inventory
+            payload: vec![1, 2, 3],                   // Invalid payload for inventory
             metadata: None,
             version: None,
         };
@@ -1360,8 +1397,11 @@ mod tests {
 
         match result.input {
             InventoryCommand::Reserve { fetched, .. } => {
-                assert!(fetched.is_none(), "fetched should be None for missing inventory");
-            }
+                assert!(
+                    fetched.is_none(),
+                    "fetched should be None for missing inventory"
+                );
+            },
             _ => panic!("Expected Reserve command"),
         }
     }

@@ -47,6 +47,5 @@ pub use messages::{
     ContentDelta, MessageDelta, MessageStart, MessagesRequest, MessagesResponse, StreamEvent,
 };
 pub use types::{
-    ContentBlock, Message, Role, StopReason, Tool, Usage, PricingModel,
-    CLAUDE_SONNET_4_5_PRICING,
+    CLAUDE_SONNET_4_5_PRICING, ContentBlock, Message, PricingModel, Role, StopReason, Tool, Usage,
 };

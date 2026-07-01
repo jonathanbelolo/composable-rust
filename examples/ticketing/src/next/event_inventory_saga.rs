@@ -60,7 +60,9 @@ use std::collections::{HashMap, HashSet};
 
 use crate::types::{Capacity, EventDate, EventId, PricingTier, Venue};
 
-use super::{EventCommand, EventError, EventEvent, InventoryCommand, InventoryError, InventoryEvent};
+use super::{
+    EventCommand, EventError, EventEvent, InventoryCommand, InventoryError, InventoryEvent,
+};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Saga Input (Commands + Feedback)
@@ -336,12 +338,12 @@ impl BusinessLogic for EventInventorySagaLogic {
         match input {
             SagaInput::CreateEventWithInventory { event_id, .. } => {
                 StreamId::new(format!("saga-event-inventory-{}", event_id.as_uuid()))
-            }
+            },
             SagaInput::Feedback { .. } => {
                 // Feedback is always for an in-progress saga
                 // The Handler maintains the stream_id from the original command
                 StreamId::new("saga-feedback-placeholder")
-            }
+            },
         }
     }
 
@@ -391,14 +393,18 @@ impl BusinessLogic for EventInventorySagaLogic {
                     }],
                     calls: vec![SagaCall::Event(event_command)],
                 })
-            }
+            },
 
-            SagaInput::Feedback { event_id: _, results, fetched } => {
+            SagaInput::Feedback {
+                event_id: _,
+                results,
+                fetched,
+            } => {
                 let state = fetched.ok_or_else(|| {
                     SagaError::ValidationFailed("Saga state required for feedback".to_string())
                 })?;
                 self.process_feedback(&state, results, now)
-            }
+            },
         }
     }
 
@@ -414,38 +420,38 @@ impl BusinessLogic for EventInventorySagaLogic {
                 state.name = Some(name.clone());
                 state.phase = SagaPhase::CreatingEvent;
                 state.pending_sections = sections.iter().cloned().collect();
-            }
+            },
 
             SagaEvent::EventCreated { .. } => {
                 state.phase = SagaPhase::InitializingInventory;
-            }
+            },
 
             SagaEvent::SectionInventoryInitialized { section, .. } => {
                 state.pending_sections.remove(section);
                 state.completed_sections.insert(section.clone());
-            }
+            },
 
             SagaEvent::Completed { .. } => {
                 state.phase = SagaPhase::Completed;
-            }
+            },
 
             SagaEvent::EventCreationFailed { error, .. }
             | SagaEvent::InventoryInitializationFailed { error, .. } => {
                 state.last_error = Some(error.clone());
-            }
+            },
 
             SagaEvent::CompensationStarted { .. } => {
                 state.phase = SagaPhase::Compensating;
-            }
+            },
 
             SagaEvent::CompensationCompleted { .. } => {
                 state.phase = SagaPhase::CompensationCompleted;
-            }
+            },
 
             SagaEvent::Failed { error, .. } => {
                 state.phase = SagaPhase::Failed;
                 state.last_error = Some(error.clone());
-            }
+            },
         }
     }
 
@@ -487,20 +493,20 @@ impl EventInventorySagaLogic {
         results: Vec<SagaCallResult>,
         now: DateTime<Utc>,
     ) -> Result<BusinessResult<SagaEvent, SagaCall, ()>, SagaError> {
-        let event_id = state.event_id.ok_or_else(|| {
-            SagaError::ValidationFailed("No event_id in state".to_string())
-        })?;
+        let event_id = state
+            .event_id
+            .ok_or_else(|| SagaError::ValidationFailed("No event_id in state".to_string()))?;
 
         match state.phase {
             SagaPhase::CreatingEvent => {
                 self.process_event_creation_feedback(state, event_id, results, now)
-            }
+            },
             SagaPhase::InitializingInventory => {
                 self.process_inventory_feedback(state, event_id, results, now)
-            }
+            },
             SagaPhase::Compensating => {
                 self.process_compensation_feedback(state, event_id, results, now)
-            }
+            },
             _ => Err(SagaError::InvalidStateTransition {
                 from: state.phase.clone(),
                 to: SagaPhase::Initial,
@@ -558,7 +564,7 @@ impl EventInventorySagaLogic {
                     .collect();
 
                 Ok(BusinessResult::Continue { events, calls })
-            }
+            },
 
             Some(Err(e)) => {
                 // Event creation failed - saga fails immediately (nothing to compensate)
@@ -574,7 +580,7 @@ impl EventInventorySagaLogic {
                         failed_at: now,
                     },
                 ]))
-            }
+            },
 
             None => Err(SagaError::ValidationFailed(
                 "Expected Event result in feedback".to_string(),
@@ -605,7 +611,7 @@ impl EventInventorySagaLogic {
                             initialized_at: now,
                         });
                         completed_count += 1;
-                    }
+                    },
                     Err(e) => {
                         events.push(SagaEvent::InventoryInitializationFailed {
                             event_id,
@@ -614,7 +620,7 @@ impl EventInventorySagaLogic {
                             failed_at: now,
                         });
                         failed_section = Some((section, e.to_string()));
-                    }
+                    },
                 }
             }
         }
@@ -675,7 +681,6 @@ impl EventInventorySagaLogic {
             fetched: None, // Compensation doesn't need fetched data (best-effort)
         })]
     }
-
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -703,8 +708,16 @@ mod tests {
             "Test Arena".to_string(),
             Capacity::new(200),
             vec![
-                VenueSection::new("VIP".to_string(), Capacity::new(50), SeatType::GeneralAdmission),
-                VenueSection::new("GA".to_string(), Capacity::new(150), SeatType::GeneralAdmission),
+                VenueSection::new(
+                    "VIP".to_string(),
+                    Capacity::new(50),
+                    SeatType::GeneralAdmission,
+                ),
+                VenueSection::new(
+                    "GA".to_string(),
+                    Capacity::new(150),
+                    SeatType::GeneralAdmission,
+                ),
             ],
         )
     }
@@ -730,8 +743,11 @@ mod tests {
                 assert_eq!(events.len(), 1);
                 assert!(matches!(events[0], SagaEvent::Initiated { .. }));
                 assert_eq!(calls.len(), 1);
-                assert!(matches!(calls[0], SagaCall::Event(EventCommand::Create { .. })));
-            }
+                assert!(matches!(
+                    calls[0],
+                    SagaCall::Event(EventCommand::Create { .. })
+                ));
+            },
             _ => panic!("Expected Continue result"),
         }
     }

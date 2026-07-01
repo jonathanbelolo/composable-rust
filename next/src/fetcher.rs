@@ -105,19 +105,28 @@ impl<Input> FetchResult<Input> {
     /// Create a new fetch result.
     #[must_use]
     pub const fn new(input: Input, expected_version: Option<Version>) -> Self {
-        Self { input, expected_version }
+        Self {
+            input,
+            expected_version,
+        }
     }
 
     /// Create a fetch result for a new entity (no expected version).
     #[must_use]
     pub const fn new_entity(input: Input) -> Self {
-        Self { input, expected_version: None }
+        Self {
+            input,
+            expected_version: None,
+        }
     }
 
     /// Create a fetch result for an existing entity with a known version.
     #[must_use]
     pub const fn existing(input: Input, version: Version) -> Self {
-        Self { input, expected_version: Some(version) }
+        Self {
+            input,
+            expected_version: Some(version),
+        }
     }
 }
 

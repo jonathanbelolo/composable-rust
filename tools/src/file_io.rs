@@ -133,17 +133,14 @@ pub fn read_file_tool() -> (Tool, ToolExecutorFn) {
 
     let executor = Arc::new(|input: String| {
         Box::pin(async move {
-            let parsed: serde_json::Value = serde_json::from_str(&input).map_err(|e| {
-                ToolError {
+            let parsed: serde_json::Value =
+                serde_json::from_str(&input).map_err(|e| ToolError {
                     message: format!("Invalid input JSON: {e}"),
-                }
-            })?;
-
-            let path_str = parsed["path"]
-                .as_str()
-                .ok_or_else(|| ToolError {
-                    message: "Missing 'path' field".to_string(),
                 })?;
+
+            let path_str = parsed["path"].as_str().ok_or_else(|| ToolError {
+                message: "Missing 'path' field".to_string(),
+            })?;
 
             // Validate and resolve path
             let path = validate_and_resolve_path(path_str)?;
@@ -166,9 +163,7 @@ pub fn read_file_tool() -> (Tool, ToolExecutorFn) {
                 FileType::Audio => read_audio_metadata(&path).await,
                 FileType::Video => read_video_metadata(&path).await,
             }
-        }) as std::pin::Pin<
-            Box<dyn std::future::Future<Output = ToolResult> + Send>,
-        >
+        }) as std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send>>
     }) as ToolExecutorFn;
 
     (tool, executor)
@@ -225,16 +220,14 @@ async fn read_pdf_file(path: &Path) -> ToolResult {
     })?;
 
     // Extract text (blocking operation, run in spawn_blocking)
-    let text = tokio::task::spawn_blocking(move || {
-        pdf_extract::extract_text_from_mem(&bytes)
-    })
-    .await
-    .map_err(|e| ToolError {
-        message: format!("Failed to spawn PDF extraction task: {e}"),
-    })?
-    .map_err(|e| ToolError {
-        message: format!("Failed to extract PDF text: {e}"),
-    })?;
+    let text = tokio::task::spawn_blocking(move || pdf_extract::extract_text_from_mem(&bytes))
+        .await
+        .map_err(|e| ToolError {
+            message: format!("Failed to spawn PDF extraction task: {e}"),
+        })?
+        .map_err(|e| ToolError {
+            message: format!("Failed to extract PDF text: {e}"),
+        })?;
 
     let result = json!({
         "type": "pdf",
@@ -268,16 +261,14 @@ async fn read_image_file(path: &Path) -> ToolResult {
 
     // Get image dimensions (blocking operation)
     let path_clone = path.to_path_buf();
-    let dimensions = tokio::task::spawn_blocking(move || {
-        image::image_dimensions(&path_clone)
-    })
-    .await
-    .map_err(|e| ToolError {
-        message: format!("Failed to spawn image processing task: {e}"),
-    })?
-    .map_err(|e| ToolError {
-        message: format!("Failed to read image dimensions: {e}"),
-    })?;
+    let dimensions = tokio::task::spawn_blocking(move || image::image_dimensions(&path_clone))
+        .await
+        .map_err(|e| ToolError {
+            message: format!("Failed to spawn image processing task: {e}"),
+        })?
+        .map_err(|e| ToolError {
+            message: format!("Failed to read image dimensions: {e}"),
+        })?;
 
     // Encode to base64
     let base64_data = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
@@ -379,11 +370,10 @@ pub fn list_directory_tool() -> (Tool, ToolExecutorFn) {
 
     let executor = Arc::new(|input: String| {
         Box::pin(async move {
-            let parsed: serde_json::Value = serde_json::from_str(&input).map_err(|e| {
-                ToolError {
+            let parsed: serde_json::Value =
+                serde_json::from_str(&input).map_err(|e| ToolError {
                     message: format!("Invalid input JSON: {e}"),
-                }
-            })?;
+                })?;
 
             let path_str = parsed["path"].as_str().unwrap_or(".");
 
@@ -399,11 +389,9 @@ pub fn list_directory_tool() -> (Tool, ToolExecutorFn) {
 
             // Read directory entries
             let mut entries = Vec::new();
-            let mut read_dir = tokio::fs::read_dir(&path)
-                .await
-                .map_err(|e| ToolError {
-                    message: format!("Failed to read directory: {e}"),
-                })?;
+            let mut read_dir = tokio::fs::read_dir(&path).await.map_err(|e| ToolError {
+                message: format!("Failed to read directory: {e}"),
+            })?;
 
             while let Some(entry) = read_dir.next_entry().await.map_err(|e| ToolError {
                 message: format!("Failed to read directory entry: {e}"),
@@ -444,9 +432,7 @@ pub fn list_directory_tool() -> (Tool, ToolExecutorFn) {
             });
 
             Ok(result.to_string())
-        }) as std::pin::Pin<
-            Box<dyn std::future::Future<Output = ToolResult> + Send>,
-        >
+        }) as std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send>>
     }) as ToolExecutorFn;
 
     (tool, executor)
@@ -471,10 +457,12 @@ mod tests {
     fn test_validate_path_rejects_parent_dir() {
         let result = validate_and_resolve_path("../etc/passwd");
         assert!(result.is_err());
-        assert!(result
-            .expect_err("should fail")
-            .message
-            .contains("Parent directory"));
+        assert!(
+            result
+                .expect_err("should fail")
+                .message
+                .contains("Parent directory")
+        );
     }
 
     #[test]

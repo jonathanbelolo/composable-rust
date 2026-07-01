@@ -2,8 +2,8 @@
 
 use crate::actions::AuthLevel;
 use crate::error::Result;
-use crate::providers::{LoginContext, RiskAssessment, RiskCalculator, RiskFactor, RiskLevel};
 use crate::providers::risk::IpLocation;
+use crate::providers::{LoginContext, RiskAssessment, RiskCalculator, RiskFactor, RiskLevel};
 use std::future::Future;
 use std::net::IpAddr;
 
@@ -73,17 +73,11 @@ impl RiskCalculator for MockRiskCalculator {
         }
     }
 
-    async fn is_ip_suspicious(
-        &self,
-        _ip_address: IpAddr,
-    ) -> Result<bool> {
+    async fn is_ip_suspicious(&self, _ip_address: IpAddr) -> Result<bool> {
         Ok(false)
     }
 
-    async fn get_ip_location(
-        &self,
-        _ip_address: IpAddr,
-    ) -> Result<IpLocation> {
+    async fn get_ip_location(&self, _ip_address: IpAddr) -> Result<IpLocation> {
         Ok(IpLocation {
             country: "US".to_string(),
             region: Some("CA".to_string()),
@@ -102,10 +96,7 @@ impl RiskCalculator for MockRiskCalculator {
         Ok(false)
     }
 
-    async fn check_credential_breach(
-        &self,
-        _email: &str,
-    ) -> Result<bool> {
+    async fn check_credential_breach(&self, _email: &str) -> Result<bool> {
         Ok(false)
     }
 }

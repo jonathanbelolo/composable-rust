@@ -11,13 +11,13 @@
 //! - Retry policies and timeout handling
 
 use composable_rust_tools::{
+    ToolConfig, ToolRegistry,
     calculation::calculate_tool,
     data::{json_query_tool, string_transform_tool},
     http::{http_get_markdown_tool, http_get_tool, http_request_tool},
     mock::{memory_search_tool, web_search_tool},
     time::current_time_tool,
-    todo::{todo_add_tool, todo_complete_tool, todo_delete_tool, todo_list_tool, TodoStore},
-    ToolConfig, ToolRegistry,
+    todo::{TodoStore, todo_add_tool, todo_complete_tool, todo_delete_tool, todo_list_tool},
 };
 use serde_json::json;
 use std::time::Duration;
@@ -203,11 +203,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Demo 7: Retry with timeout
     println!("=== Demo 7: Retry Policy ===");
-    let config = ToolConfig::fixed_retry(3, Duration::from_millis(100))
-        .with_timeout(Duration::from_secs(5));
+    let config =
+        ToolConfig::fixed_retry(3, Duration::from_millis(100)).with_timeout(Duration::from_secs(5));
 
     let retry_result = composable_rust_tools::execute_with_retry(&config, || async {
-        
         registry
             .execute(
                 "calculate",

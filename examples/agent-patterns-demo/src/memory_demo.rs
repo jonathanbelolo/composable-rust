@@ -10,15 +10,32 @@ use composable_rust_core::agent::{AgentAction, AgentConfig, AgentEnvironment};
 use composable_rust_core::effect::Effect;
 use composable_rust_core::reducer::Reducer;
 
-struct DemoEnvironment { config: AgentConfig }
+struct DemoEnvironment {
+    config: AgentConfig,
+}
 
 impl AgentEnvironment for DemoEnvironment {
-    fn tools(&self) -> &[Tool] { &[] }
-    fn config(&self) -> &AgentConfig { &self.config }
-    fn call_claude(&self, _: composable_rust_anthropic::MessagesRequest) -> Effect<AgentAction> { Effect::None }
-    fn call_claude_streaming(&self, _: composable_rust_anthropic::MessagesRequest) -> Effect<AgentAction> { Effect::None }
-    fn execute_tool(&self, _: String, _: String, _: String) -> Effect<AgentAction> { Effect::None }
-    fn execute_tool_streaming(&self, _: String, _: String, _: String) -> Effect<AgentAction> { Effect::None }
+    fn tools(&self) -> &[Tool] {
+        &[]
+    }
+    fn config(&self) -> &AgentConfig {
+        &self.config
+    }
+    fn call_claude(&self, _: composable_rust_anthropic::MessagesRequest) -> Effect<AgentAction> {
+        Effect::None
+    }
+    fn call_claude_streaming(
+        &self,
+        _: composable_rust_anthropic::MessagesRequest,
+    ) -> Effect<AgentAction> {
+        Effect::None
+    }
+    fn execute_tool(&self, _: String, _: String, _: String) -> Effect<AgentAction> {
+        Effect::None
+    }
+    fn execute_tool_streaming(&self, _: String, _: String, _: String) -> Effect<AgentAction> {
+        Effect::None
+    }
 }
 
 fn main() {
@@ -32,15 +49,21 @@ fn main() {
 
     let reducer = MemoryReducer::new(config);
     let mut state = MemoryState::new();
-    let env = DemoEnvironment { config: AgentConfig::default() };
+    let env = DemoEnvironment {
+        config: AgentConfig::default(),
+    };
 
     println!("🔍 Query: 'How do I reset my password?'");
     println!("   Settings: top_k=3, threshold=0.7\n");
 
     // Query with retrieval
-    let effects = reducer.reduce(&mut state, MemoryAction::Query {
-        query: "How do I reset my password?".to_string()
-    }, &env);
+    let effects = reducer.reduce(
+        &mut state,
+        MemoryAction::Query {
+            query: "How do I reset my password?".to_string(),
+        },
+        &env,
+    );
     println!("✅ Query initiated: {} effects", effects.len());
 
     // Simulate memory retrieval from vector store
@@ -69,15 +92,20 @@ fn main() {
         },
     ];
 
-    let effects = reducer.reduce(&mut state, MemoryAction::MemoriesRetrieved {
-        memories
-    }, &env);
+    let effects = reducer.reduce(
+        &mut state,
+        MemoryAction::MemoriesRetrieved { memories },
+        &env,
+    );
 
     println!("\n📋 Retrieved memories:");
     for memory in state.memories() {
         println!("   [Score: {:.2}] {}", memory.score, memory.content);
     }
-    println!("\n   Filtered count: {} (threshold: 0.7)", state.memories().len());
+    println!(
+        "\n   Filtered count: {} (threshold: 0.7)",
+        state.memories().len()
+    );
     println!("   Generate response effect: {}", effects.len());
 
     // Generate response with context
@@ -97,10 +125,14 @@ fn main() {
     // Optional: Store interaction for future retrieval
     println!("\n💾 Storing interaction for future queries...");
     let response_text = state.response().unwrap_or("").to_string();
-    reducer.reduce(&mut state, MemoryAction::StoreInteraction {
-        query: "How do I reset my password?".to_string(),
-        response: response_text,
-    }, &env);
+    reducer.reduce(
+        &mut state,
+        MemoryAction::StoreInteraction {
+            query: "How do I reset my password?".to_string(),
+            response: response_text,
+        },
+        &env,
+    );
     println!("   ✅ Interaction stored in vector database");
 
     println!("\n💡 Key Benefits:");

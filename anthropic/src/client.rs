@@ -24,8 +24,7 @@ impl AnthropicClient {
     ///
     /// Returns `ClaudeError::MissingApiKey` if `ANTHROPIC_API_KEY` is not set
     pub fn from_env() -> Result<Self, ClaudeError> {
-        let api_key = std::env::var("ANTHROPIC_API_KEY")
-            .map_err(|_| ClaudeError::MissingApiKey)?;
+        let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| ClaudeError::MissingApiKey)?;
 
         Ok(Self::new(api_key))
     }
@@ -45,8 +44,12 @@ impl AnthropicClient {
     /// # Errors
     ///
     /// Returns errors for network failures, API errors, or parsing failures
-    pub async fn messages(&self, request: MessagesRequest) -> Result<MessagesResponse, ClaudeError> {
-        let response = self.client
+    pub async fn messages(
+        &self,
+        request: MessagesRequest,
+    ) -> Result<MessagesResponse, ClaudeError> {
+        let response = self
+            .client
             .post(format!("{}/messages", self.api_url))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
@@ -57,23 +60,19 @@ impl AnthropicClient {
             .map_err(|e| ClaudeError::RequestFailed(e.to_string()))?;
 
         match response.status() {
-            StatusCode::OK => {
-                response.json::<MessagesResponse>().await
-                    .map_err(|e| ClaudeError::ResponseParseFailed(e.to_string()))
-            }
-            StatusCode::TOO_MANY_REQUESTS => {
-                Err(ClaudeError::RateLimited)
-            }
-            StatusCode::UNAUTHORIZED => {
-                Err(ClaudeError::Unauthorized)
-            }
+            StatusCode::OK => response
+                .json::<MessagesResponse>()
+                .await
+                .map_err(|e| ClaudeError::ResponseParseFailed(e.to_string())),
+            StatusCode::TOO_MANY_REQUESTS => Err(ClaudeError::RateLimited),
+            StatusCode::UNAUTHORIZED => Err(ClaudeError::Unauthorized),
             status => {
                 let body = response.text().await.unwrap_or_default();
                 Err(ClaudeError::ApiError {
                     status: status.as_u16(),
                     message: body,
                 })
-            }
+            },
         }
     }
 
@@ -89,11 +88,13 @@ impl AnthropicClient {
     pub async fn messages_stream(
         &self,
         request: MessagesRequest,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, ClaudeError>> + Send>>, ClaudeError> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, ClaudeError>> + Send>>, ClaudeError>
+    {
         let mut streaming_request = request;
         streaming_request.stream = true;
 
-        let response = self.client
+        let response = self
+            .client
             .post(format!("{}/messages", self.api_url))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")

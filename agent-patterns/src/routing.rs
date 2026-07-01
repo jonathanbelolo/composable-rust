@@ -27,11 +27,11 @@
 //! ]);
 //! ```
 
+use composable_rust_anthropic::{Message, MessagesRequest};
 use composable_rust_core::agent::AgentEnvironment;
 use composable_rust_core::effect::Effect;
 use composable_rust_core::reducer::Reducer;
-use composable_rust_anthropic::{Message, MessagesRequest};
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -42,9 +42,9 @@ use composable_rust_core::agent::AgentAction;
 pub type SpecialistFn = Arc<
     dyn Fn(
             String,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<String, String>> + Send>,
-        > + Send
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
+        + Send
         + Sync,
 >;
 
@@ -171,7 +171,8 @@ impl<E> RoutingReducer<E> {
 
     /// Build classification prompt
     fn build_classification_prompt(&self, input: &str) -> String {
-        let mut prompt = String::from("Classify the following input into one of these categories:\n\n");
+        let mut prompt =
+            String::from("Classify the following input into one of these categories:\n\n");
 
         for route in &self.routes {
             prompt.push_str(&format!("- {}: {}\n", route.category, route.description));
@@ -219,7 +220,7 @@ impl<E: AgentEnvironment> Reducer for RoutingReducer<E> {
                     let _ = input_clone;
                     None
                 }))]
-            }
+            },
 
             RouterAction::Classified { category, input } => {
                 // Find matching route
@@ -232,7 +233,7 @@ impl<E: AgentEnvironment> Reducer for RoutingReducer<E> {
                                 message: format!("Unknown category: {}", category),
                             })
                         }))];
-                    }
+                    },
                 };
 
                 // Update state
@@ -249,36 +250,37 @@ impl<E: AgentEnvironment> Reducer for RoutingReducer<E> {
                         result,
                     })
                 }))]
-            }
+            },
 
-            RouterAction::SpecialistComplete { category: _, result } => {
-                match result {
-                    Ok(output) => {
-                        state.result = Some(output.clone());
-                        state.completed = true;
-                        smallvec![Effect::Future(Box::pin(async move {
-                            Some(RouterAction::Complete { result: output })
-                        }))]
-                    }
-                    Err(error) => {
-                        state.completed = true;
-                        smallvec![Effect::Future(Box::pin(async move {
-                            Some(RouterAction::Error { message: error })
-                        }))]
-                    }
-                }
-            }
+            RouterAction::SpecialistComplete {
+                category: _,
+                result,
+            } => match result {
+                Ok(output) => {
+                    state.result = Some(output.clone());
+                    state.completed = true;
+                    smallvec![Effect::Future(Box::pin(async move {
+                        Some(RouterAction::Complete { result: output })
+                    }))]
+                },
+                Err(error) => {
+                    state.completed = true;
+                    smallvec![Effect::Future(Box::pin(async move {
+                        Some(RouterAction::Error { message: error })
+                    }))]
+                },
+            },
 
             RouterAction::Complete { .. } => {
                 // Already complete
                 smallvec![Effect::None]
-            }
+            },
 
             RouterAction::Error { .. } => {
                 // Error occurred, stop routing
                 state.completed = true;
                 smallvec![Effect::None]
-            }
+            },
         }
     }
 }

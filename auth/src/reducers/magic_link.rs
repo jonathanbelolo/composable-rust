@@ -45,7 +45,7 @@ use composable_rust_core::async_effect;
 use composable_rust_core::effect::Effect;
 use composable_rust_core::reducer::Reducer;
 use composable_rust_core::stream::StreamId;
-use composable_rust_core::{smallvec, SmallVec};
+use composable_rust_core::{SmallVec, smallvec};
 use std::sync::Arc;
 
 /// Magic link authentication reducer.
@@ -142,27 +142,30 @@ impl<O, E, W, S, T, U, D, R, OT, C, RL> MagicLinkReducer<O, E, W, S, T, U, D, R,
                 // Update state to reflect user registration
                 tracing::info!("Applied UserRegistered event for user {}", user_id.0);
                 // State updates will happen when session is created
-            }
+            },
             AuthEvent::DeviceRegistered { device_id, .. } => {
                 tracing::info!("Applied DeviceRegistered event for device {}", device_id.0);
-            }
+            },
             AuthEvent::UserLoggedIn { user_id, .. } => {
                 tracing::info!("Applied UserLoggedIn event for user {}", user_id.0);
-            }
+            },
             _ => {
                 // Other events not handled by magic link reducer
-            }
+            },
         }
     }
 }
 
-impl<O, E, W, S, T, U, D, R, OT, C, RL> Default for MagicLinkReducer<O, E, W, S, T, U, D, R, OT, C, RL> {
+impl<O, E, W, S, T, U, D, R, OT, C, RL> Default
+    for MagicLinkReducer<O, E, W, S, T, U, D, R, OT, C, RL>
+{
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<O, E, W, S, T, U, D, R, OT, C, RL> Reducer for MagicLinkReducer<O, E, W, S, T, U, D, R, OT, C, RL>
+impl<O, E, W, S, T, U, D, R, OT, C, RL> Reducer
+    for MagicLinkReducer<O, E, W, S, T, U, D, R, OT, C, RL>
 where
     O: OAuth2Provider + Clone + 'static,
     E: EmailProvider + Clone + 'static,
@@ -203,12 +206,13 @@ where
                     Err(e) => {
                         tracing::warn!("Invalid email format: {}", e);
                         return smallvec![Effect::None];
-                    }
+                    },
                 };
 
                 // Generate cryptographically secure token
                 let token = self.generate_token();
-                let expires_at = Utc::now() + chrono::Duration::minutes(self.config.token_ttl_minutes);
+                let expires_at =
+                    Utc::now() + chrono::Duration::minutes(self.config.token_ttl_minutes);
 
                 // Store magic link state (keep for backward compatibility during migration)
                 state.magic_link_state = Some(MagicLinkState {
@@ -276,24 +280,28 @@ where
                         }
                     }
                 ]
-            }
+            },
 
             // ═══════════════════════════════════════════════════════════════
             // MagicLinkSent: Confirmation event (no-op)
             // ═══════════════════════════════════════════════════════════════
-            AuthAction::MagicLinkSent { correlation_id: _, .. } => {
+            AuthAction::MagicLinkSent {
+                correlation_id: _, ..
+            } => {
                 // Email sent successfully - this is just a confirmation event
                 smallvec![Effect::None]
-            }
+            },
 
             // ═══════════════════════════════════════════════════════════════
             // MagicLinkFailed: Email sending failed
             // ═══════════════════════════════════════════════════════════════
-            AuthAction::MagicLinkFailed { correlation_id: _, .. } => {
+            AuthAction::MagicLinkFailed {
+                correlation_id: _, ..
+            } => {
                 // Clear magic link state on failure
                 state.magic_link_state = None;
                 smallvec![Effect::None]
-            }
+            },
 
             // ═══════════════════════════════════════════════════════════════
             // VerifyMagicLink: Validate token (ATOMIC CONSUMPTION)
@@ -398,7 +406,7 @@ where
                         }
                     }
                 }]
-            }
+            },
 
             // ═══════════════════════════════════════════════════════════════
             // MagicLinkVerified: Emit domain events (batch)
@@ -601,16 +609,19 @@ where
                         }
                     }
                 }]
-            }
+            },
 
             // ═══════════════════════════════════════════════════════════════
             // SessionCreated: Set session in state
             // ═══════════════════════════════════════════════════════════════
-            AuthAction::SessionCreated { correlation_id: _, session } => {
+            AuthAction::SessionCreated {
+                correlation_id: _,
+                session,
+            } => {
                 // Set session in state (session now has correct risk score from RiskCalculator)
                 state.session = Some(session.clone());
                 smallvec![Effect::None]
-            }
+            },
 
             // ═══════════════════════════════════════════════════════════════
             // ValidateSession: Check if session exists and is still valid
@@ -645,7 +656,7 @@ where
                         }
                     }
                 }]
-            }
+            },
 
             // ═══════════════════════════════════════════════════════════════
             // SessionValidated, SessionExpired: No-op (response actions)
@@ -653,7 +664,7 @@ where
             AuthAction::SessionValidated { .. } | AuthAction::SessionExpired { .. } => {
                 // These are response actions, no further effects needed
                 smallvec![Effect::None]
-            }
+            },
 
             // ═══════════════════════════════════════════════════════════════
             // EventPersisted: Apply event to state
@@ -661,7 +672,7 @@ where
             AuthAction::EventPersisted { event, version: _ } => {
                 self.apply_event(state, &event);
                 smallvec![Effect::None]
-            }
+            },
 
             // Other actions are not handled by this reducer
             _ => smallvec![Effect::None],

@@ -4,14 +4,14 @@
 //! persisted to the event store. Events are then replayed to reconstruct state.
 
 use crate::types::{LineItem, Money, OrderAction, OrderId, OrderState, OrderStatus};
-use composable_rust_core::{append_events, async_effect};
 use composable_rust_core::effect::Effect;
 use composable_rust_core::environment::Clock;
 use composable_rust_core::event::SerializedEvent;
 use composable_rust_core::event_store::EventStore;
 use composable_rust_core::reducer::Reducer;
 use composable_rust_core::stream::{StreamId, Version};
-use composable_rust_core::{smallvec, SmallVec};
+use composable_rust_core::{SmallVec, smallvec};
+use composable_rust_core::{append_events, async_effect};
 use std::sync::Arc;
 
 /// Environment for order processing containing dependencies
@@ -93,7 +93,11 @@ impl OrderReducer {
     }
 
     /// Validates a `PlaceOrder` command
-    fn validate_place_order(state: &OrderState, order_id: &OrderId, items: &[LineItem]) -> Result<(), String> {
+    fn validate_place_order(
+        state: &OrderState,
+        order_id: &OrderId,
+        items: &[LineItem],
+    ) -> Result<(), String> {
         // Check if THIS specific order was already placed
         // (In a real app with per-aggregate stores, we'd check state.order_id.is_some())
         // For this multi-order example, we allow different orders on the same store
@@ -385,7 +389,7 @@ mod tests {
     use super::*;
     use crate::types::CustomerId;
     use chrono::Utc;
-    use composable_rust_testing::{assertions, ReducerTest};
+    use composable_rust_testing::{ReducerTest, assertions};
 
     fn create_test_item() -> LineItem {
         LineItem::new(
@@ -597,11 +601,13 @@ mod tests {
             .then_state(|state| {
                 // Validation error should be recorded
                 assert!(state.last_error.is_some());
-                assert!(state
-                    .last_error
-                    .as_ref()
-                    .unwrap()
-                    .contains("at least one item"));
+                assert!(
+                    state
+                        .last_error
+                        .as_ref()
+                        .unwrap()
+                        .contains("at least one item")
+                );
             })
             .then_effects(|effects| {
                 // Should produce a Future effect that returns ValidationFailed

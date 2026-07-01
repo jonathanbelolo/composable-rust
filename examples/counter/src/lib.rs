@@ -32,7 +32,9 @@
 //! # }
 //! ```
 
-use composable_rust_core::{effect::Effect, environment::Clock, reducer::Reducer, smallvec, SmallVec};
+use composable_rust_core::{
+    SmallVec, effect::Effect, environment::Clock, reducer::Reducer, smallvec,
+};
 
 /// Counter state
 ///
@@ -141,7 +143,7 @@ impl<C: Clock> Reducer for CounterReducer<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use composable_rust_testing::{assertions, test_clock, ReducerTest};
+    use composable_rust_testing::{ReducerTest, assertions, test_clock};
 
     #[test]
     fn test_increment() {

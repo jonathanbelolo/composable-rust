@@ -65,7 +65,7 @@ use order_processing::{OrderEnvironment, OrderReducer, OrderState};
 #[cfg(feature = "http")]
 use std::sync::Arc;
 #[cfg(feature = "http")]
-use tracing::{info, Level};
+use tracing::{Level, info};
 #[cfg(feature = "http")]
 use tracing_subscriber::FmtSubscriber;
 
@@ -108,18 +108,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let env = OrderEnvironment::new(Arc::clone(&event_store), Arc::clone(&clock));
 
     // Create store
-    let store = Arc::new(Store::new(
-        OrderState::new(),
-        OrderReducer::new(),
-        env,
-    ));
+    let store = Arc::new(Store::new(OrderState::new(), OrderReducer::new(), env));
 
     info!("Store created with order-processing reducer");
 
     // Build router
     let app = Router::new()
         .route("/health", axum::routing::get(health_check))
-        .nest("/api/v1", order_processing::router::order_router(Arc::clone(&store)));
+        .nest(
+            "/api/v1",
+            order_processing::router::order_router(Arc::clone(&store)),
+        );
 
     // Start server
     let addr = "0.0.0.0:3000";

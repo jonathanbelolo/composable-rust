@@ -24,14 +24,17 @@ use crate::config::OAuthConfig;
 use crate::constants::login_methods;
 use crate::environment::AuthEnvironment;
 use crate::events::AuthEvent;
-use crate::providers::{ChallengeStore, OAuth2Provider, UserRepository, DeviceRepository, SessionStore, TokenStore, RiskCalculator, EmailProvider, WebAuthnProvider, OAuthTokenStore, OAuthTokenData};
+use crate::providers::{
+    ChallengeStore, DeviceRepository, EmailProvider, OAuth2Provider, OAuthTokenData,
+    OAuthTokenStore, RiskCalculator, SessionStore, TokenStore, UserRepository, WebAuthnProvider,
+};
 use crate::state::{AuthState, DeviceId, OAuthState, Session, SessionId, UserId};
+use chrono::{Duration, Utc};
 use composable_rust_core::async_effect;
 use composable_rust_core::effect::Effect;
 use composable_rust_core::reducer::Reducer;
 use composable_rust_core::stream::StreamId;
-use composable_rust_core::{smallvec, SmallVec};
-use chrono::{Duration, Utc};
+use composable_rust_core::{SmallVec, smallvec};
 use std::sync::Arc;
 
 /// `OAuth2` reducer.
@@ -73,7 +76,7 @@ where
     OT: OAuthTokenStore + Clone + 'static,
     C: ChallengeStore + Clone + 'static,
     RL: crate::providers::RateLimiter + Clone + 'static,
- {
+{
     fn default() -> Self {
         Self::new()
     }
@@ -278,7 +281,7 @@ where
                         }
                     }
                 ]
-            }
+            },
 
             // ═══════════════════════════════════════════════════════════════════
             // Handle OAuth Callback
@@ -429,7 +432,7 @@ where
                         }
                     }
                 }]
-            }
+            },
 
             // ═══════════════════════════════════════════════════════════════════
             // OAuth Success (Token Exchange Complete) - Emit events (batch)
@@ -450,7 +453,11 @@ where
                 let email = match crate::utils::normalize_email(&email) {
                     Ok(normalized) => normalized,
                     Err(e) => {
-                        tracing::warn!("Invalid email from OAuth provider {}: {}", provider.as_str(), e);
+                        tracing::warn!(
+                            "Invalid email from OAuth provider {}: {}",
+                            provider.as_str(),
+                            e
+                        );
                         return smallvec![async_effect! {
                             Some(AuthAction::OAuthFailed {
                                 correlation_id,
@@ -458,7 +465,7 @@ where
                                 error_description: Some(format!("Invalid email from OAuth provider: {e}")),
                             })
                         }];
-                    }
+                    },
                 };
 
                 // Generate IDs upfront
@@ -661,7 +668,7 @@ where
                         }
                     }
                 }]
-            }
+            },
 
             // ═══════════════════════════════════════════════════════════════════
             // OAuth Failed
@@ -676,21 +683,28 @@ where
 
                 // TODO: Redirect to error page
                 smallvec![Effect::None]
-            }
+            },
 
             // ═══════════════════════════════════════════════════════════════════
             // Session Created
             // ═══════════════════════════════════════════════════════════════════
-            AuthAction::SessionCreated { correlation_id: _, session } => {
+            AuthAction::SessionCreated {
+                correlation_id: _,
+                session,
+            } => {
                 // Set session in state (session now has correct risk score from RiskCalculator)
                 state.session = Some(session.clone());
                 smallvec![Effect::None]
-            }
+            },
 
             // ═══════════════════════════════════════════════════════════════════
             // Refresh OAuth Token (Pure Orchestration)
             // ═══════════════════════════════════════════════════════════════════
-            AuthAction::RefreshOAuthToken { correlation_id, user_id, provider } => {
+            AuthAction::RefreshOAuthToken {
+                correlation_id,
+                user_id,
+                provider,
+            } => {
                 // This is the composable-rust way:
                 // Reducer orchestrates effects, doesn't execute them
                 let token_store = env.oauth_tokens.clone();
@@ -781,7 +795,7 @@ where
                         }
                     }
                 }]
-            }
+            },
 
             // ═══════════════════════════════════════════════════════════════════
             // OAuth Token Refreshed (Event)
@@ -803,7 +817,7 @@ where
                 // No state changes needed - tokens already updated in storage
                 // This event is for audit/logging purposes
                 smallvec![Effect::None]
-            }
+            },
 
             // ═══════════════════════════════════════════════════════════════════
             // Other Actions (Not Handled by OAuth Reducer)
@@ -811,7 +825,7 @@ where
             _ => {
                 // This reducer only handles OAuth actions
                 smallvec![Effect::None]
-            }
+            },
         }
     }
 }

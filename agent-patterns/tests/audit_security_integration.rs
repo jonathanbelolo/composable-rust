@@ -12,12 +12,8 @@ async fn test_audit_security_integration() {
 
     // Log multiple failed authentication attempts from same IP
     for i in 0..10 {
-        let event = AuditEvent::authentication(
-            format!("user{i}@example.com"),
-            "login",
-            false,
-        )
-        .with_source_ip("192.168.1.100");
+        let event = AuditEvent::authentication(format!("user{i}@example.com"), "login", false)
+            .with_source_ip("192.168.1.100");
 
         audit_logger.log(event).await.unwrap();
     }
@@ -48,12 +44,8 @@ async fn test_multiple_ips_separate_incidents() {
     // Log failures from multiple IPs
     for ip_suffix in 100..=102 {
         for i in 0..7 {
-            let event = AuditEvent::authentication(
-                format!("user{i}@example.com"),
-                "login",
-                false,
-            )
-            .with_source_ip(format!("192.168.1.{ip_suffix}"));
+            let event = AuditEvent::authentication(format!("user{i}@example.com"), "login", false)
+                .with_source_ip(format!("192.168.1.{ip_suffix}"));
 
             audit_logger.log(event).await.unwrap();
         }
@@ -76,12 +68,8 @@ async fn test_below_threshold_no_incident() {
 
     // Log only 3 failed attempts (below threshold of 5)
     for i in 0..3 {
-        let event = AuditEvent::authentication(
-            format!("user{i}@example.com"),
-            "login",
-            false,
-        )
-        .with_source_ip("192.168.1.100");
+        let event = AuditEvent::authentication(format!("user{i}@example.com"), "login", false)
+            .with_source_ip("192.168.1.100");
 
         audit_logger.log(event).await.unwrap();
     }
@@ -106,7 +94,7 @@ async fn test_successful_logins_ignored() {
         let event = AuditEvent::authentication(
             format!("user{i}@example.com"),
             "login",
-            true,  // Success
+            true, // Success
         )
         .with_source_ip("192.168.1.100");
 
@@ -129,18 +117,22 @@ async fn test_dashboard_reflects_incidents() {
 
     // Report various incidents
     security_monitor
-        .report_incident(composable_rust_agent_patterns::security::SecurityIncident::brute_force_attack(
-            "192.168.1.100",
-            10,
-        ))
+        .report_incident(
+            composable_rust_agent_patterns::security::SecurityIncident::brute_force_attack(
+                "192.168.1.100",
+                10,
+            ),
+        )
         .await
         .unwrap();
 
     security_monitor
-        .report_incident(composable_rust_agent_patterns::security::SecurityIncident::prompt_injection(
-            "user@example.com",
-            "pattern_match",
-        ))
+        .report_incident(
+            composable_rust_agent_patterns::security::SecurityIncident::prompt_injection(
+                "user@example.com",
+                "pattern_match",
+            ),
+        )
         .await
         .unwrap();
 
@@ -149,6 +141,10 @@ async fn test_dashboard_reflects_incidents() {
 
     assert_eq!(dashboard.total_incidents, 2);
     assert_eq!(dashboard.active_incidents, 2);
-    assert!(dashboard.incidents_by_type.contains_key("brute_force_attack"));
+    assert!(
+        dashboard
+            .incidents_by_type
+            .contains_key("brute_force_attack")
+    );
     assert!(dashboard.incidents_by_type.contains_key("prompt_injection"));
 }

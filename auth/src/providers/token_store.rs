@@ -140,10 +140,7 @@ pub trait TokenStore: Send + Sync {
     /// # Errors
     ///
     /// Returns error if network request fails.
-    fn delete_token(
-        &self,
-        token_id: &str,
-    ) -> impl std::future::Future<Output = Result<()>> + Send;
+    fn delete_token(&self, token_id: &str) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// Check if a token exists.
     ///
@@ -154,8 +151,5 @@ pub trait TokenStore: Send + Sync {
     /// # Errors
     ///
     /// Returns error if network request fails.
-    fn exists(
-        &self,
-        token_id: &str,
-    ) -> impl std::future::Future<Output = Result<bool>> + Send;
+    fn exists(&self, token_id: &str) -> impl std::future::Future<Output = Result<bool>> + Send;
 }

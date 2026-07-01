@@ -1,8 +1,8 @@
 //! WebAuthn/Passkey provider trait.
 
+use super::PasskeyCredential;
 use crate::error::Result;
 use crate::state::{DeviceId, UserId};
-use super::PasskeyCredential;
 
 /// `WebAuthn` provider.
 ///
