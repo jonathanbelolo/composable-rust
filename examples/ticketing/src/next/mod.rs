@@ -94,15 +94,17 @@ pub use payment::{
 };
 pub use expiration::ReservationExpirationWorker;
 pub use projection_queries::{
-    AnalyticsProjectionQueries, AnalyticsQueryFetcher, EventProjectionQueries, EventQueryFetcher,
+    AnalyticsProjectionQueries, AnalyticsQueryFetcher, EventInventorySagaProjectionQueries,
+    EventInventorySagaQueryFetcher, EventProjectionQueries, EventQueryFetcher,
     InMemoryEventProjectionQueries, InMemoryEventQueryFetcher, InventoryProjectionQueries,
     InventoryQueryFetcher, PaymentProjectionQueries, PaymentQueryFetcher,
     ReservationProjectionQueries, ReservationQueryFetcher, ReservationSagaProjectionQueries,
-    ReservationSagaQueryFetcher, SagaProjectionQueries, SagaQueryFetcher,
+    ReservationSagaQueryFetcher,
 };
 pub use projector::{
-    EventInventorySagaProjector, EventProjector, InMemorySagaProjection, InventoryProjector,
-    PaymentProjector, PgAtomicPersist, PgReservationSagaStateProjector,
+    EventProjector, InventoryProjector, PaymentProjector, PgAtomicPersist,
+    PgEventInventorySagaAtomicPersist, PgEventInventorySagaStateProjector,
+    PgReservationSagaStateProjector,
 };
 pub use reservation::{
     ReservationDto, ReservationListDto, ReservationQueryCommand, ReservationQueryError,

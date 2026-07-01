@@ -16,9 +16,6 @@ use composable_rust_next::{
 };
 use composable_rust_postgres_next::{PgTransactionalProjector, PostgresEventStore};
 use sqlx::PgPool;
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::RwLock;
 use tracing::instrument;
 
 use crate::types::{EventId, ReservationId};
@@ -27,8 +24,10 @@ use super::{
     EventEvent, EventInventorySagaLogic, InventoryEvent, PaymentEvent,
     ReservationSagaLogic,
 };
-use super::event_inventory_saga::{SagaEvent, SagaState};
-use super::reservation_saga::{ReservationSagaEvent, ReservationSagaState};
+use super::event_inventory_saga::{EVENT_INVENTORY_SAGA_STATE_VERSION, SagaEvent, SagaState};
+use super::reservation_saga::{
+    RESERVATION_SAGA_STATE_VERSION, ReservationSagaEvent, ReservationSagaState,
+};
 
 /// Projector for the Event aggregate read model.
 ///
@@ -917,130 +916,163 @@ impl Projector for PaymentProjector {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Event-Inventory Saga In-Memory Projector
+// Event-Inventory Saga Durable State Projector
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Shared in-memory state for the Event-Inventory saga.
-///
-/// This is shared between the [`EventInventorySagaProjector`] (writer) and
-/// [`SagaQueryFetcher`](super::SagaQueryFetcher) (reader).
-///
-/// # Thread Safety
-///
-/// Uses `RwLock` for interior mutability, wrapped in `Arc` for sharing.
-/// The projector writes after events are persisted, and the query fetcher
-/// reads during the feedback loop.
-pub type InMemorySagaProjection = Arc<RwLock<HashMap<EventId, SagaState>>>;
+/// Extract the correlating `event_id` from any [`SagaEvent`] (all variants carry it).
+fn event_inventory_saga_id_of(event: &SagaEvent) -> EventId {
+    match event {
+        SagaEvent::Initiated { event_id, .. }
+        | SagaEvent::EventCreated { event_id, .. }
+        | SagaEvent::SectionInventoryInitialized { event_id, .. }
+        | SagaEvent::Completed { event_id, .. }
+        | SagaEvent::EventCreationFailed { event_id, .. }
+        | SagaEvent::InventoryInitializationFailed { event_id, .. }
+        | SagaEvent::CompensationStarted { event_id, .. }
+        | SagaEvent::CompensationCompleted { event_id, .. }
+        | SagaEvent::Failed { event_id, .. } => *event_id,
+    }
+}
 
-/// In-memory projector for the Event-Inventory saga.
+/// Transactional projector maintaining the durable `saga_state_event_inventory` row.
 ///
-/// This projector maintains saga state in memory, eliminating the need for
-/// database-backed saga projections. State is derived by replaying saga
-/// events through the `BusinessLogic::apply` method.
-///
-/// # Architecture
-///
-/// ```text
-/// Handler ──persist──► EventStore
-///                          │
-///                          ▼
-///                    Projector.project()
-///                          │
-///                          ▼
-///              ┌───────────────────────┐
-///              │  InMemorySagaProjection  │
-///              │  (HashMap<EventId, State>) │
-///              └───────────────────────┘
-///                          │
-///                          ▼ (next iteration)
-///              QueryFetcher.fetch() reads state
-/// ```
-///
-/// # Lifecycle
-///
-/// - State is created when `SagaEvent::Initiated` is projected
-/// - State is updated on each subsequent saga event
-/// - State can be cleaned up after saga completes (terminal state)
-#[derive(Clone)]
-pub struct EventInventorySagaProjector {
-    state: InMemorySagaProjection,
+/// Runs inside the saga's event-append transaction (via
+/// [`PostgresEventStore::append_with_projection`]): it folds the just-appended events
+/// into the full [`SagaState`] and upserts the authoritative row (`version` == stream
+/// version) — committed atomically with the events, so it can never drift from the
+/// event stream and is a trustworthy restart-safe resume source.
+#[derive(Clone, Default)]
+pub struct PgEventInventorySagaStateProjector {
     logic: EventInventorySagaLogic,
 }
 
-impl EventInventorySagaProjector {
-    /// Create a new saga projector with the given shared state.
-    ///
-    /// # Arguments
-    ///
-    /// * `state` - Shared state with the query fetcher
+impl PgEventInventorySagaStateProjector {
+    /// Create a new transactional saga-state projector.
     #[must_use]
-    pub fn new(state: InMemorySagaProjection) -> Self {
+    pub fn new() -> Self {
         Self {
-            state,
             logic: EventInventorySagaLogic,
-        }
-    }
-
-    /// Project a single saga event to the in-memory state.
-    async fn project_event(&self, event: &SerializedEvent) -> Result<(), ProjectionError> {
-        // Deserialize the saga event
-        let saga_event: SagaEvent = bincode::deserialize(&event.payload).map_err(|e| {
-            ProjectionError::Deserialization(format!("failed to deserialize saga event: {e}"))
-        })?;
-
-        // Extract event_id from the saga event
-        let event_id = Self::extract_event_id(&saga_event);
-
-        // Get or create state for this saga
-        let mut states = self.state.write().await;
-        let state = states.entry(event_id).or_default();
-
-        // Apply the event to the state using BusinessLogic::apply
-        self.logic.apply(state, &saga_event);
-
-        tracing::debug!(
-            event_id = %event_id,
-            event_type = %event.event_type,
-            phase = ?state.phase,
-            "Projected saga event to in-memory state"
-        );
-
-        Ok(())
-    }
-
-    /// Extract event_id from a saga event.
-    fn extract_event_id(event: &SagaEvent) -> EventId {
-        match event {
-            SagaEvent::Initiated { event_id, .. }
-            | SagaEvent::EventCreated { event_id, .. }
-            | SagaEvent::SectionInventoryInitialized { event_id, .. }
-            | SagaEvent::Completed { event_id, .. }
-            | SagaEvent::EventCreationFailed { event_id, .. }
-            | SagaEvent::InventoryInitializationFailed { event_id, .. }
-            | SagaEvent::CompensationStarted { event_id, .. }
-            | SagaEvent::CompensationCompleted { event_id, .. }
-            | SagaEvent::Failed { event_id, .. } => *event_id,
         }
     }
 }
 
-impl Projector for EventInventorySagaProjector {
-    #[instrument(skip(self, events), fields(event_count = events.len()))]
-    fn project(
-        &self,
-        events: &[SerializedEvent],
-    ) -> impl std::future::Future<Output = Result<(), ProjectionError>> + Send {
-        let events_owned: Vec<SerializedEvent> = events.to_vec();
-        let this = self.clone();
-
-        async move {
-            for event in &events_owned {
-                this.project_event(event).await?;
-            }
-
-            tracing::debug!(count = events_owned.len(), "Projected all saga events");
-            Ok(())
+impl PgTransactionalProjector for PgEventInventorySagaStateProjector {
+    async fn project_in_tx<'a>(
+        &'a self,
+        conn: &'a mut sqlx::PgConnection,
+        final_version: Version,
+        events: &'a [SerializedEvent],
+    ) -> Result<(), ProjectionError> {
+        // Decode the just-appended events (all share one saga stream).
+        let mut decoded = Vec::with_capacity(events.len());
+        for event in events {
+            let saga_event: SagaEvent = bincode::deserialize(&event.payload).map_err(|e| {
+                ProjectionError::Deserialization(format!("event-inventory saga event: {e}"))
+            })?;
+            decoded.push(saga_event);
         }
+        let Some(first) = decoded.first() else {
+            return Ok(());
+        };
+        let event_id = event_inventory_saga_id_of(first);
+
+        // Load the prior authoritative state (locked) and fold the new events onto it.
+        let prior: Option<(serde_json::Value, i16)> = sqlx::query_as(
+            "SELECT state, state_version FROM saga_state_event_inventory \
+             WHERE event_id = $1 FOR UPDATE",
+        )
+        .bind(event_id.as_uuid())
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(|e| ProjectionError::Database(e.to_string()))?;
+
+        let mut state: SagaState = match prior {
+            Some((json, stored_version)) => {
+                if stored_version != EVENT_INVENTORY_SAGA_STATE_VERSION {
+                    return Err(ProjectionError::Custom(format!(
+                        "saga_state_event_inventory.state_version {stored_version} != expected \
+                         {EVENT_INVENTORY_SAGA_STATE_VERSION}; SagaState shape changed — run a \
+                         state migration before deploying"
+                    )));
+                }
+                serde_json::from_value(json).map_err(|e| {
+                    ProjectionError::Deserialization(format!("saga_state_event_inventory: {e}"))
+                })?
+            }
+            None => SagaState::default(),
+        };
+        for saga_event in &decoded {
+            self.logic.apply(&mut state, saga_event);
+        }
+
+        // Upsert the authoritative row (monotonic: ignore stale replays).
+        let state_json = serde_json::to_value(&state)
+            .map_err(|e| ProjectionError::Custom(format!("serialize saga_state: {e}")))?;
+        let phase = serde_json::to_value(&state.phase)
+            .ok()
+            .and_then(|v| v.as_str().map(ToOwned::to_owned))
+            .unwrap_or_else(|| format!("{:?}", state.phase));
+        let version_i64 = i64::try_from(final_version.as_u64()).unwrap_or(i64::MAX);
+
+        sqlx::query(
+            r"
+            INSERT INTO saga_state_event_inventory
+                (event_id, version, phase, state, state_version, updated_at)
+            VALUES ($1, $2, $3, $4, $5, now())
+            ON CONFLICT (event_id) DO UPDATE
+                SET version = EXCLUDED.version,
+                    phase = EXCLUDED.phase,
+                    state = EXCLUDED.state,
+                    state_version = EXCLUDED.state_version,
+                    updated_at = now()
+            WHERE saga_state_event_inventory.version < EXCLUDED.version
+            ",
+        )
+        .bind(event_id.as_uuid())
+        .bind(version_i64)
+        .bind(&phase)
+        .bind(&state_json)
+        .bind(EVENT_INVENTORY_SAGA_STATE_VERSION)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| ProjectionError::Database(e.to_string()))?;
+
+        Ok(())
+    }
+}
+
+/// Adapts a [`PostgresEventStore`] + [`PgEventInventorySagaStateProjector`] into the
+/// framework's [`DynAtomicPersist`] seam, so the saga's `Handler` appends events and
+/// updates `saga_state_event_inventory` in a single transaction.
+#[derive(Clone)]
+pub struct PgEventInventorySagaAtomicPersist {
+    event_store: PostgresEventStore,
+    projector: PgEventInventorySagaStateProjector,
+}
+
+impl PgEventInventorySagaAtomicPersist {
+    /// Create a new atomic-persist adapter over the given event store.
+    #[must_use]
+    pub fn new(event_store: PostgresEventStore) -> Self {
+        Self {
+            event_store,
+            projector: PgEventInventorySagaStateProjector::new(),
+        }
+    }
+}
+
+impl DynAtomicPersist for PgEventInventorySagaAtomicPersist {
+    fn append_and_project<'a>(
+        &'a self,
+        stream_id: &'a StreamId,
+        expected_version: Option<Version>,
+        events: Vec<SerializedEvent>,
+    ) -> futures::future::BoxFuture<'a, Result<Version, AtomicError>> {
+        Box::pin(async move {
+            self.event_store
+                .append_with_projection(stream_id, expected_version, events, &self.projector)
+                .await
+        })
     }
 }
 
@@ -1221,16 +1253,26 @@ impl PgTransactionalProjector for PgReservationSagaStateProjector {
         let reservation_id = reservation_saga_id_of(first);
 
         // Load the prior authoritative state (locked) and fold the new events onto it.
-        let prior: Option<serde_json::Value> =
-            sqlx::query_scalar("SELECT state FROM saga_state WHERE reservation_id = $1 FOR UPDATE")
-                .bind(reservation_id.as_uuid())
-                .fetch_optional(&mut *conn)
-                .await
-                .map_err(|e| ProjectionError::Database(e.to_string()))?;
+        let prior: Option<(serde_json::Value, i16)> = sqlx::query_as(
+            "SELECT state, state_version FROM saga_state WHERE reservation_id = $1 FOR UPDATE",
+        )
+        .bind(reservation_id.as_uuid())
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(|e| ProjectionError::Database(e.to_string()))?;
 
         let mut state: ReservationSagaState = match prior {
-            Some(json) => serde_json::from_value(json)
-                .map_err(|e| ProjectionError::Deserialization(format!("saga_state: {e}")))?,
+            Some((json, stored_version)) => {
+                if stored_version != RESERVATION_SAGA_STATE_VERSION {
+                    return Err(ProjectionError::Custom(format!(
+                        "saga_state.state_version {stored_version} != expected \
+                         {RESERVATION_SAGA_STATE_VERSION}; ReservationSagaState shape changed — \
+                         run a state migration before deploying"
+                    )));
+                }
+                serde_json::from_value(json)
+                    .map_err(|e| ProjectionError::Deserialization(format!("saga_state: {e}")))?
+            }
             None => ReservationSagaState::default(),
         };
         for saga_event in &decoded {
@@ -1248,13 +1290,15 @@ impl PgTransactionalProjector for PgReservationSagaStateProjector {
 
         sqlx::query(
             r"
-            INSERT INTO saga_state (reservation_id, version, phase, expires_at, state, updated_at)
-            VALUES ($1, $2, $3, $4, $5, now())
+            INSERT INTO saga_state
+                (reservation_id, version, phase, expires_at, state, state_version, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, now())
             ON CONFLICT (reservation_id) DO UPDATE
                 SET version = EXCLUDED.version,
                     phase = EXCLUDED.phase,
                     expires_at = EXCLUDED.expires_at,
                     state = EXCLUDED.state,
+                    state_version = EXCLUDED.state_version,
                     updated_at = now()
             WHERE saga_state.version < EXCLUDED.version
             ",
@@ -1264,6 +1308,7 @@ impl PgTransactionalProjector for PgReservationSagaStateProjector {
         .bind(&phase)
         .bind(state.expires_at)
         .bind(&state_json)
+        .bind(RESERVATION_SAGA_STATE_VERSION)
         .execute(&mut *conn)
         .await
         .map_err(|e| ProjectionError::Database(e.to_string()))?;

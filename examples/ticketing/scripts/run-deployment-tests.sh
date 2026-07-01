@@ -44,8 +44,6 @@ echo -e "${YELLOW}   Truncating projections...${NC}"
 docker exec ticketing-projections psql -U postgres -d ticketing_projections -c "TRUNCATE available_seats, payments, reservations, ownership_indices CASCADE;" > /dev/null 2>&1 || true
 echo -e "${YELLOW}   Truncating auth...${NC}"
 docker exec ticketing-auth psql -U postgres -d ticketing_auth -c "TRUNCATE users, sessions, magic_links, oauth_states CASCADE;" > /dev/null 2>&1 || true
-echo -e "${YELLOW}   Truncating analytics...${NC}"
-docker exec ticketing-analytics psql -U postgres -d ticketing_analytics -c "TRUNCATE event_sales CASCADE;" > /dev/null 2>&1 || true
 echo -e "${GREEN}✅ PostgreSQL databases cleared${NC}"
 echo ""
 

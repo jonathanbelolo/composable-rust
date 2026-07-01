@@ -176,9 +176,10 @@ impl InMemoryEventStore {
     /// and [`AtomicError::Projection`] is returned, so callers observe all-or-nothing
     /// semantics without a real database.
     ///
-    /// The internal lock is never held across the `.await`, so a small visibility
-    /// window exists between append and projection under true concurrency — this is
-    /// irrelevant for deterministic single-threaded tests.
+    /// The internal lock is never held across the `.await`. On projection failure the
+    /// rollback removes exactly the versions this call appended (by version range),
+    /// rather than truncating to a prior length — so it never discards a concurrent
+    /// writer's events even if one slipped in during the projection window.
     ///
     /// # Errors
     ///
@@ -202,14 +203,14 @@ impl InMemoryEventStore {
     {
         let key = stream_id.as_str().to_string();
 
-        // Phase 1: append under the lock (no `.await` held), recording prior length.
-        let (prior_len, final_version, versioned) = {
+        // Phase 1: append under the lock (no `.await` held), recording the version
+        // range this call assigns so rollback can target exactly those events.
+        let (appended_lo, final_version, versioned) = {
             let mut streams = self
                 .streams
                 .write()
                 .expect("InMemoryEventStore lock poisoned");
             let stream = streams.entry(key.clone()).or_default();
-            let prior_len = stream.len();
             let current_version = if stream.is_empty() {
                 Version::initial()
             } else {
@@ -231,18 +232,25 @@ impl InMemoryEventStore {
                 stream.push(event);
             }
             let final_version = Version::new(stream.len() as u64);
-            (prior_len, final_version, versioned)
+            (start_version, final_version, versioned)
         };
 
         // Phase 2: run the projection with the lock released.
         if let Err(e) = project(final_version, versioned).await {
-            // Phase 3: roll the appended events back.
+            // Phase 3: roll back only the versions this call appended, so a concurrent
+            // writer's events (outside [appended_lo, final_version]) are preserved.
+            let hi = final_version.as_u64();
             let mut streams = self
                 .streams
                 .write()
                 .expect("InMemoryEventStore lock poisoned");
             if let Some(stream) = streams.get_mut(&key) {
-                stream.truncate(prior_len);
+                stream.retain(|e| {
+                    e.version.is_none_or(|v| {
+                        let n = v.as_u64();
+                        n < appended_lo || n > hi
+                    })
+                });
             }
             return Err(AtomicError::Projection(e));
         }
@@ -795,7 +803,8 @@ impl DynAtomicPersist for InMemoryAtomicPersist {
 mod tests {
     use super::*;
     use crate::{
-        BusinessLogic, BusinessResult, CallExecutor, FixedClock, Handler, NoOpQueryFetcher,
+        BusinessLogic, BusinessResult, CallExecutor, FixedClock, Handler, HandlerError,
+        NoOpQueryFetcher,
     };
     use chrono::Utc;
 
@@ -984,6 +993,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn append_with_projection_rollback_preserves_concurrent_events() {
+        // Regression guard: rollback must remove only the versions THIS call appended,
+        // never a concurrent writer's events that landed during the projection window.
+        let store = InMemoryEventStore::new();
+        let stream_id = StreamId::new("saga-1");
+
+        // Seed one committed event (version 1).
+        store
+            .append(&stream_id, None, vec![make_event("Seed")])
+            .await
+            .unwrap();
+
+        let concurrent = store.clone();
+        let concurrent_stream = stream_id.clone();
+        let result = store
+            .append_with_projection(
+                &stream_id,
+                Some(Version::new(1)),
+                vec![make_event("E2")], // appended as version 2
+                |_version, _events| async move {
+                    // A concurrent writer commits version 3 while the projection runs.
+                    concurrent
+                        .append(&concurrent_stream, Some(Version::new(2)), vec![make_event("E3")])
+                        .await
+                        .unwrap();
+                    Err(ProjectionError::Custom("boom".to_string()))
+                },
+            )
+            .await;
+
+        assert!(matches!(result, Err(AtomicError::Projection(_))));
+
+        let events = store.events_for_stream("saga-1");
+        // Seed (v1) + the concurrent E3 (v3) survive; only our E2 (v2) is rolled back.
+        assert_eq!(events.len(), 2, "concurrent writer's event must survive rollback");
+        assert!(
+            events.iter().any(|e| e.event_type == "E3"),
+            "the concurrent writer's E3 must be preserved"
+        );
+        assert!(
+            events.iter().all(|e| e.event_type != "E2"),
+            "our failed append (E2) must be rolled back"
+        );
+    }
+
+    #[tokio::test]
     async fn append_with_projection_version_conflict_skips_projection() {
         let store = InMemoryEventStore::new();
         let stream_id = StreamId::new("saga-1");
@@ -1071,11 +1126,14 @@ mod tests {
             }
         }
 
-        fn feedback_input_from(prior: &SagaIn, results: Vec<()>) -> SagaIn {
+        fn feedback_input_from(
+            prior: &SagaIn,
+            results: Vec<()>,
+        ) -> Result<SagaIn, HandlerError<Self::Error>> {
             let id = match prior {
                 SagaIn::Start { id } | SagaIn::Feedback { id, .. } => *id,
             };
-            SagaIn::Feedback { id, results }
+            Ok(SagaIn::Feedback { id, results })
         }
 
         fn event_type_name(event: &SagaEv) -> &'static str {

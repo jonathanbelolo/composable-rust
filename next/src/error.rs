@@ -138,6 +138,16 @@ pub enum HandlerError<E: std::error::Error> {
         /// The maximum iterations that were allowed
         max_iterations: u32,
     },
+
+    /// A saga returned `Continue` but its `BusinessLogic` does not implement
+    /// [`feedback_input_from`](crate::BusinessLogic::feedback_input_from).
+    ///
+    /// This is a programming error in the saga: any logic that returns
+    /// `BusinessResult::Continue` must convert its call results into the next
+    /// input. Surfaced as an error (rather than a library panic) so a
+    /// mis-implemented saga fails cleanly instead of aborting the worker task.
+    #[error("saga returned Continue but feedback_input_from is not implemented")]
+    FeedbackNotImplemented,
 }
 
 impl<E: std::error::Error> HandlerError<E> {

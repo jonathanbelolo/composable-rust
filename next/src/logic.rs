@@ -1,6 +1,6 @@
 //! The unified `BusinessLogic` trait for aggregates and sagas
 
-use crate::{BusinessResult, Clock, SerializationError, SerializedEvent, StreamId};
+use crate::{BusinessResult, Clock, HandlerError, StreamId};
 use serde::{Serialize, de::DeserializeOwned};
 
 /// Unified trait for all business logic—aggregates and sagas alike
@@ -164,8 +164,11 @@ use serde::{Serialize, de::DeserializeOwned};
 ///         }
 ///     }
 ///
-///     fn feedback_input(results: Vec<SagaCallResult>) -> SagaInput {
-///         SagaInput::Feedback { results, .. }
+///     fn feedback_input_from(
+///         prior: &SagaInput,
+///         results: Vec<SagaCallResult>,
+///     ) -> Result<SagaInput, HandlerError<SagaError>> {
+///         Ok(SagaInput::Feedback { results, .. })
 ///     }
 /// }
 /// ```
@@ -279,26 +282,6 @@ pub trait BusinessLogic: Send + Sync + 'static {
     /// - Testing (replaying events to verify state)
     fn apply(&self, state: &mut Self::State, event: &Self::Event);
 
-    /// Convert aggregate call results into input for the next iteration (saga only)
-    ///
-    /// Aggregates use `Infallible` for `CallResult`, so this is never called.
-    /// The default implementation panics—sagas **must** override this.
-    ///
-    /// # Arguments
-    ///
-    /// - `results`: Results from the aggregate calls
-    /// - `saga_id`: The saga ID (for constructing the feedback input)
-    ///
-    /// # Panics
-    ///
-    /// Panics if called on an aggregate (which should never happen since
-    /// aggregates always return `Done` and never receive feedback).
-    #[must_use]
-    #[allow(clippy::panic)] // Intentional: this should never be called for aggregates
-    fn feedback_input(_results: Vec<Self::CallResult>) -> Self::Input {
-        panic!("Aggregates don't use Continue, so feedback_input should never be called")
-    }
-
     /// Build the next saga input from the prior input plus the call results.
     ///
     /// The `prior` input is the command/feedback that produced the `Continue`, so it
@@ -307,47 +290,21 @@ pub trait BusinessLogic: Send + Sync + 'static {
     /// [`CallResult`](Self::CallResult)s — which is fragile when a call *fails* (an error
     /// result may carry no id).
     ///
-    /// The default delegates to [`feedback_input`](Self::feedback_input), preserving
-    /// existing behavior; sagas that need the correlation key should override this.
-    #[must_use]
-    fn feedback_input_from(_prior: &Self::Input, results: Vec<Self::CallResult>) -> Self::Input {
-        Self::feedback_input(results)
-    }
-
-    /// Rebuild state by folding decoded events through [`apply`](Self::apply).
-    ///
-    /// This is for projection rebuilding and recovery (replaying a stream to
-    /// reconstruct `State`), not the normal command flow.
-    #[must_use]
-    fn rebuild_state(&self, events: &[Self::Event]) -> Self::State {
-        let mut state = Self::State::default();
-        for event in events {
-            self.apply(&mut state, event);
-        }
-        state
-    }
-
-    /// Rebuild state by decoding bincode [`SerializedEvent`] payloads into
-    /// [`Event`](Self::Event)s and folding them through [`apply`](Self::apply).
-    ///
-    /// Replay hard-fails on a decode error rather than silently dropping events
-    /// (which would yield a wrong `State`).
+    /// Only called for logic that returns [`BusinessResult::Continue`] (sagas). The
+    /// default returns [`HandlerError::FeedbackNotImplemented`] so that a saga which
+    /// forgets to implement it fails cleanly instead of panicking the worker task.
+    /// Aggregates and queries (`CallResult = Infallible`) never return `Continue`, so
+    /// they never reach this method and need not override it.
     ///
     /// # Errors
     ///
-    /// Returns [`SerializationError::Decode`] (tagged with the event type) if any
-    /// payload fails to decode.
-    fn rebuild_state_from_serialized(
-        &self,
-        events: &[SerializedEvent],
-    ) -> Result<Self::State, SerializationError> {
-        let mut state = Self::State::default();
-        for event in events {
-            let decoded: Self::Event = bincode::deserialize(&event.payload)
-                .map_err(|e| SerializationError::Decode(format!("{}: {e}", event.event_type)))?;
-            self.apply(&mut state, &decoded);
-        }
-        Ok(state)
+    /// Returns [`HandlerError::FeedbackNotImplemented`] if a `Continue`-returning logic
+    /// does not override this method.
+    fn feedback_input_from(
+        _prior: &Self::Input,
+        _results: Vec<Self::CallResult>,
+    ) -> Result<Self::Input, HandlerError<Self::Error>> {
+        Err(HandlerError::FeedbackNotImplemented)
     }
 
     /// Event type name for serialization

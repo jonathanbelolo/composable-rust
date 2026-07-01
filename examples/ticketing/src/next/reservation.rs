@@ -285,13 +285,8 @@ impl BusinessLogic for ReservationQueryLogic {
         // Queries are read-only, no state changes
     }
 
-    fn feedback_input(results: Vec<Self::CallResult>) -> Self::Input {
-        // No calls - Infallible means this is never called
-        match results.first() {
-            Some(infallible) => match *infallible {},
-            None => unreachable!("ReservationQueryLogic has no external calls"),
-        }
-    }
+    // No calls (CallResult = Infallible) → never returns Continue → the default
+    // feedback_input_from is never reached; no override needed.
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

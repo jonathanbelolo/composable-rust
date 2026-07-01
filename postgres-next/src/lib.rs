@@ -244,6 +244,32 @@ pub trait PgTransactionalProjector: Send + Sync {
     ) -> impl std::future::Future<Output = Result<(), ProjectionError>> + Send + 'a;
 }
 
+/// Classify an event-`INSERT` failure into a domain [`EventStoreError`].
+///
+/// A `23505` unique-constraint violation means a concurrent writer already
+/// committed `attempted_version` for this stream — an optimistic-concurrency
+/// conflict. We deliberately do **not** re-query the actual version here: after
+/// any statement error `PostgreSQL` aborts the surrounding transaction (`25P02`),
+/// so a follow-up `SELECT` on the same connection would itself fail and mask the
+/// real conflict as a [`EventStoreError::Connection`] — which the caller's retry
+/// loop does not recognize. `attempted_version` (the version we tried to insert,
+/// which the collision proves already exists) is a truthful `actual`.
+fn classify_insert_error(
+    e: &sqlx::Error,
+    expected_version: Option<Version>,
+    attempted_version: Version,
+) -> EventStoreError {
+    if let Some(db_err) = e.as_database_error() {
+        if db_err.code().as_deref() == Some("23505") {
+            return EventStoreError::VersionConflict {
+                expected: expected_version,
+                actual: attempted_version,
+            };
+        }
+    }
+    EventStoreError::Connection(e.to_string())
+}
+
 /// Version-check and insert `events` on an open transaction/connection (no commit).
 ///
 /// Shared core used by [`PostgresEventStore::append_with_projection`]; mirrors the
@@ -298,26 +324,8 @@ async fn insert_events_tx(
         .await;
 
         if let Err(e) = result {
-            if let Some(db_err) = e.as_database_error() {
-                if db_err.code().as_deref() == Some("23505") {
-                    let actual_i64: Option<i64> =
-                        sqlx::query_scalar("SELECT MAX(version) FROM events WHERE stream_id = $1")
-                            .bind(stream_id)
-                            .fetch_optional(&mut *conn)
-                            .await
-                            .map_err(|e| EventStoreError::Connection(e.to_string()))?;
-
-                    let actual = actual_i64.map_or_else(Version::initial, |v| {
-                        Version::new(v.try_into().unwrap_or(0))
-                    });
-
-                    return Err(EventStoreError::VersionConflict {
-                        expected: expected_version,
-                        actual,
-                    });
-                }
-            }
-            return Err(EventStoreError::Connection(e.to_string()));
+            // Do not re-query here: the transaction is aborted after this error.
+            return Err(classify_insert_error(&e, expected_version, next_version));
         }
 
         next_version = next_version.next();
@@ -525,29 +533,9 @@ impl EventStore for PostgresEventStore {
                 .await;
 
                 if let Err(e) = result {
-                    // Check for unique constraint violation (concurrent modification)
-                    if let Some(db_err) = e.as_database_error() {
-                        if db_err.code().as_deref() == Some("23505") {
-                            // Re-query actual version
-                            let actual_i64: Option<i64> = sqlx::query_scalar(
-                                "SELECT MAX(version) FROM events WHERE stream_id = $1",
-                            )
-                            .bind(&stream_id_str)
-                            .fetch_optional(&mut *tx)
-                            .await
-                            .map_err(|e| EventStoreError::Connection(e.to_string()))?;
-
-                            let actual = actual_i64.map_or_else(Version::initial, |v| {
-                                Version::new(v.try_into().unwrap_or(0))
-                            });
-
-                            return Err(EventStoreError::VersionConflict {
-                                expected: expected_version,
-                                actual,
-                            });
-                        }
-                    }
-                    return Err(EventStoreError::Connection(e.to_string()));
+                    // Do not re-query here: the transaction is aborted after this error,
+                    // so a follow-up SELECT would mask the conflict as a Connection error.
+                    return Err(classify_insert_error(&e, expected_version, next_version));
                 }
 
                 next_version = next_version.next();

@@ -103,18 +103,35 @@ impl<P: Projector> DynProjector for P {
 ///
 /// # Example
 ///
+/// Compose two *distinct* read-model projectors so a single write fans out to both.
+/// (The behavior — registration-order fan-out, short-circuit on error, and use as a
+/// real [`HandlerEnvironment::Projector`](crate::HandlerEnvironment::Projector) driven
+/// through the [`Handler`](crate::Handler) — is covered by this module's tests.)
+///
 /// ```rust
 /// use composable_rust_next::{MultiProjector, ProjectionError, Projector, SerializedEvent};
 ///
-/// struct DtoProjector;
-/// impl Projector for DtoProjector {
+/// // Read model #1: the aggregate's DTO table.
+/// struct ReservationDtoProjector;
+/// impl Projector for ReservationDtoProjector {
 ///     async fn project(&self, _events: &[SerializedEvent]) -> Result<(), ProjectionError> {
-///         Ok(())
+///         Ok(()) // ... upsert the reservation DTO row(s) ...
 ///     }
 /// }
 ///
-/// // Compose several projectors behind a single `Projector`.
-/// let _projector = MultiProjector::new().with(DtoProjector).with(DtoProjector);
+/// // Read model #2: a separate throughput-measurement table that owns its own schema.
+/// struct ThroughputMeasurementProjector;
+/// impl Projector for ThroughputMeasurementProjector {
+///     async fn project(&self, _events: &[SerializedEvent]) -> Result<(), ProjectionError> {
+///         Ok(()) // ... record per-batch throughput ...
+///     }
+/// }
+///
+/// // One `Projector` that updates both read models, in registration order.
+/// let projector = MultiProjector::new()
+///     .with(ReservationDtoProjector)
+///     .with(ThroughputMeasurementProjector);
+/// let _ = projector; // drop into an environment's `Projector` slot
 /// ```
 #[derive(Clone, Default)]
 pub struct MultiProjector {

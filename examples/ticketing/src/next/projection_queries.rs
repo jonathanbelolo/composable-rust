@@ -1747,112 +1747,130 @@ impl QueryFetcher<ReservationQueryCommand, ReservationProjectionQueries> for Res
 // Event-Inventory Saga Query Fetcher
 // ═══════════════════════════════════════════════════════════════════════════
 
-use super::event_inventory_saga::{SagaInput, SagaState};
-use super::projector::InMemorySagaProjection;
+use super::event_inventory_saga::{EVENT_INVENTORY_SAGA_STATE_VERSION, SagaInput, SagaState};
 
-/// In-memory projection queries for the Event-Inventory saga.
+/// `PostgreSQL`-backed projection queries for the Event-Inventory saga.
 ///
-/// This is a thin wrapper around [`InMemorySagaProjection`] that implements
-/// [`ProjectionQueries`]. It enables the [`SagaQueryFetcher`] to look up
-/// saga state during feedback loops.
-///
-/// # Thread Safety
-///
-/// Uses async locking via `tokio::sync::RwLock` for concurrent access.
+/// Reads the durable `saga_state_event_inventory` table (written transactionally with
+/// the saga's event append), so it is restart-safe and always consistent with the
+/// event stream.
 #[derive(Clone)]
-pub struct SagaProjectionQueries {
-    state: InMemorySagaProjection,
+pub struct EventInventorySagaProjectionQueries {
+    pool: PgPool,
 }
 
-impl SagaProjectionQueries {
-    /// Create new saga projection queries with the given shared state.
+impl EventInventorySagaProjectionQueries {
+    /// Create new event-inventory saga projection queries over the shared pool.
     #[must_use]
-    pub const fn new(state: InMemorySagaProjection) -> Self {
-        Self { state }
+    pub const fn new(pool: PgPool) -> Self {
+        Self { pool }
     }
 
-    /// Get the current state for a saga by event_id.
+    /// Load the durable saga state and its version for an event.
     ///
-    /// Returns `None` if no saga exists for this event_id.
-    pub async fn get_saga_state(&self, event_id: crate::types::EventId) -> Option<SagaState> {
-        self.state.read().await.get(&event_id).cloned()
+    /// The `version` equals the saga stream's `MAX(version)` (the row is written in
+    /// the append transaction), so it can be used directly for optimistic concurrency.
+    /// Returns `None` if no saga exists for this event.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails, the stored state cannot be decoded, or the
+    /// persisted `state_version` does not match the current shape.
+    pub async fn get_saga_state(
+        &self,
+        event_id: EventId,
+    ) -> Result<Option<(SagaState, Version)>, sqlx::Error> {
+        let row: Option<(serde_json::Value, i64, i16)> = sqlx::query_as(
+            "SELECT state, version, state_version FROM saga_state_event_inventory \
+             WHERE event_id = $1",
+        )
+        .bind(event_id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some((json, version, state_version)) => {
+                if state_version != EVENT_INVENTORY_SAGA_STATE_VERSION {
+                    return Err(sqlx::Error::Decode(
+                        format!(
+                            "saga_state_event_inventory.state_version {state_version} != expected \
+                             {EVENT_INVENTORY_SAGA_STATE_VERSION}; SagaState shape changed — run a \
+                             state migration before deploying"
+                        )
+                        .into(),
+                    ));
+                }
+                let state: SagaState =
+                    serde_json::from_value(json).map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
+                Ok(Some((state, Version::new(u64::try_from(version).unwrap_or(0)))))
+            }
+            None => Ok(None),
+        }
     }
 }
 
-impl ProjectionQueries for SagaProjectionQueries {
-    type Error = std::convert::Infallible;
+impl ProjectionQueries for EventInventorySagaProjectionQueries {
+    type Error = sqlx::Error;
 }
 
 /// Query fetcher for the Event-Inventory saga.
 ///
-/// This fetcher populates the `fetched` field in [`SagaInput::Feedback`]
-/// with the current saga state from the in-memory projection.
-///
-/// # Flow
-///
-/// ```text
-/// Handler.handle(input)
-///     │
-///     ├─► SagaQueryFetcher.fetch(Feedback { event_id, fetched: None })
-///     │         │
-///     │         └─► SagaProjectionQueries.get_saga_state(event_id)
-///     │                  │
-///     │                  └─► InMemorySagaProjection (HashMap)
-///     │
-///     └─► BusinessLogic.process(Feedback { event_id, fetched: Some(state) })
-/// ```
-#[derive(Clone)]
-pub struct SagaQueryFetcher {
-    state: InMemorySagaProjection,
-}
+/// Rehydrates saga state from the durable `saga_state_event_inventory` table and
+/// returns the stream version as `expected_version` for optimistic-concurrency
+/// protection across asynchronous restarts. `CreateEventWithInventory` opens a new
+/// stream (expects it empty, so a duplicate conflicts). `Feedback` carries the loaded
+/// state in `fetched`.
+#[derive(Clone, Copy, Default)]
+pub struct EventInventorySagaQueryFetcher;
 
-impl SagaQueryFetcher {
-    /// Create a new saga query fetcher with the given shared state.
-    ///
-    /// # Arguments
-    ///
-    /// * `state` - Shared state with the [`EventInventorySagaProjector`](super::projector::EventInventorySagaProjector)
+impl EventInventorySagaQueryFetcher {
+    /// Create a new event-inventory saga query fetcher.
     #[must_use]
-    pub const fn new(state: InMemorySagaProjection) -> Self {
-        Self { state }
+    pub const fn new() -> Self {
+        Self
     }
 }
 
-impl QueryFetcher<SagaInput, SagaProjectionQueries> for SagaQueryFetcher {
-    type Error = std::convert::Infallible;
+impl QueryFetcher<SagaInput, EventInventorySagaProjectionQueries>
+    for EventInventorySagaQueryFetcher
+{
+    type Error = sqlx::Error;
 
     async fn fetch(
         &self,
         input: SagaInput,
-        _projections: &SagaProjectionQueries,
+        projections: &EventInventorySagaProjectionQueries,
     ) -> Result<FetchResult<SagaInput>, Self::Error> {
         match input {
-            // For initial commands, pass through - no state to fetch
+            // Initiation opens a new stream — expect it empty so a duplicate (same
+            // event_id) conflicts instead of initiating twice.
             SagaInput::CreateEventWithInventory { .. } => {
-                Ok(FetchResult::new_entity(input))
+                Ok(FetchResult::new(input, Some(Version::initial())))
             }
 
-            // For feedback, look up saga state by event_id
             SagaInput::Feedback {
                 event_id,
                 results,
-                fetched: _,
+                ..
             } => {
-                // Read state from the shared in-memory projection
-                let fetched = self.state.read().await.get(&event_id).cloned();
-
+                let loaded = projections.get_saga_state(event_id).await?;
                 tracing::debug!(
                     event_id = %event_id,
-                    found = fetched.is_some(),
-                    phase = ?fetched.as_ref().map(|s| &s.phase),
-                    "Fetched saga state for feedback"
+                    found = loaded.is_some(),
+                    "Rehydrated event-inventory saga state for feedback"
                 );
-
-                Ok(FetchResult::new_entity(SagaInput::Feedback {
-                    event_id,
-                    results,
-                    fetched,
-                }))
+                let (fetched, version) = match loaded {
+                    Some((state, version)) => (Some(state), Some(version)),
+                    None => (None, None),
+                };
+                Ok(FetchResult::new(
+                    SagaInput::Feedback {
+                        event_id,
+                        results,
+                        fetched,
+                    },
+                    version,
+                ))
             }
         }
     }
@@ -1862,7 +1880,9 @@ impl QueryFetcher<SagaInput, SagaProjectionQueries> for SagaQueryFetcher {
 // Reservation Saga Query Fetcher
 // ═══════════════════════════════════════════════════════════════════════════
 
-use super::reservation_saga::{ReservationSagaInput, ReservationSagaState};
+use super::reservation_saga::{
+    RESERVATION_SAGA_STATE_VERSION, ReservationSagaInput, ReservationSagaState,
+};
 
 /// `PostgreSQL`-backed projection queries for the Reservation saga.
 ///
@@ -1893,14 +1913,25 @@ impl ReservationSagaProjectionQueries {
         &self,
         reservation_id: ReservationId,
     ) -> Result<Option<(ReservationSagaState, Version)>, sqlx::Error> {
-        let row: Option<(serde_json::Value, i64)> =
-            sqlx::query_as("SELECT state, version FROM saga_state WHERE reservation_id = $1")
-                .bind(reservation_id.as_uuid())
-                .fetch_optional(&self.pool)
-                .await?;
+        let row: Option<(serde_json::Value, i64, i16)> = sqlx::query_as(
+            "SELECT state, version, state_version FROM saga_state WHERE reservation_id = $1",
+        )
+        .bind(reservation_id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await?;
 
         match row {
-            Some((json, version)) => {
+            Some((json, version, state_version)) => {
+                if state_version != RESERVATION_SAGA_STATE_VERSION {
+                    return Err(sqlx::Error::Decode(
+                        format!(
+                            "saga_state.state_version {state_version} != expected \
+                             {RESERVATION_SAGA_STATE_VERSION}; ReservationSagaState shape changed \
+                             — run a state migration before deploying"
+                        )
+                        .into(),
+                    ));
+                }
                 let state: ReservationSagaState =
                     serde_json::from_value(json).map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
                 Ok(Some((state, Version::new(u64::try_from(version).unwrap_or(0)))))

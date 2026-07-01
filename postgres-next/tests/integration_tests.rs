@@ -11,6 +11,14 @@
 //! Docker must be running.
 
 #![allow(clippy::expect_used)]
+#![allow(clippy::unwrap_used)]
+// Test-harness noise: these lints target production-code concerns, not integration tests.
+#![allow(clippy::panic)]
+#![allow(clippy::too_many_lines)]
+#![allow(clippy::single_match)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_sign_loss)]
+#![allow(clippy::needless_borrows_for_generic_args)]
 
 use composable_rust_next::{
     AtomicError, EventStore, EventStoreError, ProjectionError, SerializedEvent, StreamId, Version,
@@ -756,8 +764,15 @@ async fn postgres_event_store_integration() {
         for handle in handles {
             match handle.await.unwrap() {
                 Ok(_) => successes += 1,
-                Err(EventStoreError::VersionConflict { .. }) => conflicts += 1,
-                Err(_) => conflicts += 1, // Connection errors from aborted transactions
+                // A losing race MUST surface as VersionConflict, never a masked
+                // Connection error from an aborted transaction (see classify_insert_error).
+                Err(e) => {
+                    assert!(
+                        matches!(e, EventStoreError::VersionConflict { .. }),
+                        "concurrent append must conflict with VersionConflict, got: {e:?}"
+                    );
+                    conflicts += 1;
+                }
             }
         }
 
@@ -813,14 +828,21 @@ async fn postgres_event_store_integration() {
         for handle in handles {
             match handle.await.unwrap() {
                 Ok(_) => successes += 1,
-                // All errors count as conflicts in this concurrent scenario
-                Err(_) => conflicts += 1,
+                // Losers MUST conflict with VersionConflict — not a masked Connection
+                // error from an aborted transaction (see classify_insert_error).
+                Err(e) => {
+                    assert!(
+                        matches!(e, EventStoreError::VersionConflict { .. }),
+                        "concurrent append must conflict with VersionConflict, got: {e:?}"
+                    );
+                    conflicts += 1;
+                }
             }
         }
 
-        // Exactly one should succeed, rest should conflict (either version or tx abort)
+        // Exactly one should succeed, the rest MUST get VersionConflict.
         assert_eq!(successes, 1, "exactly one concurrent append should succeed");
-        assert_eq!(conflicts, 4, "four should get conflict or tx error");
+        assert_eq!(conflicts, 4, "four should get VersionConflict");
 
         let events = store.load(&id, None).await.unwrap();
         assert_eq!(
@@ -829,6 +851,59 @@ async fn postgres_event_store_integration() {
             "should have original + one successful append"
         );
         println!("  [PASS] concurrent_appends_same_stream_with_version");
+    }
+
+    // Test 32b: concurrent_create_time_occ - duplicate initiation dedups via VersionConflict.
+    // The idempotency-under-concurrency case: two writers both target a FRESH stream at
+    // expected = Version::initial(). Exactly one wins; the other MUST get VersionConflict
+    // (a regression guard for classify_insert_error — it must not surface a masked
+    // Connection error from the aborted transaction after the 23505 unique violation).
+    {
+        db.reset().await;
+        let store = db.store();
+        let id = StreamId::new("idempotent-stream");
+
+        let a = {
+            let store = store.clone();
+            let id = id.clone();
+            tokio::spawn(async move {
+                store
+                    .append(&id, Some(Version::initial()), vec![event("Init", b"a")])
+                    .await
+            })
+        };
+        let b = {
+            let store = store.clone();
+            let id = id.clone();
+            tokio::spawn(async move {
+                store
+                    .append(&id, Some(Version::initial()), vec![event("Init", b"b")])
+                    .await
+            })
+        };
+
+        let mut successes = 0;
+        let mut conflicts = 0;
+        for r in [a.await.unwrap(), b.await.unwrap()] {
+            match r {
+                Ok(_) => successes += 1,
+                Err(e) => {
+                    assert!(
+                        matches!(e, EventStoreError::VersionConflict { .. }),
+                        "duplicate initiation must conflict with VersionConflict, got: {e:?}"
+                    );
+                    conflicts += 1;
+                }
+            }
+        }
+        assert_eq!(successes, 1, "exactly one initiation should win");
+        assert_eq!(conflicts, 1, "the duplicate must get VersionConflict");
+        assert_eq!(
+            store.load(&id, None).await.unwrap().len(),
+            1,
+            "only one event survives the race"
+        );
+        println!("  [PASS] concurrent_create_time_occ");
     }
 
     // ═══════════════════════════════════════════════════════════════════════

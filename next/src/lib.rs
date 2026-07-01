@@ -496,6 +496,14 @@ pub trait HandlerEnvironment: Send + Sync {
     /// [`Projector::project`] steps.
     ///
     /// The default returns `None`, preserving the separate append-then-project flow.
+    ///
+    /// # Invariant
+    ///
+    /// When `Some`, the returned [`DynAtomicPersist`] **must** write to the same
+    /// event store as [`event_store`](Self::event_store). The command path uses one
+    /// *or* the other (atomic when present, plain append otherwise), so pointing them
+    /// at different physical stores would split a stream's writes across two stores
+    /// with no type-level guard. Construct both from a single shared store.
     fn atomic_persist(&self) -> Option<&dyn DynAtomicPersist> {
         None
     }

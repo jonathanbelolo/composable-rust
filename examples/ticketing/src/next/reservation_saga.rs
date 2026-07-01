@@ -53,7 +53,7 @@
 //! 3. Emits `Compensated` terminal event
 
 use chrono::{DateTime, Duration, Utc};
-use composable_rust_next::{BusinessLogic, BusinessResult, Clock, StreamId};
+use composable_rust_next::{BusinessLogic, BusinessResult, Clock, HandlerError, StreamId};
 use serde::{Deserialize, Serialize};
 
 use crate::types::{CustomerId, EventId, Money, PaymentId, PaymentMethod, ReservationId, SeatId, TicketId};
@@ -285,6 +285,14 @@ pub enum ReservationSagaPhase {
     /// Terminal failure (cancelled, expired, or compensated)
     Failed,
 }
+
+/// On-disk schema version of the persisted [`ReservationSagaState`] JSONB.
+///
+/// Stored in `saga_state.state_version` and checked on every rehydration. Bump this
+/// (and add a data migration that rewrites existing rows) whenever the persisted
+/// shape changes incompatibly, so a version skew fails loudly instead of decoding
+/// into a wrong state or a cryptic serde error.
+pub const RESERVATION_SAGA_STATE_VERSION: i16 = 1;
 
 /// State for the Reservation saga.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -579,7 +587,10 @@ impl BusinessLogic for ReservationSagaLogic {
         }
     }
 
-    fn feedback_input_from(prior: &Self::Input, results: Vec<Self::CallResult>) -> Self::Input {
+    fn feedback_input_from(
+        prior: &Self::Input,
+        results: Vec<Self::CallResult>,
+    ) -> Result<Self::Input, HandlerError<Self::Error>> {
         // The prior input always carries the reservation_id, so read it directly
         // rather than mining it from the (possibly failed) call results.
         let reservation_id = match prior {
@@ -589,11 +600,11 @@ impl BusinessLogic for ReservationSagaLogic {
             | ReservationSagaInput::Feedback { reservation_id, .. } => *reservation_id,
         };
 
-        ReservationSagaInput::Feedback {
+        Ok(ReservationSagaInput::Feedback {
             reservation_id,
             results,
             fetched: None, // Handler will populate this before calling process
-        }
+        })
     }
 
     fn event_type_name(event: &Self::Event) -> &'static str {

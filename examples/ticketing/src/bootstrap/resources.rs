@@ -123,22 +123,10 @@ impl ResourceManager {
             .await?;
         info!("Auth migrations complete");
 
-        // Setup analytics database WITH MIGRATIONS
-        info!("Connecting to analytics database...");
-        let analytics_database_url = std::env::var("ANALYTICS_DATABASE_URL").unwrap_or_else(|_| {
-            "postgresql://postgres:postgres@localhost:5434/ticketing_analytics".to_string()
-        });
-        let analytics_pool = PgPool::connect(&analytics_database_url).await?;
-
-        // Run analytics migrations
-        info!("Running analytics migrations...");
-        sqlx::migrate!("./migrations_analytics")
-            .run(&analytics_pool)
-            .await?;
-        info!("Analytics migrations complete");
-
-        // Analytics pool is currently not stored - will be used in future
-        drop(analytics_pool);
+        // NOTE: there is intentionally no separate analytics database. Analytics read
+        // models (if any) live in the single main Postgres alongside events, projections,
+        // and saga_state. Auth keeps its own database because it is a distinct bounded
+        // context with its own framework-managed schema.
 
         Ok(Self {
             config: Arc::new(config.clone()),

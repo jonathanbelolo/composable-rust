@@ -7,21 +7,26 @@
 
 #![allow(clippy::expect_used)]
 #![allow(clippy::unwrap_used)]
+#![allow(clippy::too_many_lines)] // integration-test bodies are naturally long
 
 use chrono::{Duration, Utc};
 use composable_rust_next::{
-    AtomicError, BusinessLogic, DynAtomicPersist, EventStore, EventStoreError, SerializedEvent,
-    StreamId, Version,
+    AtomicError, BusinessLogic, CallExecutor, DynAtomicPersist, EventStore, EventStoreError,
+    Handler, HandlerError, SerializedEvent, StreamId, SystemClock, Version,
 };
 use composable_rust_postgres_next::PostgresEventStore;
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
+use std::sync::Arc;
 use testcontainers::ContainerAsync;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::postgres::Postgres;
 use ticketing::next::{
-    PgAtomicPersist, ReservationSagaEvent, ReservationSagaLogic, ReservationSagaPhase,
-    ReservationSagaProjectionQueries,
+    EventInventorySagaEvent, EventInventorySagaLogic, EventInventorySagaPhase,
+    EventInventorySagaProjectionQueries, NoOpEventBus, NoOpProjector, PgAtomicPersist,
+    PgEventInventorySagaAtomicPersist, ReservationSagaCall, ReservationSagaCallResult,
+    ReservationSagaEvent, ReservationSagaInput, ReservationSagaLogic, ReservationSagaPhase,
+    ReservationSagaProjectionQueries, ReservationSagaQueryFetcher, TicketingEnvironment,
 };
 use ticketing::types::{CustomerId, EventId, Money, ReservationId, SeatId};
 use uuid::Uuid;
@@ -43,6 +48,8 @@ async fn migrate(pool: &PgPool) {
         include_str!("../migrations/002_projections.sql"),
         include_str!("../migrations/003_seats.sql"),
         include_str!("../migrations/004_saga_state.sql"),
+        include_str!("../migrations/005_saga_state_version.sql"),
+        include_str!("../migrations/006_event_inventory_saga_state.sql"),
     ] {
         sqlx::raw_sql(sql).execute(pool).await.expect("migration");
     }
@@ -270,5 +277,287 @@ async fn expiration_query_selects_overdue_non_terminal_sagas() {
         due,
         vec![overdue],
         "only the overdue, non-terminal saga is selected"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// End-to-end: the REAL ReservationSagaHandler driven through the durable Pg path.
+//
+// These drive the real `ReservationSagaLogic` through the real `Handler` +
+// `PgAtomicPersist` (saga_state written transactionally) + the Pg `QueryFetcher`
+// (rehydrate) + the feedback loop — the integration that the lib unit tests and the
+// PgAtomicPersist-direct tests above do not exercise together. A trivial stub call
+// executor returns successful-but-empty results, which the saga logic treats as "no
+// seats reserved" and drives to a terminal state, so no concrete inventory/payment
+// events need to be constructed (child-aggregate dispatch is covered by the in-memory
+// harness in `src/next/testing`).
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A call executor returning a successful-but-empty result for every saga call.
+/// The reservation saga treats an empty inventory reserve as "no seats" and fails fast
+/// to a terminal state, and ignores results during compensation — so this drives the
+/// real Handler loop to a terminal `saga_state` without building concrete child events.
+struct EmptyOkCallExecutor;
+
+impl CallExecutor<ReservationSagaCall, ReservationSagaCallResult> for EmptyOkCallExecutor {
+    async fn execute(&self, calls: Vec<ReservationSagaCall>) -> Vec<ReservationSagaCallResult> {
+        calls
+            .into_iter()
+            .map(|call| match call {
+                ReservationSagaCall::Inventory(_) => ReservationSagaCallResult::Inventory {
+                    result: Ok(Vec::new()),
+                },
+                ReservationSagaCall::Payment(_) => ReservationSagaCallResult::Payment {
+                    result: Ok(Vec::new()),
+                },
+            })
+            .collect()
+    }
+}
+
+type TestSagaEnv = TicketingEnvironment<
+    SystemClock,
+    PostgresEventStore,
+    NoOpProjector,
+    NoOpEventBus,
+    ReservationSagaProjectionQueries,
+>;
+type TestSagaHandler =
+    Handler<ReservationSagaLogic, EmptyOkCallExecutor, ReservationSagaQueryFetcher, TestSagaEnv>;
+
+/// Build the REAL reservation saga handler over Postgres (durable atomic persist + Pg
+/// fetcher), as `bootstrap::builder` does but with the stub call executor.
+fn build_saga_handler(pool: &PgPool) -> TestSagaHandler {
+    let store = PostgresEventStore::from_pool(pool.clone());
+    let env: TestSagaEnv = TicketingEnvironment::with_projections(
+        SystemClock,
+        store.clone(),
+        None::<NoOpProjector>,
+        None::<NoOpEventBus>,
+        "test-reservation-sagas",
+        ReservationSagaProjectionQueries::new(pool.clone()),
+    )
+    .with_atomic_persist(Arc::new(PgAtomicPersist::new(store)));
+    Handler::new(
+        ReservationSagaLogic,
+        EmptyOkCallExecutor,
+        ReservationSagaQueryFetcher::new(),
+        env,
+    )
+}
+
+fn saga_stream(reservation_id: ReservationId) -> StreamId {
+    StreamId::new(format!("saga-reservation-{}", reservation_id.as_uuid()))
+}
+
+#[tokio::test]
+async fn saga_runs_to_terminal_through_real_handler() {
+    let (_container, pool) = fresh_db().await;
+    let handler = build_saga_handler(&pool);
+    let reservation_id = ReservationId::new();
+
+    handler
+        .handle(ReservationSagaInput::InitiateReservation {
+            reservation_id,
+            event_id: EventId::new(),
+            customer_id: CustomerId::new(),
+            section: "A".to_string(),
+            quantity: 2,
+        })
+        .await
+        .expect("handle initiate");
+
+    // The real Handler drove the durable path across two transactional appends:
+    // ReservationInitiated (v1), then InventoryReservationFailed (v2, from the empty
+    // reserve result) → terminal saga_state, all via env.atomic_persist + feedback.
+    let queries = ReservationSagaProjectionQueries::new(pool.clone());
+    let (state, version) = queries
+        .get_saga_state(reservation_id)
+        .await
+        .expect("query")
+        .expect("saga_state row exists");
+    assert_eq!(state.phase, ReservationSagaPhase::Failed, "saga reached terminal");
+    assert_eq!(version, Version::new(2), "two events appended via the Handler");
+
+    let events = PostgresEventStore::from_pool(pool)
+        .load(&saga_stream(reservation_id), None)
+        .await
+        .expect("load");
+    assert_eq!(events.len(), 2, "saga stream has both events");
+}
+
+#[tokio::test]
+async fn duplicate_initiation_conflicts_through_real_handler() {
+    let (_container, pool) = fresh_db().await;
+    let handler = build_saga_handler(&pool);
+    let reservation_id = ReservationId::new();
+
+    let initiate = || ReservationSagaInput::InitiateReservation {
+        reservation_id,
+        event_id: EventId::new(),
+        customer_id: CustomerId::new(),
+        section: "A".to_string(),
+        quantity: 1,
+    };
+
+    handler.handle(initiate()).await.expect("first initiate");
+
+    // A second initiation for the SAME reservation_id (e.g. a duplicate idempotency
+    // key) hits create-time OCC in the Pg fetcher and surfaces as VersionConflict
+    // through the real Handler — the mapping the HTTP layer turns into an idempotent 200.
+    let dup = handler.handle(initiate()).await;
+    assert!(
+        matches!(
+            dup,
+            Err(HandlerError::Persist(EventStoreError::VersionConflict { .. }))
+        ),
+        "duplicate initiation must conflict, got {dup:?}"
+    );
+}
+
+#[tokio::test]
+async fn expiration_resumes_seeded_saga_to_terminal_through_real_handler() {
+    let (_container, pool) = fresh_db().await;
+    let reservation_id = ReservationId::new();
+    let stream = saga_stream(reservation_id);
+    let now = Utc::now();
+
+    // Seed a non-terminal saga with a PAST deadline — exactly the state a crash would
+    // leave behind — via the durable atomic-persist path.
+    let seed = PgAtomicPersist::new(PostgresEventStore::from_pool(pool.clone()));
+    seed.append_and_project(
+        &stream,
+        None,
+        vec![serialized(&ReservationSagaEvent::ReservationInitiated {
+            reservation_id,
+            event_id: EventId::new(),
+            customer_id: CustomerId::new(),
+            section: "A".to_string(),
+            quantity: 1,
+            expires_at: now - Duration::minutes(1),
+            initiated_at: now - Duration::minutes(6),
+        })],
+    )
+    .await
+    .expect("seed non-terminal saga");
+
+    // A FRESH handler (no in-memory state) rehydrates the saga from durable saga_state
+    // and expires it — restart-resume + the expiration action, end-to-end.
+    let handler = build_saga_handler(&pool);
+    handler
+        .handle(ReservationSagaInput::ExpireReservation {
+            reservation_id,
+            fetched: None,
+        })
+        .await
+        .expect("expire");
+
+    let queries = ReservationSagaProjectionQueries::new(pool.clone());
+    let (state, _version) = queries
+        .get_saga_state(reservation_id)
+        .await
+        .expect("query")
+        .expect("row");
+    assert_eq!(
+        state.phase,
+        ReservationSagaPhase::Failed,
+        "expired saga reaches a terminal phase"
+    );
+
+    let events = PostgresEventStore::from_pool(pool)
+        .load(&stream, None)
+        .await
+        .expect("load");
+    assert!(
+        events.iter().any(|e| e.event_type == "ReservationExpired"),
+        "a ReservationExpired event was appended by the saga"
+    );
+}
+
+// ── Event-Inventory saga: same durable-state guarantee as the reservation saga ──
+
+fn serialized_event_inventory(event: &EventInventorySagaEvent) -> SerializedEvent {
+    SerializedEvent {
+        event_type: EventInventorySagaLogic::event_type_name(event).to_string(),
+        payload: bincode::serialize(event).expect("serialize event-inventory saga event"),
+        metadata: None,
+        version: None,
+    }
+}
+
+#[tokio::test]
+async fn event_inventory_saga_state_survives_restart_and_enforces_occ() {
+    let (_container, pool) = fresh_db().await;
+    let event_id = EventId::new();
+    let stream = StreamId::new(format!("saga-event-inventory-{}", event_id.as_uuid()));
+    let now = Utc::now();
+
+    let ap = PgEventInventorySagaAtomicPersist::new(PostgresEventStore::from_pool(pool.clone()));
+
+    let v1 = ap
+        .append_and_project(
+            &stream,
+            None,
+            vec![serialized_event_inventory(
+                &EventInventorySagaEvent::Initiated {
+                    event_id,
+                    name: "Concert".to_string(),
+                    sections: vec!["VIP".to_string(), "GA".to_string()],
+                    initiated_at: now,
+                },
+            )],
+        )
+        .await
+        .expect("append Initiated");
+    assert_eq!(v1, Version::new(1));
+
+    let v2 = ap
+        .append_and_project(
+            &stream,
+            Some(Version::new(1)),
+            vec![serialized_event_inventory(
+                &EventInventorySagaEvent::EventCreated {
+                    event_id,
+                    created_at: now,
+                },
+            )],
+        )
+        .await
+        .expect("append EventCreated");
+    assert_eq!(v2, Version::new(2));
+
+    // "Restart": a fresh reader rehydrates from durable saga_state_event_inventory.
+    let queries = EventInventorySagaProjectionQueries::new(pool.clone());
+    let (state, version) = queries
+        .get_saga_state(event_id)
+        .await
+        .expect("query")
+        .expect("saga_state_event_inventory row exists");
+    assert_eq!(version, Version::new(2), "rehydrated version == stream version");
+    assert_eq!(
+        state.phase,
+        EventInventorySagaPhase::InitializingInventory,
+        "folded events rehydrate to InitializingInventory"
+    );
+
+    // A stale append (wrong expected version) conflicts.
+    let conflict = ap
+        .append_and_project(
+            &stream,
+            Some(Version::new(1)),
+            vec![serialized_event_inventory(
+                &EventInventorySagaEvent::EventCreated {
+                    event_id,
+                    created_at: now,
+                },
+            )],
+        )
+        .await;
+    assert!(
+        matches!(
+            conflict,
+            Err(AtomicError::Append(EventStoreError::VersionConflict { .. }))
+        ),
+        "a stale-version append must conflict"
     );
 }

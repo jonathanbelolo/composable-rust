@@ -66,28 +66,32 @@ impl ReservationExpirationWorker {
         }
     }
 
-    /// Create a worker with the default 30-second check interval.
-    #[must_use]
-    pub fn with_default_interval(pool: PgPool, saga_handler: Arc<ReservationSagaHandler>) -> Self {
-        Self::new(pool, saga_handler, Duration::from_secs(30))
+    /// Run one expire-only recovery sweep, returning how many sagas were expired.
+    ///
+    /// Call this once at startup **before** serving traffic (see
+    /// `bootstrap::builder`) so overdue sagas that accumulated while the process was
+    /// down are advanced to a terminal state before new requests arrive. It is a
+    /// phase-guarded no-op for already-terminal sagas, so it is safe to re-run.
+    #[instrument(skip(self))]
+    pub async fn recover(&self) -> usize {
+        let recovered = self.expire_due_sagas().await;
+        if recovered > 0 {
+            info!(count = recovered, "Expired overdue sagas on boot recovery");
+        }
+        recovered
     }
 
-    /// Run the expiration worker until `shutdown_rx` fires.
+    /// Run the expiration worker's polling loop until `shutdown_rx` fires.
     ///
-    /// On startup it immediately expires any overdue non-terminal sagas (expire-only
-    /// boot recovery), then polls at `check_interval`. Spawn this as a background task.
+    /// Boot recovery is performed separately via [`recover`](Self::recover) *before*
+    /// traffic is served; this method only polls at `check_interval`. Spawn it as a
+    /// background task.
     #[instrument(skip(self, shutdown_rx), name = "expiration_worker")]
     pub async fn run(self, mut shutdown_rx: broadcast::Receiver<()>) {
         info!(
             check_interval_secs = self.check_interval.as_secs(),
             "Starting reservation expiration worker"
         );
-
-        // Startup sweep == expire-only boot recovery.
-        let recovered = self.expire_due_sagas().await;
-        if recovered > 0 {
-            info!(count = recovered, "Expired overdue sagas on startup");
-        }
 
         let mut interval = tokio::time::interval(self.check_interval);
         loop {

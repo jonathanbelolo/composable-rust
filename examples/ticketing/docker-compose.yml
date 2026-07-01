@@ -42,25 +42,8 @@ services:
     networks:
       - ticketing
 
-  # PostgreSQL Analytics Store (port 5434)
-  postgres-analytics:
-    image: postgres:16-alpine
-    container_name: ticketing-postgres-analytics
-    environment:
-      POSTGRES_DB: ticketing_analytics
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    ports:
-      - "5434:5432"
-    volumes:
-      - postgres_analytics_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d ticketing_analytics"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    networks:
-      - ticketing
+  # Analytics read models live in the main Postgres (see ./migrations); there is no
+  # separate analytics database.
 
   # PostgreSQL Auth Store (port 5435)
   postgres-auth:
@@ -162,7 +145,6 @@ networks:
 volumes:
   postgres_events_data:
   postgres_projections_data:
-  postgres_analytics_data:
   postgres_auth_data:
   redis_data:
   # redpanda_data:  # REMOVED: Redpanda service no longer used

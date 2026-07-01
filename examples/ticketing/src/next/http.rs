@@ -64,8 +64,11 @@ use super::{
     environment::{NoOpEventBus, NoOpProjector, ProductionEnvironment, TicketingEnvironment},
     event::{EventDto, EventResponse as DomainEventResponse},
     event_inventory_saga::{EventInventorySagaLogic, SagaError, SagaInput},
-    projection_queries::{EventProjectionQueries, EventQueryFetcher, SagaProjectionQueries, SagaQueryFetcher},
-    projector::{EventInventorySagaProjector, EventProjector, InventoryProjector, PaymentProjector},
+    projection_queries::{
+        EventInventorySagaProjectionQueries, EventInventorySagaQueryFetcher, EventProjectionQueries,
+        EventQueryFetcher,
+    },
+    projector::{EventProjector, InventoryProjector, PaymentProjector},
     reservation_saga::ReservationSagaError,
     EventBusinessLogic, EventCommand, EventError, InventoryBusinessLogic, PaymentBusinessLogic,
 };
@@ -190,20 +193,23 @@ pub struct NextAppState {
 // Event Creation App State (Saga-based)
 // ───────────────────────────────────────────────────────────────────────────
 
-/// Type alias for the Event-Inventory saga environment with in-memory projection.
+/// Type alias for the Event-Inventory saga environment.
+///
+/// Saga state is maintained transactionally in `saga_state_event_inventory` via the
+/// environment's `atomic_persist` capability, so the environment's projector is a no-op.
 type EventInventorySagaEnv = TicketingEnvironment<
     SystemClock,
     PostgresEventStore,
-    EventInventorySagaProjector,
+    NoOpProjector,
     NoOpEventBus,
-    SagaProjectionQueries,
+    EventInventorySagaProjectionQueries,
 >;
 
-/// Type alias for the Event-Inventory saga handler with in-memory query fetcher.
+/// Type alias for the Event-Inventory saga handler (durable, restart-safe state).
 pub type EventInventorySagaHandler = Handler<
     EventInventorySagaLogic,
     EventInventorySagaCallExecutor<PostgresEventStore>,
-    SagaQueryFetcher,
+    EventInventorySagaQueryFetcher,
     EventInventorySagaEnv,
 >;
 
@@ -394,6 +400,9 @@ fn to_app_error(err: HandlerError<EventError>) -> AppError {
         HandlerError::QueryFetch(e) => {
             AppError::internal(format!("Query fetch failed: {e}"))
         }
+        HandlerError::FeedbackNotImplemented => {
+            AppError::internal("saga feedback_input_from not implemented".to_string())
+        }
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Saga exceeded max iterations: {max_iterations}"))
         }
@@ -422,6 +431,9 @@ fn event_inventory_saga_to_app_error(err: HandlerError<SagaError>) -> AppError {
         }
         HandlerError::QueryFetch(e) => {
             AppError::internal(format!("Saga query fetch failed: {e}"))
+        }
+        HandlerError::FeedbackNotImplemented => {
+            AppError::internal("saga feedback_input_from not implemented".to_string())
         }
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Saga exceeded max iterations: {max_iterations}"))
@@ -454,6 +466,9 @@ fn reservation_saga_to_app_error(err: HandlerError<ReservationSagaError>) -> App
         }
         HandlerError::QueryFetch(e) => {
             AppError::internal(format!("Saga query fetch failed: {e}"))
+        }
+        HandlerError::FeedbackNotImplemented => {
+            AppError::internal("saga feedback_input_from not implemented".to_string())
         }
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Saga exceeded max iterations: {max_iterations}"))
@@ -1487,6 +1502,9 @@ fn inventory_to_app_error(err: HandlerError<InventoryError>) -> AppError {
         HandlerError::Broadcast(e) => AppError::internal(format!("Broadcast failed: {e}")),
         HandlerError::Serialization(e) => AppError::internal(format!("Serialization failed: {e}")),
         HandlerError::QueryFetch(e) => AppError::internal(format!("Query fetch failed: {e}")),
+        HandlerError::FeedbackNotImplemented => {
+            AppError::internal("saga feedback_input_from not implemented".to_string())
+        }
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Saga exceeded max iterations: {max_iterations}"))
         }
@@ -1618,6 +1636,9 @@ fn payment_to_app_error(err: HandlerError<PaymentError>) -> AppError {
         HandlerError::Broadcast(e) => AppError::internal(format!("Broadcast failed: {e}")),
         HandlerError::Serialization(e) => AppError::internal(format!("Serialization failed: {e}")),
         HandlerError::QueryFetch(e) => AppError::internal(format!("Query fetch failed: {e}")),
+        HandlerError::FeedbackNotImplemented => {
+            AppError::internal("saga feedback_input_from not implemented".to_string())
+        }
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Saga exceeded max iterations: {max_iterations}"))
         }
@@ -2041,6 +2062,9 @@ fn saga_to_app_error(err: HandlerError<ReservationSagaError>) -> AppError {
         HandlerError::Broadcast(e) => AppError::internal(format!("Broadcast failed: {e}")),
         HandlerError::Serialization(e) => AppError::internal(format!("Serialization failed: {e}")),
         HandlerError::QueryFetch(e) => AppError::internal(format!("Query fetch failed: {e}")),
+        HandlerError::FeedbackNotImplemented => {
+            AppError::internal("saga feedback_input_from not implemented".to_string())
+        }
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Saga exceeded max iterations: {max_iterations}"))
         }
@@ -2066,22 +2090,25 @@ pub async fn create_reservation(
     idempotency_key: IdempotencyKey,
     Json(request): Json<CreateReservationRequest>,
 ) -> Result<(StatusCode, Json<CreateReservationResponse>), AppError> {
-    // With an `Idempotency-Key`, derive a deterministic reservation id so retries map
-    // to the SAME saga stream; create-time optimistic concurrency then dedups them.
-    // Without one, mint a fresh id (non-idempotent, prior behavior).
-    let reservation_id = match idempotency_key.0.as_deref() {
-        Some(key) => ReservationId::from_uuid(Uuid::new_v5(
-            &RESERVATION_IDEMPOTENCY_NAMESPACE,
-            format!("reservations.create:{key}").as_bytes(),
-        )),
-        None => ReservationId::new(),
-    };
-
     // Get customer_id from auth or request (request is for backwards compatibility)
     let customer_id = request
         .customer_id
         .map(CustomerId::from_uuid)
         .unwrap_or_else(|| CustomerId::from_uuid(user.0.0));
+
+    // With an `Idempotency-Key`, derive a deterministic reservation id so retries map
+    // to the SAME saga stream; create-time optimistic concurrency then dedups them.
+    // The key is scoped per-customer, so two customers reusing the same key never
+    // collide onto one reservation. Without a key, mint a fresh id (non-idempotent,
+    // prior behavior). Dedup hits are not separately audited — the deterministic id is
+    // the only record.
+    let reservation_id = match idempotency_key.0.as_deref() {
+        Some(key) => ReservationId::from_uuid(Uuid::new_v5(
+            &RESERVATION_IDEMPOTENCY_NAMESPACE,
+            format!("reservations.create:{}:{key}", customer_id.as_uuid()).as_bytes(),
+        )),
+        None => ReservationId::new(),
+    };
 
     let input = ReservationSagaInput::InitiateReservation {
         reservation_id,
@@ -2121,7 +2148,12 @@ pub async fn create_reservation(
 }
 
 /// Namespace for deterministic reservation ids derived from idempotency keys.
-const RESERVATION_IDEMPOTENCY_NAMESPACE: Uuid = Uuid::from_bytes(*b"reservation-idem");
+/// Fixed namespace for deriving deterministic reservation ids from an
+/// `Idempotency-Key` (see [`create_reservation`]). A stable, well-formed UUID — unlike
+/// building one from raw ASCII bytes, this keeps the `Uuid::new_v5` namespace input
+/// conventional.
+const RESERVATION_IDEMPOTENCY_NAMESPACE: Uuid =
+    Uuid::from_u128(0x6f3c_9a12_5e7b_4d80_a1c2_b3d4_e5f6_0718);
 
 /// Cancel a reservation.
 ///
@@ -2504,6 +2536,9 @@ fn analytics_to_app_error(err: HandlerError<AnalyticsError>) -> AppError {
         HandlerError::Broadcast(e) => AppError::internal(format!("Broadcast failed: {e}")),
         HandlerError::Serialization(e) => AppError::internal(format!("Serialization failed: {e}")),
         HandlerError::QueryFetch(e) => AppError::internal(format!("Query fetch failed: {e}")),
+        HandlerError::FeedbackNotImplemented => {
+            AppError::internal("saga feedback_input_from not implemented".to_string())
+        }
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Exceeded max iterations: {max_iterations}"))
         }
@@ -2761,6 +2796,9 @@ fn reservation_query_to_app_error(err: HandlerError<ReservationQueryError>) -> A
         HandlerError::Broadcast(e) => AppError::internal(format!("Broadcast failed: {e}")),
         HandlerError::Serialization(e) => AppError::internal(format!("Serialization failed: {e}")),
         HandlerError::QueryFetch(e) => AppError::internal(format!("Query fetch failed: {e}")),
+        HandlerError::FeedbackNotImplemented => {
+            AppError::internal("saga feedback_input_from not implemented".to_string())
+        }
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Exceeded max iterations: {max_iterations}"))
         }

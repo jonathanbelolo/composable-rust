@@ -44,13 +44,16 @@ use crate::next::{
         ReservationQueryAppState, ReservationAppState,
     },
     projection_queries::{
-        AnalyticsProjectionQueries, AnalyticsQueryFetcher, EventProjectionQueries,
-        EventQueryFetcher, InventoryProjectionQueries, InventoryQueryFetcher,
-        PaymentProjectionQueries, PaymentQueryFetcher, ReservationProjectionQueries,
-        ReservationQueryFetcher, ReservationSagaProjectionQueries, ReservationSagaQueryFetcher,
-        SagaProjectionQueries, SagaQueryFetcher,
+        AnalyticsProjectionQueries, AnalyticsQueryFetcher, EventInventorySagaProjectionQueries,
+        EventInventorySagaQueryFetcher, EventProjectionQueries, EventQueryFetcher,
+        InventoryProjectionQueries, InventoryQueryFetcher, PaymentProjectionQueries,
+        PaymentQueryFetcher, ReservationProjectionQueries, ReservationQueryFetcher,
+        ReservationSagaProjectionQueries, ReservationSagaQueryFetcher,
     },
-    projector::{EventInventorySagaProjector, EventProjector, InventoryProjector, PaymentProjector, PgAtomicPersist},
+    projector::{
+        EventProjector, InventoryProjector, PaymentProjector, PgAtomicPersist,
+        PgEventInventorySagaAtomicPersist,
+    },
     TicketingEnvironment, NoOpEventBus, NoOpProjector,
 };
 use crate::server::routes::AuthAppState;
@@ -485,17 +488,18 @@ impl ApplicationBuilder {
                 .build(),
         );
 
-        // Spawn the reservation expiration worker. It drives overdue sagas to a
-        // terminal state THROUGH the saga (compensation + terminal saga_state), and
-        // its startup sweep is the expire-only boot recovery. Shut down with the app.
-        tokio::spawn(
-            ReservationExpirationWorker::new(
-                next_event_store.pool().clone(),
-                saga_handler.clone(),
-                std::time::Duration::from_secs(30),
-            )
-            .run(self.shutdown_tx.subscribe()),
+        // Reservation expiration worker. It drives overdue sagas to a terminal state
+        // THROUGH the saga (compensation + terminal saga_state). Boot recovery runs
+        // synchronously BEFORE traffic is served, then the polling loop is spawned to
+        // run until app shutdown.
+        let expiration_worker = ReservationExpirationWorker::new(
+            next_event_store.pool().clone(),
+            saga_handler.clone(),
+            std::time::Duration::from_secs(30),
         );
+        // Expire-only boot recovery, awaited before we hand back an Application to serve.
+        expiration_worker.recover().await;
+        tokio::spawn(expiration_worker.run(self.shutdown_tx.subscribe()));
 
         // ───────────────────────────────────────────────────────────────────────
         // Event-Inventory Saga Handler (orchestrates Event + Inventory creation)
@@ -508,33 +512,38 @@ impl ApplicationBuilder {
             next_event_store.clone(),
         );
 
-        // Create in-memory saga projection state
-        let saga_projection_state: crate::next::InMemorySagaProjection =
-            std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+        // The saga's durable state lives in the SAME database as the event log, so its
+        // events and `saga_state_event_inventory` commit in one transaction (no in-memory
+        // map). The fetcher reads that table (restart-safe, OCC); projection happens
+        // transactionally via `atomic_persist`, so the env's Projector is a no-op.
+        let event_inventory_saga_query_fetcher = EventInventorySagaQueryFetcher::new();
+        let event_inventory_saga_projection_queries =
+            EventInventorySagaProjectionQueries::new(next_event_store.pool().clone());
+        let event_inventory_saga_atomic_persist =
+            Arc::new(PgEventInventorySagaAtomicPersist::new(next_event_store.clone()));
 
-        // Create saga projector
-        let saga_projector = EventInventorySagaProjector::new(saga_projection_state.clone());
-
-        // Create saga query fetcher
-        let saga_query_fetcher = SagaQueryFetcher::new(saga_projection_state.clone());
-
-        // Create saga projection queries
-        let saga_projection_queries = SagaProjectionQueries::new(saga_projection_state);
-
-        let event_inventory_saga_env: TicketingEnvironment<NextSystemClock, NextPostgresEventStore, EventInventorySagaProjector, NoOpEventBus, SagaProjectionQueries> = TicketingEnvironment::with_projections(
+        let event_inventory_saga_env: TicketingEnvironment<
+            NextSystemClock,
+            NextPostgresEventStore,
+            NoOpProjector,
+            NoOpEventBus,
+            EventInventorySagaProjectionQueries,
+        > = TicketingEnvironment::with_projections(
             NextSystemClock,
             next_event_store.clone(),
-            Some(saga_projector),
+            None::<NoOpProjector>,
             None::<NoOpEventBus>,
             "ticketing-event-inventory-sagas",
-            saga_projection_queries,
-        );
+            event_inventory_saga_projection_queries,
+        )
+        .with_atomic_persist(event_inventory_saga_atomic_persist);
+
         let event_inventory_saga_handler = Arc::new(
             HandlerBuilder::new(EventInventorySagaLogic)
                 .call_executor(event_inventory_saga_executor)
-                .query_fetcher(saga_query_fetcher)
+                .query_fetcher(event_inventory_saga_query_fetcher)
                 .environment(event_inventory_saga_env)
-                .build()
+                .build(),
         );
 
         // ═══════════════════════════════════════════════════════════════════════

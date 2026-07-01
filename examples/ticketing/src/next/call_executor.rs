@@ -512,6 +512,11 @@ where
         composable_rust_next::HandlerError::QueryFetch(fetch_err) => EventError::ValidationFailed {
             message: format!("Query fetch error: {fetch_err}"),
         },
+        composable_rust_next::HandlerError::FeedbackNotImplemented => {
+            EventError::ValidationFailed {
+                message: "saga feedback_input_from not implemented".to_string(),
+            }
+        }
         composable_rust_next::HandlerError::SagaIterationsExceeded { max_iterations } => {
             EventError::ValidationFailed {
                 message: format!("Saga exceeded max iterations: {max_iterations}"),
@@ -543,6 +548,9 @@ where
         composable_rust_next::HandlerError::QueryFetch(fetch_err) => {
             format!("Query fetch error: {fetch_err}")
         }
+        composable_rust_next::HandlerError::FeedbackNotImplemented => {
+            "saga feedback_input_from not implemented".to_string()
+        }
         composable_rust_next::HandlerError::SagaIterationsExceeded { max_iterations } => {
             format!("Saga exceeded max iterations: {max_iterations}")
         }
@@ -572,6 +580,9 @@ where
         }
         composable_rust_next::HandlerError::QueryFetch(fetch_err) => {
             format!("Query fetch error: {fetch_err}")
+        }
+        composable_rust_next::HandlerError::FeedbackNotImplemented => {
+            "saga feedback_input_from not implemented".to_string()
         }
         composable_rust_next::HandlerError::SagaIterationsExceeded { max_iterations } => {
             format!("Saga exceeded max iterations: {max_iterations}")

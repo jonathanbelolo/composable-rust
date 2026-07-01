@@ -30,7 +30,7 @@ const PAYMENT_EVENT_TYPES: &[&str] = &[
     "PaymentRefunded",
 ];
 
-/// Row from event store with stream_id for logging.
+/// Row from event store with `stream_id` for logging.
 struct EventRow {
     stream_id: String,
     event: SerializedEvent,
@@ -135,7 +135,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Query all payment events from the event store.
 async fn query_payment_events(pool: &PgPool) -> Result<Vec<EventRow>, sqlx::Error> {
     // Build query for all payment event types
-    let query = r#"
+    let query = r"
         SELECT
             stream_id,
             version,
@@ -144,7 +144,7 @@ async fn query_payment_events(pool: &PgPool) -> Result<Vec<EventRow>, sqlx::Erro
         FROM events
         WHERE event_type = ANY($1)
         ORDER BY created_at ASC, stream_id ASC, version ASC
-    "#;
+    ";
 
     let rows = sqlx::query(query)
         .bind(PAYMENT_EVENT_TYPES)
