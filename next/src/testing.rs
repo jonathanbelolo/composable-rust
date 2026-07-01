@@ -803,8 +803,7 @@ impl DynAtomicPersist for InMemoryAtomicPersist {
 mod tests {
     use super::*;
     use crate::{
-        BusinessLogic, BusinessResult, CallExecutor, FixedClock, Handler, HandlerError,
-        NoOpQueryFetcher,
+        BusinessLogic, BusinessResult, CallExecutor, FixedClock, Handler, NoOpQueryFetcher,
     };
     use chrono::Utc;
 
@@ -1126,14 +1125,11 @@ mod tests {
             }
         }
 
-        fn feedback_input_from(
-            prior: &SagaIn,
-            results: Vec<()>,
-        ) -> Result<SagaIn, HandlerError<Self::Error>> {
+        fn feedback_input_from(prior: &SagaIn, results: Vec<()>) -> SagaIn {
             let id = match prior {
                 SagaIn::Start { id } | SagaIn::Feedback { id, .. } => *id,
             };
-            Ok(SagaIn::Feedback { id, results })
+            SagaIn::Feedback { id, results }
         }
 
         fn event_type_name(event: &SagaEv) -> &'static str {
@@ -1186,5 +1182,108 @@ mod tests {
         assert_eq!(projector.projection_count(), 2);
         // The environment's own (non-atomic) projector was bypassed entirely.
         assert_eq!(env_handle.projector().projection_count(), 0);
+    }
+
+    // ── Backward-compat: a saga overriding ONLY the legacy `feedback_input` ──
+    //
+    // Downstream sagas implement `feedback_input` (not the newer `feedback_input_from`).
+    // The Handler always calls `feedback_input_from`, whose default delegates to
+    // `feedback_input` — so old-style sagas must keep working unchanged. This is the
+    // regression guard for keeping `feedback_input` on the trait.
+
+    #[derive(Clone)]
+    #[allow(dead_code)] // `results` is carried for realism; this minimal saga ignores it
+    enum OldSagaIn {
+        Start { id: u64 },
+        Feedback { id: u64, results: Vec<u64> },
+    }
+
+    struct OldStyleSagaLogic;
+
+    impl BusinessLogic for OldStyleSagaLogic {
+        type State = SagaState;
+        type Input = OldSagaIn;
+        type Event = SagaEv;
+        type Error = SagaErr;
+        type Call = u64;
+        type CallResult = u64;
+        type Response = ();
+
+        fn stream_id(input: &OldSagaIn) -> StreamId {
+            let id = match input {
+                OldSagaIn::Start { id } | OldSagaIn::Feedback { id, .. } => *id,
+            };
+            StreamId::new(format!("old-saga-{id}"))
+        }
+
+        fn process(
+            &self,
+            input: OldSagaIn,
+            _clock: &dyn Clock,
+        ) -> Result<BusinessResult<SagaEv, u64, ()>, SagaErr> {
+            match input {
+                OldSagaIn::Start { id } => Ok(BusinessResult::Continue {
+                    events: vec![SagaEv::Started(id)],
+                    calls: vec![id],
+                }),
+                OldSagaIn::Feedback { id, .. } => Ok(BusinessResult::Done(vec![SagaEv::Finished(id)])),
+            }
+        }
+
+        fn apply(&self, state: &mut SagaState, event: &SagaEv) {
+            if matches!(event, SagaEv::Started(_)) {
+                state.started = true;
+            }
+        }
+
+        // LEGACY method only — no `feedback_input_from` override. The id is recovered
+        // from the call results, exactly as downstream sagas do.
+        fn feedback_input(results: Vec<u64>) -> OldSagaIn {
+            let id = results.first().copied().unwrap_or_default();
+            OldSagaIn::Feedback { id, results }
+        }
+
+        fn event_type_name(event: &SagaEv) -> &'static str {
+            match event {
+                SagaEv::Started(_) => "Started",
+                SagaEv::Finished(_) => "Finished",
+            }
+        }
+    }
+
+    struct IdCallExecutor;
+
+    impl CallExecutor<u64, u64> for IdCallExecutor {
+        async fn execute(&self, calls: Vec<u64>) -> Vec<u64> {
+            calls // echo the id back as the call result
+        }
+    }
+
+    #[tokio::test]
+    async fn handler_routes_legacy_feedback_input_through_default_feedback_input_from() {
+        let store = InMemoryEventStore::new();
+        let projector = InMemoryProjector::new();
+        let ap = InMemoryAtomicPersist::new(store.clone(), projector.clone());
+        let env =
+            TestEnvironment::new(FixedClock::new(Utc::now())).with_atomic_persist(Arc::new(ap));
+
+        let handler = Handler::new(OldStyleSagaLogic, IdCallExecutor, NoOpQueryFetcher, env);
+        let result = handler.handle(OldSagaIn::Start { id: 7 }).await;
+
+        // Start -> Continue -> call -> feedback (via legacy feedback_input) -> Done.
+        assert!(
+            matches!(
+                result,
+                Ok(crate::HandleResult::Command { event_count: 1, .. })
+            ),
+            "old-style saga must finish through the Handler, got {result:?}"
+        );
+        // Both events landed on the id-derived stream — only true if the default
+        // feedback_input_from delegated to the legacy feedback_input and threaded id 7.
+        assert_eq!(
+            store.events_for_stream("old-saga-7").len(),
+            2,
+            "Started + Finished persisted via the legacy feedback_input path"
+        );
     }
 }

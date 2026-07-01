@@ -54,7 +54,7 @@
 
 use chrono::{DateTime, Utc};
 use composable_rust_auth::state::UserId;
-use composable_rust_next::{BusinessLogic, BusinessResult, Clock, HandlerError, StreamId};
+use composable_rust_next::{BusinessLogic, BusinessResult, Clock, StreamId};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -449,10 +449,7 @@ impl BusinessLogic for EventInventorySagaLogic {
         }
     }
 
-    fn feedback_input_from(
-        prior: &Self::Input,
-        results: Vec<Self::CallResult>,
-    ) -> Result<Self::Input, HandlerError<Self::Error>> {
+    fn feedback_input_from(prior: &Self::Input, results: Vec<Self::CallResult>) -> Self::Input {
         // The prior input always carries the event_id, so read it directly rather
         // than mining it from the (possibly failed) call results.
         let event_id = match prior {
@@ -460,11 +457,11 @@ impl BusinessLogic for EventInventorySagaLogic {
             | SagaInput::Feedback { event_id, .. } => *event_id,
         };
 
-        Ok(SagaInput::Feedback {
+        SagaInput::Feedback {
             event_id,
             results,
             fetched: None, // QueryFetcher will populate this before calling process
-        })
+        }
     }
 
     fn event_type_name(event: &Self::Event) -> &'static str {

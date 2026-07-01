@@ -53,7 +53,7 @@
 //! 3. Emits `Compensated` terminal event
 
 use chrono::{DateTime, Duration, Utc};
-use composable_rust_next::{BusinessLogic, BusinessResult, Clock, HandlerError, StreamId};
+use composable_rust_next::{BusinessLogic, BusinessResult, Clock, StreamId};
 use serde::{Deserialize, Serialize};
 
 use crate::types::{CustomerId, EventId, Money, PaymentId, PaymentMethod, ReservationId, SeatId, TicketId};
@@ -587,10 +587,7 @@ impl BusinessLogic for ReservationSagaLogic {
         }
     }
 
-    fn feedback_input_from(
-        prior: &Self::Input,
-        results: Vec<Self::CallResult>,
-    ) -> Result<Self::Input, HandlerError<Self::Error>> {
+    fn feedback_input_from(prior: &Self::Input, results: Vec<Self::CallResult>) -> Self::Input {
         // The prior input always carries the reservation_id, so read it directly
         // rather than mining it from the (possibly failed) call results.
         let reservation_id = match prior {
@@ -600,11 +597,11 @@ impl BusinessLogic for ReservationSagaLogic {
             | ReservationSagaInput::Feedback { reservation_id, .. } => *reservation_id,
         };
 
-        Ok(ReservationSagaInput::Feedback {
+        ReservationSagaInput::Feedback {
             reservation_id,
             results,
             fetched: None, // Handler will populate this before calling process
-        })
+        }
     }
 
     fn event_type_name(event: &Self::Event) -> &'static str {

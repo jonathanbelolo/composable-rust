@@ -400,9 +400,6 @@ fn to_app_error(err: HandlerError<EventError>) -> AppError {
         HandlerError::QueryFetch(e) => {
             AppError::internal(format!("Query fetch failed: {e}"))
         }
-        HandlerError::FeedbackNotImplemented => {
-            AppError::internal("saga feedback_input_from not implemented".to_string())
-        }
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Saga exceeded max iterations: {max_iterations}"))
         }
@@ -431,9 +428,6 @@ fn event_inventory_saga_to_app_error(err: HandlerError<SagaError>) -> AppError {
         }
         HandlerError::QueryFetch(e) => {
             AppError::internal(format!("Saga query fetch failed: {e}"))
-        }
-        HandlerError::FeedbackNotImplemented => {
-            AppError::internal("saga feedback_input_from not implemented".to_string())
         }
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Saga exceeded max iterations: {max_iterations}"))
@@ -466,9 +460,6 @@ fn reservation_saga_to_app_error(err: HandlerError<ReservationSagaError>) -> App
         }
         HandlerError::QueryFetch(e) => {
             AppError::internal(format!("Saga query fetch failed: {e}"))
-        }
-        HandlerError::FeedbackNotImplemented => {
-            AppError::internal("saga feedback_input_from not implemented".to_string())
         }
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Saga exceeded max iterations: {max_iterations}"))
@@ -1502,9 +1493,6 @@ fn inventory_to_app_error(err: HandlerError<InventoryError>) -> AppError {
         HandlerError::Broadcast(e) => AppError::internal(format!("Broadcast failed: {e}")),
         HandlerError::Serialization(e) => AppError::internal(format!("Serialization failed: {e}")),
         HandlerError::QueryFetch(e) => AppError::internal(format!("Query fetch failed: {e}")),
-        HandlerError::FeedbackNotImplemented => {
-            AppError::internal("saga feedback_input_from not implemented".to_string())
-        }
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Saga exceeded max iterations: {max_iterations}"))
         }
@@ -1636,9 +1624,6 @@ fn payment_to_app_error(err: HandlerError<PaymentError>) -> AppError {
         HandlerError::Broadcast(e) => AppError::internal(format!("Broadcast failed: {e}")),
         HandlerError::Serialization(e) => AppError::internal(format!("Serialization failed: {e}")),
         HandlerError::QueryFetch(e) => AppError::internal(format!("Query fetch failed: {e}")),
-        HandlerError::FeedbackNotImplemented => {
-            AppError::internal("saga feedback_input_from not implemented".to_string())
-        }
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Saga exceeded max iterations: {max_iterations}"))
         }
@@ -2062,9 +2047,6 @@ fn saga_to_app_error(err: HandlerError<ReservationSagaError>) -> AppError {
         HandlerError::Broadcast(e) => AppError::internal(format!("Broadcast failed: {e}")),
         HandlerError::Serialization(e) => AppError::internal(format!("Serialization failed: {e}")),
         HandlerError::QueryFetch(e) => AppError::internal(format!("Query fetch failed: {e}")),
-        HandlerError::FeedbackNotImplemented => {
-            AppError::internal("saga feedback_input_from not implemented".to_string())
-        }
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Saga exceeded max iterations: {max_iterations}"))
         }
@@ -2536,9 +2518,6 @@ fn analytics_to_app_error(err: HandlerError<AnalyticsError>) -> AppError {
         HandlerError::Broadcast(e) => AppError::internal(format!("Broadcast failed: {e}")),
         HandlerError::Serialization(e) => AppError::internal(format!("Serialization failed: {e}")),
         HandlerError::QueryFetch(e) => AppError::internal(format!("Query fetch failed: {e}")),
-        HandlerError::FeedbackNotImplemented => {
-            AppError::internal("saga feedback_input_from not implemented".to_string())
-        }
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Exceeded max iterations: {max_iterations}"))
         }
@@ -2796,9 +2775,6 @@ fn reservation_query_to_app_error(err: HandlerError<ReservationQueryError>) -> A
         HandlerError::Broadcast(e) => AppError::internal(format!("Broadcast failed: {e}")),
         HandlerError::Serialization(e) => AppError::internal(format!("Serialization failed: {e}")),
         HandlerError::QueryFetch(e) => AppError::internal(format!("Query fetch failed: {e}")),
-        HandlerError::FeedbackNotImplemented => {
-            AppError::internal("saga feedback_input_from not implemented".to_string())
-        }
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Exceeded max iterations: {max_iterations}"))
         }

@@ -373,7 +373,7 @@ where
 
                     // Execute calls and feed results back
                     let feedback = self.call_executor.execute(calls).await;
-                    current_input = T::feedback_input_from(&prepared_input, feedback)?;
+                    current_input = T::feedback_input_from(&prepared_input, feedback);
 
                     // Track saga iterations for loop safety
                     saga_iterations += 1;
