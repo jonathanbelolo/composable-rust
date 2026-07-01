@@ -110,8 +110,14 @@ impl ComponentHealth {
 
     /// Add detail to health check
     #[must_use]
-    pub fn with_detail(mut self, key: impl Into<String>, value: impl Into<serde_json::Value>) -> Self {
-        self.details.get_or_insert_with(HashMap::new).insert(key.into(), value.into());
+    pub fn with_detail(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<serde_json::Value>,
+    ) -> Self {
+        self.details
+            .get_or_insert_with(HashMap::new)
+            .insert(key.into(), value.into());
         self
     }
 }
@@ -146,9 +152,7 @@ impl SystemHealthCheck {
     /// Create new system health checker
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            checks: Vec::new(),
-        }
+        Self { checks: Vec::new() }
     }
 
     /// Add a health check
@@ -191,7 +195,10 @@ impl SystemHealthCheck {
     pub async fn overall_health(&self) -> HealthStatus {
         let results = self.check_all().await;
 
-        if results.values().any(|h| h.status == HealthStatus::Unhealthy) {
+        if results
+            .values()
+            .any(|h| h.status == HealthStatus::Unhealthy)
+        {
             HealthStatus::Unhealthy
         } else if results.values().any(|h| h.status == HealthStatus::Degraded) {
             HealthStatus::Degraded
@@ -295,7 +302,7 @@ impl HealthCheckable for TimeoutHealthCheck {
             Ok(health) => {
                 let duration = start.elapsed();
                 health.with_detail("check_duration_ms", duration.as_millis() as i64)
-            }
+            },
             Err(_) => ComponentHealth::unhealthy(format!(
                 "Health check timed out after {:?}",
                 self.timeout
@@ -408,7 +415,10 @@ mod tests {
     async fn test_system_health_overall_health_one_degraded() {
         let mut system_health = SystemHealthCheck::new();
         system_health.add_check(Arc::new(MockHealthCheck::new("db", HealthStatus::Healthy)));
-        system_health.add_check(Arc::new(MockHealthCheck::new("api", HealthStatus::Degraded)));
+        system_health.add_check(Arc::new(MockHealthCheck::new(
+            "api",
+            HealthStatus::Degraded,
+        )));
 
         let overall = system_health.overall_health().await;
         assert_eq!(overall, HealthStatus::Degraded);
@@ -418,7 +428,10 @@ mod tests {
     async fn test_system_health_overall_health_one_unhealthy() {
         let mut system_health = SystemHealthCheck::new();
         system_health.add_check(Arc::new(MockHealthCheck::new("db", HealthStatus::Healthy)));
-        system_health.add_check(Arc::new(MockHealthCheck::new("api", HealthStatus::Unhealthy)));
+        system_health.add_check(Arc::new(MockHealthCheck::new(
+            "api",
+            HealthStatus::Unhealthy,
+        )));
 
         let overall = system_health.overall_health().await;
         assert_eq!(overall, HealthStatus::Unhealthy);
@@ -449,7 +462,10 @@ mod tests {
     #[tokio::test]
     async fn test_k8s_readiness_degraded() {
         let mut system_health = SystemHealthCheck::new();
-        system_health.add_check(Arc::new(MockHealthCheck::new("api", HealthStatus::Degraded)));
+        system_health.add_check(Arc::new(MockHealthCheck::new(
+            "api",
+            HealthStatus::Degraded,
+        )));
 
         let k8s = K8sHealthEndpoints::new(Arc::new(system_health));
 
@@ -461,7 +477,10 @@ mod tests {
     #[tokio::test]
     async fn test_k8s_readiness_unhealthy() {
         let mut system_health = SystemHealthCheck::new();
-        system_health.add_check(Arc::new(MockHealthCheck::new("db", HealthStatus::Unhealthy)));
+        system_health.add_check(Arc::new(MockHealthCheck::new(
+            "db",
+            HealthStatus::Unhealthy,
+        )));
 
         let k8s = K8sHealthEndpoints::new(Arc::new(system_health));
 
@@ -486,10 +505,8 @@ mod tests {
             }
         }
 
-        let timeout_check = TimeoutHealthCheck::new(
-            Arc::new(SlowHealthCheck),
-            Duration::from_millis(100),
-        );
+        let timeout_check =
+            TimeoutHealthCheck::new(Arc::new(SlowHealthCheck), Duration::from_millis(100));
 
         let result = timeout_check.check_health().await;
         assert_eq!(result.status, HealthStatus::Unhealthy);

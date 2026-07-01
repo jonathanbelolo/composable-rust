@@ -7,13 +7,9 @@
 //! need to be updated to return proper challenge/result actions before these
 //! handlers will work end-to-end.
 
-use crate::{AuthAction, AuthEnvironment, AuthReducer, AuthState};
 use crate::state::UserId;
-use axum::{
-    extract::State,
-    http::StatusCode,
-    Json,
-};
+use crate::{AuthAction, AuthEnvironment, AuthReducer, AuthState};
+use axum::{Json, extract::State, http::StatusCode};
 use composable_rust_runtime::Store;
 use composable_rust_web::{AppError, ClientIp, CorrelationId, UserAgent};
 use serde::{Deserialize, Serialize};
@@ -149,7 +145,16 @@ pub struct CompletePasskeyLoginResponse {
 ///
 /// Returns `WebAuthn` challenge for `navigator.credentials.create()`.
 pub async fn begin_passkey_registration<O, E, W, S, T, U, D, R, OT, C, RL>(
-    State(store): State<Arc<Store<AuthState, AuthAction, AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>, AuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>>>>,
+    State(store): State<
+        Arc<
+            Store<
+                AuthState,
+                AuthAction,
+                AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>,
+                AuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>,
+            >,
+        >,
+    >,
     correlation_id: CorrelationId,
     _client_ip: ClientIp,
     _user_agent: UserAgent,
@@ -215,9 +220,9 @@ where
                 },
             }),
         )),
-        AuthAction::PasskeyRegistrationFailed { error, .. } => {
-            Err(AppError::internal(format!("Passkey registration failed: {error}")))
-        }
+        AuthAction::PasskeyRegistrationFailed { error, .. } => Err(AppError::internal(format!(
+            "Passkey registration failed: {error}"
+        ))),
         _ => Err(AppError::internal("Unexpected action received")),
     }
 }
@@ -239,7 +244,16 @@ where
 /// }
 /// ```
 pub async fn complete_passkey_registration<O, E, W, S, T, U, D, R, OT, C, RL>(
-    State(store): State<Arc<Store<AuthState, AuthAction, AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>, AuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>>>>,
+    State(store): State<
+        Arc<
+            Store<
+                AuthState,
+                AuthAction,
+                AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>,
+                AuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>,
+            >,
+        >,
+    >,
     correlation_id: CorrelationId,
     _client_ip: ClientIp,
     _user_agent: UserAgent,
@@ -306,9 +320,9 @@ where
                 credential_id,
             }),
         )),
-        AuthAction::PasskeyRegistrationFailed { error, .. } => {
-            Err(AppError::internal(format!("Passkey registration failed: {error}")))
-        }
+        AuthAction::PasskeyRegistrationFailed { error, .. } => Err(AppError::internal(format!(
+            "Passkey registration failed: {error}"
+        ))),
         _ => Err(AppError::internal("Unexpected action received")),
     }
 }
@@ -326,7 +340,16 @@ where
 /// }
 /// ```
 pub async fn begin_passkey_login<O, E, W, S, T, U, D, R, OT, C, RL>(
-    State(store): State<Arc<Store<AuthState, AuthAction, AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>, AuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>>>>,
+    State(store): State<
+        Arc<
+            Store<
+                AuthState,
+                AuthAction,
+                AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>,
+                AuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>,
+            >,
+        >,
+    >,
     correlation_id: CorrelationId,
     client_ip: ClientIp,
     user_agent: UserAgent,
@@ -371,16 +394,20 @@ where
 
     // Map result to HTTP response
     match result {
-        AuthAction::PasskeyLoginChallengeGenerated { challenge, allowed_credentials, .. } => Ok((
+        AuthAction::PasskeyLoginChallengeGenerated {
+            challenge,
+            allowed_credentials,
+            ..
+        } => Ok((
             StatusCode::OK,
             Json(BeginPasskeyLoginResponse {
                 challenge,
                 allowed_credentials,
             }),
         )),
-        AuthAction::PasskeyAuthenticationFailed { error, .. } => {
-            Err(AppError::unauthorized(format!("Passkey login failed: {error}")))
-        }
+        AuthAction::PasskeyAuthenticationFailed { error, .. } => Err(AppError::unauthorized(
+            format!("Passkey login failed: {error}"),
+        )),
         _ => Err(AppError::internal("Unexpected action received")),
     }
 }
@@ -400,7 +427,16 @@ where
 /// }
 /// ```
 pub async fn complete_passkey_login<O, E, W, S, T, U, D, R, OT, C, RL>(
-    State(store): State<Arc<Store<AuthState, AuthAction, AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>, AuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>>>>,
+    State(store): State<
+        Arc<
+            Store<
+                AuthState,
+                AuthAction,
+                AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>,
+                AuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>,
+            >,
+        >,
+    >,
     correlation_id: CorrelationId,
     client_ip: ClientIp,
     user_agent: UserAgent,
@@ -460,10 +496,10 @@ where
                     expires_at: session.expires_at.to_rfc3339(),
                 }),
             ))
-        }
-        AuthAction::PasskeyAuthenticationFailed { error, .. } => {
-            Err(AppError::unauthorized(format!("Passkey login failed: {error}")))
-        }
+        },
+        AuthAction::PasskeyAuthenticationFailed { error, .. } => Err(AppError::unauthorized(
+            format!("Passkey login failed: {error}"),
+        )),
         _ => Err(AppError::internal("Unexpected action received")),
     }
 }

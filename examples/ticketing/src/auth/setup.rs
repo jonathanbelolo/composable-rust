@@ -13,19 +13,18 @@
 //! - `RateLimiter` (Redis)
 //! - `RiskCalculator` (mock for demo)
 
+use crate::auth::ConsoleEmailProvider;
 use crate::config::Config;
 use composable_rust_auth::{
     AuthAction, AuthEnvironment, AuthReducer, AuthState, Result,
-    mocks::{MockOAuth2Provider, MockWebAuthnProvider, MockRiskCalculator},
+    mocks::{MockOAuth2Provider, MockRiskCalculator, MockWebAuthnProvider},
     stores::{
-        RedisSessionStore, RedisTokenStore, RedisChallengeStore,
-        RedisOAuthTokenStore, RedisRateLimiter,
-        PostgresUserRepository, PostgresDeviceRepository,
+        PostgresDeviceRepository, PostgresUserRepository, RedisChallengeStore,
+        RedisOAuthTokenStore, RedisRateLimiter, RedisSessionStore, RedisTokenStore,
     },
 };
-use crate::auth::ConsoleEmailProvider;
-use composable_rust_runtime::Store;
 use composable_rust_postgres::PostgresEventStore;
+use composable_rust_runtime::Store;
 use sqlx::PgPool;
 use std::sync::Arc;
 
@@ -63,7 +62,8 @@ pub type TicketingAuthReducer = AuthReducer<
 >;
 
 /// Type alias for the auth `Store` with all ticketing-specific types.
-pub type TicketingAuthStore = Store<AuthState, AuthAction, TicketingAuthEnvironment, TicketingAuthReducer>;
+pub type TicketingAuthStore =
+    Store<AuthState, AuthAction, TicketingAuthEnvironment, TicketingAuthReducer>;
 
 /// Build `AuthEnvironment` with all 11 providers
 ///
@@ -79,9 +79,9 @@ pub async fn build_auth_environment(
     let postgres_url = &config.postgres.url;
 
     // Create the event store for auth events
-    let event_store = PostgresEventStore::new(postgres_url)
-        .await
-        .map_err(|e| composable_rust_auth::AuthError::InternalError(format!("Event store error: {e}")))?;
+    let event_store = PostgresEventStore::new(postgres_url).await.map_err(|e| {
+        composable_rust_auth::AuthError::InternalError(format!("Event store error: {e}"))
+    })?;
 
     // Generate encryption key for OAuth tokens (32 bytes for AES-256)
     // In production, load this from secure configuration
@@ -108,15 +108,8 @@ pub async fn build_auth_environment(
 /// # Errors
 ///
 /// Returns error if environment setup fails.
-pub async fn build_auth_store(
-    config: &Config,
-    pg_pool: PgPool,
-) -> Result<Arc<TicketingAuthStore>> {
+pub async fn build_auth_store(config: &Config, pg_pool: PgPool) -> Result<Arc<TicketingAuthStore>> {
     let env = build_auth_environment(config, pg_pool).await?;
-    let store = Store::new(
-        AuthState::default(),
-        TicketingAuthReducer::new(),
-        env,
-    );
+    let store = Store::new(AuthState::default(), TicketingAuthReducer::new(), env);
     Ok(Arc::new(store))
 }

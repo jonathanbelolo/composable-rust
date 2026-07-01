@@ -9,11 +9,11 @@ use crate::environment::ProductionEnvironment;
 use crate::types::{AgentAction, AgentEnvironment, AgentState, Effects, Message, Role};
 use composable_rust_agent_patterns::audit::{AuditEvent, AuditEventType, AuditLogger};
 use composable_rust_agent_patterns::security::SecurityMonitor;
-use composable_rust_core::{append_events, async_effect};
 use composable_rust_core::effect::Effect;
 use composable_rust_core::event::SerializedEvent;
 use composable_rust_core::reducer::Reducer;
 use composable_rust_core::stream::{StreamId, Version};
+use composable_rust_core::{append_events, async_effect};
 use smallvec::smallvec;
 use std::sync::Arc;
 use tracing::{error, info, warn};
@@ -31,10 +31,7 @@ pub struct ProductionAgentReducer<A: AuditLogger + Send + Sync + 'static> {
 impl<A: AuditLogger + Send + Sync + 'static> ProductionAgentReducer<A> {
     /// Create new reducer
     #[must_use]
-    pub fn new(
-        audit_logger: Arc<A>,
-        security_monitor: Arc<SecurityMonitor>,
-    ) -> Self {
+    pub fn new(audit_logger: Arc<A>, security_monitor: Arc<SecurityMonitor>) -> Self {
         Self {
             audit_logger,
             security_monitor,
@@ -56,33 +53,36 @@ impl<A: AuditLogger + Send + Sync + 'static> ProductionAgentReducer<A> {
                 state.conversation_id = Some(conversation_id.clone());
                 state.user_id = Some(user_id.clone());
                 state.session_id = Some(session_id.clone());
-            }
+            },
             AgentAction::MessageReceived { content, timestamp } => {
                 state.messages.push(Message {
                     role: Role::User,
                     content: content.clone(),
                     timestamp: timestamp.clone(),
                 });
-            }
-            AgentAction::ResponseGenerated { response, timestamp } => {
+            },
+            AgentAction::ResponseGenerated {
+                response,
+                timestamp,
+            } => {
                 state.messages.push(Message {
                     role: Role::Assistant,
                     content: response.clone(),
                     timestamp: timestamp.clone(),
                 });
-            }
+            },
             AgentAction::ToolExecuted { .. } => {
                 // Tool execution tracking could be added here
-            }
+            },
             AgentAction::ConversationEnded { .. } => {
                 // Mark conversation as ended (could add a flag to state)
-            }
+            },
             AgentAction::SecurityEventDetected { .. } => {
                 // Security events are logged but don't change conversation state
-            }
+            },
             AgentAction::ValidationFailed { error } => {
                 state.last_error = Some(error.clone());
-            }
+            },
             // Commands and internal actions don't modify state during replay
             AgentAction::StartConversation { .. }
             | AgentAction::SendMessage { .. }
@@ -91,7 +91,7 @@ impl<A: AuditLogger + Send + Sync + 'static> ProductionAgentReducer<A> {
             | AgentAction::EndConversation
             | AgentAction::EventPersisted { .. } => {
                 // Commands are not applied during event replay
-            }
+            },
         }
     }
 
@@ -117,7 +117,7 @@ impl<A: AuditLogger + Send + Sync + 'static> ProductionAgentReducer<A> {
             Err(error) => {
                 error!("Failed to serialize event: {error}");
                 return Effect::None;
-            }
+            },
         };
 
         append_events! {
@@ -207,7 +207,10 @@ impl<A: AuditLogger + Send + Sync + 'static> Reducer for ProductionAgentReducer<
                 // Apply event optimistically to state for immediate read
                 Self::apply_event(state, &event);
                 // Optimistically update version (will be corrected by EventPersisted)
-                state.version = state.version.map(|v| Version::new(v.value() + 1)).or(Some(Version::new(1)));
+                state.version = state
+                    .version
+                    .map(|v| Version::new(v.value() + 1))
+                    .or(Some(Version::new(1)));
 
                 // Create stream ID
                 let stream_id = Self::stream_id(&conversation_id);
@@ -225,7 +228,7 @@ impl<A: AuditLogger + Send + Sync + 'static> Reducer for ProductionAgentReducer<
                 );
 
                 smallvec![append_effect, audit_effect]
-            }
+            },
 
             AgentAction::SendMessage { content, source_ip } => {
                 info!("Sending message");
@@ -240,7 +243,7 @@ impl<A: AuditLogger + Send + Sync + 'static> Reducer for ProductionAgentReducer<
                         };
                         Self::apply_event(state, &validation_failed);
                         return smallvec![async_effect! { Some(validation_failed) }];
-                    }
+                    },
                 };
 
                 // Create event
@@ -281,7 +284,7 @@ impl<A: AuditLogger + Send + Sync + 'static> Reducer for ProductionAgentReducer<
                 );
 
                 smallvec![append_effect, audit_effect]
-            }
+            },
 
             AgentAction::ProcessResponse { response } => {
                 info!("Processing LLM response");
@@ -296,7 +299,7 @@ impl<A: AuditLogger + Send + Sync + 'static> Reducer for ProductionAgentReducer<
                         };
                         Self::apply_event(state, &validation_failed);
                         return smallvec![async_effect! { Some(validation_failed) }];
-                    }
+                    },
                 };
 
                 // Create event
@@ -315,11 +318,19 @@ impl<A: AuditLogger + Send + Sync + 'static> Reducer for ProductionAgentReducer<
 
                 // Append event to EventStore (use old version before increment)
                 let expected_version = state.version.map(|v| Version::new(v.value() - 1));
-                smallvec![Self::create_append_effect(env, &stream_id, expected_version, event)]
-            }
+                smallvec![Self::create_append_effect(
+                    env,
+                    &stream_id,
+                    expected_version,
+                    event
+                )]
+            },
 
             AgentAction::ExecuteTool { tool_name, input } => {
-                info!("Executing tool: {} (not yet implemented in event-sourced version)", tool_name);
+                info!(
+                    "Executing tool: {} (not yet implemented in event-sourced version)",
+                    tool_name
+                );
 
                 // Validate: check if conversation started
                 let Some(ref _conversation_id) = state.conversation_id else {
@@ -333,11 +344,14 @@ impl<A: AuditLogger + Send + Sync + 'static> Reducer for ProductionAgentReducer<
 
                 // TODO: Implement tool execution with proper event sourcing
                 // For now, just acknowledge without executing
-                warn!("Tool execution ({}) not yet implemented in event-sourced reducer", tool_name);
+                warn!(
+                    "Tool execution ({}) not yet implemented in event-sourced reducer",
+                    tool_name
+                );
                 warn!("Input: {}", input);
 
                 smallvec![Effect::None]
-            }
+            },
 
             AgentAction::EndConversation => {
                 info!("Ending conversation");
@@ -361,8 +375,13 @@ impl<A: AuditLogger + Send + Sync + 'static> Reducer for ProductionAgentReducer<
                 let stream_id = Self::stream_id(conversation_id);
 
                 // Append event to EventStore
-                smallvec![Self::create_append_effect(env, &stream_id, state.version, event)]
-            }
+                smallvec![Self::create_append_effect(
+                    env,
+                    &stream_id,
+                    state.version,
+                    event
+                )]
+            },
 
             // ========== Events (from event replay or EventPersisted) ==========
             AgentAction::ConversationStarted { .. }
@@ -381,7 +400,7 @@ impl<A: AuditLogger + Send + Sync + 'static> Reducer for ProductionAgentReducer<
                 };
 
                 smallvec![Effect::None]
-            }
+            },
 
             AgentAction::EventPersisted { event, version } => {
                 // Event was already applied optimistically, just update version to persisted value
@@ -394,7 +413,7 @@ impl<A: AuditLogger + Send + Sync + 'static> Reducer for ProductionAgentReducer<
                     Err(error) => {
                         error!("Failed to serialize event for publishing: {error}");
                         return smallvec![Effect::None];
-                    }
+                    },
                 };
 
                 use composable_rust_core::effect::{Effect, EventBusOperation};
@@ -413,13 +432,13 @@ impl<A: AuditLogger + Send + Sync + 'static> Reducer for ProductionAgentReducer<
                 });
 
                 smallvec![publish_effect]
-            }
+            },
 
             AgentAction::ValidationFailed { ref error } => {
                 error!("Validation failed: {}", error);
                 Self::apply_event(state, &action);
                 smallvec![Effect::None]
-            }
+            },
         }
     }
 }
@@ -428,11 +447,11 @@ impl<A: AuditLogger + Send + Sync + 'static> Reducer for ProductionAgentReducer<
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Test code can use unwrap/expect
 mod tests {
     use super::*;
+    use crate::environment::ProductionEnvironment;
     use composable_rust_agent_patterns::audit::InMemoryAuditLogger;
     use composable_rust_agent_patterns::security::SecurityMonitor;
     use composable_rust_core::environment::{Clock, SystemClock};
     use composable_rust_testing::mocks::InMemoryEventStore;
-    use crate::environment::ProductionEnvironment;
 
     #[tokio::test]
     async fn test_start_conversation() {
@@ -442,9 +461,13 @@ mod tests {
             Arc::new(InMemoryEventStore::new());
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
 
-        let event_bus: Arc<dyn composable_rust_core::event_bus::EventBus> = Arc::new(composable_rust_testing::mocks::InMemoryEventBus::new());
+        let event_bus: Arc<dyn composable_rust_core::event_bus::EventBus> =
+            Arc::new(composable_rust_testing::mocks::InMemoryEventBus::new());
         let pool = sqlx::PgPool::connect_lazy("postgres://test").expect("Test pool");
-        let projection_store = Arc::new(composable_rust_projections::PostgresProjectionStore::new(pool, "test".to_string()));
+        let projection_store = Arc::new(composable_rust_projections::PostgresProjectionStore::new(
+            pool,
+            "test".to_string(),
+        ));
 
         let env = ProductionEnvironment::new(
             audit_logger.clone(),

@@ -60,9 +60,7 @@ struct WeatherEnvironment {
 }
 
 impl WeatherEnvironment {
-    fn new(
-        config: AgentConfig,
-    ) -> Result<Self, composable_rust_anthropic::error::ClaudeError> {
+    fn new(config: AgentConfig) -> Result<Self, composable_rust_anthropic::error::ClaudeError> {
         // Define the weather tool
         let weather_tool = Tool {
             name: "get_weather".to_string(),
@@ -89,7 +87,7 @@ impl WeatherEnvironment {
                         return Err(composable_rust_core::agent::ToolError {
                             message: format!("Invalid input JSON: {e}"),
                         });
-                    }
+                    },
                 };
 
                 let location = parsed["location"].as_str().unwrap_or("unknown");
@@ -104,8 +102,7 @@ impl WeatherEnvironment {
                 });
 
                 Ok(weather_data.to_string())
-            })
-                as Pin<Box<dyn std::future::Future<Output = ToolResult> + Send>>
+            }) as Pin<Box<dyn std::future::Future<Output = ToolResult> + Send>>
         }) as composable_rust_core::agent::ToolExecutorFn;
 
         // Create environment with the tool
@@ -154,7 +151,8 @@ impl composable_rust_core::agent::AgentEnvironment for WeatherEnvironment {
         tool_name: String,
         tool_input: String,
     ) -> composable_rust_core::effect::Effect<AgentAction> {
-        self.inner.execute_tool_streaming(tool_use_id, tool_name, tool_input)
+        self.inner
+            .execute_tool_streaming(tool_use_id, tool_name, tool_input)
     }
 }
 
@@ -194,25 +192,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         match block {
                             composable_rust_core::agent::ContentBlock::Text { text } => {
                                 println!("\nAssistant: {text}\n");
-                            }
+                            },
                             composable_rust_core::agent::ContentBlock::ToolUse {
-                                name, input, ..
+                                name,
+                                input,
+                                ..
                             } => {
                                 println!("\n[Using tool: {name} with input: {input}]");
-                            }
-                            composable_rust_core::agent::ContentBlock::ToolResult { .. } => {}
+                            },
+                            composable_rust_core::agent::ContentBlock::ToolResult { .. } => {},
                         }
                     }
-                }
+                },
                 AgentAction::ToolResult {
                     result: Ok(output), ..
                 } => {
                     println!("[Tool result: {output}]");
-                }
+                },
                 AgentAction::Error { error } => {
                     eprintln!("\nError: {error}\n");
-                }
-                _ => {}
+                },
+                _ => {},
             }
         }
     });

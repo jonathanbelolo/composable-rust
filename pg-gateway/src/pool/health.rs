@@ -26,12 +26,7 @@
 //! }
 //! ```
 
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
+use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use serde::Serialize;
 use sqlx::PgPool;
 
@@ -235,7 +230,12 @@ pub async fn health_check_with_outbox(
     State(config): State<HealthConfig>,
 ) -> impl IntoResponse {
     let db_healthy = check_database(&pool).await;
-    let outbox_healthy = check_outbox(&pool, config.stuck_task_threshold, config.stuck_duration_secs).await;
+    let outbox_healthy = check_outbox(
+        &pool,
+        config.stuck_task_threshold,
+        config.stuck_duration_secs,
+    )
+    .await;
 
     let all_healthy = db_healthy && outbox_healthy;
 
@@ -278,10 +278,7 @@ pub async fn health_check_with_outbox(
 /// let healthy = check_database(&pool).await;
 /// ```
 pub async fn check_database(pool: &PgPool) -> bool {
-    sqlx::query("SELECT 1")
-        .fetch_one(pool)
-        .await
-        .is_ok()
+    sqlx::query("SELECT 1").fetch_one(pool).await.is_ok()
 }
 
 /// Check outbox queue health.
@@ -339,7 +336,7 @@ pub async fn check_outbox(pool: &PgPool, threshold: i64, stuck_duration_secs: i6
                 "Failed to query outbox health"
             );
             false
-        }
+        },
     }
 }
 

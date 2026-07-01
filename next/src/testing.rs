@@ -1014,7 +1014,11 @@ mod tests {
                 |_version, _events| async move {
                     // A concurrent writer commits version 3 while the projection runs.
                     concurrent
-                        .append(&concurrent_stream, Some(Version::new(2)), vec![make_event("E3")])
+                        .append(
+                            &concurrent_stream,
+                            Some(Version::new(2)),
+                            vec![make_event("E3")],
+                        )
                         .await
                         .unwrap();
                     Err(ProjectionError::Custom("boom".to_string()))
@@ -1026,7 +1030,11 @@ mod tests {
 
         let events = store.events_for_stream("saga-1");
         // Seed (v1) + the concurrent E3 (v3) survive; only our E2 (v2) is rolled back.
-        assert_eq!(events.len(), 2, "concurrent writer's event must survive rollback");
+        assert_eq!(
+            events.len(),
+            2,
+            "concurrent writer's event must survive rollback"
+        );
         assert!(
             events.iter().any(|e| e.event_type == "E3"),
             "the concurrent writer's E3 must be preserved"
@@ -1226,7 +1234,9 @@ mod tests {
                     events: vec![SagaEv::Started(id)],
                     calls: vec![id],
                 }),
-                OldSagaIn::Feedback { id, .. } => Ok(BusinessResult::Done(vec![SagaEv::Finished(id)])),
+                OldSagaIn::Feedback { id, .. } => {
+                    Ok(BusinessResult::Done(vec![SagaEv::Finished(id)]))
+                },
             }
         }
 

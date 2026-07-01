@@ -27,7 +27,7 @@
 use composable_rust_core::agent::AgentEnvironment;
 use composable_rust_core::effect::Effect;
 use composable_rust_core::reducer::Reducer;
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 use std::collections::HashMap;
 use std::marker::PhantomData;
 
@@ -166,10 +166,10 @@ impl<E> ParallelReducer<E> {
             match result {
                 Ok(data) => {
                     output.push_str(&format!("- Task {}: {}\n", task_id, data));
-                }
+                },
                 Err(error) => {
                     output.push_str(&format!("- Task {} (failed): {}\n", task_id, error));
-                }
+                },
             }
         }
 
@@ -221,7 +221,7 @@ impl<E: AgentEnvironment> Reducer for ParallelReducer<E> {
                 }
 
                 effects
-            }
+            },
 
             ParallelAction::TaskComplete { task_id, result } => {
                 // Remove from pending
@@ -238,7 +238,7 @@ impl<E: AgentEnvironment> Reducer for ParallelReducer<E> {
                 } else {
                     smallvec![Effect::None]
                 }
-            }
+            },
 
             ParallelAction::Aggregate => {
                 // Aggregate all results
@@ -249,18 +249,18 @@ impl<E: AgentEnvironment> Reducer for ParallelReducer<E> {
                 smallvec![Effect::Future(Box::pin(async move {
                     Some(ParallelAction::Complete { result: aggregated })
                 }))]
-            }
+            },
 
             ParallelAction::Complete { .. } => {
                 // Already complete
                 smallvec![Effect::None]
-            }
+            },
 
             ParallelAction::Error { .. } => {
                 // Error occurred, stop execution
                 state.completed = true;
                 smallvec![Effect::None]
-            }
+            },
         }
     }
 }
@@ -285,11 +285,17 @@ mod tests {
             &self.config
         }
 
-        fn call_claude(&self, _request: composable_rust_anthropic::MessagesRequest) -> Effect<AgentAction> {
+        fn call_claude(
+            &self,
+            _request: composable_rust_anthropic::MessagesRequest,
+        ) -> Effect<AgentAction> {
             Effect::None
         }
 
-        fn call_claude_streaming(&self, _request: composable_rust_anthropic::MessagesRequest) -> Effect<AgentAction> {
+        fn call_claude_streaming(
+            &self,
+            _request: composable_rust_anthropic::MessagesRequest,
+        ) -> Effect<AgentAction> {
             Effect::None
         }
 
@@ -400,7 +406,9 @@ mod tests {
         let reducer: ParallelReducer<MockEnvironment> = ParallelReducer::new(3);
         let mut state = ParallelState::new();
         state.pending_tasks = vec!["1".to_string()];
-        state.completed_tasks.insert("2".to_string(), Ok("result2".to_string()));
+        state
+            .completed_tasks
+            .insert("2".to_string(), Ok("result2".to_string()));
 
         let env = MockEnvironment {
             config: AgentConfig::default(),
@@ -423,8 +431,12 @@ mod tests {
     fn test_aggregate() {
         let reducer: ParallelReducer<MockEnvironment> = ParallelReducer::new(3);
         let mut state = ParallelState::new();
-        state.completed_tasks.insert("1".to_string(), Ok("result1".to_string()));
-        state.completed_tasks.insert("2".to_string(), Ok("result2".to_string()));
+        state
+            .completed_tasks
+            .insert("1".to_string(), Ok("result1".to_string()));
+        state
+            .completed_tasks
+            .insert("2".to_string(), Ok("result2".to_string()));
 
         let env = MockEnvironment {
             config: AgentConfig::default(),

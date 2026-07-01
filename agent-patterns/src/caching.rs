@@ -109,7 +109,9 @@ impl ToolResultCache {
 
     /// Evict least-recently-used entry
     fn evict_lru(&mut self) {
-        if let Some((lru_key, _)) = self.cache.iter()
+        if let Some((lru_key, _)) = self
+            .cache
+            .iter()
             .min_by_key(|(_, entry)| entry.last_accessed)
             .map(|(k, v)| (k.clone(), v.clone()))
         {
@@ -149,7 +151,11 @@ mod tests {
         cache.insert("key1".to_string(), Ok("result1".to_string()));
         let result = cache.get("key1");
         assert!(result.is_some());
-        assert!(result.as_ref().is_some_and(|r| r.as_ref().is_ok_and(|s| s == "result1")));
+        assert!(
+            result
+                .as_ref()
+                .is_some_and(|r| r.as_ref().is_ok_and(|s| s == "result1"))
+        );
     }
 
     #[test]

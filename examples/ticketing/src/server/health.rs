@@ -2,7 +2,7 @@
 //!
 //! Provides endpoints for monitoring service health and readiness.
 
-use axum::{http::StatusCode, Json};
+use axum::{Json, http::StatusCode};
 use serde::Serialize;
 
 /// Health check response.
@@ -104,4 +104,3 @@ pub async fn readiness_check() -> (StatusCode, Json<ReadinessResponse>) {
         }),
     )
 }
-

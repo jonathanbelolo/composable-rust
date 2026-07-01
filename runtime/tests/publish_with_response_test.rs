@@ -8,7 +8,7 @@
 
 use composable_rust_core::effect::Effect;
 use composable_rust_core::reducer::Reducer;
-use composable_rust_core::{smallvec, ResponseChannel, SmallVec};
+use composable_rust_core::{ResponseChannel, SmallVec, smallvec};
 use composable_rust_runtime::Store;
 use std::time::Duration;
 
@@ -77,15 +77,15 @@ impl Reducer for TestReducer {
                         })
                     }),
                 }]
-            }
+            },
             TestAction::CommandConfirmed { id } => {
                 state.messages.push(format!("Confirmed: {id}"));
                 SmallVec::new()
-            }
+            },
             TestAction::CommandFailed { id, reason } => {
                 state.messages.push(format!("Failed: {id} - {reason}"));
                 SmallVec::new()
-            }
+            },
         }
     }
 }

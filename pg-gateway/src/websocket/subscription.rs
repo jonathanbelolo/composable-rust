@@ -88,9 +88,10 @@ impl Subscription {
         match self {
             Self::Context(ctx) => event.context() == ctx,
             Self::Stream(stream) => event.stream_id() == stream,
-            Self::Pattern { context, event_type } => {
-                event.context() == context && event.event_type() == event_type
-            }
+            Self::Pattern {
+                context,
+                event_type,
+            } => event.context() == context && event.event_type() == event_type,
         }
     }
 
@@ -100,7 +101,10 @@ impl Subscription {
         match self {
             Self::Context(ctx) => ctx.clone(),
             Self::Stream(stream) => format!("stream:{stream}"),
-            Self::Pattern { context, event_type } => format!("{context}:{event_type}"),
+            Self::Pattern {
+                context,
+                event_type,
+            } => format!("{context}:{event_type}"),
         }
     }
 }
@@ -159,10 +163,7 @@ mod tests {
 
     #[test]
     fn display_string() {
-        assert_eq!(
-            Subscription::context("sales").to_display_string(),
-            "sales"
-        );
+        assert_eq!(Subscription::context("sales").to_display_string(), "sales");
         assert_eq!(
             Subscription::stream("order-123").to_display_string(),
             "stream:order-123"

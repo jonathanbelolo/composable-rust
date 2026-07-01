@@ -307,7 +307,11 @@ mod tests {
         let rate_limiter = RateLimiter::new("test".to_string(), &config);
 
         // First request should succeed
-        assert!(with_rate_limit(&rate_limiter, 1, async { "ok" }).await.is_ok());
+        assert!(
+            with_rate_limit(&rate_limiter, 1, async { "ok" })
+                .await
+                .is_ok()
+        );
 
         // Second request should fail (no tokens)
         let result = with_rate_limit(&rate_limiter, 1, async { "should not execute" }).await;

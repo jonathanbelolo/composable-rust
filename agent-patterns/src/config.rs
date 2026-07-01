@@ -132,10 +132,14 @@ impl LlmConfig {
     /// Returns error if configuration is invalid
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.model.is_empty() {
-            return Err(ConfigError::ValidationError("model cannot be empty".to_string()));
+            return Err(ConfigError::ValidationError(
+                "model cannot be empty".to_string(),
+            ));
         }
         if self.max_tokens == 0 {
-            return Err(ConfigError::ValidationError("max_tokens must be > 0".to_string()));
+            return Err(ConfigError::ValidationError(
+                "max_tokens must be > 0".to_string(),
+            ));
         }
         if !(0.0..=1.0).contains(&self.temperature) {
             return Err(ConfigError::ValidationError(
@@ -143,7 +147,9 @@ impl LlmConfig {
             ));
         }
         if self.timeout_secs == 0 {
-            return Err(ConfigError::ValidationError("timeout_secs must be > 0".to_string()));
+            return Err(ConfigError::ValidationError(
+                "timeout_secs must be > 0".to_string(),
+            ));
         }
         Ok(())
     }
@@ -244,7 +250,9 @@ impl ResilienceConfig {
             ));
         }
         if self.rate_limit_rps == 0 {
-            return Err(ConfigError::ValidationError("rate_limit_rps must be > 0".to_string()));
+            return Err(ConfigError::ValidationError(
+                "rate_limit_rps must be > 0".to_string(),
+            ));
         }
         if self.bulkhead_max_concurrent == 0 {
             return Err(ConfigError::ValidationError(
@@ -378,16 +386,16 @@ impl AgentConfig {
             Environment::Development => {
                 config.observability.log_level = "debug".to_string();
                 config.resilience.rate_limit_rps = 100; // More permissive in dev
-            }
+            },
             Environment::Staging => {
                 config.observability.log_level = "info".to_string();
                 config.resilience.rate_limit_rps = 50;
-            }
+            },
             Environment::Production => {
                 config.observability.log_level = "warn".to_string();
                 config.resilience.rate_limit_rps = 10; // Conservative in prod
                 config.resilience.circuit_breaker_threshold = 3; // Stricter in prod
-            }
+            },
         }
 
         // Load secrets from environment variables
@@ -591,6 +599,9 @@ mod tests {
         assert_eq!(err.to_string(), "Environment variable not set: TEST_VAR");
 
         let err = ConfigError::ValidationError("test failed".to_string());
-        assert_eq!(err.to_string(), "Configuration validation failed: test failed");
+        assert_eq!(
+            err.to_string(),
+            "Configuration validation failed: test failed"
+        );
     }
 }

@@ -37,30 +37,24 @@ pub fn json_query_tool() -> (Tool, ToolExecutorFn) {
 
     let executor = Arc::new(|input: String| {
         Box::pin(async move {
-            let parsed: serde_json::Value = serde_json::from_str(&input).map_err(|e| {
-                ToolError {
+            let parsed: serde_json::Value =
+                serde_json::from_str(&input).map_err(|e| ToolError {
                     message: format!("Invalid input JSON: {e}"),
-                }
+                })?;
+
+            let data_str = parsed["data"].as_str().ok_or_else(|| ToolError {
+                message: "Missing 'data' field".to_string(),
             })?;
 
-            let data_str = parsed["data"]
-                .as_str()
-                .ok_or_else(|| ToolError {
-                    message: "Missing 'data' field".to_string(),
-                })?;
-
-            let query = parsed["query"]
-                .as_str()
-                .ok_or_else(|| ToolError {
-                    message: "Missing 'query' field".to_string(),
-                })?;
+            let query = parsed["query"].as_str().ok_or_else(|| ToolError {
+                message: "Missing 'query' field".to_string(),
+            })?;
 
             // Parse JSON data
-            let data: serde_json::Value = serde_json::from_str(data_str).map_err(|e| {
-                ToolError {
+            let data: serde_json::Value =
+                serde_json::from_str(data_str).map_err(|e| ToolError {
                     message: format!("Invalid JSON data: {e}"),
-                }
-            })?;
+                })?;
 
             // Execute JSONPath query (blocking operation)
             let data_owned = data.clone();
@@ -82,9 +76,7 @@ pub fn json_query_tool() -> (Tool, ToolExecutorFn) {
             });
 
             Ok(output.to_string())
-        }) as std::pin::Pin<
-            Box<dyn std::future::Future<Output = ToolResult> + Send>,
-        >
+        }) as std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send>>
     }) as ToolExecutorFn;
 
     (tool, executor)
@@ -119,7 +111,9 @@ pub fn json_query_tool() -> (Tool, ToolExecutorFn) {
 pub fn string_transform_tool() -> (Tool, ToolExecutorFn) {
     let tool = Tool {
         name: "string_transform".to_string(),
-        description: "Transform strings with common operations (uppercase, lowercase, trim, reverse, length)".to_string(),
+        description:
+            "Transform strings with common operations (uppercase, lowercase, trim, reverse, length)"
+                .to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -139,23 +133,18 @@ pub fn string_transform_tool() -> (Tool, ToolExecutorFn) {
 
     let executor = Arc::new(|input: String| {
         Box::pin(async move {
-            let parsed: serde_json::Value = serde_json::from_str(&input).map_err(|e| {
-                ToolError {
+            let parsed: serde_json::Value =
+                serde_json::from_str(&input).map_err(|e| ToolError {
                     message: format!("Invalid input JSON: {e}"),
-                }
+                })?;
+
+            let text = parsed["text"].as_str().ok_or_else(|| ToolError {
+                message: "Missing 'text' field".to_string(),
             })?;
 
-            let text = parsed["text"]
-                .as_str()
-                .ok_or_else(|| ToolError {
-                    message: "Missing 'text' field".to_string(),
-                })?;
-
-            let operation = parsed["operation"]
-                .as_str()
-                .ok_or_else(|| ToolError {
-                    message: "Missing 'operation' field".to_string(),
-                })?;
+            let operation = parsed["operation"].as_str().ok_or_else(|| ToolError {
+                message: "Missing 'operation' field".to_string(),
+            })?;
 
             let output = match operation {
                 "uppercase" => json!({ "result": text.to_uppercase() }),
@@ -169,13 +158,11 @@ pub fn string_transform_tool() -> (Tool, ToolExecutorFn) {
                     return Err(ToolError {
                         message: format!("Unknown operation: {operation}"),
                     });
-                }
+                },
             };
 
             Ok(output.to_string())
-        }) as std::pin::Pin<
-            Box<dyn std::future::Future<Output = ToolResult> + Send>,
-        >
+        }) as std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send>>
     }) as ToolExecutorFn;
 
     (tool, executor)
@@ -213,7 +200,8 @@ mod tests {
         let result = executor(input).await;
         assert!(result.is_ok());
 
-        let output: serde_json::Value = serde_json::from_str(&result.expect("should succeed")).expect("valid JSON");
+        let output: serde_json::Value =
+            serde_json::from_str(&result.expect("should succeed")).expect("valid JSON");
         assert!(output["results"].is_array());
     }
 
@@ -230,7 +218,8 @@ mod tests {
         let result = executor(input).await;
         assert!(result.is_ok());
 
-        let output: serde_json::Value = serde_json::from_str(&result.expect("should succeed")).expect("valid JSON");
+        let output: serde_json::Value =
+            serde_json::from_str(&result.expect("should succeed")).expect("valid JSON");
         assert_eq!(output["result"], "HELLO");
     }
 
@@ -247,7 +236,8 @@ mod tests {
         let result = executor(input).await;
         assert!(result.is_ok());
 
-        let output: serde_json::Value = serde_json::from_str(&result.expect("should succeed")).expect("valid JSON");
+        let output: serde_json::Value =
+            serde_json::from_str(&result.expect("should succeed")).expect("valid JSON");
         assert_eq!(output["result"], "hello");
     }
 
@@ -264,7 +254,8 @@ mod tests {
         let result = executor(input).await;
         assert!(result.is_ok());
 
-        let output: serde_json::Value = serde_json::from_str(&result.expect("should succeed")).expect("valid JSON");
+        let output: serde_json::Value =
+            serde_json::from_str(&result.expect("should succeed")).expect("valid JSON");
         assert_eq!(output["result"], "hello");
     }
 
@@ -281,7 +272,8 @@ mod tests {
         let result = executor(input).await;
         assert!(result.is_ok());
 
-        let output: serde_json::Value = serde_json::from_str(&result.expect("should succeed")).expect("valid JSON");
+        let output: serde_json::Value =
+            serde_json::from_str(&result.expect("should succeed")).expect("valid JSON");
         assert_eq!(output["result"], "olleh");
     }
 
@@ -298,7 +290,8 @@ mod tests {
         let result = executor(input).await;
         assert!(result.is_ok());
 
-        let output: serde_json::Value = serde_json::from_str(&result.expect("should succeed")).expect("valid JSON");
+        let output: serde_json::Value =
+            serde_json::from_str(&result.expect("should succeed")).expect("valid JSON");
         assert_eq!(output["length"], 5);
     }
 
@@ -314,9 +307,11 @@ mod tests {
 
         let result = executor(input).await;
         assert!(result.is_err());
-        assert!(result
-            .expect_err("should fail")
-            .message
-            .contains("Unknown operation"));
+        assert!(
+            result
+                .expect_err("should fail")
+                .message
+                .contains("Unknown operation")
+        );
     }
 }

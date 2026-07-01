@@ -22,8 +22,8 @@
 //! ```
 
 use crate::error::{AuthError, Result};
-use crate::providers::{User, UserRepository, OAuthLink, MagicLinkToken, PasskeyCredential};
-use crate::state::{OAuthProvider, UserId, DeviceId};
+use crate::providers::{MagicLinkToken, OAuthLink, PasskeyCredential, User, UserRepository};
+use crate::state::{DeviceId, OAuthProvider, UserId};
 use sqlx::PgPool;
 
 /// `PostgreSQL` user repository.
@@ -41,7 +41,7 @@ impl PostgresUserRepository {
     /// # Arguments
     ///
     /// * `pool` - `PostgreSQL` connection pool
-    #[must_use] 
+    #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
     }
@@ -214,8 +214,8 @@ impl UserRepository for PostgresUserRepository {
             provider,
             provider_user_id: row.provider_user_id,
             access_token: String::new(), // TODO: Not stored in projection, load from token store
-            refresh_token: None, // TODO: Not stored in projection
-            expires_at: None, // TODO: Not stored in projection
+            refresh_token: None,         // TODO: Not stored in projection
+            expires_at: None,            // TODO: Not stored in projection
             created_at: row.linked_at,
             updated_at: row.linked_at,
         })
@@ -247,8 +247,8 @@ impl UserRepository for PostgresUserRepository {
             provider,
             provider_user_id: row.provider_user_id,
             access_token: String::new(), // TODO: Not stored in projection, load from token store
-            refresh_token: None, // TODO: Not stored in projection
-            expires_at: None, // TODO: Not stored in projection
+            refresh_token: None,         // TODO: Not stored in projection
+            expires_at: None,            // TODO: Not stored in projection
             created_at: row.linked_at,
             updated_at: row.linked_at,
         })
@@ -365,7 +365,10 @@ impl UserRepository for PostgresUserRepository {
         })
     }
 
-    async fn get_user_passkey_credentials(&self, user_id: UserId) -> Result<Vec<PasskeyCredential>> {
+    async fn get_user_passkey_credentials(
+        &self,
+        user_id: UserId,
+    ) -> Result<Vec<PasskeyCredential>> {
         let rows = sqlx::query!(
             r#"
             SELECT credential_id, user_id, device_id, public_key, counter, registered_at, last_used
@@ -432,7 +435,9 @@ impl UserRepository for PostgresUserRepository {
         )
         .execute(&self.pool)
         .await
-        .map_err(|e| AuthError::DatabaseError(format!("Failed to create passkey credential: {e}")))?;
+        .map_err(|e| {
+            AuthError::DatabaseError(format!("Failed to create passkey credential: {e}"))
+        })?;
 
         Ok(())
     }
@@ -479,9 +484,7 @@ impl UserRepository for PostgresUserRepository {
             ))
         })?;
         let new_counter_i32 = i32::try_from(new_counter).map_err(|_| {
-            AuthError::DatabaseError(format!(
-                "New counter value {new_counter} exceeds i32::MAX"
-            ))
+            AuthError::DatabaseError(format!("New counter value {new_counter} exceeds i32::MAX"))
         })?;
 
         // ✅ SECURITY FIX (BLOCKER #6): Atomic compare-and-swap with explicit transaction
@@ -508,8 +511,10 @@ impl UserRepository for PostgresUserRepository {
         //   Request B: UPDATE WHERE counter=100 (fails, 0 rows affected)
         //   Request B: COMMIT, returns Ok(false)
 
-        let mut tx = self.pool.begin().await
-            .map_err(|e| AuthError::DatabaseError(format!("Failed to start transaction: {e}")))?;
+        let mut tx =
+            self.pool.begin().await.map_err(|e| {
+                AuthError::DatabaseError(format!("Failed to start transaction: {e}"))
+            })?;
 
         // Step 1: Acquire exclusive lock on the credential row
         // This blocks concurrent updates until our transaction completes
@@ -550,7 +555,8 @@ impl UserRepository for PostgresUserRepository {
         .map_err(|e| AuthError::DatabaseError(format!("Failed to update passkey counter: {e}")))?;
 
         // Step 3: Commit transaction (releases lock)
-        tx.commit().await
+        tx.commit()
+            .await
             .map_err(|e| AuthError::DatabaseError(format!("Failed to commit transaction: {e}")))?;
 
         // Return true if CAS succeeded (counter matched expected value)
@@ -568,7 +574,9 @@ impl UserRepository for PostgresUserRepository {
         )
         .execute(&self.pool)
         .await
-        .map_err(|e| AuthError::DatabaseError(format!("Failed to delete passkey credential: {e}")))?;
+        .map_err(|e| {
+            AuthError::DatabaseError(format!("Failed to delete passkey credential: {e}"))
+        })?;
 
         Ok(())
     }

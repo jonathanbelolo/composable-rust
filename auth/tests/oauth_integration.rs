@@ -6,8 +6,8 @@ use composable_rust_auth::{
     environment::AuthEnvironment,
     mocks::{
         MockChallengeStore, MockDeviceRepository, MockEmailProvider, MockOAuth2Provider,
-        MockOAuthTokenStore, MockRateLimiter, MockRiskCalculator, MockSessionStore,
-        MockTokenStore, MockUserRepository, MockWebAuthnProvider,
+        MockOAuthTokenStore, MockRateLimiter, MockRiskCalculator, MockSessionStore, MockTokenStore,
+        MockUserRepository, MockWebAuthnProvider,
     },
     reducers::oauth::OAuthReducer,
     state::{AuthState, OAuthProvider},
@@ -413,7 +413,10 @@ async fn test_session_created_event() {
 
     // Session should still be in state
     assert!(state.session.is_some());
-    assert_eq!(state.session.as_ref().unwrap().session_id, session.session_id);
+    assert_eq!(
+        state.session.as_ref().unwrap().session_id,
+        session.session_id
+    );
 
     // Should return no additional effects (final event)
     assert_eq!(effects.len(), 1); // Effect::None
@@ -447,7 +450,10 @@ async fn test_csrf_state_uniqueness() {
     }
 
     // All states should be unique
-    let unique_count = states.iter().collect::<std::collections::HashSet<_>>().len();
+    let unique_count = states
+        .iter()
+        .collect::<std::collections::HashSet<_>>()
+        .len();
     assert_eq!(unique_count, 10, "CSRF states should be unique");
 
     // All states should be non-empty

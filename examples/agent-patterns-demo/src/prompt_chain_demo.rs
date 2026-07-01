@@ -114,7 +114,10 @@ fn main() {
 
     println!("✅ Step 1 complete, moving to step 2");
     println!("   Current step: {}", state.current_step());
-    println!("   Accumulated context preserved: {}", !state.accumulated_result().is_empty());
+    println!(
+        "   Accumulated context preserved: {}",
+        !state.accumulated_result().is_empty()
+    );
 
     // Simulate another step
     println!("\n📊 Simulating step 2 completion...");

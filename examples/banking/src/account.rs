@@ -3,9 +3,7 @@
 //! Handles individual account operations: open, deposit, withdraw.
 
 use crate::types::{Account, AccountAction, AccountId, AccountState, Money};
-use composable_rust_core::{
-    effect::Effect, environment::Clock, reducer::Reducer, SmallVec,
-};
+use composable_rust_core::{SmallVec, effect::Effect, environment::Clock, reducer::Reducer};
 
 /// Environment dependencies for the Account reducer
 #[derive(Clone)]
@@ -108,32 +106,26 @@ impl AccountReducer {
                 );
                 state.accounts.insert(id.clone(), account);
                 state.last_error = None;
-            }
-            AccountAction::MoneyDeposited {
-                account_id,
-                amount,
-            } => {
+            },
+            AccountAction::MoneyDeposited { account_id, amount } => {
                 if let Some(account) = state.accounts.get_mut(account_id) {
                     account.balance = Money::from_cents(account.balance.cents() + amount.cents());
                 }
                 state.last_error = None;
-            }
-            AccountAction::MoneyWithdrawn {
-                account_id,
-                amount,
-            } => {
+            },
+            AccountAction::MoneyWithdrawn { account_id, amount } => {
                 if let Some(account) = state.accounts.get_mut(account_id) {
                     account.balance = Money::from_cents(account.balance.cents() - amount.cents());
                 }
                 state.last_error = None;
-            }
+            },
             AccountAction::ValidationFailed { error } => {
                 state.last_error = Some(error.clone());
-            }
+            },
             // Commands are not applied to state
             AccountAction::OpenAccount { .. }
             | AccountAction::Deposit { .. }
-            | AccountAction::Withdraw { .. } => {}
+            | AccountAction::Withdraw { .. } => {},
         }
     }
 }
@@ -185,12 +177,9 @@ impl Reducer for AccountReducer {
                 Self::apply_event(state, &event);
 
                 SmallVec::new()
-            }
+            },
 
-            AccountAction::Deposit {
-                account_id,
-                amount,
-            } => {
+            AccountAction::Deposit { account_id, amount } => {
                 // Validate command
                 if let Err(error) = Self::validate_deposit(state, &account_id, amount) {
                     Self::apply_event(
@@ -203,21 +192,15 @@ impl Reducer for AccountReducer {
                 }
 
                 // Create event
-                let event = AccountAction::MoneyDeposited {
-                    account_id,
-                    amount,
-                };
+                let event = AccountAction::MoneyDeposited { account_id, amount };
 
                 // Apply event to state
                 Self::apply_event(state, &event);
 
                 SmallVec::new()
-            }
+            },
 
-            AccountAction::Withdraw {
-                account_id,
-                amount,
-            } => {
+            AccountAction::Withdraw { account_id, amount } => {
                 // Validate command
                 if let Err(error) = Self::validate_withdraw(state, &account_id, amount) {
                     Self::apply_event(
@@ -230,16 +213,13 @@ impl Reducer for AccountReducer {
                 }
 
                 // Create event
-                let event = AccountAction::MoneyWithdrawn {
-                    account_id,
-                    amount,
-                };
+                let event = AccountAction::MoneyWithdrawn { account_id, amount };
 
                 // Apply event to state
                 Self::apply_event(state, &event);
 
                 SmallVec::new()
-            }
+            },
 
             // ========== Events ==========
             AccountAction::AccountOpened { .. }
@@ -249,7 +229,7 @@ impl Reducer for AccountReducer {
                 // Events are applied (for replay or external events)
                 Self::apply_event(state, &action);
                 SmallVec::new()
-            }
+            },
         }
     }
 }
@@ -260,7 +240,7 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use composable_rust_core::environment::SystemClock;
-    use composable_rust_testing::{assertions, ReducerTest};
+    use composable_rust_testing::{ReducerTest, assertions};
     use std::sync::Arc;
 
     fn create_test_env() -> AccountEnvironment {
@@ -315,11 +295,13 @@ mod tests {
             .then_state(|state| {
                 assert_eq!(state.count(), 1); // Still only one account
                 assert!(state.last_error.is_some());
-                assert!(state
-                    .last_error
-                    .as_ref()
-                    .unwrap()
-                    .contains("already exists"));
+                assert!(
+                    state
+                        .last_error
+                        .as_ref()
+                        .unwrap()
+                        .contains("already exists")
+                );
             })
             .then_effects(assertions::assert_no_effects)
             .run();
@@ -406,11 +388,13 @@ mod tests {
                 // Balance unchanged
                 assert_eq!(state.balance(&id), Some(Money::from_dollars(50)));
                 assert!(state.last_error.is_some());
-                assert!(state
-                    .last_error
-                    .as_ref()
-                    .unwrap()
-                    .contains("Insufficient funds"));
+                assert!(
+                    state
+                        .last_error
+                        .as_ref()
+                        .unwrap()
+                        .contains("Insufficient funds")
+                );
             })
             .then_effects(assertions::assert_no_effects)
             .run();

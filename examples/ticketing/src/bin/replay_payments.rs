@@ -14,7 +14,7 @@
 //! ```
 
 use composable_rust_next::{Projector, SerializedEvent, Version};
-use sqlx::{postgres::PgPoolOptions, PgPool, Row};
+use sqlx::{PgPool, Row, postgres::PgPoolOptions};
 use ticketing::next::projector::PaymentProjector;
 
 /// Database connection URLs (matching main application).
@@ -87,7 +87,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut error_count = 0;
 
     for event_row in &event_rows {
-        match projector.project(std::slice::from_ref(&event_row.event)).await {
+        match projector
+            .project(std::slice::from_ref(&event_row.event))
+            .await
+        {
             Ok(()) => {
                 success_count += 1;
                 tracing::debug!(
@@ -95,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     event_type = %event_row.event.event_type,
                     "Projected event"
                 );
-            }
+            },
             Err(e) => {
                 error_count += 1;
                 tracing::error!(
@@ -104,7 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     error = %e,
                     "Failed to project event"
                 );
-            }
+            },
         }
     }
 

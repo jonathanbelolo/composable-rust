@@ -380,10 +380,12 @@ mod tests {
             .await;
 
         assert!(result.is_err());
-        assert!(result
-            .expect_err("should fail")
-            .message
-            .contains("Tool not found"));
+        assert!(
+            result
+                .expect_err("should fail")
+                .message
+                .contains("Tool not found")
+        );
     }
 
     #[test]

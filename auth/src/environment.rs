@@ -4,9 +4,8 @@
 //! in auth reducers.
 
 use crate::providers::{
-    ChallengeStore, OAuth2Provider, EmailProvider, WebAuthnProvider, SessionStore,
-    UserRepository, DeviceRepository, RiskCalculator, TokenStore,
-    OAuthTokenStore, RateLimiter,
+    ChallengeStore, DeviceRepository, EmailProvider, OAuth2Provider, OAuthTokenStore, RateLimiter,
+    RiskCalculator, SessionStore, TokenStore, UserRepository, WebAuthnProvider,
 };
 use composable_rust_core::event_store::EventStore;
 use std::sync::Arc;

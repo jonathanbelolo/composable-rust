@@ -75,10 +75,7 @@ pub trait RateLimiter: Send + Sync {
     /// # Errors
     ///
     /// Returns error if database/`Redis` operation fails.
-    fn record_attempt(
-        &self,
-        key: &str,
-    ) -> impl std::future::Future<Output = Result<()>> + Send;
+    fn record_attempt(&self, key: &str) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// Check and record in one atomic operation.
     ///
@@ -121,10 +118,7 @@ pub trait RateLimiter: Send + Sync {
     /// # Errors
     ///
     /// Returns error if database/`Redis` operation fails.
-    fn reset(
-        &self,
-        key: &str,
-    ) -> impl std::future::Future<Output = Result<()>> + Send;
+    fn reset(&self, key: &str) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// Get current attempt count for a key.
     ///
@@ -141,8 +135,5 @@ pub trait RateLimiter: Send + Sync {
     /// # Errors
     ///
     /// Returns error if database/`Redis` operation fails.
-    fn get_attempts(
-        &self,
-        key: &str,
-    ) -> impl std::future::Future<Output = Result<u32>> + Send;
+    fn get_attempts(&self, key: &str) -> impl std::future::Future<Output = Result<u32>> + Send;
 }

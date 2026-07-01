@@ -54,39 +54,43 @@
 //! let effects = reducer.reduce(&mut state, action, &env);
 //! ```
 
-pub mod context;
-pub mod caching;
+pub mod aggregation;
 pub mod analytics;
+pub mod caching;
+pub mod context;
+pub mod evaluator;
+pub mod memory;
+pub mod orchestrator;
+pub mod parallelization;
 pub mod prompt_chain;
 pub mod routing;
-pub mod parallelization;
-pub mod orchestrator;
-pub mod evaluator;
-pub mod aggregation;
-pub mod memory;
 
 // Phase 8.4: Production Hardening
-pub mod tracing_support;
-pub mod context_propagation;
-pub mod http_propagation;
-pub mod health;
-pub mod shutdown;
-pub mod resilience;
-pub mod metrics;
-pub mod config;
 pub mod audit;
+pub mod config;
+pub mod context_propagation;
+pub mod health;
+pub mod http_propagation;
+pub mod metrics;
+pub mod resilience;
 pub mod security;
+pub mod shutdown;
+pub mod tracing_support;
 
 // Re-export commonly used types
-pub use context::{ContextManager, ContextWindow};
-pub use caching::{ToolResultCache, CachedToolResult};
+pub use aggregation::{AggregationAction, AggregationReducer, AggregationState, Source};
 pub use analytics::{AgentMetrics, MetricsSnapshot};
+pub use caching::{CachedToolResult, ToolResultCache};
+pub use context::{ContextManager, ContextWindow};
+pub use context_propagation::SpanContext;
+pub use evaluator::{
+    Evaluation, EvaluatorAction, EvaluatorConfig, EvaluatorReducer, EvaluatorState,
+};
+pub use memory::{Memory, MemoryAction, MemoryConfig, MemoryReducer, MemoryState};
+pub use orchestrator::{
+    OrchestratorAction, OrchestratorReducer, OrchestratorState, Subtask, WorkerFn, WorkerRegistry,
+};
+pub use parallelization::{ParallelAction, ParallelReducer, ParallelState, Task, TaskResult};
 pub use prompt_chain::{ChainAction, ChainState, ChainStep, PromptChainReducer};
 pub use routing::{Route, RouterAction, RouterState, RoutingReducer, SpecialistFn};
-pub use parallelization::{ParallelAction, ParallelReducer, ParallelState, Task, TaskResult};
-pub use orchestrator::{OrchestratorAction, OrchestratorReducer, OrchestratorState, Subtask, WorkerFn, WorkerRegistry};
-pub use evaluator::{Evaluation, EvaluatorAction, EvaluatorConfig, EvaluatorReducer, EvaluatorState};
-pub use aggregation::{AggregationAction, AggregationReducer, AggregationState, Source};
-pub use memory::{Memory, MemoryAction, MemoryConfig, MemoryReducer, MemoryState};
 pub use tracing_support::TracedReducer;
-pub use context_propagation::SpanContext;

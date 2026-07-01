@@ -114,8 +114,7 @@ pub fn progress_counter_tool() -> (Tool, StreamExecutor) {
                 tool_use_id,
                 result: Ok(format!("Completed: {steps} steps")),
             };
-        })
-            as std::pin::Pin<Box<dyn futures::Stream<Item = AgentAction> + Send>>
+        }) as std::pin::Pin<Box<dyn futures::Stream<Item = AgentAction> + Send>>
     });
 
     (tool, executor)
@@ -198,8 +197,7 @@ pub fn stream_lines_tool() -> (Tool, StreamExecutor) {
                 tool_use_id,
                 result: Ok(format!("Streamed {total_lines} lines")),
             };
-        })
-            as std::pin::Pin<Box<dyn futures::Stream<Item = AgentAction> + Send>>
+        }) as std::pin::Pin<Box<dyn futures::Stream<Item = AgentAction> + Send>>
     });
 
     (tool, executor)
@@ -231,11 +229,11 @@ mod tests {
             match action {
                 AgentAction::ToolChunk { content, .. } => {
                     chunks.push(content);
-                }
+                },
                 AgentAction::ToolComplete { result, .. } => {
                     complete = Some(result);
-                }
-                _ => {}
+                },
+                _ => {},
             }
         }
 
@@ -246,7 +244,11 @@ mod tests {
 
         // Should complete successfully
         assert!(complete.is_some());
-        assert!(complete.as_ref().is_some_and(|r| r.as_ref().is_ok_and(|s| s.contains("Completed: 3 steps"))));
+        assert!(
+            complete
+                .as_ref()
+                .is_some_and(|r| r.as_ref().is_ok_and(|s| s.contains("Completed: 3 steps")))
+        );
     }
 
     #[tokio::test]
@@ -257,7 +259,10 @@ mod tests {
         let mut stream = executor("test_2".to_string(), input);
 
         let action = stream.next().await;
-        assert!(matches!(action, Some(AgentAction::ToolComplete { result: Err(_), .. })));
+        assert!(matches!(
+            action,
+            Some(AgentAction::ToolComplete { result: Err(_), .. })
+        ));
     }
 
     #[tokio::test]
@@ -280,11 +285,11 @@ mod tests {
             match action {
                 AgentAction::ToolChunk { content, .. } => {
                     chunks.push(content);
-                }
+                },
                 AgentAction::ToolComplete { result, .. } => {
                     complete = Some(result);
-                }
-                _ => {}
+                },
+                _ => {},
             }
         }
 
@@ -296,7 +301,11 @@ mod tests {
 
         // Should complete successfully
         assert!(complete.is_some());
-        assert!(complete.as_ref().is_some_and(|r| r.as_ref().is_ok_and(|s| s.contains("Streamed 3 lines"))));
+        assert!(
+            complete
+                .as_ref()
+                .is_some_and(|r| r.as_ref().is_ok_and(|s| s.contains("Streamed 3 lines")))
+        );
     }
 
     #[tokio::test]
@@ -320,6 +329,9 @@ mod tests {
 
         // Should complete with 0 lines (empty string has no lines)
         assert!(complete.is_some());
-        assert!(complete.as_ref().is_some_and(|r| r.as_ref().is_ok_and(|s| s.contains("Streamed 0 lines") || s.contains("Streamed 1 lines"))));
+        assert!(complete.as_ref().is_some_and(|r| {
+            r.as_ref()
+                .is_ok_and(|s| s.contains("Streamed 0 lines") || s.contains("Streamed 1 lines"))
+        }));
     }
 }

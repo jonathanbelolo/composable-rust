@@ -3,9 +3,7 @@
 //! This module provides centralized management of all active WebSocket
 //! connections, including broadcasting events to subscribed clients.
 
-use super::{
-    protocol::ServerMessage, ConnectionId, EventNotification, Subscription, WsConnection,
-};
+use super::{ConnectionId, EventNotification, Subscription, WsConnection, protocol::ServerMessage};
 use crate::identity::Identity;
 use dashmap::DashMap;
 use std::sync::Arc;
@@ -354,9 +352,7 @@ mod tests {
 
     #[test]
     fn builder_pattern() {
-        let manager = WsManagerBuilder::new()
-            .broadcast_capacity(500)
-            .build();
+        let manager = WsManagerBuilder::new().broadcast_capacity(500).build();
 
         assert_eq!(manager.connection_count(), 0);
     }

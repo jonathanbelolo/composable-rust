@@ -14,7 +14,6 @@ pub enum AuthError {
     // ═══════════════════════════════════════════════════════════
     // Authentication Errors
     // ═══════════════════════════════════════════════════════════
-
     /// Invalid credentials provided.
     #[error("Invalid credentials")]
     InvalidCredentials,
@@ -27,7 +26,7 @@ pub enum AuthError {
     #[error("Passkey verification failed: {reason}")]
     PasskeyVerificationFailed {
         /// Reason for failure
-        reason: String
+        reason: String,
     },
 
     /// Magic link has expired.
@@ -77,12 +76,11 @@ pub enum AuthError {
     // ═══════════════════════════════════════════════════════════
     // Authorization Errors
     // ═══════════════════════════════════════════════════════════
-
     /// User lacks required permissions.
     #[error("Insufficient permissions: {required}")]
     InsufficientPermissions {
         /// Required permission that was missing
-        required: String
+        required: String,
     },
 
     /// Requested resource not found.
@@ -92,7 +90,6 @@ pub enum AuthError {
     // ═══════════════════════════════════════════════════════════
     // Input Validation Errors
     // ═══════════════════════════════════════════════════════════
-
     /// Invalid input provided.
     #[error("Invalid input: {0}")]
     InvalidInput(String),
@@ -100,7 +97,6 @@ pub enum AuthError {
     // ═══════════════════════════════════════════════════════════
     // Session Errors
     // ═══════════════════════════════════════════════════════════
-
     /// Session has expired.
     #[error("Session has expired")]
     SessionExpired,
@@ -120,18 +116,16 @@ pub enum AuthError {
     // ═══════════════════════════════════════════════════════════
     // Rate Limiting
     // ═══════════════════════════════════════════════════════════
-
     /// Too many authentication attempts.
     #[error("Too many attempts, please retry after {retry_after:?}")]
     TooManyAttempts {
         /// Duration to wait before retrying
-        retry_after: std::time::Duration
+        retry_after: std::time::Duration,
     },
 
     // ═══════════════════════════════════════════════════════════
     // WebAuthn Specific
     // ═══════════════════════════════════════════════════════════
-
     /// `WebAuthn` challenge has expired.
     #[error("`WebAuthn` challenge has expired")]
     ChallengeExpired,
@@ -151,7 +145,6 @@ pub enum AuthError {
     // ═══════════════════════════════════════════════════════════
     // System Errors
     // ═══════════════════════════════════════════════════════════
-
     /// Database operation failed.
     #[error("Database error: {0}")]
     DatabaseError(String),

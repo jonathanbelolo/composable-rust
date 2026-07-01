@@ -7,9 +7,9 @@
 #![allow(missing_docs)] // Benchmarks don't need extensive docs
 #![allow(clippy::expect_used)] // Benchmarks can use expect for setup
 
-use composable_rust_core::{effect::Effect, reducer::Reducer, smallvec, SmallVec};
+use composable_rust_core::{SmallVec, effect::Effect, reducer::Reducer, smallvec};
 use composable_rust_runtime::Store;
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use std::time::Duration;
 
 // ============================================================================
@@ -52,7 +52,7 @@ impl Reducer for BenchReducer {
                 smallvec![Effect::Future(Box::pin(async move {
                     Some(BenchAction::Incremented { value })
                 }))]
-            }
+            },
             BenchAction::Incremented { .. } => smallvec![Effect::None],
         }
     }

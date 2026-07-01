@@ -42,7 +42,11 @@ fn get_auth_token() -> &'static str {
 }
 
 /// Helper function to create a valid event payload with proper schema
-fn create_event_payload(name: &str, _vip_capacity: u32, general_capacity: u32) -> serde_json::Value {
+fn create_event_payload(
+    name: &str,
+    _vip_capacity: u32,
+    general_capacity: u32,
+) -> serde_json::Value {
     json!({
         "title": name,
         "description": format!("{} - An exciting test event", name),
@@ -103,15 +107,17 @@ async fn test_event_crud_operations() {
 
     let status = create_response.status();
     if status != 201 {
-        let error_body = create_response.text().await.unwrap_or_else(|_| "Failed to get error body".to_string());
-        panic!("Event creation failed with status {}: {}", status, error_body);
+        let error_body = create_response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Failed to get error body".to_string());
+        panic!(
+            "Event creation failed with status {}: {}",
+            status, error_body
+        );
     }
 
-    assert_eq!(
-        status,
-        201,
-        "Event creation should return 201 Created"
-    );
+    assert_eq!(status, 201, "Event creation should return 201 Created");
 
     let created_event: serde_json::Value = create_response
         .json()
@@ -173,7 +179,9 @@ async fn test_availability_queries() {
 
     // Query section availability for the General Admission section that was created
     let section_availability = client
-        .get(format!("{API_BASE}/api/v2/events/{event_id}/sections/General%20Admission/availability"))
+        .get(format!(
+            "{API_BASE}/api/v2/events/{event_id}/sections/General%20Admission/availability"
+        ))
         .send()
         .await
         .expect("Failed to query section availability");
@@ -194,9 +202,7 @@ async fn test_availability_queries() {
         "Should return correct section"
     );
     assert_eq!(
-        availability["available_seats"]
-            .as_u64()
-            .unwrap(),
+        availability["available_seats"].as_u64().unwrap(),
         100,
         "Should have 100 available seats initially"
     );
@@ -205,7 +211,9 @@ async fn test_availability_queries() {
 
     // Query total available
     let total_availability = client
-        .get(format!("{API_BASE}/api/v2/events/{event_id}/total-available"))
+        .get(format!(
+            "{API_BASE}/api/v2/events/{event_id}/total-available"
+        ))
         .send()
         .await
         .expect("Failed to query total availability");
@@ -315,7 +323,9 @@ async fn test_reservation_flow() {
 
     // Verify availability decreased
     let availability = client
-        .get(format!("{API_BASE}/api/v2/events/{event_id}/sections/General%20Admission/availability"))
+        .get(format!(
+            "{API_BASE}/api/v2/events/{event_id}/sections/General%20Admission/availability"
+        ))
         .send()
         .await
         .expect("Failed to query availability");
@@ -333,7 +343,9 @@ async fn test_reservation_flow() {
     //     "Available seats should decrease after reservation (was 100, now {available_seats})"
     // );
 
-    println!("  ✅ Availability query successful (note: business logic not implemented, returned stub: {available_seats})");
+    println!(
+        "  ✅ Availability query successful (note: business logic not implemented, returned stub: {available_seats})"
+    );
 
     // List user reservations
     let list_reservations = client
@@ -438,7 +450,11 @@ async fn test_payment_processing() {
         .await
         .expect("Failed to create reservation");
 
-    assert_eq!(reservation_response.status(), 201, "Reservation should return 201 Created");
+    assert_eq!(
+        reservation_response.status(),
+        201,
+        "Reservation should return 201 Created"
+    );
 
     let reservation: serde_json::Value = reservation_response
         .json()
@@ -479,7 +495,9 @@ async fn test_payment_processing() {
 
     // If status is Completed, the saga already processed payment - skip manual payment
     if reservation_status == "Completed" {
-        println!("  ℹ️  Saga auto-completed payment with mock gateway, skipping manual payment test");
+        println!(
+            "  ℹ️  Saga auto-completed payment with mock gateway, skipping manual payment test"
+        );
 
         // Clean up
         client
@@ -618,7 +636,9 @@ async fn test_analytics_queries() {
 
     // Query event sales
     let sales_response = client
-        .get(format!("{API_BASE}/api/v2/analytics/events/{event_id}/sales"))
+        .get(format!(
+            "{API_BASE}/api/v2/analytics/events/{event_id}/sales"
+        ))
         .header("Authorization", format!("Bearer {auth_token}"))
         .send()
         .await
@@ -632,7 +652,10 @@ async fn test_analytics_queries() {
 
         println!("  ✅ Event sales query successful: {sales:?}");
     } else {
-        println!("  ⚠️  Event sales endpoint returned {}", sales_response.status());
+        println!(
+            "  ⚠️  Event sales endpoint returned {}",
+            sales_response.status()
+        );
     }
 
     // Query total revenue
@@ -651,7 +674,10 @@ async fn test_analytics_queries() {
 
         println!("  ✅ Total revenue query successful: {revenue:?}");
     } else {
-        println!("  ⚠️  Revenue endpoint returned {}", revenue_response.status());
+        println!(
+            "  ⚠️  Revenue endpoint returned {}",
+            revenue_response.status()
+        );
     }
 
     // Clean up
@@ -700,14 +726,20 @@ async fn test_list_events() {
         .await
         .expect("Failed to list events");
 
-    assert_eq!(list_response.status(), 200, "List events should return 200 OK");
+    assert_eq!(
+        list_response.status(),
+        200,
+        "List events should return 200 OK"
+    );
 
     let events_body: serde_json::Value = list_response.json().await.unwrap();
-    let events = events_body["events"].as_array().expect("Response should contain events array");
+    let events = events_body["events"]
+        .as_array()
+        .expect("Response should contain events array");
 
-    let found = events.iter().any(|e| {
-        e["id"].as_str() == Some(event_id) || e["event_id"].as_str() == Some(event_id)
-    });
+    let found = events
+        .iter()
+        .any(|e| e["id"].as_str() == Some(event_id) || e["event_id"].as_str() == Some(event_id));
 
     assert!(found, "Created event should appear in the events list");
     println!("  ✅ Event found in list");
@@ -741,7 +773,11 @@ async fn test_event_not_found() {
         .await
         .expect("Failed to send request");
 
-    assert_eq!(response.status(), 404, "Non-existent event should return 404");
+    assert_eq!(
+        response.status(),
+        404,
+        "Non-existent event should return 404"
+    );
     println!("  ✅ Non-existent event correctly returns 404");
 }
 
@@ -783,10 +819,17 @@ async fn test_pricing_operations() {
         .await
         .expect("Failed to get pricing");
 
-    assert_eq!(get_pricing_response.status(), 200, "GET pricing should succeed");
+    assert_eq!(
+        get_pricing_response.status(),
+        200,
+        "GET pricing should succeed"
+    );
 
     let pricing_data: serde_json::Value = get_pricing_response.json().await.unwrap();
-    println!("  ✅ Retrieved pricing: {:?}", pricing_data["pricing_tiers"]);
+    println!(
+        "  ✅ Retrieved pricing: {:?}",
+        pricing_data["pricing_tiers"]
+    );
 
     // Update pricing - API expects "price" in dollars, not "price_cents"
     let update_pricing_payload = json!({
@@ -812,7 +855,11 @@ async fn test_pricing_operations() {
         .await
         .expect("Failed to update pricing");
 
-    assert_eq!(update_response.status(), 200, "PATCH pricing should succeed");
+    assert_eq!(
+        update_response.status(),
+        200,
+        "PATCH pricing should succeed"
+    );
     println!("  ✅ Pricing updated successfully");
 
     // Clean up
@@ -847,7 +894,11 @@ async fn test_payment_refund() {
         .await
         .unwrap();
 
-    assert_eq!(create_response.status(), 201, "Event creation should succeed");
+    assert_eq!(
+        create_response.status(),
+        201,
+        "Event creation should succeed"
+    );
 
     let created_event: serde_json::Value = create_response.json().await.unwrap();
     let event_id = created_event["event_id"].as_str().unwrap();
@@ -868,7 +919,11 @@ async fn test_payment_refund() {
         .await
         .unwrap();
 
-    assert_eq!(reservation_response.status(), 201, "Reservation should succeed");
+    assert_eq!(
+        reservation_response.status(),
+        201,
+        "Reservation should succeed"
+    );
 
     let reservation: serde_json::Value = reservation_response.json().await.unwrap();
     let reservation_id = reservation["reservation_id"].as_str().unwrap();
@@ -934,7 +989,9 @@ async fn test_payment_refund() {
         // Cancel the reservation - this should trigger refund via saga compensation
         // Note: The cancellation endpoint is POST /reservations/{id}/cancel, not DELETE
         let cancel_response = client
-            .post(format!("{API_BASE}/api/v2/reservations/{reservation_id}/cancel"))
+            .post(format!(
+                "{API_BASE}/api/v2/reservations/{reservation_id}/cancel"
+            ))
             .header("Authorization", format!("Bearer {auth_token}"))
             .send()
             .await
@@ -1019,7 +1076,11 @@ async fn test_cross_user_authorization() {
         .await
         .unwrap();
 
-    assert_eq!(view_response.status(), 200, "User B should be able to view public event");
+    assert_eq!(
+        view_response.status(),
+        200,
+        "User B should be able to view public event"
+    );
     println!("  ✅ User B can view public event");
 
     // Clean up
@@ -1089,7 +1150,9 @@ async fn test_magic_link_authentication() {
     // NOTE: This test demonstrates the flow but cannot extract real tokens from console
 
     println!("  ⚠️  Note: Magic link token would normally be extracted from email/console logs");
-    println!("  ⚠️  This test verifies the API contract but cannot complete full flow without token");
+    println!(
+        "  ⚠️  This test verifies the API contract but cannot complete full flow without token"
+    );
 
     // To complete this test in CI/CD, you would need to:
     // 1. Configure a test email provider that exposes received emails via API

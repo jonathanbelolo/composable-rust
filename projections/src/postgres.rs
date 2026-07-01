@@ -158,10 +158,7 @@ impl PostgresProjectionStore {
     ///     "projection_data".to_string(),
     /// ).await?;
     /// ```
-    pub async fn new_with_separate_db(
-        database_url: &str,
-        table_name: String,
-    ) -> Result<Self> {
+    pub async fn new_with_separate_db(database_url: &str, table_name: String) -> Result<Self> {
         let pool = PgPoolOptions::new()
             .max_connections(10) // Reasonable default for projection queries
             .connect(database_url)
@@ -235,10 +232,7 @@ impl ProjectionStore for PostgresProjectionStore {
     }
 
     async fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        let query = format!(
-            "SELECT data FROM {} WHERE key = $1",
-            self.table_name
-        );
+        let query = format!("SELECT data FROM {} WHERE key = $1", self.table_name);
 
         let result: Option<(Vec<u8>,)> = sqlx::query_as(&query)
             .bind(key)
@@ -250,10 +244,7 @@ impl ProjectionStore for PostgresProjectionStore {
     }
 
     async fn delete(&self, key: &str) -> Result<()> {
-        let query = format!(
-            "DELETE FROM {} WHERE key = $1",
-            self.table_name
-        );
+        let query = format!("DELETE FROM {} WHERE key = $1", self.table_name);
 
         sqlx::query(&query)
             .bind(key)
@@ -415,7 +406,7 @@ impl ProjectionCheckpoint for PostgresProjectionCheckpoint {
             let result: Option<(i64, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
                 "SELECT event_offset, event_timestamp
                  FROM projection_checkpoints
-                 WHERE projection_name = $1"
+                 WHERE projection_name = $1",
             )
             .bind(projection_name)
             .fetch_optional(&self.pool)

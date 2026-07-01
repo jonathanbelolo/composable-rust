@@ -53,12 +53,7 @@ impl EmailProvider for MockEmailProvider {
         Ok(())
     }
 
-    async fn send_security_alert(
-        &self,
-        _to: &str,
-        _subject: &str,
-        _message: &str,
-    ) -> Result<()> {
+    async fn send_security_alert(&self, _to: &str, _subject: &str, _message: &str) -> Result<()> {
         Ok(())
     }
 }

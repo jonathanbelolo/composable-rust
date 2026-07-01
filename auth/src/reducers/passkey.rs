@@ -59,8 +59,7 @@ use crate::environment::AuthEnvironment;
 use crate::events::AuthEvent;
 use crate::providers::{
     ChallengeStore, DeviceRepository, EmailProvider, OAuth2Provider, OAuthTokenStore,
-    PasskeyCredential, RiskCalculator, SessionStore, TokenStore, UserRepository,
-    WebAuthnProvider,
+    PasskeyCredential, RiskCalculator, SessionStore, TokenStore, UserRepository, WebAuthnProvider,
 };
 use crate::state::{AuthState, Session, SessionId};
 use chrono::Utc;
@@ -68,7 +67,7 @@ use composable_rust_core::async_effect;
 use composable_rust_core::effect::Effect;
 use composable_rust_core::reducer::Reducer;
 use composable_rust_core::stream::StreamId;
-use composable_rust_core::{smallvec, SmallVec};
+use composable_rust_core::{SmallVec, smallvec};
 use std::sync::Arc;
 
 /// `WebAuthn`/Passkey authentication reducer.
@@ -128,16 +127,18 @@ impl<O, E, W, S, T, U, D, R, OT, C, RL> PasskeyReducer<O, E, W, S, T, U, D, R, O
             _phantom: std::marker::PhantomData,
         }
     }
-
 }
 
-impl<O, E, W, S, T, U, D, R, OT, C, RL> Default for PasskeyReducer<O, E, W, S, T, U, D, R, OT, C, RL> {
+impl<O, E, W, S, T, U, D, R, OT, C, RL> Default
+    for PasskeyReducer<O, E, W, S, T, U, D, R, OT, C, RL>
+{
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<O, E, W, S, T, U, D, R, OT, C, RL> Reducer for PasskeyReducer<O, E, W, S, T, U, D, R, OT, C, RL>
+impl<O, E, W, S, T, U, D, R, OT, C, RL> Reducer
+    for PasskeyReducer<O, E, W, S, T, U, D, R, OT, C, RL>
 where
     O: OAuth2Provider + Clone + 'static,
     E: EmailProvider + Clone + 'static,
@@ -241,7 +242,7 @@ where
                         }
                     }
                 }]
-            }
+            },
 
             // ═══════════════════════════════════════════════════════════════
             // CompletePasskeyRegistration: Verify attestation
@@ -384,7 +385,7 @@ where
                         }
                     }
                 }]
-            }
+            },
 
             // ═══════════════════════════════════════════════════════════════
             // InitiatePasskeyLogin: Generate challenge and lookup credentials
@@ -483,7 +484,7 @@ where
                         }
                     }
                 }]
-            }
+            },
 
             // ═══════════════════════════════════════════════════════════════
             // CompletePasskeyLogin: Verify assertion
@@ -863,7 +864,7 @@ where
                         fingerprint,
                     })
                 }]
-            }
+            },
 
             // ═══════════════════════════════════════════════════════════════
             // PasskeyLoginSuccess: Emit events (batch) and create session
@@ -1050,21 +1051,27 @@ where
                         }
                     }
                 }]
-            }
+            },
 
             // ═══════════════════════════════════════════════════════════════
             // SessionCreated: Set session in state
             // ═══════════════════════════════════════════════════════════════
-            AuthAction::SessionCreated { correlation_id: _, session } => {
+            AuthAction::SessionCreated {
+                correlation_id: _,
+                session,
+            } => {
                 // Set session in state (session now has correct risk score from RiskCalculator)
                 state.session = Some(session.clone());
                 smallvec![Effect::None]
-            }
+            },
 
             // ═══════════════════════════════════════════════════════════════
             // ListPasskeyCredentials: List all credentials for user
             // ═══════════════════════════════════════════════════════════════
-            AuthAction::ListPasskeyCredentials { correlation_id, user_id } => {
+            AuthAction::ListPasskeyCredentials {
+                correlation_id,
+                user_id,
+            } => {
                 // ✅ AUTHORIZATION: This action should only be called after session validation
                 // The session middleware ensures user_id matches the authenticated session
                 let users = env.users.clone();
@@ -1094,7 +1101,7 @@ where
                         }
                     }
                 }]
-            }
+            },
 
             // ═══════════════════════════════════════════════════════════════
             // PasskeyCredentialsListed: Credentials retrieved successfully
@@ -1107,7 +1114,7 @@ where
                 // This is a success event - no state changes needed
                 // The application layer will use the credentials from the event
                 smallvec![Effect::None]
-            }
+            },
 
             // ═══════════════════════════════════════════════════════════════
             // DeletePasskeyCredential: Delete a specific credential
@@ -1192,7 +1199,7 @@ where
                         }
                     }
                 }]
-            }
+            },
 
             // ═══════════════════════════════════════════════════════════════
             // PasskeyCredentialDeleted: Credential deleted successfully
@@ -1205,7 +1212,7 @@ where
                 // This is a success event - no state changes needed
                 // The application layer will handle the success response
                 smallvec![Effect::None]
-            }
+            },
 
             // ═══════════════════════════════════════════════════════════════
             // PasskeyCredentialDeletionFailed: Credential deletion failed
@@ -1219,7 +1226,7 @@ where
                 // This is an error event - no state changes needed
                 // The application layer will handle the error response
                 smallvec![Effect::None]
-            }
+            },
 
             // Other actions are not handled by this reducer
             _ => smallvec![Effect::None],
@@ -1309,14 +1316,8 @@ mod tests {
             is_rollback(100, 99),
             "Counter decrement by 1 should be rollback"
         );
-        assert!(
-            is_rollback(100, 50),
-            "Backward jump should be rollback"
-        );
-        assert!(
-            is_rollback(100, 0),
-            "Reset to 0 should be rollback"
-        );
+        assert!(is_rollback(100, 50), "Backward jump should be rollback");
+        assert!(is_rollback(100, 0), "Reset to 0 should be rollback");
 
         // ═══════════════════════════════════════════════════════════
         // Wrapping cases (CRITICAL edge cases!)
@@ -1414,10 +1415,7 @@ mod tests {
             !is_rollback(u32::MAX, 0),
             "MAX → 0 should be valid (wraparound)"
         );
-        assert!(
-            !is_rollback(u32::MAX - 1, 0),
-            "(MAX-1) → 0 should be valid"
-        );
+        assert!(!is_rollback(u32::MAX - 1, 0), "(MAX-1) → 0 should be valid");
 
         // From MAX
         assert!(
@@ -1444,15 +1442,9 @@ mod tests {
         );
 
         // Attacker resets counter
-        assert!(
-            is_rollback(1000, 1),
-            "Attacker reset counter: 1000 → 1"
-        );
+        assert!(is_rollback(1000, 1), "Attacker reset counter: 1000 → 1");
 
         // Attacker uses old backup
-        assert!(
-            is_rollback(500, 450),
-            "Attacker uses old backup: 500 → 450"
-        );
+        assert!(is_rollback(500, 450), "Attacker uses old backup: 500 → 450");
     }
 }

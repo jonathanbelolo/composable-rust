@@ -25,11 +25,17 @@ impl AgentEnvironment for DemoEnvironment {
         &self.config
     }
 
-    fn call_claude(&self, _request: composable_rust_anthropic::MessagesRequest) -> Effect<AgentAction> {
+    fn call_claude(
+        &self,
+        _request: composable_rust_anthropic::MessagesRequest,
+    ) -> Effect<AgentAction> {
         Effect::None
     }
 
-    fn call_claude_streaming(&self, _request: composable_rust_anthropic::MessagesRequest) -> Effect<AgentAction> {
+    fn call_claude_streaming(
+        &self,
+        _request: composable_rust_anthropic::MessagesRequest,
+    ) -> Effect<AgentAction> {
         Effect::None
     }
 
@@ -78,10 +84,15 @@ fn main() {
     };
 
     // Execute tasks in parallel
-    println!("🚀 Executing {} translation tasks in parallel (max 3 concurrent)...\n", tasks.len());
+    println!(
+        "🚀 Executing {} translation tasks in parallel (max 3 concurrent)...\n",
+        tasks.len()
+    );
     let effects = reducer.reduce(
         &mut state,
-        ParallelAction::Execute { tasks: tasks.clone() },
+        ParallelAction::Execute {
+            tasks: tasks.clone(),
+        },
         &env,
     );
 
@@ -102,8 +113,12 @@ fn main() {
         &env,
     );
     println!("   ✅ Spanish: Completed");
-    println!("      Pending: {} | Completed: {} | Effects: {}",
-             state.pending_count(), state.completed_count(), effects.len());
+    println!(
+        "      Pending: {} | Completed: {} | Effects: {}",
+        state.pending_count(),
+        state.completed_count(),
+        effects.len()
+    );
 
     // French completes
     let _effects = reducer.reduce(
@@ -115,7 +130,11 @@ fn main() {
         &env,
     );
     println!("   ✅ French: Completed");
-    println!("      Pending: {} | Completed: {}", state.pending_count(), state.completed_count());
+    println!(
+        "      Pending: {} | Completed: {}",
+        state.pending_count(),
+        state.completed_count()
+    );
 
     // German completes
     let _effects = reducer.reduce(
@@ -127,7 +146,11 @@ fn main() {
         &env,
     );
     println!("   ✅ German: Completed");
-    println!("      Pending: {} | Completed: {}", state.pending_count(), state.completed_count());
+    println!(
+        "      Pending: {} | Completed: {}",
+        state.pending_count(),
+        state.completed_count()
+    );
 
     // Japanese completes
     let _effects = reducer.reduce(
@@ -139,7 +162,11 @@ fn main() {
         &env,
     );
     println!("   ✅ Japanese: Completed");
-    println!("      Pending: {} | Completed: {}", state.pending_count(), state.completed_count());
+    println!(
+        "      Pending: {} | Completed: {}",
+        state.pending_count(),
+        state.completed_count()
+    );
 
     // Chinese completes
     let _effects = reducer.reduce(
@@ -151,8 +178,12 @@ fn main() {
         &env,
     );
     println!("   ✅ Chinese: Completed");
-    println!("      Pending: {} | Completed: {} | All done: {}",
-             state.pending_count(), state.completed_count(), state.all_tasks_complete());
+    println!(
+        "      Pending: {} | Completed: {} | All done: {}",
+        state.pending_count(),
+        state.completed_count(),
+        state.all_tasks_complete()
+    );
 
     // Aggregate results
     if state.all_tasks_complete() {

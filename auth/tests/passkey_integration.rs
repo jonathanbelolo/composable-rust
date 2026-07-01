@@ -6,8 +6,8 @@ use composable_rust_auth::{
     environment::AuthEnvironment,
     mocks::{
         MockChallengeStore, MockDeviceRepository, MockEmailProvider, MockOAuth2Provider,
-        MockOAuthTokenStore, MockRateLimiter, MockRiskCalculator, MockSessionStore,
-        MockTokenStore, MockUserRepository, MockWebAuthnProvider,
+        MockOAuthTokenStore, MockRateLimiter, MockRiskCalculator, MockSessionStore, MockTokenStore,
+        MockUserRepository, MockWebAuthnProvider,
     },
     reducers::PasskeyReducer,
     state::{AuthState, DeviceId, UserId},
@@ -345,6 +345,8 @@ async fn test_passkey_security_properties() {
     // 4. Counter-based replay protection
 
     // Therefore, risk score should be very low
-    assert!(session.login_risk_score == 0.05,
-        "Passkey logins should have risk score of 0.05 (very secure)");
+    assert!(
+        session.login_risk_score == 0.05,
+        "Passkey logins should have risk score of 0.05 (very secure)"
+    );
 }

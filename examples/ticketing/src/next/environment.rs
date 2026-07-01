@@ -350,7 +350,13 @@ where
         event_bus: Option<EB>,
         broadcast_topic: impl Into<String>,
     ) -> Self {
-        Self::new(SystemClock, event_store, projector, event_bus, broadcast_topic)
+        Self::new(
+            SystemClock,
+            event_store,
+            projector,
+            event_bus,
+            broadcast_topic,
+        )
     }
 }
 

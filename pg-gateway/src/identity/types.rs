@@ -239,8 +239,7 @@ mod tests {
 
     #[test]
     fn identity_with_session() {
-        let identity =
-            Identity::new("user-123", "tenant-456", vec![]).with_session("session-789");
+        let identity = Identity::new("user-123", "tenant-456", vec![]).with_session("session-789");
 
         assert_eq!(identity.session_id, Some("session-789".to_string()));
     }

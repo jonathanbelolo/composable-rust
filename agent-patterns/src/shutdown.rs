@@ -139,15 +139,18 @@ impl ShutdownCoordinator {
                     Ok(Ok(())) => {
                         info!("Component {} shut down successfully", name);
                         Ok(())
-                    }
+                    },
                     Ok(Err(e)) => {
                         error!("Component {} shutdown failed: {}", name, e);
                         Err(format!("{}: {}", name, e))
-                    }
+                    },
                     Err(_) => {
                         error!("Component {} shutdown timed out", name);
-                        Err(format!("{}: timeout after {:?}", name, self.timeout_duration))
-                    }
+                        Err(format!(
+                            "{}: timeout after {:?}",
+                            name, self.timeout_duration
+                        ))
+                    },
                 }
             })
             .collect();
@@ -253,10 +256,10 @@ impl ShutdownHandler for GenericShutdownHandler {
 pub async fn wait_for_signal() {
     #[cfg(unix)]
     {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
 
-        let mut sigterm = signal(SignalKind::terminate())
-            .expect("Failed to register SIGTERM handler");
+        let mut sigterm =
+            signal(SignalKind::terminate()).expect("Failed to register SIGTERM handler");
 
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {

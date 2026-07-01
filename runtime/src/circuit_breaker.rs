@@ -35,11 +35,11 @@
 //! # }
 //! ```
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
 use thiserror::Error;
+use tokio::sync::RwLock;
 
 /// Circuit breaker configuration.
 #[derive(Debug, Clone)]
@@ -218,12 +218,12 @@ impl CircuitBreaker {
                 self.on_success().await;
                 self.total_successes.fetch_add(1, Ordering::Relaxed);
                 Ok(result)
-            }
+            },
             Err(err) => {
                 self.on_failure().await;
                 self.total_failures.fetch_add(1, Ordering::Relaxed);
                 Err(CircuitBreakerError::Inner(err))
-            }
+            },
         }
     }
 
@@ -247,7 +247,7 @@ impl CircuitBreaker {
                 } else {
                     false
                 }
-            }
+            },
         }
     }
 
@@ -259,7 +259,7 @@ impl CircuitBreaker {
             State::Closed => {
                 // Reset failure count on success
                 state.failure_count = 0;
-            }
+            },
             State::HalfOpen => {
                 state.success_count += 1;
                 if state.success_count >= self.config.success_threshold {
@@ -272,11 +272,11 @@ impl CircuitBreaker {
                     state.success_count = 0;
                     state.last_failure_time = None;
                 }
-            }
+            },
             State::Open => {
                 // Should not happen, but reset just in case
                 state.failure_count = 0;
-            }
+            },
         }
     }
 
@@ -296,17 +296,17 @@ impl CircuitBreaker {
                     );
                     state.state = State::Open;
                 }
-            }
+            },
             State::HalfOpen => {
                 tracing::warn!("Circuit breaker transitioning HALF_OPEN -> OPEN (recovery failed)");
                 state.state = State::Open;
                 state.failure_count = 1;
                 state.success_count = 0;
-            }
+            },
             State::Open => {
                 // Already open, just update failure count
                 state.failure_count += 1;
-            }
+            },
         }
     }
 
@@ -388,9 +388,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_circuit_breaker_opens_after_threshold() {
-        let config = CircuitBreakerConfig::builder()
-            .failure_threshold(3)
-            .build();
+        let config = CircuitBreakerConfig::builder().failure_threshold(3).build();
         let breaker = CircuitBreaker::new(config);
 
         // Fail 3 times
@@ -403,9 +401,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_circuit_breaker_rejects_when_open() {
-        let config = CircuitBreakerConfig::builder()
-            .failure_threshold(2)
-            .build();
+        let config = CircuitBreakerConfig::builder().failure_threshold(2).build();
         let breaker = CircuitBreaker::new(config);
 
         // Open the circuit
@@ -517,9 +513,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_circuit_breaker_reset() {
-        let config = CircuitBreakerConfig::builder()
-            .failure_threshold(2)
-            .build();
+        let config = CircuitBreakerConfig::builder().failure_threshold(2).build();
         let breaker = CircuitBreaker::new(config);
 
         // Open the circuit

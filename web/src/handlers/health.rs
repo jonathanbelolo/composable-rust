@@ -3,7 +3,7 @@
 //! These endpoints are used by load balancers and monitoring systems
 //! to verify service health.
 
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{Json, extract::State, http::StatusCode};
 use composable_rust_core::reducer::Reducer;
 use composable_rust_runtime::{HealthCheck, HealthStatus, Store};
 use std::sync::Arc;
@@ -81,7 +81,7 @@ where
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Test code can use unwrap/expect
 mod tests {
     use super::*;
-    use composable_rust_core::{effect::Effect, SmallVec};
+    use composable_rust_core::{SmallVec, effect::Effect};
 
     #[tokio::test]
     async fn test_simple_health_check() {

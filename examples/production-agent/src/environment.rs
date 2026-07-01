@@ -52,7 +52,15 @@ impl<A: AuditLogger + Send + Sync + 'static> ProductionEnvironment<A> {
         event_bus: Arc<dyn composable_rust_core::event_bus::EventBus>,
         projection_store: Arc<composable_rust_projections::PostgresProjectionStore>,
     ) -> Self {
-        Self::with_client(None, audit_logger, security_monitor, event_store, clock, event_bus, projection_store)
+        Self::with_client(
+            None,
+            audit_logger,
+            security_monitor,
+            event_store,
+            clock,
+            event_bus,
+            projection_store,
+        )
     }
 
     /// Create new production environment with Anthropic client
@@ -116,14 +124,25 @@ impl<A: AuditLogger + Send + Sync + 'static> ProductionEnvironment<A> {
             Ok(client) => {
                 info!("Anthropic API client initialized from environment");
                 Some(Arc::new(client))
-            }
+            },
             Err(e) => {
-                warn!("Failed to initialize Anthropic client: {}. Using mock LLM.", e);
+                warn!(
+                    "Failed to initialize Anthropic client: {}. Using mock LLM.",
+                    e
+                );
                 None
-            }
+            },
         };
 
-        Self::with_client(anthropic_client, audit_logger, security_monitor, event_store, clock, event_bus, projection_store)
+        Self::with_client(
+            anthropic_client,
+            audit_logger,
+            security_monitor,
+            event_store,
+            clock,
+            event_bus,
+            projection_store,
+        )
     }
 
     /// Call LLM with resilience features
@@ -168,7 +187,9 @@ impl<A: AuditLogger + Send + Sync + 'static> ProductionEnvironment<A> {
         let anthropic_messages: Vec<composable_rust_anthropic::types::Message> = messages
             .iter()
             .map(|msg| {
-                use composable_rust_anthropic::types::{ContentBlock, Message as AnthropicMessage, Role};
+                use composable_rust_anthropic::types::{
+                    ContentBlock, Message as AnthropicMessage, Role,
+                };
 
                 let role = match msg.role {
                     crate::types::Role::User | crate::types::Role::System => Role::User,
@@ -224,7 +245,11 @@ impl<A: AuditLogger + Send + Sync + 'static> ProductionEnvironment<A> {
     }
 
     /// Execute tool with bulkhead pattern
-    async fn execute_tool_internal(&self, tool_name: &str, input: &str) -> Result<String, AgentError> {
+    async fn execute_tool_internal(
+        &self,
+        tool_name: &str,
+        input: &str,
+    ) -> Result<String, AgentError> {
         info!("Executing tool: {}", tool_name);
 
         // Execute in bulkhead (limits concurrent tool executions)
@@ -236,7 +261,10 @@ impl<A: AuditLogger + Send + Sync + 'static> ProductionEnvironment<A> {
                 "search" => Self::mock_search_tool(&input_owned).await,
                 "calculator" => Self::mock_calculator_tool(&input_owned).await,
                 "weather" => Self::mock_weather_tool(&input_owned).await,
-                _ => Err(AgentError::Tool(format!("Unknown tool: {}", tool_name_owned))),
+                _ => Err(AgentError::Tool(format!(
+                    "Unknown tool: {}",
+                    tool_name_owned
+                ))),
             }
         };
 
@@ -334,7 +362,12 @@ impl<A: AuditLogger + Send + Sync + 'static> AgentEnvironment for ProductionEnvi
             "configuration_tampering" => IncidentType::ConfigurationTampering,
             "credential_stuffing" => IncidentType::CredentialStuffing,
             "session_hijacking" => IncidentType::SessionHijacking,
-            _ => return Err(AgentError::InvalidInput(format!("Unknown incident type: {}", incident_type))),
+            _ => {
+                return Err(AgentError::InvalidInput(format!(
+                    "Unknown incident type: {}",
+                    incident_type
+                )));
+            },
         };
 
         let incident = SecurityIncident::new(
@@ -358,20 +391,33 @@ impl<A: AuditLogger + Send + Sync + 'static> AgentEnvironment for ProductionEnvi
 mod tests {
     use super::*;
     use composable_rust_agent_patterns::audit::InMemoryAuditLogger;
-    use composable_rust_testing::mocks::{InMemoryEventStore, InMemoryEventBus};
+    use composable_rust_testing::mocks::{InMemoryEventBus, InMemoryEventStore};
 
     // Helper to create test environment
     fn create_test_env() -> ProductionEnvironment<InMemoryAuditLogger> {
         let audit_logger = Arc::new(InMemoryAuditLogger::new());
         let security_monitor = Arc::new(SecurityMonitor::new());
-        let event_store: Arc<dyn composable_rust_core::event_store::EventStore> = Arc::new(InMemoryEventStore::new());
-        let clock: Arc<dyn composable_rust_core::environment::Clock> = Arc::new(composable_rust_core::environment::SystemClock);
-        let event_bus: Arc<dyn composable_rust_core::event_bus::EventBus> = Arc::new(InMemoryEventBus::new());
+        let event_store: Arc<dyn composable_rust_core::event_store::EventStore> =
+            Arc::new(InMemoryEventStore::new());
+        let clock: Arc<dyn composable_rust_core::environment::Clock> =
+            Arc::new(composable_rust_core::environment::SystemClock);
+        let event_bus: Arc<dyn composable_rust_core::event_bus::EventBus> =
+            Arc::new(InMemoryEventBus::new());
         // Create a minimal in-memory projection store for tests
         let pool = sqlx::PgPool::connect_lazy("postgres://test").expect("Test pool");
-        let projection_store = Arc::new(composable_rust_projections::PostgresProjectionStore::new(pool, "test".to_string()));
+        let projection_store = Arc::new(composable_rust_projections::PostgresProjectionStore::new(
+            pool,
+            "test".to_string(),
+        ));
 
-        ProductionEnvironment::new(audit_logger, security_monitor, event_store, clock, event_bus, projection_store)
+        ProductionEnvironment::new(
+            audit_logger,
+            security_monitor,
+            event_store,
+            clock,
+            event_bus,
+            projection_store,
+        )
     }
 
     #[tokio::test]

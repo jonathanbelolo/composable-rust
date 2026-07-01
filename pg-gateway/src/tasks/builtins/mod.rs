@@ -43,9 +43,7 @@ mod webhook;
 pub use email::{EmailConfig, EmailExecutor, EmailTask};
 
 #[cfg(feature = "tasks-sms")]
-pub use sms::{
-    ConsoleSmsProvider, DynSmsExecutor, SmsExecutor, SmsProvider, SmsTask,
-};
+pub use sms::{ConsoleSmsProvider, DynSmsExecutor, SmsExecutor, SmsProvider, SmsTask};
 
 #[cfg(feature = "tasks-webhook")]
 pub use webhook::{WebhookConfig, WebhookExecutor, WebhookTask};

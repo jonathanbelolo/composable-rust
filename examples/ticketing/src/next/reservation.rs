@@ -164,7 +164,9 @@ pub enum ReservationQueryError {
     },
 
     /// Access denied - user doesn't own this resource.
-    #[error("Access denied: user {requesting_user_id} cannot access reservations for {customer_id}")]
+    #[error(
+        "Access denied: user {requesting_user_id} cannot access reservations for {customer_id}"
+    )]
     AccessDenied {
         /// The customer ID whose reservations are being accessed.
         customer_id: CustomerId,
@@ -222,10 +224,10 @@ impl BusinessLogic for ReservationQueryLogic {
         match input {
             ReservationQueryCommand::GetReservation { reservation_id, .. } => {
                 StreamId::new(format!("reservation-query-{}", reservation_id.as_uuid()))
-            }
+            },
             ReservationQueryCommand::ListUserReservations { customer_id, .. } => {
                 StreamId::new(format!("reservation-query-user-{}", customer_id.as_uuid()))
-            }
+            },
         }
     }
 
@@ -256,7 +258,7 @@ impl BusinessLogic for ReservationQueryLogic {
                 Ok(BusinessResult::Respond(
                     ReservationQueryResponse::Reservation(data),
                 ))
-            }
+            },
 
             ReservationQueryCommand::ListUserReservations {
                 customer_id,
@@ -277,7 +279,7 @@ impl BusinessLogic for ReservationQueryLogic {
                 Ok(BusinessResult::Respond(
                     ReservationQueryResponse::ReservationList(data),
                 ))
-            }
+            },
         }
     }
 
@@ -337,7 +339,7 @@ mod tests {
             BusinessResult::Respond(ReservationQueryResponse::Reservation(data)) => {
                 assert_eq!(data.id, reservation_id);
                 assert_eq!(data.quantity, 2);
-            }
+            },
             _ => panic!("Expected Respond with Reservation"),
         }
     }
@@ -353,10 +355,7 @@ mod tests {
         };
 
         let result = logic.process(input, &clock);
-        assert!(matches!(
-            result,
-            Err(ReservationQueryError::DataNotFetched)
-        ));
+        assert!(matches!(result, Err(ReservationQueryError::DataNotFetched)));
     }
 
     #[test]

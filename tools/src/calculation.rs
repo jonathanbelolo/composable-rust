@@ -40,30 +40,25 @@ pub fn calculate_tool() -> (Tool, ToolExecutorFn) {
 
     let executor = Arc::new(|input: String| {
         Box::pin(async move {
-            let parsed: serde_json::Value = serde_json::from_str(&input).map_err(|e| {
-                ToolError {
+            let parsed: serde_json::Value =
+                serde_json::from_str(&input).map_err(|e| ToolError {
                     message: format!("Invalid input JSON: {e}"),
-                }
-            })?;
-
-            let expression = parsed["expression"]
-                .as_str()
-                .ok_or_else(|| ToolError {
-                    message: "Missing 'expression' field".to_string(),
                 })?;
+
+            let expression = parsed["expression"].as_str().ok_or_else(|| ToolError {
+                message: "Missing 'expression' field".to_string(),
+            })?;
 
             // Evaluate expression (blocking operation)
             let expr_owned = expression.to_string();
-            let result = tokio::task::spawn_blocking(move || {
-                meval::eval_str(&expr_owned)
-            })
-            .await
-            .map_err(|e| ToolError {
-                message: format!("Failed to spawn calculation task: {e}"),
-            })?
-            .map_err(|e| ToolError {
-                message: format!("Calculation error: {e}"),
-            })?;
+            let result = tokio::task::spawn_blocking(move || meval::eval_str(&expr_owned))
+                .await
+                .map_err(|e| ToolError {
+                    message: format!("Failed to spawn calculation task: {e}"),
+                })?
+                .map_err(|e| ToolError {
+                    message: format!("Calculation error: {e}"),
+                })?;
 
             let output = json!({
                 "expression": expression,
@@ -71,9 +66,7 @@ pub fn calculate_tool() -> (Tool, ToolExecutorFn) {
             });
 
             Ok(output.to_string())
-        }) as std::pin::Pin<
-            Box<dyn std::future::Future<Output = ToolResult> + Send>,
-        >
+        }) as std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send>>
     }) as ToolExecutorFn;
 
     (tool, executor)
@@ -103,7 +96,8 @@ mod tests {
         let result = executor(input).await;
         assert!(result.is_ok());
 
-        let output: serde_json::Value = serde_json::from_str(&result.expect("should succeed")).expect("valid JSON");
+        let output: serde_json::Value =
+            serde_json::from_str(&result.expect("should succeed")).expect("valid JSON");
         assert_eq!(output["result"], 4.0);
     }
 
@@ -119,7 +113,8 @@ mod tests {
         let result = executor(input).await;
         assert!(result.is_ok());
 
-        let output: serde_json::Value = serde_json::from_str(&result.expect("should succeed")).expect("valid JSON");
+        let output: serde_json::Value =
+            serde_json::from_str(&result.expect("should succeed")).expect("valid JSON");
         assert_eq!(output["result"], 8.0);
     }
 
@@ -135,7 +130,8 @@ mod tests {
         let result = executor(input).await;
         assert!(result.is_ok());
 
-        let output: serde_json::Value = serde_json::from_str(&result.expect("should succeed")).expect("valid JSON");
+        let output: serde_json::Value =
+            serde_json::from_str(&result.expect("should succeed")).expect("valid JSON");
         assert_eq!(output["result"], 4.0);
     }
 

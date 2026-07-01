@@ -2,7 +2,7 @@
 //!
 //! Exposes `/metrics` endpoint in Prometheus text format for scraping.
 
-use axum::{response::IntoResponse, routing::get, Router};
+use axum::{Router, response::IntoResponse, routing::get};
 use prometheus::{Encoder, TextEncoder};
 
 /// Create metrics routes.
@@ -31,14 +31,8 @@ async fn metrics_handler() -> impl IntoResponse {
     // Encode metrics to Prometheus text format
     if let Err(e) = encoder.encode(&metric_families, &mut buffer) {
         tracing::error!(error = %e, "Failed to encode metrics");
-        return (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            vec![],
-        );
+        return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, vec![]);
     }
 
-    (
-        axum::http::StatusCode::OK,
-        buffer,
-    )
+    (axum::http::StatusCode::OK, buffer)
 }

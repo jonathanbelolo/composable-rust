@@ -16,7 +16,7 @@
 //! cargo run --example basic-agent
 //! ```
 
-use basic_agent::{environment::ProductionAgentEnvironment, BasicAgentReducer};
+use basic_agent::{BasicAgentReducer, environment::ProductionAgentEnvironment};
 use composable_rust_core::agent::{AgentAction, AgentConfig, BasicAgentState};
 use composable_rust_runtime::Store;
 use std::io::{self, Write};
@@ -30,8 +30,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Ask me anything! Type 'quit' to exit.\n");
 
     // Create agent configuration
-    let config = AgentConfig::default()
-        .with_system_prompt("You are a helpful assistant. Provide concise, accurate answers.".to_string());
+    let config = AgentConfig::default().with_system_prompt(
+        "You are a helpful assistant. Provide concise, accurate answers.".to_string(),
+    );
 
     // Create production environment (connects to real Claude API)
     let environment = ProductionAgentEnvironment::new(config.clone())?;
@@ -54,11 +55,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             println!("\nAssistant: {text}\n");
                         }
                     }
-                }
+                },
                 AgentAction::Error { error } => {
                     eprintln!("\nError: {error}\n");
-                }
-                _ => {}
+                },
+                _ => {},
             }
         }
     });

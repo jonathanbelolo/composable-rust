@@ -155,9 +155,8 @@ impl TaskExecutor for WebhookExecutor {
     fn execute(
         &self,
         payload: serde_json::Value,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<(), TaskError>> + Send + '_>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), TaskError>> + Send + '_>>
+    {
         Box::pin(async move {
             let task: WebhookTask = serde_json::from_value(payload)
                 .map_err(|e| TaskError::permanent(format!("Invalid payload: {e}")))?;
@@ -241,7 +240,7 @@ const fn is_retryable_status(status: StatusCode) -> bool {
         500 | // Internal Server Error
         502 | // Bad Gateway
         503 | // Service Unavailable
-        504   // Gateway Timeout
+        504 // Gateway Timeout
     )
 }
 

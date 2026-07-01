@@ -118,10 +118,7 @@ mod tests {
     #[test]
     fn display_temporary() {
         let err = TaskError::Temporary("timeout".to_string());
-        assert_eq!(
-            format!("{err}"),
-            "Temporary failure (will retry): timeout"
-        );
+        assert_eq!(format!("{err}"), "Temporary failure (will retry): timeout");
     }
 
     #[test]

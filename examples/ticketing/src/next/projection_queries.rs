@@ -329,13 +329,19 @@ impl QueryFetcher<EventCommand, EventProjectionQueries> for EventQueryFetcher {
                     requesting_user_id,
                     fetched,
                 }))
-            }
+            },
 
-            EventCommand::ListMyEvents { user_id, fetched: _ } => {
+            EventCommand::ListMyEvents {
+                user_id,
+                fetched: _,
+            } => {
                 // Fetch all events owned by this user
                 let fetched = projections.list_by_owner(user_id).await?;
-                Ok(FetchResult::new_entity(EventCommand::ListMyEvents { user_id, fetched }))
-            }
+                Ok(FetchResult::new_entity(EventCommand::ListMyEvents {
+                    user_id,
+                    fetched,
+                }))
+            },
 
             EventCommand::ListEvents {
                 status_filter,
@@ -344,16 +350,14 @@ impl QueryFetcher<EventCommand, EventProjectionQueries> for EventQueryFetcher {
                 fetched: _,
             } => {
                 // Fetch paginated events with optional filter
-                let fetched = projections
-                    .list_all(status_filter, page, page_size)
-                    .await?;
+                let fetched = projections.list_all(status_filter, page, page_size).await?;
                 Ok(FetchResult::new_entity(EventCommand::ListEvents {
                     status_filter,
                     page,
                     page_size,
                     fetched,
                 }))
-            }
+            },
 
             EventCommand::GetEventPricing {
                 event_id,
@@ -361,13 +365,15 @@ impl QueryFetcher<EventCommand, EventProjectionQueries> for EventQueryFetcher {
             } => {
                 // Fetch event (which includes pricing tiers)
                 let fetched = projections.get_event(event_id).await?;
-                Ok(FetchResult::new_entity(EventCommand::GetEventPricing { event_id, fetched }))
-            }
+                Ok(FetchResult::new_entity(EventCommand::GetEventPricing {
+                    event_id,
+                    fetched,
+                }))
+            },
 
             // ═══════════════════════════════════════════════════════════════
             // Write commands that need projection data for authorization
             // ═══════════════════════════════════════════════════════════════
-
             EventCommand::Update {
                 event_id,
                 requesting_user_id,
@@ -385,12 +391,18 @@ impl QueryFetcher<EventCommand, EventProjectionQueries> for EventQueryFetcher {
                     date,
                     fetched,
                 }))
-            }
+            },
 
-            EventCommand::Publish { event_id, fetched: _ } => {
+            EventCommand::Publish {
+                event_id,
+                fetched: _,
+            } => {
                 let fetched = projections.get_event(event_id).await?;
-                Ok(FetchResult::new_entity(EventCommand::Publish { event_id, fetched }))
-            }
+                Ok(FetchResult::new_entity(EventCommand::Publish {
+                    event_id,
+                    fetched,
+                }))
+            },
 
             EventCommand::Cancel {
                 event_id,
@@ -403,7 +415,7 @@ impl QueryFetcher<EventCommand, EventProjectionQueries> for EventQueryFetcher {
                     reason,
                     fetched,
                 }))
-            }
+            },
 
             EventCommand::UpdatePricing {
                 event_id,
@@ -418,7 +430,7 @@ impl QueryFetcher<EventCommand, EventProjectionQueries> for EventQueryFetcher {
                     pricing_tiers,
                     fetched,
                 }))
-            }
+            },
 
             EventCommand::AddVenueSections {
                 event_id,
@@ -433,7 +445,7 @@ impl QueryFetcher<EventCommand, EventProjectionQueries> for EventQueryFetcher {
                     sections,
                     fetched,
                 }))
-            }
+            },
 
             EventCommand::Delete {
                 event_id,
@@ -446,7 +458,7 @@ impl QueryFetcher<EventCommand, EventProjectionQueries> for EventQueryFetcher {
                     requesting_user_id,
                     fetched,
                 }))
-            }
+            },
 
             // Create doesn't need fetched data - it's creating a new entity
             EventCommand::Create { .. } => Ok(FetchResult::new_entity(input)),
@@ -544,11 +556,7 @@ impl InMemoryEventProjectionQueries {
 
         // Paginate
         let start = page * page_size;
-        let paginated: Vec<EventDto> = filtered
-            .into_iter()
-            .skip(start)
-            .take(page_size)
-            .collect();
+        let paginated: Vec<EventDto> = filtered.into_iter().skip(start).take(page_size).collect();
 
         (paginated, total)
     }
@@ -596,12 +604,18 @@ impl<P: ProjectionQueries> QueryFetcher<EventCommand, P> for InMemoryEventQueryF
                         requesting_user_id,
                         fetched,
                     }))
-                }
+                },
 
-                EventCommand::ListMyEvents { user_id, fetched: _ } => {
+                EventCommand::ListMyEvents {
+                    user_id,
+                    fetched: _,
+                } => {
                     let fetched = projections.list_by_owner(user_id);
-                    Ok(FetchResult::new_entity(EventCommand::ListMyEvents { user_id, fetched }))
-                }
+                    Ok(FetchResult::new_entity(EventCommand::ListMyEvents {
+                        user_id,
+                        fetched,
+                    }))
+                },
 
                 EventCommand::ListEvents {
                     status_filter,
@@ -616,15 +630,18 @@ impl<P: ProjectionQueries> QueryFetcher<EventCommand, P> for InMemoryEventQueryF
                         page_size,
                         fetched,
                     }))
-                }
+                },
 
                 EventCommand::GetEventPricing {
                     event_id,
                     fetched: _,
                 } => {
                     let fetched = projections.get_event(event_id);
-                    Ok(FetchResult::new_entity(EventCommand::GetEventPricing { event_id, fetched }))
-                }
+                    Ok(FetchResult::new_entity(EventCommand::GetEventPricing {
+                        event_id,
+                        fetched,
+                    }))
+                },
 
                 other => Ok(FetchResult::new_entity(other)),
             }
@@ -881,7 +898,6 @@ impl QueryFetcher<InventoryCommand, InventoryProjectionQueries> for InventoryQue
             // ═══════════════════════════════════════════════════════════════
             // Write Commands - need validation data
             // ═══════════════════════════════════════════════════════════════
-
             InventoryCommand::Initialize {
                 event_id,
                 section,
@@ -896,7 +912,7 @@ impl QueryFetcher<InventoryCommand, InventoryProjectionQueries> for InventoryQue
                     capacity,
                     fetched,
                 }))
-            }
+            },
 
             InventoryCommand::Reserve {
                 reservation_id,
@@ -916,7 +932,7 @@ impl QueryFetcher<InventoryCommand, InventoryProjectionQueries> for InventoryQue
                     expires_at,
                     fetched,
                 }))
-            }
+            },
 
             InventoryCommand::Confirm {
                 reservation_id,
@@ -930,7 +946,7 @@ impl QueryFetcher<InventoryCommand, InventoryProjectionQueries> for InventoryQue
                     customer_id,
                     fetched,
                 }))
-            }
+            },
 
             InventoryCommand::Release {
                 reservation_id,
@@ -944,12 +960,11 @@ impl QueryFetcher<InventoryCommand, InventoryProjectionQueries> for InventoryQue
                     reason,
                     fetched,
                 }))
-            }
+            },
 
             // ═══════════════════════════════════════════════════════════════
             // Query Commands - need read data
             // ═══════════════════════════════════════════════════════════════
-
             InventoryCommand::GetSectionAvailability {
                 event_id,
                 section,
@@ -958,22 +973,34 @@ impl QueryFetcher<InventoryCommand, InventoryProjectionQueries> for InventoryQue
                 let fetched = projections
                     .get_section_availability(event_id, &section)
                     .await?;
-                Ok(FetchResult::new_entity(InventoryCommand::GetSectionAvailability {
-                    event_id,
-                    section,
-                    fetched,
-                }))
-            }
+                Ok(FetchResult::new_entity(
+                    InventoryCommand::GetSectionAvailability {
+                        event_id,
+                        section,
+                        fetched,
+                    },
+                ))
+            },
 
-            InventoryCommand::GetEventAvailability { event_id, fetched: _ } => {
+            InventoryCommand::GetEventAvailability {
+                event_id,
+                fetched: _,
+            } => {
                 let fetched = projections.get_event_availability(event_id).await?;
-                Ok(FetchResult::new_entity(InventoryCommand::GetEventAvailability { event_id, fetched }))
-            }
+                Ok(FetchResult::new_entity(
+                    InventoryCommand::GetEventAvailability { event_id, fetched },
+                ))
+            },
 
-            InventoryCommand::GetTotalAvailable { event_id, fetched: _ } => {
+            InventoryCommand::GetTotalAvailable {
+                event_id,
+                fetched: _,
+            } => {
                 let fetched = projections.get_total_available(event_id).await?;
-                Ok(FetchResult::new_entity(InventoryCommand::GetTotalAvailable { event_id, fetched }))
-            }
+                Ok(FetchResult::new_entity(
+                    InventoryCommand::GetTotalAvailable { event_id, fetched },
+                ))
+            },
         }
     }
 }
@@ -1119,15 +1146,29 @@ impl QueryFetcher<PaymentCommand, PaymentProjectionQueries> for PaymentQueryFetc
         projections: &PaymentProjectionQueries,
     ) -> Result<FetchResult<PaymentCommand>, Self::Error> {
         match input {
-            PaymentCommand::GetPayment { payment_id, fetched: _ } => {
+            PaymentCommand::GetPayment {
+                payment_id,
+                fetched: _,
+            } => {
                 let fetched = projections.get_payment(payment_id).await?;
-                Ok(FetchResult::new_entity(PaymentCommand::GetPayment { payment_id, fetched }))
-            }
+                Ok(FetchResult::new_entity(PaymentCommand::GetPayment {
+                    payment_id,
+                    fetched,
+                }))
+            },
 
-            PaymentCommand::ListCustomerPayments { customer_id, fetched: _ } => {
+            PaymentCommand::ListCustomerPayments {
+                customer_id,
+                fetched: _,
+            } => {
                 let fetched = projections.list_by_customer(customer_id).await?;
-                Ok(FetchResult::new_entity(PaymentCommand::ListCustomerPayments { customer_id, fetched }))
-            }
+                Ok(FetchResult::new_entity(
+                    PaymentCommand::ListCustomerPayments {
+                        customer_id,
+                        fetched,
+                    },
+                ))
+            },
 
             // Non-query commands pass through unchanged
             other => Ok(FetchResult::new_entity(other)),
@@ -1215,7 +1256,9 @@ impl AnalyticsProjectionQueries {
             tickets_sold: metrics.tickets_sold as u32,
             completed_reservations: metrics.completed_reservations as u32,
             cancelled_reservations: metrics.cancelled_reservations as u32,
-            average_ticket_price: crate::types::Money::from_cents(metrics.average_ticket_price as u64),
+            average_ticket_price: crate::types::Money::from_cents(
+                metrics.average_ticket_price as u64,
+            ),
             sections,
         }))
     }
@@ -1324,9 +1367,10 @@ impl AnalyticsProjectionQueries {
         .fetch_all(&self.pool)
         .await?;
 
-        let total_customers: i64 = sqlx::query_scalar("SELECT COUNT(*)::BIGINT FROM customer_profiles")
-            .fetch_one(&self.pool)
-            .await?;
+        let total_customers: i64 =
+            sqlx::query_scalar("SELECT COUNT(*)::BIGINT FROM customer_profiles")
+                .fetch_one(&self.pool)
+                .await?;
 
         #[allow(clippy::cast_sign_loss)]
         let customers: Vec<CustomerSpendingDto> = rows
@@ -1495,22 +1539,33 @@ impl QueryFetcher<AnalyticsCommand, AnalyticsProjectionQueries> for AnalyticsQue
         projections: &AnalyticsProjectionQueries,
     ) -> Result<FetchResult<AnalyticsCommand>, Self::Error> {
         match input {
-            AnalyticsCommand::GetEventSales { event_id, fetched: _ } => {
+            AnalyticsCommand::GetEventSales {
+                event_id,
+                fetched: _,
+            } => {
                 let fetched = projections.get_event_sales(event_id).await?;
-                Ok(FetchResult::new_entity(AnalyticsCommand::GetEventSales { event_id, fetched }))
-            }
+                Ok(FetchResult::new_entity(AnalyticsCommand::GetEventSales {
+                    event_id,
+                    fetched,
+                }))
+            },
 
-            AnalyticsCommand::GetPopularSections { event_id, fetched: _ } => {
+            AnalyticsCommand::GetPopularSections {
+                event_id,
+                fetched: _,
+            } => {
                 let fetched = projections.get_popular_sections(event_id).await?;
-                Ok(FetchResult::new_entity(AnalyticsCommand::GetPopularSections { event_id, fetched }))
-            }
+                Ok(FetchResult::new_entity(
+                    AnalyticsCommand::GetPopularSections { event_id, fetched },
+                ))
+            },
 
             AnalyticsCommand::GetTotalRevenue { fetched: _ } => {
                 let fetched = projections.get_total_revenue().await?;
                 Ok(FetchResult::new_entity(AnalyticsCommand::GetTotalRevenue {
                     fetched: Some(fetched),
                 }))
-            }
+            },
 
             AnalyticsCommand::GetTopSpenders { limit, fetched: _ } => {
                 let fetched = projections.get_top_spenders(limit).await?;
@@ -1518,7 +1573,7 @@ impl QueryFetcher<AnalyticsCommand, AnalyticsProjectionQueries> for AnalyticsQue
                     limit,
                     fetched: Some(fetched),
                 }))
-            }
+            },
 
             AnalyticsCommand::GetCustomerProfile {
                 customer_id,
@@ -1526,12 +1581,14 @@ impl QueryFetcher<AnalyticsCommand, AnalyticsProjectionQueries> for AnalyticsQue
                 fetched: _,
             } => {
                 let fetched = projections.get_customer_profile(customer_id).await?;
-                Ok(FetchResult::new_entity(AnalyticsCommand::GetCustomerProfile {
-                    customer_id,
-                    requesting_user_id,
-                    fetched,
-                }))
-            }
+                Ok(FetchResult::new_entity(
+                    AnalyticsCommand::GetCustomerProfile {
+                        customer_id,
+                        requesting_user_id,
+                        fetched,
+                    },
+                ))
+            },
         }
     }
 }
@@ -1707,7 +1764,9 @@ impl From<ReservationSummaryRow> for ReservationSummaryDto {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ReservationQueryFetcher;
 
-impl QueryFetcher<ReservationQueryCommand, ReservationProjectionQueries> for ReservationQueryFetcher {
+impl QueryFetcher<ReservationQueryCommand, ReservationProjectionQueries>
+    for ReservationQueryFetcher
+{
     type Error = sqlx::Error;
 
     async fn fetch(
@@ -1721,11 +1780,13 @@ impl QueryFetcher<ReservationQueryCommand, ReservationProjectionQueries> for Res
                 fetched: _,
             } => {
                 let fetched = projections.get_reservation(reservation_id).await?;
-                Ok(FetchResult::new_entity(ReservationQueryCommand::GetReservation {
-                    reservation_id,
-                    fetched,
-                }))
-            }
+                Ok(FetchResult::new_entity(
+                    ReservationQueryCommand::GetReservation {
+                        reservation_id,
+                        fetched,
+                    },
+                ))
+            },
 
             ReservationQueryCommand::ListUserReservations {
                 customer_id,
@@ -1733,12 +1794,14 @@ impl QueryFetcher<ReservationQueryCommand, ReservationProjectionQueries> for Res
                 fetched: _,
             } => {
                 let fetched = projections.list_by_customer(customer_id).await?;
-                Ok(FetchResult::new_entity(ReservationQueryCommand::ListUserReservations {
-                    customer_id,
-                    requesting_user_id,
-                    fetched: Some(fetched),
-                }))
-            }
+                Ok(FetchResult::new_entity(
+                    ReservationQueryCommand::ListUserReservations {
+                        customer_id,
+                        requesting_user_id,
+                        fetched: Some(fetched),
+                    },
+                ))
+            },
         }
     }
 }
@@ -1802,8 +1865,11 @@ impl EventInventorySagaProjectionQueries {
                 }
                 let state: SagaState =
                     serde_json::from_value(json).map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
-                Ok(Some((state, Version::new(u64::try_from(version).unwrap_or(0)))))
-            }
+                Ok(Some((
+                    state,
+                    Version::new(u64::try_from(version).unwrap_or(0)),
+                )))
+            },
             None => Ok(None),
         }
     }
@@ -1846,12 +1912,10 @@ impl QueryFetcher<SagaInput, EventInventorySagaProjectionQueries>
             // event_id) conflicts instead of initiating twice.
             SagaInput::CreateEventWithInventory { .. } => {
                 Ok(FetchResult::new(input, Some(Version::initial())))
-            }
+            },
 
             SagaInput::Feedback {
-                event_id,
-                results,
-                ..
+                event_id, results, ..
             } => {
                 let loaded = projections.get_saga_state(event_id).await?;
                 tracing::debug!(
@@ -1871,7 +1935,7 @@ impl QueryFetcher<SagaInput, EventInventorySagaProjectionQueries>
                     },
                     version,
                 ))
-            }
+            },
         }
     }
 }
@@ -1934,8 +1998,11 @@ impl ReservationSagaProjectionQueries {
                 }
                 let state: ReservationSagaState =
                     serde_json::from_value(json).map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
-                Ok(Some((state, Version::new(u64::try_from(version).unwrap_or(0)))))
-            }
+                Ok(Some((
+                    state,
+                    Version::new(u64::try_from(version).unwrap_or(0)),
+                )))
+            },
             None => Ok(None),
         }
     }
@@ -1978,7 +2045,7 @@ impl QueryFetcher<ReservationSagaInput, ReservationSagaProjectionQueries>
             // initiating twice.
             ReservationSagaInput::InitiateReservation { .. } => {
                 Ok(FetchResult::new(input, Some(Version::initial())))
-            }
+            },
 
             ReservationSagaInput::CancelReservation { reservation_id, .. } => {
                 let loaded = projections.get_saga_state(reservation_id).await?;
@@ -1990,7 +2057,7 @@ impl QueryFetcher<ReservationSagaInput, ReservationSagaProjectionQueries>
                     },
                     version,
                 ))
-            }
+            },
 
             ReservationSagaInput::ExpireReservation { reservation_id, .. } => {
                 let loaded = projections.get_saga_state(reservation_id).await?;
@@ -2002,7 +2069,7 @@ impl QueryFetcher<ReservationSagaInput, ReservationSagaProjectionQueries>
                     },
                     version,
                 ))
-            }
+            },
 
             ReservationSagaInput::Feedback {
                 reservation_id,
@@ -2024,7 +2091,7 @@ impl QueryFetcher<ReservationSagaInput, ReservationSagaProjectionQueries>
                     },
                     version,
                 ))
-            }
+            },
         }
     }
 }

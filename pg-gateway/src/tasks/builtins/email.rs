@@ -79,18 +79,14 @@ impl EmailConfig {
     ///
     /// Returns an error if required environment variables are missing.
     pub fn from_env() -> Result<Self, String> {
-        let smtp_host =
-            std::env::var("SMTP_HOST").map_err(|_| "SMTP_HOST not set")?;
+        let smtp_host = std::env::var("SMTP_HOST").map_err(|_| "SMTP_HOST not set")?;
         let smtp_port = std::env::var("SMTP_PORT")
             .ok()
             .and_then(|p| p.parse().ok())
             .unwrap_or(587);
-        let smtp_username =
-            std::env::var("SMTP_USERNAME").map_err(|_| "SMTP_USERNAME not set")?;
-        let smtp_password =
-            std::env::var("SMTP_PASSWORD").map_err(|_| "SMTP_PASSWORD not set")?;
-        let from_email =
-            std::env::var("SMTP_FROM_EMAIL").map_err(|_| "SMTP_FROM_EMAIL not set")?;
+        let smtp_username = std::env::var("SMTP_USERNAME").map_err(|_| "SMTP_USERNAME not set")?;
+        let smtp_password = std::env::var("SMTP_PASSWORD").map_err(|_| "SMTP_PASSWORD not set")?;
+        let from_email = std::env::var("SMTP_FROM_EMAIL").map_err(|_| "SMTP_FROM_EMAIL not set")?;
         let from_name = std::env::var("SMTP_FROM_NAME").ok();
         let use_tls = std::env::var("SMTP_USE_TLS")
             .map(|v| v != "false" && v != "0")
@@ -242,9 +238,8 @@ impl TaskExecutor for EmailExecutor {
     fn execute(
         &self,
         payload: serde_json::Value,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<(), TaskError>> + Send + '_>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), TaskError>> + Send + '_>>
+    {
         Box::pin(async move {
             let task: EmailTask = serde_json::from_value(payload)
                 .map_err(|e| TaskError::permanent(format!("Invalid payload: {e}")))?;
@@ -329,12 +324,7 @@ mod tests {
 
     #[test]
     fn email_config_new() {
-        let config = EmailConfig::new(
-            "smtp.example.com",
-            "user",
-            "pass",
-            "noreply@example.com",
-        );
+        let config = EmailConfig::new("smtp.example.com", "user", "pass", "noreply@example.com");
 
         assert_eq!(config.smtp_host, "smtp.example.com");
         assert_eq!(config.smtp_port, 587);

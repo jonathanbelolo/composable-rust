@@ -8,8 +8,8 @@
 //!
 //! This bug prevents magic link verification from working when using `RedisTokenStore`.
 
-use composable_rust_auth::providers::{TokenData, TokenType};
 use chrono::{Duration, Utc};
+use composable_rust_auth::providers::{TokenData, TokenType};
 
 #[test]
 #[should_panic(expected = "DeserializeAnyNotSupported")]

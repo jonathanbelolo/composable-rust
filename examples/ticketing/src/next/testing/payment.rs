@@ -229,7 +229,7 @@ impl Projector for InMemoryPaymentProjector {
                                 method_str,
                             )
                             .await;
-                    }
+                    },
 
                     PaymentEvent::PaymentSucceeded {
                         payment_id,
@@ -237,13 +237,13 @@ impl Projector for InMemoryPaymentProjector {
                         ..
                     } => {
                         projections.mark_succeeded(payment_id, transaction_id).await;
-                    }
+                    },
 
                     PaymentEvent::PaymentFailed {
                         payment_id, reason, ..
                     } => {
                         projections.mark_failed(payment_id, reason).await;
-                    }
+                    },
 
                     PaymentEvent::PaymentRefunded {
                         payment_id,
@@ -252,7 +252,7 @@ impl Projector for InMemoryPaymentProjector {
                         ..
                     } => {
                         projections.mark_refunded(payment_id, amount, reason).await;
-                    }
+                    },
                 }
             }
 
@@ -315,7 +315,7 @@ impl<PQ: ProjectionQueries> QueryFetcher<PaymentCommand, PQ> for InMemoryPayment
                         payment_method,
                         fetched,
                     }
-                }
+                },
 
                 PaymentCommand::RefundPayment {
                     payment_id,
@@ -330,28 +330,37 @@ impl<PQ: ProjectionQueries> QueryFetcher<PaymentCommand, PQ> for InMemoryPayment
                         reason,
                         fetched,
                     }
-                }
+                },
 
                 PaymentCommand::SimulatePaymentFailure { payment_id, reason } => {
                     // No fetched data needed for simulation
                     PaymentCommand::SimulatePaymentFailure { payment_id, reason }
-                }
+                },
 
                 // ═══════════════════════════════════════════════════════════
                 // Query Commands - need read data
                 // ═══════════════════════════════════════════════════════════
-                PaymentCommand::GetPayment { payment_id, fetched: _ } => {
+                PaymentCommand::GetPayment {
+                    payment_id,
+                    fetched: _,
+                } => {
                     let fetched = projections.get_payment(payment_id).await;
-                    PaymentCommand::GetPayment { payment_id, fetched }
-                }
+                    PaymentCommand::GetPayment {
+                        payment_id,
+                        fetched,
+                    }
+                },
 
                 PaymentCommand::ListCustomerPayments {
                     customer_id,
                     fetched: _,
                 } => {
                     let fetched = projections.list_by_customer(customer_id).await;
-                    PaymentCommand::ListCustomerPayments { customer_id, fetched }
-                }
+                    PaymentCommand::ListCustomerPayments {
+                        customer_id,
+                        fetched,
+                    }
+                },
             };
 
             Ok(FetchResult::new_entity(prepared))
@@ -364,9 +373,9 @@ impl<PQ: ProjectionQueries> QueryFetcher<PaymentCommand, PQ> for InMemoryPayment
 // ═══════════════════════════════════════════════════════════════════════════
 
 use composable_rust_next::{
-    testing::{InMemoryEventBus, InMemoryEventStore},
-    Clock, Handler, HandlerEnvironment, HandlerError, HandleResult, MetadataContext,
+    Clock, HandleResult, Handler, HandlerEnvironment, HandlerError, MetadataContext,
     NoOpCallExecutor,
+    testing::{InMemoryEventBus, InMemoryEventStore},
 };
 
 use crate::next::payment::{PaymentBusinessLogic, PaymentError, PaymentResponse};
@@ -732,7 +741,7 @@ mod tests {
                 let dto = fetched.expect("fetched should be populated");
                 assert_eq!(dto.status, PaymentDtoStatus::Succeeded);
                 assert_eq!(dto.amount, Money::from_dollars(100));
-            }
+            },
             _ => panic!("Expected RefundPayment command"),
         }
     }
@@ -813,7 +822,7 @@ mod tests {
 
         assert!(result.is_err());
         match result {
-            Err(HandlerError::Business(PaymentError::AlreadyExists(_))) => {}
+            Err(HandlerError::Business(PaymentError::AlreadyExists(_))) => {},
             other => panic!("Expected AlreadyExists error, got: {other:?}"),
         }
     }
@@ -877,7 +886,7 @@ mod tests {
 
         assert!(result.is_err());
         match result {
-            Err(HandlerError::Business(PaymentError::NotFound(_))) => {}
+            Err(HandlerError::Business(PaymentError::NotFound(_))) => {},
             other => panic!("Expected NotFound error, got: {other:?}"),
         }
     }
@@ -956,7 +965,11 @@ mod tests {
 
         // Mark refunded
         projections
-            .mark_refunded(payment_id, Money::from_dollars(50), "Customer request".to_string())
+            .mark_refunded(
+                payment_id,
+                Money::from_dollars(50),
+                "Customer request".to_string(),
+            )
             .await;
 
         let dto = projections.get_payment(payment_id).await.unwrap();
@@ -973,7 +986,7 @@ mod tests {
         // Create a non-payment event
         let fake_event = SerializedEvent {
             event_type: "InventoryInitialized".to_string(), // Not a payment event
-            payload: vec![1, 2, 3], // Invalid payload
+            payload: vec![1, 2, 3],                         // Invalid payload
             metadata: None,
             version: None,
         };
@@ -1054,8 +1067,11 @@ mod tests {
 
         match result.input {
             PaymentCommand::GetPayment { fetched, .. } => {
-                assert!(fetched.is_none(), "fetched should be None for missing payment");
-            }
+                assert!(
+                    fetched.is_none(),
+                    "fetched should be None for missing payment"
+                );
+            },
             _ => panic!("Expected GetPayment command"),
         }
     }

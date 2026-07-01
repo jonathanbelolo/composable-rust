@@ -32,7 +32,7 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, DeriveInput, Data, Fields, Attribute};
+use syn::{Attribute, Data, DeriveInput, Fields, parse_macro_input};
 
 /// Derive macro for Action enums
 ///
@@ -86,12 +86,9 @@ pub fn derive_action(input: TokenStream) -> TokenStream {
     let name = &input.ident;
 
     let Data::Enum(data_enum) = &input.data else {
-        return syn::Error::new_spanned(
-            input,
-            "#[derive(Action)] can only be used on enums"
-        )
-        .to_compile_error()
-        .into();
+        return syn::Error::new_spanned(input, "#[derive(Action)] can only be used on enums")
+            .to_compile_error()
+            .into();
     };
 
     // Collect variants marked as commands or events
@@ -106,7 +103,7 @@ pub fn derive_action(input: TokenStream) -> TokenStream {
         if is_command && is_event {
             return syn::Error::new_spanned(
                 variant,
-                "Variant cannot be both #[command] and #[event]"
+                "Variant cannot be both #[command] and #[event]",
             )
             .to_compile_error()
             .into();
@@ -233,18 +230,16 @@ pub fn derive_state(input: TokenStream) -> TokenStream {
     let name = &input.ident;
 
     let Data::Struct(data_struct) = &input.data else {
-        return syn::Error::new_spanned(
-            input,
-            "#[derive(State)] can only be used on structs"
-        )
-        .to_compile_error()
-        .into();
+        return syn::Error::new_spanned(input, "#[derive(State)] can only be used on structs")
+            .to_compile_error()
+            .into();
     };
 
     // Find version field if present
-    let version_field = data_struct.fields.iter().find(|field| {
-        has_attribute(&field.attrs, "version")
-    });
+    let version_field = data_struct
+        .fields
+        .iter()
+        .find(|field| has_attribute(&field.attrs, "version"));
 
     let has_version = version_field.is_some();
 
@@ -281,9 +276,7 @@ pub fn derive_state(input: TokenStream) -> TokenStream {
 
 /// Helper function to check if an attribute list contains a specific attribute
 fn has_attribute(attrs: &[Attribute], name: &str) -> bool {
-    attrs.iter().any(|attr| {
-        attr.path().is_ident(name)
-    })
+    attrs.iter().any(|attr| attr.path().is_ident(name))
 }
 
 #[cfg(test)]

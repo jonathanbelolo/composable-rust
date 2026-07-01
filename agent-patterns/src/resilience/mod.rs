@@ -5,11 +5,11 @@
 //! - Rate limiters: Prevent resource exhaustion
 //! - Bulkheads: Isolate failures
 
+pub mod bulkhead;
 pub mod circuit_breaker;
 pub mod rate_limiter;
-pub mod bulkhead;
 
 // Re-export common types
+pub use bulkhead::{Bulkhead, BulkheadConfig, BulkheadRegistry};
 pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitState};
 pub use rate_limiter::{RateLimiter, RateLimiterConfig};
-pub use bulkhead::{Bulkhead, BulkheadConfig, BulkheadRegistry};

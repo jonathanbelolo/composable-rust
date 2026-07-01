@@ -1067,12 +1067,14 @@ impl InventoryState {
 
     /// Marks inventory as loading
     pub fn mark_loading(&mut self, event_id: EventId, section: String) {
-        self.loading_states.insert((event_id, section), LoadingState::Loading);
+        self.loading_states
+            .insert((event_id, section), LoadingState::Loading);
     }
 
     /// Marks inventory as loaded
     pub fn mark_loaded(&mut self, event_id: EventId, section: String) {
-        self.loading_states.insert((event_id, section), LoadingState::Loaded);
+        self.loading_states
+            .insert((event_id, section), LoadingState::Loaded);
     }
 
     /// Gets inventory for an event and section
@@ -1162,12 +1164,14 @@ impl ReservationState {
 
     /// Marks reservation as loading
     pub fn mark_loading(&mut self, reservation_id: ReservationId) {
-        self.loading_states.insert(reservation_id, LoadingState::Loading);
+        self.loading_states
+            .insert(reservation_id, LoadingState::Loading);
     }
 
     /// Marks reservation as loaded
     pub fn mark_loaded(&mut self, reservation_id: ReservationId) {
-        self.loading_states.insert(reservation_id, LoadingState::Loaded);
+        self.loading_states
+            .insert(reservation_id, LoadingState::Loaded);
     }
 }
 
@@ -1212,7 +1216,8 @@ impl PaymentState {
 
     /// Marks payment as loading
     pub fn mark_loading(&mut self, payment_id: PaymentId) {
-        self.loading_states.insert(payment_id, LoadingState::Loading);
+        self.loading_states
+            .insert(payment_id, LoadingState::Loading);
     }
 
     /// Marks payment as loaded

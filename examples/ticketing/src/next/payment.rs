@@ -88,7 +88,6 @@ pub enum PaymentCommand {
     // ═══════════════════════════════════════════════════════════════════════
     // Query Commands
     // ═══════════════════════════════════════════════════════════════════════
-
     /// Get a single payment by ID.
     ///
     /// The `fetched` field is populated by the Handler before calling process().
@@ -351,10 +350,10 @@ impl BusinessLogic for PaymentBusinessLogic {
             | PaymentCommand::SimulatePaymentFailure { payment_id, .. }
             | PaymentCommand::GetPayment { payment_id, .. } => {
                 StreamId::new(format!("payment-{}", payment_id.as_uuid()))
-            }
+            },
             PaymentCommand::ListCustomerPayments { customer_id, .. } => {
                 StreamId::new(format!("query-payments-customer-{}", customer_id.as_uuid()))
-            }
+            },
         }
     }
 
@@ -404,7 +403,7 @@ impl BusinessLogic for PaymentBusinessLogic {
                         succeeded_at: now,
                     },
                 ]))
-            }
+            },
 
             PaymentCommand::RefundPayment {
                 payment_id,
@@ -448,7 +447,7 @@ impl BusinessLogic for PaymentBusinessLogic {
                     reason,
                     refunded_at: now,
                 }]))
-            }
+            },
 
             PaymentCommand::SimulatePaymentFailure { payment_id, reason } => {
                 // This is a test command that simulates payment failure.
@@ -463,20 +462,23 @@ impl BusinessLogic for PaymentBusinessLogic {
                     reason,
                     failed_at: now,
                 }]))
-            }
+            },
 
             // ═══════════════════════════════════════════════════════════════
             // Query Commands (data pre-fetched by Handler)
             // ═══════════════════════════════════════════════════════════════
-
-            PaymentCommand::GetPayment { payment_id: _, fetched } => {
+            PaymentCommand::GetPayment {
+                payment_id: _,
+                fetched,
+            } => {
                 let payment = fetched.ok_or(PaymentError::PaymentNotFound)?;
                 Ok(BusinessResult::Respond(PaymentResponse::Single(payment)))
-            }
+            },
 
-            PaymentCommand::ListCustomerPayments { customer_id: _, fetched } => {
-                Ok(BusinessResult::Respond(PaymentResponse::List(fetched)))
-            }
+            PaymentCommand::ListCustomerPayments {
+                customer_id: _,
+                fetched,
+            } => Ok(BusinessResult::Respond(PaymentResponse::List(fetched))),
         }
     }
 
@@ -501,7 +503,7 @@ impl BusinessLogic for PaymentBusinessLogic {
                     transaction_id: None,
                 };
                 state.payments.insert(*payment_id, payment);
-            }
+            },
 
             PaymentEvent::PaymentSucceeded {
                 payment_id,
@@ -512,7 +514,7 @@ impl BusinessLogic for PaymentBusinessLogic {
                     payment.status = PaymentStatus::Captured;
                     payment.transaction_id = Some(transaction_id.clone());
                 }
-            }
+            },
 
             PaymentEvent::PaymentFailed {
                 payment_id, reason, ..
@@ -522,7 +524,7 @@ impl BusinessLogic for PaymentBusinessLogic {
                         reason: reason.clone(),
                     };
                 }
-            }
+            },
 
             PaymentEvent::PaymentRefunded {
                 payment_id, amount, ..
@@ -530,7 +532,7 @@ impl BusinessLogic for PaymentBusinessLogic {
                 if let Some(payment) = state.payments.get_mut(payment_id) {
                     payment.status = PaymentStatus::Refunded { amount: *amount };
                 }
-            }
+            },
         }
     }
 
@@ -572,7 +574,11 @@ mod tests {
             amount,
             payment_method: "CreditCard".to_string(),
             status,
-            transaction_id: if status == PaymentDtoStatus::Succeeded { Some("txn_123".to_string()) } else { None },
+            transaction_id: if status == PaymentDtoStatus::Succeeded {
+                Some("txn_123".to_string())
+            } else {
+                None
+            },
             failure_reason: None,
             refund_amount: None,
             refund_reason: None,
@@ -603,7 +609,7 @@ mod tests {
                 assert_eq!(events.len(), 2);
                 assert!(matches!(events[0], PaymentEvent::PaymentProcessed { .. }));
                 assert!(matches!(events[1], PaymentEvent::PaymentSucceeded { .. }));
-            }
+            },
             _ => panic!("Expected Done result"),
         }
     }
@@ -624,7 +630,11 @@ mod tests {
             payment_method: PaymentMethod::CreditCard {
                 last_four: "4242".to_string(),
             },
-            fetched: Some(payment_dto(payment_id, Money::from_dollars(50), PaymentDtoStatus::Succeeded)),
+            fetched: Some(payment_dto(
+                payment_id,
+                Money::from_dollars(50),
+                PaymentDtoStatus::Succeeded,
+            )),
         };
 
         let result = logic.process(command, &clock);
@@ -663,7 +673,11 @@ mod tests {
             payment_id,
             amount: Money::from_dollars(50),
             reason: "Customer requested refund".to_string(),
-            fetched: Some(payment_dto(payment_id, Money::from_dollars(100), PaymentDtoStatus::Succeeded)),
+            fetched: Some(payment_dto(
+                payment_id,
+                Money::from_dollars(100),
+                PaymentDtoStatus::Succeeded,
+            )),
         };
 
         let result = logic.process(command, &clock).unwrap();
@@ -675,10 +689,10 @@ mod tests {
                     PaymentEvent::PaymentRefunded { amount, reason, .. } => {
                         assert_eq!(*amount, Money::from_dollars(50));
                         assert_eq!(reason, "Customer requested refund");
-                    }
+                    },
                     _ => panic!("Expected PaymentRefunded event"),
                 }
-            }
+            },
             _ => panic!("Expected Done result"),
         }
     }
@@ -695,7 +709,11 @@ mod tests {
             payment_id,
             amount: Money::from_dollars(50),
             reason: "Customer requested refund".to_string(),
-            fetched: Some(payment_dto(payment_id, Money::from_dollars(100), PaymentDtoStatus::Processing)),
+            fetched: Some(payment_dto(
+                payment_id,
+                Money::from_dollars(100),
+                PaymentDtoStatus::Processing,
+            )),
         };
 
         let result = logic.process(command, &clock);
@@ -714,7 +732,11 @@ mod tests {
             payment_id,
             amount: Money::from_dollars(150), // More than original!
             reason: "Customer requested refund".to_string(),
-            fetched: Some(payment_dto(payment_id, Money::from_dollars(100), PaymentDtoStatus::Succeeded)),
+            fetched: Some(payment_dto(
+                payment_id,
+                Money::from_dollars(100),
+                PaymentDtoStatus::Succeeded,
+            )),
         };
 
         let result = logic.process(command, &clock);
@@ -739,10 +761,10 @@ mod tests {
                 match &events[0] {
                     PaymentEvent::PaymentFailed { reason, .. } => {
                         assert_eq!(reason, "Card declined");
-                    }
+                    },
                     _ => panic!("Expected PaymentFailed event"),
                 }
-            }
+            },
             _ => panic!("Expected Done result"),
         }
     }

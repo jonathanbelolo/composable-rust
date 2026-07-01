@@ -6,8 +6,8 @@ use crate::handlers;
 use crate::types::{OrderAction, OrderState};
 use crate::{OrderEnvironment, OrderReducer};
 use axum::{
-    routing::{get, post},
     Router,
+    routing::{get, post},
 };
 use composable_rust_runtime::Store;
 use composable_rust_web::handlers::websocket;

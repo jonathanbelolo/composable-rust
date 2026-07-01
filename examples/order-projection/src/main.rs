@@ -11,8 +11,8 @@ use composable_rust_core::projection::Projection;
 use order_processing::{CustomerId, LineItem, Money, OrderAction, OrderId};
 use order_projection_example::CustomerOrderHistoryProjection;
 use sqlx::postgres::PgPoolOptions;
-use tokio::time::{sleep, Duration};
-use tracing::{info, Level};
+use tokio::time::{Duration, sleep};
+use tracing::{Level, info};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -144,7 +144,10 @@ async fn main() -> Result<()> {
 
     // Get all orders for Alice
     let alice_orders = projection.get_customer_orders("customer-alice").await?;
-    info!("📊 Orders for customer-alice ({} orders):", alice_orders.len());
+    info!(
+        "📊 Orders for customer-alice ({} orders):",
+        alice_orders.len()
+    );
     for order in &alice_orders {
         info!(
             "  - Order {}: {} items, ${:.2}, status: {}{}{}",

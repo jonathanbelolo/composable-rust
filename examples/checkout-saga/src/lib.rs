@@ -85,7 +85,7 @@ use composable_rust_core::effect::Effect;
 use composable_rust_core::environment::Clock;
 use composable_rust_core::event_bus::EventBus;
 use composable_rust_core::reducer::Reducer;
-use composable_rust_core::{smallvec, SmallVec};
+use composable_rust_core::{SmallVec, smallvec};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 

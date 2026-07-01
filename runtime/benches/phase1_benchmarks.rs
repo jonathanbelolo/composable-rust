@@ -11,7 +11,7 @@
 #![allow(clippy::expect_used)] // Benchmarks can use expect for setup
 #![allow(dead_code)] // Benchmark data structures may have unused fields
 
-use composable_rust_core::{effect::Effect, reducer::Reducer, smallvec, SmallVec};
+use composable_rust_core::{SmallVec, effect::Effect, reducer::Reducer, smallvec};
 use composable_rust_runtime::Store;
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use std::time::Duration;
@@ -195,7 +195,10 @@ fn benchmark_effect_overhead(c: &mut Criterion) {
         let store = Store::new(BenchState::default(), EffectReducer, BenchEnv);
 
         b.to_async(&runtime).iter(|| async {
-            let mut handle = store.send(black_box(BenchAction::NoOp)).await.expect("send failed");
+            let mut handle = store
+                .send(black_box(BenchAction::NoOp))
+                .await
+                .expect("send failed");
             handle.wait().await;
         });
     });
@@ -204,7 +207,10 @@ fn benchmark_effect_overhead(c: &mut Criterion) {
         let store = Store::new(BenchState::default(), EffectReducer, BenchEnv);
 
         b.to_async(&runtime).iter(|| async {
-            let mut handle = store.send(black_box(BenchAction::Increment)).await.expect("send failed");
+            let mut handle = store
+                .send(black_box(BenchAction::Increment))
+                .await
+                .expect("send failed");
             handle.wait().await;
         });
     });
@@ -213,7 +219,10 @@ fn benchmark_effect_overhead(c: &mut Criterion) {
         let store = Store::new(BenchState::default(), EffectReducer, BenchEnv);
 
         b.to_async(&runtime).iter(|| async {
-            let mut handle = store.send(black_box(BenchAction::Reset)).await.expect("send failed");
+            let mut handle = store
+                .send(black_box(BenchAction::Reset))
+                .await
+                .expect("send failed");
             handle.wait().await;
         });
     });

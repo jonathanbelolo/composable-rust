@@ -2,11 +2,11 @@
 //!
 //! Composes all authentication handlers into a single Axum router.
 
-use crate::{AuthAction, AuthEnvironment, AuthReducer, AuthState};
 use crate::handlers::{magic_link, oauth, passkey, session};
+use crate::{AuthAction, AuthEnvironment, AuthReducer, AuthState};
 use axum::{
-    routing::{get, post},
     Router,
+    routing::{get, post},
 };
 use composable_rust_runtime::Store;
 use std::sync::Arc;
@@ -47,7 +47,14 @@ use std::sync::Arc;
 ///     .layer(TraceLayer::new_for_http());
 /// ```
 pub fn auth_router<O, E, W, S, T, U, D, R, OT, C, RL>(
-    store: Arc<Store<AuthState, AuthAction, AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>, AuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>>>,
+    store: Arc<
+        Store<
+            AuthState,
+            AuthAction,
+            AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>,
+            AuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>,
+        >,
+    >,
 ) -> Router
 where
     O: crate::providers::OAuth2Provider + Clone + 'static,

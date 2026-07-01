@@ -3,7 +3,7 @@
 //! Implements passwordless authentication via email magic links.
 
 use crate::{AuthAction, AuthEnvironment, AuthReducer, AuthState};
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{Json, extract::State, http::StatusCode};
 use composable_rust_runtime::Store;
 use composable_rust_web::{AppError, ClientIp, CorrelationId, UserAgent};
 use serde::{Deserialize, Serialize};
@@ -82,7 +82,16 @@ pub struct VerifyMagicLinkResponse {
 /// 3. Dispatch and wait for `MagicLinkSent` or `MagicLinkFailed`
 /// 4. Return success/error response
 pub async fn send_magic_link<O, E, W, S, T, U, D, R, OT, C, RL>(
-    State(store): State<Arc<Store<AuthState, AuthAction, AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>, AuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>>>>,
+    State(store): State<
+        Arc<
+            Store<
+                AuthState,
+                AuthAction,
+                AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>,
+                AuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>,
+            >,
+        >,
+    >,
     correlation_id: CorrelationId,
     client_ip: ClientIp,
     user_agent: UserAgent,
@@ -113,7 +122,12 @@ where
     let result = store
         .send_and_wait_for(
             action,
-            |a| matches!(a, AuthAction::MagicLinkSent { .. } | AuthAction::MagicLinkFailed { .. }),
+            |a| {
+                matches!(
+                    a,
+                    AuthAction::MagicLinkSent { .. } | AuthAction::MagicLinkFailed { .. }
+                )
+            },
             Duration::from_secs(10),
         )
         .await
@@ -128,9 +142,9 @@ where
                 email,
             }),
         )),
-        AuthAction::MagicLinkFailed { error, .. } => {
-            Err(AppError::internal(format!("Failed to send magic link: {error}")))
-        }
+        AuthAction::MagicLinkFailed { error, .. } => Err(AppError::internal(format!(
+            "Failed to send magic link: {error}"
+        ))),
         _ => Err(AppError::internal("Unexpected action received")),
     }
 }
@@ -171,7 +185,16 @@ where
 /// 3. Dispatch and wait for `SessionCreated` or error actions
 /// 4. Return session info or error
 pub async fn verify_magic_link<O, E, W, S, T, U, D, R, OT, C, RL>(
-    State(store): State<Arc<Store<AuthState, AuthAction, AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>, AuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>>>>,
+    State(store): State<
+        Arc<
+            Store<
+                AuthState,
+                AuthAction,
+                AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>,
+                AuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>,
+            >,
+        >,
+    >,
     correlation_id: CorrelationId,
     client_ip: ClientIp,
     user_agent: UserAgent,
@@ -232,11 +255,11 @@ where
                     expires_at: session.expires_at.to_rfc3339(),
                 }),
             ))
-        }
+        },
         AuthAction::MagicLinkFailed { error, .. } => Err(AppError::unauthorized(error)),
-        AuthAction::SessionCreationFailed { error, .. } => {
-            Err(AppError::internal(format!("Session creation failed: {error}")))
-        }
+        AuthAction::SessionCreationFailed { error, .. } => Err(AppError::internal(format!(
+            "Session creation failed: {error}"
+        ))),
         _ => Err(AppError::internal("Unexpected action received")),
     }
 }

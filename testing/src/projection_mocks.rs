@@ -212,7 +212,12 @@ impl ProjectionCheckpoint for InMemoryProjectionCheckpoint {
     ) -> Pin<Box<dyn Future<Output = Result<Option<EventPosition>>> + Send + '_>> {
         let projection_name = projection_name.to_string();
         Box::pin(async move {
-            Ok(self.positions.read().unwrap().get(&projection_name).copied())
+            Ok(self
+                .positions
+                .read()
+                .unwrap()
+                .get(&projection_name)
+                .copied())
         })
     }
 }

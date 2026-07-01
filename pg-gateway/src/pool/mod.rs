@@ -25,8 +25,8 @@ pub use config::DbConfig;
 
 #[cfg(feature = "http")]
 pub use health::{
-    check_database, check_outbox, health_check, health_check_with_outbox, HealthChecks,
-    HealthConfig, HealthResponse, HealthStatus,
+    HealthChecks, HealthConfig, HealthResponse, HealthStatus, check_database, check_outbox,
+    health_check, health_check_with_outbox,
 };
 
 use sqlx::postgres::{PgPool, PgPoolOptions};

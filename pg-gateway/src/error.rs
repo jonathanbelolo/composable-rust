@@ -146,14 +146,14 @@ impl From<sqlx::Error> for ApiError {
                             "Unhandled database error"
                         );
                         Self::Internal
-                    }
+                    },
                 }
-            }
+            },
             sqlx::Error::RowNotFound => Self::NotFound,
             _ => {
                 tracing::error!(error = %err, "Database error");
                 Self::Internal
-            }
+            },
         }
     }
 }
@@ -173,17 +173,15 @@ struct ErrorBody {
 #[cfg(feature = "http")]
 mod http_impl {
     use super::{ApiError, ErrorBody, ErrorResponse};
+    use axum::Json;
     use axum::http::StatusCode;
     use axum::response::{IntoResponse, Response};
-    use axum::Json;
 
     impl IntoResponse for ApiError {
         fn into_response(self) -> Response {
             let (status, code, message) = match &self {
                 ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg.clone()),
-                ApiError::Unauthorized => {
-                    (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", String::new())
-                }
+                ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", String::new()),
                 ApiError::Forbidden(msg) => (StatusCode::FORBIDDEN, "FORBIDDEN", msg.clone()),
                 ApiError::NotFound => (StatusCode::NOT_FOUND, "NOT_FOUND", String::new()),
                 ApiError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg.clone()),

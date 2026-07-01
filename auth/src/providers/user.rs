@@ -10,9 +10,9 @@
 //! - ❌ Writes: Use event emission (reducers emit `UserRegistered`, `UserUpdated` events)
 //! - 🔄 Projections: `AuthProjection` listens to events and updates read models
 
+use super::{MagicLinkToken, OAuthLink, PasskeyCredential, User};
 use crate::error::Result;
 use crate::state::{OAuthProvider, UserId};
-use super::{User, OAuthLink, MagicLinkToken, PasskeyCredential};
 
 /// User repository (query-only).
 ///
@@ -53,10 +53,7 @@ pub trait UserRepository: Send + Sync {
     /// Returns error if:
     /// - Database query fails
     /// - Email already exists
-    fn create_user(
-        &self,
-        user: &User,
-    ) -> impl std::future::Future<Output = Result<User>> + Send;
+    fn create_user(&self, user: &User) -> impl std::future::Future<Output = Result<User>> + Send;
 
     /// Update user.
     ///
@@ -65,10 +62,7 @@ pub trait UserRepository: Send + Sync {
     /// Returns error if:
     /// - Database query fails
     /// - User not found
-    fn update_user(
-        &self,
-        user: &User,
-    ) -> impl std::future::Future<Output = Result<User>> + Send;
+    fn update_user(&self, user: &User) -> impl std::future::Future<Output = Result<User>> + Send;
 
     /// Check if email exists.
     ///
@@ -79,10 +73,7 @@ pub trait UserRepository: Send + Sync {
     /// # Errors
     ///
     /// Returns error if database query fails.
-    fn email_exists(
-        &self,
-        email: &str,
-    ) -> impl std::future::Future<Output = Result<bool>> + Send;
+    fn email_exists(&self, email: &str) -> impl std::future::Future<Output = Result<bool>> + Send;
 
     // ═══════════════════════════════════════════════════════════════════════
     // OAuth Links
@@ -180,9 +171,8 @@ pub trait UserRepository: Send + Sync {
     /// # Errors
     ///
     /// Returns error if database query fails.
-    fn delete_expired_magic_links(
-        &self,
-    ) -> impl std::future::Future<Output = Result<usize>> + Send;
+    fn delete_expired_magic_links(&self)
+    -> impl std::future::Future<Output = Result<usize>> + Send;
 
     // ═══════════════════════════════════════════════════════════════════════
     // Passkey Credentials

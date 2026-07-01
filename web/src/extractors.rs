@@ -29,7 +29,7 @@
 
 use axum::{
     extract::FromRequestParts,
-    http::{request::Parts, HeaderMap},
+    http::{HeaderMap, request::Parts},
 };
 use std::net::IpAddr;
 use uuid::Uuid;
@@ -187,9 +187,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_correlation_id_generates_new() {
-        let req = Request::builder()
-            .body(())
-            .expect("Valid request");
+        let req = Request::builder().body(()).expect("Valid request");
 
         let (mut parts, ()) = req.into_parts();
         let correlation_id = CorrelationId::from_request_parts(&mut parts, &())
@@ -232,9 +230,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_client_ip_fallback() {
-        let req = Request::builder()
-            .body(())
-            .expect("Valid request");
+        let req = Request::builder().body(()).expect("Valid request");
 
         let (mut parts, ()) = req.into_parts();
         let client_ip = ClientIp::from_request_parts(&mut parts, &())
@@ -262,9 +258,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_user_agent_fallback() {
-        let req = Request::builder()
-            .body(())
-            .expect("Valid request");
+        let req = Request::builder().body(()).expect("Valid request");
 
         let (mut parts, ()) = req.into_parts();
         let user_agent = UserAgent::from_request_parts(&mut parts, &())

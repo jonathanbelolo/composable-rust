@@ -4,10 +4,10 @@
 
 use crate::{AuthAction, AuthEnvironment, AuthReducer, AuthState};
 use axum::{
+    Json,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Redirect, Response},
-    Json,
 };
 use composable_rust_runtime::Store;
 use composable_rust_web::{AppError, ClientIp, CorrelationId, UserAgent};
@@ -74,7 +74,16 @@ pub struct OAuthCallbackResponse {
 ///
 /// HTTP 302 redirect to `OAuth` provider's authorization page.
 pub async fn oauth_authorize<O, E, W, S, T, U, D, R, OT, C, RL>(
-    State(store): State<Arc<Store<AuthState, AuthAction, AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>, AuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>>>>,
+    State(store): State<
+        Arc<
+            Store<
+                AuthState,
+                AuthAction,
+                AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>,
+                AuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>,
+            >,
+        >,
+    >,
     Path(provider_str): Path<String>,
     correlation_id: CorrelationId,
     client_ip: ClientIp,
@@ -123,14 +132,20 @@ where
 
     // Map result to HTTP response
     match result {
-        AuthAction::OAuthAuthorizationUrlReady { authorization_url, .. } => {
+        AuthAction::OAuthAuthorizationUrlReady {
+            authorization_url, ..
+        } => {
             // Redirect to OAuth provider
             Ok(Redirect::to(&authorization_url).into_response())
-        }
-        AuthAction::OAuthFailed { error, error_description, .. } => {
+        },
+        AuthAction::OAuthFailed {
+            error,
+            error_description,
+            ..
+        } => {
             let message = error_description.unwrap_or(error);
             Err(AppError::internal(format!("OAuth failed: {message}")))
-        }
+        },
         _ => Err(AppError::internal("Unexpected action received")),
     }
 }
@@ -170,7 +185,16 @@ where
 /// }
 /// ```
 pub async fn oauth_callback<O, E, W, S, T, U, D, R, OT, C, RL>(
-    State(store): State<Arc<Store<AuthState, AuthAction, AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>, AuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>>>>,
+    State(store): State<
+        Arc<
+            Store<
+                AuthState,
+                AuthAction,
+                AuthEnvironment<O, E, W, S, T, U, D, R, OT, C, RL>,
+                AuthReducer<O, E, W, S, T, U, D, R, OT, C, RL>,
+            >,
+        >,
+    >,
     Path(provider_str): Path<String>,
     Query(query): Query<OAuthCallbackQuery>,
     correlation_id: CorrelationId,
@@ -193,7 +217,9 @@ where
     // Check if provider sent an error
     if let Some(error) = query.error {
         let description = query.error_description.unwrap_or_default();
-        return Err(AppError::bad_request(format!("OAuth error: {error} - {description}")));
+        return Err(AppError::bad_request(format!(
+            "OAuth error: {error} - {description}"
+        )));
     }
 
     // Parse provider from path (validates provider name)
@@ -240,11 +266,17 @@ where
                     expires_at: session.expires_at.to_rfc3339(),
                 }),
             ))
-        }
-        AuthAction::OAuthFailed { error, error_description, .. } => {
+        },
+        AuthAction::OAuthFailed {
+            error,
+            error_description,
+            ..
+        } => {
             let message = error_description.unwrap_or(error);
-            Err(AppError::internal(format!("OAuth authentication failed: {message}")))
-        }
+            Err(AppError::internal(format!(
+                "OAuth authentication failed: {message}"
+            )))
+        },
         _ => Err(AppError::internal("Unexpected action received")),
     }
 }

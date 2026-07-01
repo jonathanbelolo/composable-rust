@@ -324,7 +324,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{smallvec, SmallVec};
+    use crate::{SmallVec, smallvec};
 
     #[derive(Clone, Default)]
     struct TestState {

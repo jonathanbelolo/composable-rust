@@ -30,11 +30,7 @@
 //! - **Observable**: Tracing spans include correlation context
 //! - **Client-friendly**: Clients receive their correlation ID back
 
-use axum::{
-    extract::Request,
-    http::HeaderValue,
-    response::Response,
-};
+use axum::{extract::Request, http::HeaderValue, response::Response};
 use std::task::{Context, Poll};
 use tower::{Layer, Service};
 use uuid::Uuid;
@@ -191,7 +187,7 @@ use tracing::Instrument;
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Test code can use unwrap/expect
 mod tests {
     use super::*;
-    use axum::{body::Body, http::Request, response::IntoResponse, routing::get, Router};
+    use axum::{Router, body::Body, http::Request, response::IntoResponse, routing::get};
     use tower::ServiceExt;
 
     #[tokio::test]
@@ -200,10 +196,7 @@ mod tests {
             .route("/test", get(|| async { "ok" }))
             .layer(correlation_id_layer());
 
-        let request = Request::builder()
-            .uri("/test")
-            .body(Body::empty())
-            .unwrap();
+        let request = Request::builder().uri("/test").body(Body::empty()).unwrap();
 
         let response = app.oneshot(request).await.unwrap();
 
@@ -257,10 +250,7 @@ mod tests {
             .route("/test", get(handler))
             .layer(correlation_id_layer());
 
-        let request = Request::builder()
-            .uri("/test")
-            .body(Body::empty())
-            .unwrap();
+        let request = Request::builder().uri("/test").body(Body::empty()).unwrap();
 
         let response = app.oneshot(request).await.unwrap();
 

@@ -288,7 +288,7 @@ where
                     ProjectionError::EventProcessing(format!(
                         "Failed to subscribe to {topics:?}: {reason}"
                     ))
-                }
+                },
                 _ => ProjectionError::EventProcessing(format!("Subscription error: {e}")),
             })?;
 

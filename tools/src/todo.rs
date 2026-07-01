@@ -81,11 +81,10 @@ pub fn todo_add_tool(store: TodoStore) -> (Tool, ToolExecutorFn) {
     let executor = Arc::new(move |input: String| {
         let store = store.clone();
         Box::pin(async move {
-            let parsed: serde_json::Value = serde_json::from_str(&input).map_err(|e| {
-                ToolError {
+            let parsed: serde_json::Value =
+                serde_json::from_str(&input).map_err(|e| ToolError {
                     message: format!("Invalid input JSON: {e}"),
-                }
-            })?;
+                })?;
 
             let title = parsed["title"]
                 .as_str()
@@ -96,9 +95,10 @@ pub fn todo_add_tool(store: TodoStore) -> (Tool, ToolExecutorFn) {
 
             // Get next ID
             let id = {
-                let mut next_id = store.next_id.write().expect(
-                    "Todo next_id lock poisoned - indicates a panic in another thread",
-                );
+                let mut next_id = store
+                    .next_id
+                    .write()
+                    .expect("Todo next_id lock poisoned - indicates a panic in another thread");
                 let id = *next_id;
                 *next_id += 1;
                 id
@@ -122,9 +122,7 @@ pub fn todo_add_tool(store: TodoStore) -> (Tool, ToolExecutorFn) {
 
             let output = json!(todo);
             Ok(output.to_string())
-        }) as std::pin::Pin<
-            Box<dyn std::future::Future<Output = ToolResult> + Send>,
-        >
+        }) as std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send>>
     }) as ToolExecutorFn;
 
     (tool, executor)
@@ -177,9 +175,7 @@ pub fn todo_list_tool(store: TodoStore) -> (Tool, ToolExecutorFn) {
             });
 
             Ok(output.to_string())
-        }) as std::pin::Pin<
-            Box<dyn std::future::Future<Output = ToolResult> + Send>,
-        >
+        }) as std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send>>
     }) as ToolExecutorFn;
 
     (tool, executor)
@@ -222,11 +218,10 @@ pub fn todo_complete_tool(store: TodoStore) -> (Tool, ToolExecutorFn) {
     let executor = Arc::new(move |input: String| {
         let store = store.clone();
         Box::pin(async move {
-            let parsed: serde_json::Value = serde_json::from_str(&input).map_err(|e| {
-                ToolError {
+            let parsed: serde_json::Value =
+                serde_json::from_str(&input).map_err(|e| ToolError {
                     message: format!("Invalid input JSON: {e}"),
-                }
-            })?;
+                })?;
 
             let id = parsed["id"].as_u64().ok_or_else(|| ToolError {
                 message: "Missing or invalid 'id' field".to_string(),
@@ -249,9 +244,7 @@ pub fn todo_complete_tool(store: TodoStore) -> (Tool, ToolExecutorFn) {
 
             let output = json!(todo);
             Ok(output.to_string())
-        }) as std::pin::Pin<
-            Box<dyn std::future::Future<Output = ToolResult> + Send>,
-        >
+        }) as std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send>>
     }) as ToolExecutorFn;
 
     (tool, executor)
@@ -293,11 +286,10 @@ pub fn todo_delete_tool(store: TodoStore) -> (Tool, ToolExecutorFn) {
     let executor = Arc::new(move |input: String| {
         let store = store.clone();
         Box::pin(async move {
-            let parsed: serde_json::Value = serde_json::from_str(&input).map_err(|e| {
-                ToolError {
+            let parsed: serde_json::Value =
+                serde_json::from_str(&input).map_err(|e| ToolError {
                     message: format!("Invalid input JSON: {e}"),
-                }
-            })?;
+                })?;
 
             let id = parsed["id"].as_u64().ok_or_else(|| ToolError {
                 message: "Missing or invalid 'id' field".to_string(),
@@ -323,9 +315,7 @@ pub fn todo_delete_tool(store: TodoStore) -> (Tool, ToolExecutorFn) {
             });
 
             Ok(output.to_string())
-        }) as std::pin::Pin<
-            Box<dyn std::future::Future<Output = ToolResult> + Send>,
-        >
+        }) as std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send>>
     }) as ToolExecutorFn;
 
     (tool, executor)
@@ -383,7 +373,8 @@ mod tests {
         .await;
         assert!(add_result.is_ok());
 
-        let added: serde_json::Value = serde_json::from_str(&add_result.expect("should succeed")).expect("valid JSON");
+        let added: serde_json::Value =
+            serde_json::from_str(&add_result.expect("should succeed")).expect("valid JSON");
         let todo_id = added["id"].as_u64().expect("should have id");
         assert_eq!(added["title"], "Test todo");
         assert_eq!(added["completed"], false);
@@ -393,7 +384,8 @@ mod tests {
         let list_result = list_executor(json!({}).to_string()).await;
         assert!(list_result.is_ok());
 
-        let list: serde_json::Value = serde_json::from_str(&list_result.expect("should succeed")).expect("valid JSON");
+        let list: serde_json::Value =
+            serde_json::from_str(&list_result.expect("should succeed")).expect("valid JSON");
         assert_eq!(list["todos"].as_array().expect("should be array").len(), 1);
 
         // Complete todo
@@ -407,7 +399,8 @@ mod tests {
         .await;
         assert!(complete_result.is_ok());
 
-        let completed: serde_json::Value = serde_json::from_str(&complete_result.expect("should succeed")).expect("valid JSON");
+        let completed: serde_json::Value =
+            serde_json::from_str(&complete_result.expect("should succeed")).expect("valid JSON");
         assert_eq!(completed["completed"], true);
 
         // Delete todo
@@ -425,7 +418,8 @@ mod tests {
         let list_result2 = list_executor(json!({}).to_string()).await;
         assert!(list_result2.is_ok());
 
-        let list2: serde_json::Value = serde_json::from_str(&list_result2.expect("should succeed")).expect("valid JSON");
+        let list2: serde_json::Value =
+            serde_json::from_str(&list_result2.expect("should succeed")).expect("valid JSON");
         assert_eq!(list2["todos"].as_array().expect("should be array").len(), 0);
     }
 }

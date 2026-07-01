@@ -52,10 +52,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ApplicationBuilder::new()
         .with_config(config)
         .with_tracing()?
-        .with_resources().await?
-        .with_auth().await?
-        .build().await?
-        .run().await?;
+        .with_resources()
+        .await?
+        .with_auth()
+        .await?
+        .build()
+        .await?
+        .run()
+        .await?;
 
     info!("Server shut down gracefully");
     Ok(())

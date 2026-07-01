@@ -437,12 +437,10 @@ mod tests {
 
     #[test]
     fn test_passkey_config_builder() {
-        let config = PasskeyConfig::new(
-            "https://example.com".to_string(),
-            "example.com".to_string(),
-        )
-        .with_challenge_ttl(3)
-        .with_session_duration(Duration::hours(6));
+        let config =
+            PasskeyConfig::new("https://example.com".to_string(), "example.com".to_string())
+                .with_challenge_ttl(3)
+                .with_session_duration(Duration::hours(6));
 
         assert_eq!(config.origin, "https://example.com");
         assert_eq!(config.rp_id, "example.com");

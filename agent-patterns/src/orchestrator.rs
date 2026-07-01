@@ -25,7 +25,7 @@
 use composable_rust_core::agent::AgentEnvironment;
 use composable_rust_core::effect::Effect;
 use composable_rust_core::reducer::Reducer;
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -34,9 +34,9 @@ use std::sync::Arc;
 pub type WorkerFn = Arc<
     dyn Fn(
             String,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<String, String>> + Send>,
-        > + Send
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
+        + Send
         + Sync,
 >;
 
@@ -221,8 +221,15 @@ impl<E> OrchestratorReducer<E> {
     }
 
     /// Check if subtask dependencies are satisfied
-    fn dependencies_satisfied(&self, subtask: &Subtask, completed: &HashMap<String, Result<String, String>>) -> bool {
-        subtask.dependencies.iter().all(|dep| completed.contains_key(dep))
+    fn dependencies_satisfied(
+        &self,
+        subtask: &Subtask,
+        completed: &HashMap<String, Result<String, String>>,
+    ) -> bool {
+        subtask
+            .dependencies
+            .iter()
+            .all(|dep| completed.contains_key(dep))
     }
 
     /// Get ready subtasks (dependencies satisfied, not yet executing or completed)
@@ -247,10 +254,10 @@ impl<E> OrchestratorReducer<E> {
             match result {
                 Ok(data) => {
                     output.push_str(&format!("- Subtask {}: {}\n", subtask_id, data));
-                }
+                },
                 Err(error) => {
                     output.push_str(&format!("- Subtask {} (failed): {}\n", subtask_id, error));
-                }
+                },
             }
         }
 
@@ -277,7 +284,7 @@ impl<E: AgentEnvironment> Reducer for OrchestratorReducer<E> {
                     // Placeholder - would call LLM to create subtasks
                     None
                 }))]
-            }
+            },
 
             OrchestratorAction::Planned { subtasks } => {
                 if subtasks.is_empty() {
@@ -303,7 +310,7 @@ impl<E: AgentEnvironment> Reducer for OrchestratorReducer<E> {
                         Some(w) => w.clone(),
                         None => {
                             continue;
-                        }
+                        },
                     };
 
                     state.executing.push(subtask.id.clone());
@@ -318,7 +325,7 @@ impl<E: AgentEnvironment> Reducer for OrchestratorReducer<E> {
                 }
 
                 effects
-            }
+            },
 
             OrchestratorAction::SubtaskComplete { subtask_id, result } => {
                 // Remove from executing
@@ -362,7 +369,7 @@ impl<E: AgentEnvironment> Reducer for OrchestratorReducer<E> {
                 }
 
                 effects
-            }
+            },
 
             OrchestratorAction::Aggregate => {
                 // Aggregate all results
@@ -373,18 +380,18 @@ impl<E: AgentEnvironment> Reducer for OrchestratorReducer<E> {
                 smallvec![Effect::Future(Box::pin(async move {
                     Some(OrchestratorAction::Complete { result: aggregated })
                 }))]
-            }
+            },
 
             OrchestratorAction::Complete { .. } => {
                 // Already complete
                 smallvec![Effect::None]
-            }
+            },
 
             OrchestratorAction::Error { .. } => {
                 // Error occurred
                 state.completed_flag = true;
                 smallvec![Effect::None]
-            }
+            },
         }
     }
 }
@@ -412,11 +419,17 @@ mod tests {
             &self.config
         }
 
-        fn call_claude(&self, _request: composable_rust_anthropic::MessagesRequest) -> Effect<AgentAction> {
+        fn call_claude(
+            &self,
+            _request: composable_rust_anthropic::MessagesRequest,
+        ) -> Effect<AgentAction> {
             Effect::None
         }
 
-        fn call_claude_streaming(&self, _request: composable_rust_anthropic::MessagesRequest) -> Effect<AgentAction> {
+        fn call_claude_streaming(
+            &self,
+            _request: composable_rust_anthropic::MessagesRequest,
+        ) -> Effect<AgentAction> {
             Effect::None
         }
 
@@ -441,12 +454,14 @@ mod tests {
 
     fn create_test_registry() -> WorkerRegistry {
         WorkerRegistry::new()
-            .register("worker1", Arc::new(|input| {
-                Box::pin(async move { Ok(format!("Worker1: {}", input)) })
-            }))
-            .register("worker2", Arc::new(|input| {
-                Box::pin(async move { Ok(format!("Worker2: {}", input)) })
-            }))
+            .register(
+                "worker1",
+                Arc::new(|input| Box::pin(async move { Ok(format!("Worker1: {}", input)) })),
+            )
+            .register(
+                "worker2",
+                Arc::new(|input| Box::pin(async move { Ok(format!("Worker2: {}", input)) })),
+            )
     }
 
     #[test]
@@ -484,7 +499,9 @@ mod tests {
 
         let effects = reducer.reduce(
             &mut state,
-            OrchestratorAction::Planned { subtasks: Vec::new() },
+            OrchestratorAction::Planned {
+                subtasks: Vec::new(),
+            },
             &env,
         );
 
@@ -598,8 +615,12 @@ mod tests {
         let registry = create_test_registry();
         let reducer: OrchestratorReducer<MockEnvironment> = OrchestratorReducer::new(registry);
         let mut state = OrchestratorState::new();
-        state.completed.insert("1".to_string(), Ok("result1".to_string()));
-        state.completed.insert("2".to_string(), Ok("result2".to_string()));
+        state
+            .completed
+            .insert("1".to_string(), Ok("result1".to_string()));
+        state
+            .completed
+            .insert("2".to_string(), Ok("result2".to_string()));
 
         let env = MockEnvironment {
             config: AgentConfig::default(),

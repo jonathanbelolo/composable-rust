@@ -5,9 +5,9 @@
 use crate::types::{CustomerId, LineItem, Money, OrderAction, OrderId, OrderState, OrderStatus};
 use crate::{OrderEnvironment, OrderReducer};
 use axum::{
+    Json,
     extract::{Path, State},
     http::StatusCode,
-    Json,
 };
 use composable_rust_runtime::Store;
 use composable_rust_web::{AppError, CorrelationId};
@@ -268,8 +268,16 @@ pub async fn get_order(
 
     // Convert to response
     Ok(Json(GetOrderResponse {
-        order_id: state.order_id.as_ref().map(|id| id.as_str().to_string()).unwrap_or_default(),
-        customer_id: state.customer_id.as_ref().map(|id| id.as_str().to_string()).unwrap_or_default(),
+        order_id: state
+            .order_id
+            .as_ref()
+            .map(|id| id.as_str().to_string())
+            .unwrap_or_default(),
+        customer_id: state
+            .customer_id
+            .as_ref()
+            .map(|id| id.as_str().to_string())
+            .unwrap_or_default(),
         status: state.status.to_string(),
         items: state
             .items
