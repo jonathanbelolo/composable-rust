@@ -386,6 +386,31 @@ impl MetadataContext {
             correlation_id: self.correlation_id.clone(),
             causation_id: self.causation_id.clone(),
             user_id: self.user_id.clone(),
+            author_id: None,
+            origin_subject_id: None,
+            timestamp: chrono::Utc::now(),
+        }
+    }
+
+    /// Create [`EventMetadata`] with the current timestamp, stamping identity
+    /// from the given subject.
+    ///
+    /// `author_id` is taken from [`Subject::id`] — [`Subject::Anonymous`] and
+    /// [`Subject::System`] stamp `None` (a `SubjectId` only exists for
+    /// [`Subject::Authenticated`]). `origin_subject_id` is threaded through
+    /// for saga-emitted events and is `None` on non-saga paths.
+    #[must_use]
+    pub fn to_event_metadata_with_subject(
+        &self,
+        subject: &Subject,
+        origin_subject_id: Option<&SubjectId>,
+    ) -> EventMetadata {
+        EventMetadata {
+            correlation_id: self.correlation_id.clone(),
+            causation_id: self.causation_id.clone(),
+            user_id: self.user_id.clone(),
+            author_id: subject.id().cloned(),
+            origin_subject_id: origin_subject_id.cloned(),
             timestamp: chrono::Utc::now(),
         }
     }
@@ -572,13 +597,34 @@ pub struct SerializedEvent {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct EventMetadata {
     /// Correlation ID for tracing across services
+    #[serde(default)]
     pub correlation_id: Option<String>,
 
     /// Causation ID linking to the causing event
+    #[serde(default)]
     pub causation_id: Option<String>,
 
     /// User who triggered the action
+    ///
+    /// Legacy field, retained for back-compat. New code should read
+    /// [`author_id`](Self::author_id).
+    #[serde(default)]
     pub user_id: Option<String>,
+
+    /// Subject that authored this event
+    ///
+    /// Stamped from the invocation's subject. `None` for events authored by
+    /// [`Subject::Anonymous`] / [`Subject::System`] and for events persisted
+    /// before identity stamping existed.
+    #[serde(default)]
+    pub author_id: Option<SubjectId>,
+
+    /// For saga-emitted events: the originating human subject
+    ///
+    /// Threaded from the saga's start through every feedback step.
+    /// `None` on non-saga paths.
+    #[serde(default)]
+    pub origin_subject_id: Option<SubjectId>,
 
     /// Timestamp when the event was created
     pub timestamp: chrono::DateTime<chrono::Utc>,
@@ -695,5 +741,116 @@ impl std::fmt::Debug for SubscriptionHandle {
         f.debug_struct("SubscriptionHandle")
             .field("active", &self.is_active())
             .finish()
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    // ── EventMetadata JSON shape (the JSONB column contract) ──
+    //
+    // EventMetadata is persisted as JSON (postgres-next `metadata` column).
+    // These tests pin the serde contract: old-shape JSON (pre-identity,
+    // 4 fields) must keep deserializing, and the new shape must round-trip.
+
+    #[test]
+    fn event_metadata_old_shape_json_deserializes() {
+        // The 4-field shape that predates author_id/origin_subject_id.
+        let old_json = r#"{
+            "correlation_id": "req-1",
+            "causation_id": null,
+            "user_id": "user-1",
+            "timestamp": "2026-01-01T00:00:00Z"
+        }"#;
+
+        let metadata: EventMetadata = serde_json::from_str(old_json).unwrap();
+        assert_eq!(metadata.correlation_id, Some("req-1".to_string()));
+        assert_eq!(metadata.causation_id, None);
+        assert_eq!(metadata.user_id, Some("user-1".to_string()));
+        assert_eq!(metadata.author_id, None);
+        assert_eq!(metadata.origin_subject_id, None);
+    }
+
+    #[test]
+    fn event_metadata_timestamp_only_json_deserializes() {
+        // Every Option field carries #[serde(default)], so a bare-timestamp
+        // object is the minimal valid shape.
+        let json = r#"{"timestamp": "2026-01-01T00:00:00Z"}"#;
+
+        let metadata: EventMetadata = serde_json::from_str(json).unwrap();
+        assert_eq!(metadata.correlation_id, None);
+        assert_eq!(metadata.causation_id, None);
+        assert_eq!(metadata.user_id, None);
+        assert_eq!(metadata.author_id, None);
+        assert_eq!(metadata.origin_subject_id, None);
+    }
+
+    #[test]
+    fn event_metadata_new_shape_json_round_trips() {
+        let metadata = EventMetadata {
+            correlation_id: Some("req-9".to_string()),
+            causation_id: Some("evt-3".to_string()),
+            user_id: Some("legacy-user".to_string()),
+            author_id: Some(SubjectId::new("user-42")),
+            origin_subject_id: Some(SubjectId::new("user-7")),
+            timestamp: chrono::Utc::now(),
+        };
+
+        let json = serde_json::to_string(&metadata).unwrap();
+        let back: EventMetadata = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(back.correlation_id, metadata.correlation_id);
+        assert_eq!(back.causation_id, metadata.causation_id);
+        assert_eq!(back.user_id, metadata.user_id);
+        assert_eq!(back.author_id, metadata.author_id);
+        assert_eq!(back.origin_subject_id, metadata.origin_subject_id);
+        assert_eq!(back.timestamp, metadata.timestamp);
+    }
+
+    // ── MetadataContext → EventMetadata stamping ──
+
+    #[test]
+    fn to_event_metadata_leaves_identity_fields_none() {
+        let ctx = MetadataContext::new()
+            .with_correlation_id("req-1")
+            .with_user_id("user-1");
+
+        let metadata = ctx.to_event_metadata();
+        assert_eq!(metadata.correlation_id, Some("req-1".to_string()));
+        assert_eq!(metadata.user_id, Some("user-1".to_string()));
+        assert_eq!(metadata.author_id, None);
+        assert_eq!(metadata.origin_subject_id, None);
+    }
+
+    #[test]
+    fn to_event_metadata_with_subject_stamps_author_id() {
+        let ctx = MetadataContext::new().with_correlation_id("req-1");
+        let subject = Subject::Authenticated {
+            id: SubjectId::new("user-9"),
+            attributes: HashMap::new(),
+        };
+
+        let metadata = ctx.to_event_metadata_with_subject(&subject, None);
+        assert_eq!(metadata.correlation_id, Some("req-1".to_string()));
+        assert_eq!(metadata.author_id, Some(SubjectId::new("user-9")));
+        assert_eq!(metadata.origin_subject_id, None);
+    }
+
+    #[test]
+    fn to_event_metadata_with_subject_system_and_anonymous_stamp_none() {
+        let ctx = MetadataContext::new();
+        let origin = SubjectId::new("user-7");
+
+        // System stamps no author, but the saga-threaded origin survives.
+        let system = ctx.to_event_metadata_with_subject(&Subject::System, Some(&origin));
+        assert_eq!(system.author_id, None);
+        assert_eq!(system.origin_subject_id, Some(SubjectId::new("user-7")));
+
+        let anonymous = ctx.to_event_metadata_with_subject(&Subject::Anonymous, None);
+        assert_eq!(anonymous.author_id, None);
+        assert_eq!(anonymous.origin_subject_id, None);
     }
 }
