@@ -83,6 +83,7 @@
 use std::convert::Infallible;
 use std::future::Future;
 
+use crate::InvocationContext;
 use crate::{ProjectionQueries, Version};
 
 /// Result of fetching projection data.
@@ -178,6 +179,31 @@ where
         input: Input,
         projections: &Projections,
     ) -> impl Future<Output = Result<FetchResult<Input>, Self::Error>> + Send;
+
+    /// Fetch projection data with subject context.
+    ///
+    /// Enables scoped projections (e.g. filtering rows by the subject's ID).
+    /// The default implementation discards the context and delegates to
+    /// [`fetch`](Self::fetch) — it forwards the future directly, so there is
+    /// no boxing and no behavior change for existing fetchers. Override this
+    /// when the fetch needs to scope by subject.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the projection query fails, exactly as
+    /// [`fetch`](Self::fetch) does.
+    fn fetch_with_context<'a>(
+        &'a self,
+        input: Input,
+        projections: &'a Projections,
+        ctx: &'a InvocationContext<'a>,
+    ) -> impl Future<Output = Result<FetchResult<Input>, Self::Error>> + Send + 'a
+    where
+        Input: 'a,
+    {
+        let _ = ctx;
+        self.fetch(input, projections)
+    }
 }
 
 /// No-op query fetcher for simple aggregates.

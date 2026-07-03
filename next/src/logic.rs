@@ -1,6 +1,7 @@
 //! The unified `BusinessLogic` trait for aggregates and sagas
 
 use crate::{BusinessResult, Clock, SerializationError, SerializedEvent, StreamId};
+use crate::InvocationContext;
 use serde::{Serialize, de::DeserializeOwned};
 
 /// Unified trait for all business logic—aggregates and sagas alike
@@ -361,4 +362,23 @@ pub trait BusinessLogic: Send + Sync + 'static {
     /// is used in production, it should never change. For schema evolution,
     /// create new event types (e.g., `EventCreatedV2`) rather than renaming.
     fn event_type_name(event: &Self::Event) -> &'static str;
+
+    /// Process input with subject/correlation context.
+    ///
+    /// Default implementation delegates to [`process`](Self::process) with
+    /// `ctx.clock`, discarding the subject — old impls compile unchanged and
+    /// behave identically. Override this to see the subject.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for business rule violations, exactly as
+    /// [`process`](Self::process) does.
+    #[allow(clippy::type_complexity)]
+    fn process_with_context(
+        &self,
+        input: Self::Input,
+        ctx: &InvocationContext<'_>,
+    ) -> Result<BusinessResult<Self::Event, Self::Call, Self::Response>, Self::Error> {
+        self.process(input, ctx.clock)
+    }
 }

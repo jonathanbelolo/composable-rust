@@ -509,6 +509,16 @@ pub trait HandlerEnvironment: Send + Sync {
     fn atomic_persist(&self) -> Option<&dyn DynAtomicPersist> {
         None
     }
+
+    /// Resolve the current request's subject.
+    ///
+    /// Returns `None` if this environment doesn't know about identity.
+    /// Environments backed by a subject provider override this; the
+    /// [`Handler`] falls back to [`Subject::System`] when this returns
+    /// `None`.
+    fn current_subject(&self) -> Option<Subject> {
+        None
+    }
 }
 
 /// Atomically append events and update a projection in one transaction.
