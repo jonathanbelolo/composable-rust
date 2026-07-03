@@ -87,6 +87,7 @@ mod multi_projector;
 mod projections;
 mod result;
 mod stream;
+mod subject;
 pub mod testing;
 mod version;
 
@@ -104,6 +105,7 @@ pub use multi_projector::{DynProjector, MultiProjector};
 pub use projections::{GetById, NoOpProjectionQueries, ProjectionQueries};
 pub use result::BusinessResult;
 pub use stream::StreamId;
+pub use subject::{InvocationContext, Subject, SubjectId};
 pub use version::Version;
 
 // Note: The following traits and types are defined below in this file
