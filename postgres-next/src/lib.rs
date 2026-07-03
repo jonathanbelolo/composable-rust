@@ -24,7 +24,8 @@
 #![warn(missing_docs)]
 
 use composable_rust_next::{
-    AtomicError, EventStore, EventStoreError, ProjectionError, SerializedEvent, StreamId, Version,
+    AtomicError, EventMetadata, EventStore, EventStoreError, ProjectionError, SerializedEvent,
+    StreamId, Version,
 };
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -308,6 +309,8 @@ async fn insert_events_tx(
         let version_i64 = i64::try_from(next_version.as_u64())
             .map_err(|e| EventStoreError::Connection(format!("Version overflow: {e}")))?;
 
+        let metadata_json = metadata_to_json(event.metadata.as_ref())?;
+
         let result = sqlx::query(
             r"
             INSERT INTO events (stream_id, version, event_type, event_version, event_data, metadata, created_at)
@@ -319,7 +322,7 @@ async fn insert_events_tx(
         .bind(&event.event_type)
         .bind(1i32)
         .bind(&event.payload)
-        .bind::<Option<serde_json::Value>>(None)
+        .bind(metadata_json)
         .execute(&mut *conn)
         .await;
 
@@ -332,6 +335,34 @@ async fn insert_events_tx(
     }
 
     Ok(next_version.prev())
+}
+
+/// Serialize an event's metadata to a JSON value for the `metadata` JSONB column.
+///
+/// `None` metadata binds SQL `NULL`, matching every row written before
+/// metadata persistence existed.
+fn metadata_to_json(
+    metadata: Option<&EventMetadata>,
+) -> Result<Option<serde_json::Value>, EventStoreError> {
+    metadata
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|e| EventStoreError::Serialization(format!("metadata: {e}")))
+}
+
+/// Deserialize the `metadata` JSONB column back into [`EventMetadata`].
+///
+/// Tolerant by design: `NULL` (legacy rows) and undecodable JSON both load as
+/// `None` — a malformed value is logged, never an error, so old streams stay
+/// replayable.
+fn metadata_from_json(value: Option<serde_json::Value>) -> Option<EventMetadata> {
+    value.and_then(|value| match serde_json::from_value(value) {
+        Ok(metadata) => Some(metadata),
+        Err(e) => {
+            tracing::warn!(error = %e, "Undecodable event metadata JSON; loading as None");
+            None
+        },
+    })
 }
 
 /// Stamp sequential stream versions onto freshly-appended events.
@@ -414,7 +445,7 @@ impl EventStore for PostgresEventStore {
                     SerializedEvent {
                         event_type: row.get("event_type"),
                         payload: row.get("event_data"),
-                        metadata: None, // TODO: Parse metadata if needed
+                        metadata: metadata_from_json(row.get("metadata")),
                         version: Some(version),
                     }
                 })
@@ -517,6 +548,8 @@ impl EventStore for PostgresEventStore {
                     EventStoreError::Connection(format!("Version overflow: {e}"))
                 })?;
 
+                let metadata_json = metadata_to_json(event.metadata.as_ref())?;
+
                 let result = sqlx::query(
                     r"
                     INSERT INTO events (stream_id, version, event_type, event_version, event_data, metadata, created_at)
@@ -528,7 +561,7 @@ impl EventStore for PostgresEventStore {
                 .bind(&event.event_type)
                 .bind(1i32) // Default event_version
                 .bind(&event.payload)
-                .bind::<Option<serde_json::Value>>(None) // TODO: Serialize metadata if needed
+                .bind(metadata_json)
                 .execute(&mut *tx)
                 .await;
 

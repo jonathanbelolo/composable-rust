@@ -21,7 +21,8 @@
 #![allow(clippy::needless_borrows_for_generic_args)]
 
 use composable_rust_next::{
-    AtomicError, EventStore, EventStoreError, ProjectionError, SerializedEvent, StreamId, Version,
+    AtomicError, EventMetadata, EventStore, EventStoreError, ProjectionError, SerializedEvent,
+    StreamId, SubjectId, Version,
 };
 use composable_rust_postgres_next::{PgTransactionalProjector, PostgresEventStore};
 use sqlx::PgPool;
@@ -981,8 +982,85 @@ async fn postgres_event_store_integration() {
         println!("  [PASS] many_streams");
     }
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // SECTION 12: Event Metadata Persistence (JSONB column)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    // Test 36: metadata_roundtrip - EventMetadata persists through the metadata column
+    {
+        db.reset().await;
+        let store = db.store();
+        let id = StreamId::new("stream-1");
+
+        let metadata = EventMetadata {
+            correlation_id: Some("req-1".to_string()),
+            causation_id: Some("evt-9".to_string()),
+            user_id: Some("legacy-user".to_string()),
+            author_id: Some(SubjectId::new("user-42")),
+            origin_subject_id: Some(SubjectId::new("user-7")),
+            timestamp: chrono::Utc::now(),
+        };
+        let mut e = event("WithMetadata", b"m");
+        e.metadata = Some(metadata.clone());
+
+        store.append(&id, None, vec![e]).await.unwrap();
+
+        let events = store.load(&id, None).await.unwrap();
+        assert_eq!(events.len(), 1);
+        let loaded = events[0]
+            .metadata
+            .as_ref()
+            .expect("metadata should round-trip through the JSONB column");
+        assert_eq!(loaded.correlation_id, metadata.correlation_id);
+        assert_eq!(loaded.causation_id, metadata.causation_id);
+        assert_eq!(loaded.user_id, metadata.user_id);
+        assert_eq!(loaded.author_id, metadata.author_id);
+        assert_eq!(loaded.origin_subject_id, metadata.origin_subject_id);
+        assert_eq!(loaded.timestamp, metadata.timestamp);
+        println!("  [PASS] metadata_roundtrip");
+    }
+
+    // Test 37: legacy_null_metadata - NULL metadata rows load as None
+    {
+        db.reset().await;
+        let store = db.store();
+        let id = StreamId::new("stream-1");
+
+        // The event() helper carries no metadata → binds NULL, exactly like
+        // every row written before metadata persistence existed.
+        store
+            .append(&id, None, vec![event("Legacy", b"1")])
+            .await
+            .unwrap();
+
+        // Belt and braces: a raw legacy row inserted with explicit NULL.
+        sqlx::query(
+            r"
+            INSERT INTO events (stream_id, version, event_type, event_version, event_data, metadata, created_at)
+            VALUES ($1, 2, 'RawLegacy', 1, $2, NULL, now())
+            ",
+        )
+        .bind(id.as_str())
+        .bind(b"2".as_slice())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        let events = store.load(&id, None).await.unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(
+            events[0].metadata.is_none(),
+            "NULL metadata must load as None"
+        );
+        assert!(
+            events[1].metadata.is_none(),
+            "raw legacy NULL row must load as None"
+        );
+        println!("  [PASS] legacy_null_metadata");
+    }
+
     println!("\n═══════════════════════════════════════");
-    println!("All 35 PostgresEventStore tests passed!");
+    println!("All 37 PostgresEventStore tests passed!");
     println!("═══════════════════════════════════════");
 }
 
@@ -1071,4 +1149,28 @@ async fn append_with_projection_atomicity() {
         (2, 2),
         "projection committed atomically with the events"
     );
+
+    // Metadata round-trips through the atomic path (insert_events_tx) too.
+    let metadata = EventMetadata {
+        correlation_id: Some("req-atomic".to_string()),
+        causation_id: None,
+        user_id: None,
+        author_id: Some(SubjectId::new("user-1")),
+        origin_subject_id: None,
+        timestamp: chrono::Utc::now(),
+    };
+    let mut e = event("E3", b"d");
+    e.metadata = Some(metadata.clone());
+    store
+        .append_with_projection(&id, Some(Version::new(2)), vec![e], &SideTableProjector)
+        .await
+        .unwrap();
+    let loaded = store.load(&id, None).await.unwrap();
+    let last = loaded
+        .last()
+        .and_then(|e| e.metadata.as_ref())
+        .expect("metadata should round-trip through the atomic append");
+    assert_eq!(last.correlation_id, metadata.correlation_id);
+    assert_eq!(last.author_id, metadata.author_id);
+    assert_eq!(last.timestamp, metadata.timestamp);
 }
