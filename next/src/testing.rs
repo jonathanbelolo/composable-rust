@@ -42,7 +42,7 @@
 use crate::{
     AtomicError, Clock, DynAtomicPersist, EventBus, EventBusError, EventStore, EventStoreError,
     HandlerEnvironment, MetadataContext, NoOpProjectionQueries, ProjectionError, ProjectionQueries,
-    Projector, SerializedEvent, StreamId, SubscriptionHandle, Version,
+    Projector, SerializedEvent, StreamId, Subject, SubscriptionHandle, Version,
 };
 use futures::future::BoxFuture;
 use std::collections::HashMap;
@@ -575,6 +575,7 @@ pub struct TestEnvironment<C: Clock, P: ProjectionQueries = NoOpProjectionQuerie
     broadcast_topic: String,
     projections: P,
     metadata: MetadataContext,
+    subject: Option<Subject>,
     atomic_persist: Option<Arc<dyn DynAtomicPersist>>,
 }
 
@@ -590,6 +591,7 @@ impl<C: Clock + std::fmt::Debug, P: ProjectionQueries + std::fmt::Debug> std::fm
             .field("broadcast_topic", &self.broadcast_topic)
             .field("projections", &self.projections)
             .field("metadata", &self.metadata)
+            .field("subject", &self.subject)
             .field("atomic_persist", &self.atomic_persist.is_some())
             .finish()
     }
@@ -610,6 +612,7 @@ impl<C: Clock> TestEnvironment<C, NoOpProjectionQueries> {
             broadcast_topic: "test-events".to_string(),
             projections: NoOpProjectionQueries,
             metadata: MetadataContext::new(),
+            subject: None,
             atomic_persist: None,
         }
     }
@@ -641,6 +644,7 @@ impl<C: Clock, P: ProjectionQueries> TestEnvironment<C, P> {
             broadcast_topic: "test-events".to_string(),
             projections,
             metadata: MetadataContext::new(),
+            subject: None,
             atomic_persist: None,
         }
     }
@@ -671,6 +675,18 @@ impl<C: Clock, P: ProjectionQueries> TestEnvironment<C, P> {
     #[must_use]
     pub fn with_metadata(mut self, metadata: MetadataContext) -> Self {
         self.metadata = metadata;
+        self
+    }
+
+    /// Create with a fixture subject (returned from `current_subject`).
+    ///
+    /// Commands handled with this environment stamp the subject's ID as
+    /// `author_id` on every persisted event. Without a fixture,
+    /// `current_subject` returns `None` and the Handler falls back to
+    /// [`Subject::System`] (which stamps `author_id: None`).
+    #[must_use]
+    pub fn with_subject(mut self, subject: Subject) -> Self {
+        self.subject = Some(subject);
         self
     }
 
@@ -737,6 +753,10 @@ impl<C: Clock + Send + Sync, P: ProjectionQueries> HandlerEnvironment for TestEn
 
     fn atomic_persist(&self) -> Option<&dyn DynAtomicPersist> {
         self.atomic_persist.as_deref()
+    }
+
+    fn current_subject(&self) -> Option<Subject> {
+        self.subject.clone()
     }
 }
 
@@ -1285,5 +1305,106 @@ mod tests {
             2,
             "Started + Finished persisted via the legacy feedback_input path"
         );
+    }
+
+    // ── Subject stamping: author_id on persisted event metadata ──
+    //
+    // A minimal aggregate (Infallible calls) to exercise the Handler's
+    // context path: current_subject → InvocationContext → serialize_events →
+    // to_event_metadata_with_subject.
+
+    use crate::{NoOpCallExecutor, SubjectId};
+    use std::convert::Infallible;
+
+    #[derive(Clone)]
+    struct CreateCmd {
+        id: u64,
+    }
+
+    struct AggregateLogic;
+
+    impl BusinessLogic for AggregateLogic {
+        type State = SagaState;
+        type Input = CreateCmd;
+        type Event = SagaEv;
+        type Error = SagaErr;
+        type Call = Infallible;
+        type CallResult = Infallible;
+        type Response = ();
+
+        fn stream_id(input: &CreateCmd) -> StreamId {
+            StreamId::new(format!("agg-{}", input.id))
+        }
+
+        fn process(
+            &self,
+            input: CreateCmd,
+            _clock: &dyn Clock,
+        ) -> Result<BusinessResult<SagaEv, Infallible, ()>, SagaErr> {
+            Ok(BusinessResult::Done(vec![SagaEv::Started(input.id)]))
+        }
+
+        fn apply(&self, state: &mut SagaState, event: &SagaEv) {
+            if matches!(event, SagaEv::Started(_)) {
+                state.started = true;
+            }
+        }
+
+        fn event_type_name(event: &SagaEv) -> &'static str {
+            match event {
+                SagaEv::Started(_) => "Started",
+                SagaEv::Finished(_) => "Finished",
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn handler_stamps_author_id_from_fixture_subject() {
+        let subject = Subject::Authenticated {
+            id: SubjectId::new("user-9"),
+            attributes: HashMap::new(),
+        };
+        let env = TestEnvironment::new(FixedClock::new(Utc::now())).with_subject(subject);
+        let env_handle = env.clone();
+
+        let handler = Handler::new(AggregateLogic, NoOpCallExecutor, NoOpQueryFetcher, env);
+        handler.handle(CreateCmd { id: 1 }).await.unwrap();
+
+        let stored = env_handle.event_store().events_for_stream("agg-1");
+        assert_eq!(stored.len(), 1);
+        let metadata = stored[0]
+            .metadata
+            .as_ref()
+            .expect("handler must stamp metadata on persisted events");
+        assert_eq!(
+            metadata.author_id,
+            Some(SubjectId::new("user-9")),
+            "the fixture subject's id must land as author_id"
+        );
+        assert_eq!(metadata.origin_subject_id, None);
+    }
+
+    #[tokio::test]
+    async fn handler_defaults_to_system_subject_stamping_no_author_id() {
+        // No fixture → current_subject() = None → the Handler resolves
+        // Subject::System, which stamps author_id: None (a SubjectId only
+        // exists for Authenticated).
+        let env = TestEnvironment::new(FixedClock::new(Utc::now()));
+        let env_handle = env.clone();
+
+        let handler = Handler::new(AggregateLogic, NoOpCallExecutor, NoOpQueryFetcher, env);
+        handler.handle(CreateCmd { id: 2 }).await.unwrap();
+
+        let stored = env_handle.event_store().events_for_stream("agg-2");
+        assert_eq!(stored.len(), 1);
+        let metadata = stored[0]
+            .metadata
+            .as_ref()
+            .expect("handler must stamp metadata even for the System subject");
+        assert_eq!(
+            metadata.author_id, None,
+            "Subject::System must stamp author_id: None"
+        );
+        assert_eq!(metadata.origin_subject_id, None);
     }
 }

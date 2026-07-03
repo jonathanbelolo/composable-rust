@@ -34,8 +34,8 @@
 
 use crate::{
     AtomicError, BusinessLogic, BusinessResult, CallExecutor, EventBus, EventStore,
-    EventStoreError, FetchResult, HandlerEnvironment, HandlerError, Projector, QueryFetcher,
-    SerializationError, SerializedEvent, StreamId, Version,
+    EventStoreError, FetchResult, HandlerEnvironment, HandlerError, InvocationContext, Projector,
+    QueryFetcher, SerializationError, SerializedEvent, StreamId, Subject, Version,
 };
 
 /// Default maximum retry attempts for version conflicts
@@ -287,20 +287,33 @@ where
                     max_iterations: self.max_saga_iterations,
                 });
             }
+            // Resolve the subject per attempt (a session may expire mid-retry)
+            // and build the per-invocation context. Environments that don't
+            // know about identity return None → Subject::System.
+            let subject = self.env.current_subject().unwrap_or(Subject::System);
+            let metadata_context = self.env.metadata();
+            let ctx = InvocationContext {
+                clock: self.env.clock(),
+                subject: &subject,
+                correlation_id: metadata_context.correlation_id.as_deref(),
+                causation_id: metadata_context.causation_id.as_deref(),
+                origin_subject_id: None, // saga feedback threading is a later work package
+            };
+
             // Step 1: Fetch from projections (includes expected version)
             let FetchResult {
                 input: prepared_input,
                 expected_version,
             } = self
                 .query_fetcher
-                .fetch(current_input.clone(), self.env.projections())
+                .fetch_with_context(current_input.clone(), self.env.projections(), &ctx)
                 .await
                 .map_err(|e| HandlerError::QueryFetch(e.to_string()))?;
 
             // Step 2: Process business logic (pure, no I/O)
             let result = self
                 .business
-                .process(prepared_input.clone(), self.env.clock())
+                .process_with_context(prepared_input.clone(), &ctx)
                 .map_err(HandlerError::Business)?;
 
             match result {
@@ -318,7 +331,7 @@ where
                     }
 
                     let stream_id = T::stream_id(&prepared_input);
-                    let serialized = self.serialize_events(&events)?;
+                    let serialized = self.serialize_events(&events, &ctx)?;
 
                     // Step 3+4: Persist and project (atomically if the environment
                     // provides it, otherwise append-then-project).
@@ -349,7 +362,7 @@ where
                 BusinessResult::Continue { events, calls } => {
                     if !events.is_empty() {
                         let stream_id = T::stream_id(&prepared_input);
-                        let serialized = self.serialize_events(&events)?;
+                        let serialized = self.serialize_events(&events, &ctx)?;
 
                         // Persist and project (atomically if available) with retry
                         match self
@@ -385,12 +398,19 @@ where
         }
     }
 
-    /// Serialize events with metadata from environment
+    /// Serialize events with metadata from the environment, stamped with the
+    /// invocation's subject (`author_id` from `ctx.subject`,
+    /// `origin_subject_id` from `ctx.origin_subject_id`)
     fn serialize_events(
         &self,
         events: &[T::Event],
+        ctx: &InvocationContext<'_>,
     ) -> Result<Vec<SerializedEvent>, HandlerError<T::Error>> {
-        let metadata = Some(self.env.metadata().to_event_metadata());
+        let metadata = Some(
+            self.env
+                .metadata()
+                .to_event_metadata_with_subject(ctx.subject, ctx.origin_subject_id),
+        );
 
         events
             .iter()

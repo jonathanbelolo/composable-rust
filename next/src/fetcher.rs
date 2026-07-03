@@ -192,15 +192,12 @@ where
     ///
     /// Returns an error if the projection query fails, exactly as
     /// [`fetch`](Self::fetch) does.
-    fn fetch_with_context<'a>(
-        &'a self,
+    fn fetch_with_context(
+        &self,
         input: Input,
-        projections: &'a Projections,
-        ctx: &'a InvocationContext<'a>,
-    ) -> impl Future<Output = Result<FetchResult<Input>, Self::Error>> + Send + 'a
-    where
-        Input: 'a,
-    {
+        projections: &Projections,
+        ctx: &InvocationContext<'_>,
+    ) -> impl Future<Output = Result<FetchResult<Input>, Self::Error>> + Send {
         let _ = ctx;
         self.fetch(input, projections)
     }
