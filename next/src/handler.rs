@@ -34,8 +34,9 @@
 
 use crate::{
     AtomicError, BusinessLogic, BusinessResult, CallExecutor, EventBus, EventStore,
-    EventStoreError, FetchResult, HandlerEnvironment, HandlerError, InvocationContext, Projector,
-    QueryFetcher, SerializationError, SerializedEvent, StreamId, Subject, Version,
+    EventStoreError, FetchResult, HandlerEnvironment, HandlerError, InvocationContext,
+    MetadataContext, Projector, QueryFetcher, SerializationError, SerializedEvent, StreamId,
+    Subject, Version,
 };
 
 /// Default maximum retry attempts for version conflicts
@@ -289,7 +290,10 @@ where
             }
             // Resolve the subject per attempt (a session may expire mid-retry)
             // and build the per-invocation context. Environments that don't
-            // know about identity return None → Subject::System.
+            // know about identity return None → Subject::System. The metadata
+            // context is captured ONCE per attempt and reused for event
+            // stamping, so stamped correlation/causation can never diverge
+            // from what fetch/process saw.
             let subject = self.env.current_subject().unwrap_or(Subject::System);
             let metadata_context = self.env.metadata();
             let ctx = InvocationContext {
@@ -331,7 +335,7 @@ where
                     }
 
                     let stream_id = T::stream_id(&prepared_input);
-                    let serialized = self.serialize_events(&events, &ctx)?;
+                    let serialized = Self::serialize_events(&events, metadata_context, &ctx)?;
 
                     // Step 3+4: Persist and project (atomically if the environment
                     // provides it, otherwise append-then-project).
@@ -362,7 +366,8 @@ where
                 BusinessResult::Continue { events, calls } => {
                     if !events.is_empty() {
                         let stream_id = T::stream_id(&prepared_input);
-                        let serialized = self.serialize_events(&events, &ctx)?;
+                        let serialized =
+                            Self::serialize_events(&events, metadata_context, &ctx)?;
 
                         // Persist and project (atomically if available) with retry
                         match self
@@ -398,18 +403,18 @@ where
         }
     }
 
-    /// Serialize events with metadata from the environment, stamped with the
-    /// invocation's subject (`author_id` from `ctx.subject`,
+    /// Serialize events with the per-attempt metadata snapshot (the same one
+    /// the [`InvocationContext`] was built from, so stamped
+    /// correlation/causation can never diverge from what fetch/process saw),
+    /// stamped with the invocation's subject (`author_id` from `ctx.subject`,
     /// `origin_subject_id` from `ctx.origin_subject_id`)
     fn serialize_events(
-        &self,
         events: &[T::Event],
+        metadata_context: &MetadataContext,
         ctx: &InvocationContext<'_>,
     ) -> Result<Vec<SerializedEvent>, HandlerError<T::Error>> {
         let metadata = Some(
-            self.env
-                .metadata()
-                .to_event_metadata_with_subject(ctx.subject, ctx.origin_subject_id),
+            metadata_context.to_event_metadata_with_subject(ctx.subject, ctx.origin_subject_id),
         );
 
         events

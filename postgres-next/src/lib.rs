@@ -353,13 +353,23 @@ fn metadata_to_json(
 /// Deserialize the `metadata` JSONB column back into [`EventMetadata`].
 ///
 /// Tolerant by design: `NULL` (legacy rows) and undecodable JSON both load as
-/// `None` — a malformed value is logged, never an error, so old streams stay
+/// `None` — a malformed value is logged (with the row's stream and version so
+/// the offending row is findable), never an error, so old streams stay
 /// replayable.
-fn metadata_from_json(value: Option<serde_json::Value>) -> Option<EventMetadata> {
+fn metadata_from_json(
+    stream_id: &str,
+    version: Version,
+    value: Option<serde_json::Value>,
+) -> Option<EventMetadata> {
     value.and_then(|value| match serde_json::from_value(value) {
         Ok(metadata) => Some(metadata),
         Err(e) => {
-            tracing::warn!(error = %e, "Undecodable event metadata JSON; loading as None");
+            tracing::warn!(
+                stream_id = %stream_id,
+                version = version.as_u64(),
+                error = %e,
+                "Undecodable event metadata JSON; loading as None"
+            );
             None
         },
     })
@@ -445,7 +455,7 @@ impl EventStore for PostgresEventStore {
                     SerializedEvent {
                         event_type: row.get("event_type"),
                         payload: row.get("event_data"),
-                        metadata: metadata_from_json(row.get("metadata")),
+                        metadata: metadata_from_json(&stream_id_str, version, row.get("metadata")),
                         version: Some(version),
                     }
                 })
