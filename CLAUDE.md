@@ -65,6 +65,8 @@ This repository includes **7 expert skills** that provide comprehensive guidance
 
 **Composable Rust** is a functional architecture framework for building event-driven backend systems in Rust, inspired by Swift's Composable Architecture (TCA). The framework combines Rust's type safety with functional programming patterns, CQRS, and Event Sourcing to create battle-tested, industrial-grade business process management systems.
 
+> **⚠️ Direction**: The original `core`/`runtime` framework (and the crates built on it) is **deprecated — maintenance-only**. All new development targets `composable-rust-next` (+ `composable-rust-postgres-next`). Retirement of the legacy stack is planned but not yet scheduled; do not invest new work there. Start with `docs/durable-sagas.md` and the `next/` crate docs.
+
 **Current Status**: Phase 4 complete. Phase 5 (Developer Experience) is next.
 
 **Phase 4 Achievement**: Production-ready framework with full observability (tracing, metrics, OpenTelemetry), advanced error handling (retries, circuit breakers, DLQ), performance optimization (SmallVec, batch operations), and database migrations. 156 library tests + 15 integration tests passing. See `plans/phase-4/TODO.md` for comprehensive completion assessment.
@@ -136,7 +138,7 @@ composable-rust/
 
 ### Library Crates
 
-**Core Framework**:
+**Legacy Framework (deprecated, maintenance-only)**:
 - `composable-rust-core` - Core traits and types (Reducer, Effect, Environment)
 - `composable-rust-runtime` - Store implementation and effect execution
 - `composable-rust-testing` - Test utilities (TestStore, InMemoryEventStore, mocks)
