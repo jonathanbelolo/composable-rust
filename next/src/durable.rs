@@ -35,9 +35,10 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{
-    BusinessLogic, BusinessResult, CallExecutor, CancellationToken, EventMetadata, EventStoreError,
-    FetchResult, Handler, HandlerEnvironment, HandlerError, InvocationContext, QueryFetcher,
-    SerializationError, SerializedEvent, StreamId, Subject, SubjectId, UnitCallExecutor, Version,
+    BusinessLogic, BusinessResult, CallExecutor, CancellationToken, EventMetadata, EventStore,
+    EventStoreError, FetchResult, Handler, HandlerEnvironment, HandlerError, InvocationContext,
+    QueryFetcher, SerializationError, SerializedEvent, StreamId, Subject, SubjectId,
+    UnitCallExecutor, Version,
 };
 
 /// Event type of the framework marker persisted when a saga call is
@@ -442,6 +443,136 @@ where
         };
 
         self.run_completion_loop(&stream_id, initial_calls, run, &cancel)
+            .await
+    }
+
+    /// Resume a durable saga instance from its journal after a crash,
+    /// cancellation, or process restart.
+    ///
+    /// Loads the stream, computes the outstanding calls
+    /// (`dispatched \ completed` from the `$saga.*` markers), re-dispatches
+    /// **exactly** those calls, and re-enters the normal completion loop. No
+    /// state is rebuilt and no initial `process()` runs — the first feedback
+    /// cycle's `QueryFetcher` fetch supplies the saga's state from its
+    /// projection, exactly as in a live run, and feedback inputs come from
+    /// [`completion_input`](DurableBusinessLogic::completion_input).
+    ///
+    /// # Parked ≠ orphaned
+    ///
+    /// A stream with **zero** outstanding calls returns
+    /// [`DurableOutcome::NoOutstandingCalls`] immediately — nothing is
+    /// processed, appended, or executed. A saga parked at a human-review
+    /// gate (it returned `Done` and awaits a user command), an already
+    /// completed saga, and a nonexistent stream are deliberately
+    /// indistinguishable here: none of them are a recovery driver's business.
+    /// This makes `resume` idempotent and safe to call from stale sweep
+    /// lists.
+    ///
+    /// # At-least-once
+    ///
+    /// A call whose completion was never journaled re-executes. Two drivers
+    /// resuming the same stream concurrently both re-dispatch the
+    /// outstanding set (persists serialize via optimistic concurrency;
+    /// duplicate completion markers are tolerated by set semantics) — safe
+    /// but wasteful; use an advisory lock to avoid it (below).
+    ///
+    /// If `resume` for one instance **repeatedly** fails with a business
+    /// error, the saga's `process` is returning `Err` for a call outcome —
+    /// that must be a `CallResult` variant instead (see
+    /// [`handle_durable`](Handler::handle_durable)). Alert on repeated
+    /// resume failures rather than retrying forever.
+    ///
+    /// # Recovery driver (startup sweep)
+    ///
+    /// The framework deliberately ships no daemon; a sweep is ~15 lines.
+    /// Enumerate instances with outstanding calls from a `SagaRegistry`
+    /// implementation, filtered by YOUR logic's tag — never feed another
+    /// saga type's streams to this handler:
+    ///
+    /// ```rust,ignore
+    /// let registry = PostgresSagaRegistry::new(pool.clone());
+    /// for rec in registry
+    ///     .instances_with_outstanding_calls(MySagaLogic::LOGIC_TAG)
+    ///     .await?
+    /// {
+    ///     let handler = Arc::clone(&handler);
+    ///     tokio::spawn(async move {
+    ///         match handler.resume(&rec.stream_id, CancellationToken::new()).await {
+    ///             Ok(DurableOutcome::NoOutstandingCalls) => {} // parked or done: leave it alone
+    ///             Ok(outcome) => tracing::info!(?outcome, stream = %rec.stream_id, "saga resumed"),
+    ///             Err(e) => tracing::error!(%e, stream = %rec.stream_id, "resume failed"),
+    ///         }
+    ///     });
+    /// }
+    /// ```
+    ///
+    /// Re-run the sweep on an interval if you like — `resume` is idempotent,
+    /// and an instance a live loop is already driving will conflict-and-lose
+    /// harmlessly.
+    ///
+    /// **Multi-node deployments**: skip instances another node owns with a
+    /// Postgres advisory lock — but advisory locks are **session-scoped**
+    /// and sqlx pools reuse sessions. Take the lock on a connection held for
+    /// the entire resume and release it deliberately: either a dedicated
+    /// non-pooled `PgConnection::connect` (dropping it closes the session
+    /// and releases the lock), or a held `PoolConnection` with an explicit
+    /// `SELECT pg_advisory_unlock(...)` before returning it. Never run
+    /// `pg_try_advisory_lock` bare on the pool — the lock leaks into the
+    /// pooled session and silently blocks every future sweep of that stream.
+    ///
+    /// # Errors
+    ///
+    /// - [`HandlerError::Load`]: the stream could not be read.
+    /// - [`HandlerError::Serialization`]: a journal marker or call payload
+    ///   failed to decode. These are framework-authored bytes — most likely
+    ///   the wrong logic type's handler was pointed at this stream (check
+    ///   the `LOGIC_TAG` filter).
+    /// - Everything [`handle_durable`](Handler::handle_durable) can return
+    ///   once the loop is running.
+    pub async fn resume(
+        &self,
+        stream_id: &StreamId,
+        cancel: CancellationToken,
+    ) -> Result<DurableOutcome<T::Response>, HandlerError<T::Error>> {
+        let events = self
+            .env
+            .event_store()
+            .load(stream_id, None)
+            .await
+            .map_err(HandlerError::Load)?;
+
+        let journal = scan_journal(&events).map_err(HandlerError::Serialization)?;
+
+        if journal.outstanding.is_empty() {
+            return Ok(DurableOutcome::NoOutstandingCalls);
+        }
+
+        let mut initial_calls = Vec::with_capacity(journal.outstanding.len());
+        for (call_id, payload) in journal.outstanding {
+            let call: T::Call = bincode::deserialize(&payload).map_err(|e| {
+                HandlerError::Serialization(SerializationError::Decode(format!(
+                    "{CALL_DISPATCHED_EVENT_TYPE} {call_id}: call payload: {e}"
+                )))
+            })?;
+            initial_calls.push((call_id, call));
+        }
+
+        let run = RunState {
+            outstanding: BTreeSet::new(),
+            // Lifetime guard continuity: count every call this instance has
+            // ever dispatched (re-dispatching outstanding ones is not new).
+            dispatched_total: journal.dispatched_count,
+            domain_events_total: 0,
+            // The stream's true version; feedback cycles must not trust a
+            // possibly-marker-stale fetcher (see RunState::carried_version).
+            carried_version: events.last().and_then(|e| e.version),
+            // The initiating subject is not recoverable here; resumed cycles
+            // run without an origin. (Reading it back from the stream's
+            // first event metadata is deliberately deferred.)
+            origin: None,
+        };
+
+        self.run_completion_loop(stream_id, initial_calls, run, &cancel)
             .await
     }
 
