@@ -112,10 +112,14 @@ composable-rust/
 ├── projections/       # PostgreSQL projection store for CQRS read models
 ├── web/               # HTTP and WebSocket framework (Axum)
 ├── auth/              # Authentication framework (magic links, OAuth, passkeys)
+├── pg-gateway/        # PostgreSQL-backed API gateway (auth handlers, sessions)
+├── next/              # Next-gen BusinessLogic/Handler framework + durable sagas
+├── postgres-next/     # PostgreSQL event store + saga call journal for next
 ├── anthropic/         # Claude API client for LLM integration
 ├── agent-patterns/    # Production agent patterns (resilience, observability, security)
 ├── tools/             # Tool execution framework for agents
 ├── macros/            # Proc macros for derive(State), derive(Action)
+├── migrations/        # Shared sqlx migrations (embedded by postgres AND postgres-next)
 ├── examples/          # Reference implementations (15+ examples)
 ├── docs/              # Documentation (21 comprehensive guides)
 ├── specs/             # Architecture specification (2,800+ lines)
@@ -132,25 +136,41 @@ composable-rust/
 
 ### Library Crates
 
-**Core Framework** (8 crates):
-- `composable-rust-core` - Core traits and types (Reducer, Effect, Environment) ✅ 0 clippy errors
-- `composable-rust-runtime` - Store implementation and effect execution ✅ 0 clippy errors
-- `composable-rust-testing` - Test utilities (TestStore, InMemoryEventStore, mocks) 🔧 7 clippy errors
-- `composable-rust-postgres` - PostgreSQL event store implementation ✅ 0 clippy errors
-- `composable-rust-redpanda` - Redpanda/Kafka event bus implementation ✅ 0 clippy errors
-- `composable-rust-projections` - PostgreSQL projection store for CQRS read models ✅ 0 clippy errors
-- `composable-rust-web` - HTTP API and WebSocket framework (Axum) 🔧 5 clippy errors
-- `composable-rust-auth` - Authentication (magic links, OAuth 2.0, passkeys, WebAuthn) 🔧 156 clippy errors
+**Core Framework**:
+- `composable-rust-core` - Core traits and types (Reducer, Effect, Environment)
+- `composable-rust-runtime` - Store implementation and effect execution
+- `composable-rust-testing` - Test utilities (TestStore, InMemoryEventStore, mocks)
+- `composable-rust-postgres` - PostgreSQL event store implementation
+- `composable-rust-redpanda` - Redpanda/Kafka event bus implementation
+- `composable-rust-projections` - PostgreSQL projection store for CQRS read models
+- `composable-rust-web` - HTTP API and WebSocket framework (Axum)
+- `composable-rust-auth` - Authentication (magic links, OAuth 2.0, passkeys, WebAuthn)
+- `composable-rust-pg-gateway` - PostgreSQL-backed API gateway (auth handlers, sessions)
 
-**AI Agent Framework** (3 crates):
-- `composable-rust-anthropic` - Claude API client for LLM integration ✅ 0 clippy errors
-- `composable-rust-agent-patterns` - Production patterns (resilience, observability, security) ✅ 0 clippy errors
-- `composable-rust-tools` - Tool execution framework for agents 🔧 55 clippy errors
+**Next-Generation Framework** (`BusinessLogic`/`Handler` architecture):
+- `composable-rust-next` - Unified aggregate/saga framework: Handler, CQRS QueryFetcher,
+  durable saga mode (per-call journal, `handle_durable`/`resume`), SagaRegistry
+- `composable-rust-postgres-next` - PostgreSQL event store + saga call journal,
+  SagaJournalProjector, PostgresSagaRegistry, PostgresAtomicPersist
 
-**Developer Experience** (1 crate):
-- `composable-rust-macros` - Proc macros (#[derive(State)], #[derive(Action)]) ✅ 0 clippy errors
+**AI Agent Framework**:
+- `composable-rust-anthropic` - Claude API client for LLM integration
+- `composable-rust-agent-patterns` - Production patterns (resilience, observability, security)
+- `composable-rust-tools` - Tool execution framework for agents
 
-**Clippy Status**: 8/12 crates clean (67%), 223 total errors remaining across 4 crates
+**Developer Experience**:
+- `composable-rust-macros` - Proc macros (#[derive(State)], #[derive(Action)])
+
+**Quality Status**: the whole workspace is clean under the pinned toolchain —
+`cargo clippy --all-targets --all-features -- -D warnings`, `cargo fmt --all --check`,
+and `RUSTDOCFLAGS="-D warnings" cargo doc` all pass. Keep it that way: `./scripts/check.sh`
+before every commit.
+
+**Toolchain policy**: pinned via `rust-toolchain.toml` (dev and CI install the same
+version). Bumping the toolchain is a deliberate one-commit event: bump the pin,
+re-run fmt/clippy/docs, and fix any drift in the same change. The workspace-wide
+fmt re-baseline commits are listed in `.git-blame-ignore-revs`
+(one-time setup: `git config blame.ignoreRevsFile .git-blame-ignore-revs`).
 
 ### Example Applications
 
