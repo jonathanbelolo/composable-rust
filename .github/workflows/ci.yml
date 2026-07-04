@@ -17,6 +17,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install system dependencies (librdkafka build)
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev libssl-dev libsasl2-dev zlib1g-dev
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
@@ -49,6 +52,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install system dependencies (librdkafka build)
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev libssl-dev libsasl2-dev zlib1g-dev
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
@@ -80,6 +86,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install system dependencies (librdkafka build)
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev libssl-dev libsasl2-dev zlib1g-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
@@ -128,6 +137,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install system dependencies (librdkafka build)
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev libssl-dev libsasl2-dev zlib1g-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
