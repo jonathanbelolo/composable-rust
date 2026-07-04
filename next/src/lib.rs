@@ -76,7 +76,9 @@
 
 #![doc = include_str!("../README.md")]
 
+mod cancel;
 mod clock;
+mod durable;
 mod error;
 mod executor;
 mod fetcher;
@@ -92,7 +94,12 @@ pub mod testing;
 mod version;
 
 // Re-export core types from modules
+pub use cancel::CancellationToken;
 pub use clock::{Clock, FixedClock, SystemClock};
+pub use durable::{
+    CALL_COMPLETED_EVENT_TYPE, CALL_DISPATCHED_EVENT_TYPE, CallCompleted, CallDispatched, CallId,
+    JournalState, is_framework_event_type, scan_journal,
+};
 pub use error::{AtomicError, HandlerError, ProjectionError, SerializationError};
 pub use executor::{CallExecutor, NoOpCallExecutor};
 pub use fetcher::{FetchResult, NoOpQueryFetcher, QueryFetcher};
