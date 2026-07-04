@@ -169,9 +169,11 @@ and `RUSTDOCFLAGS="-D warnings" cargo doc` all pass. Keep it that way: `./script
 before every commit.
 
 **Toolchain policy**: pinned via `rust-toolchain.toml` (dev and CI install the same
-version). Bumping the toolchain is a deliberate one-commit event: bump the pin,
-re-run fmt/clippy/docs, and fix any drift in the same change. The workspace-wide
-fmt re-baseline commits are listed in `.git-blame-ignore-revs`
+version), and `Cargo.lock` is **committed** so CI resolves the exact dependency set
+you tested (and the MSRV job is meaningful — a fresh lock would float to deps with
+newer MSRVs). Bumping the toolchain or deps is a deliberate one-commit event: bump,
+re-run fmt/clippy/docs/MSRV, and fix any drift in the same change. The
+workspace-wide fmt re-baseline commits are listed in `.git-blame-ignore-revs`
 (one-time setup: `git config blame.ignoreRevsFile .git-blame-ignore-revs`).
 
 ### Example Applications
