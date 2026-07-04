@@ -60,7 +60,7 @@
 // Re-export commonly used types
 pub use chrono::{DateTime, Utc};
 pub use serde::{Deserialize, Serialize};
-pub use smallvec::{smallvec, SmallVec};
+pub use smallvec::{SmallVec, smallvec};
 
 // Re-export effect types
 pub use effect::ResponseChannel;
@@ -213,8 +213,8 @@ pub mod effect {
     use std::pin::Pin;
     use std::time::Duration;
 
-    use futures::stream::Stream;
     use futures::StreamExt;
+    use futures::stream::Stream;
 
     use crate::event::SerializedEvent;
     use crate::event_bus::{EventBus, EventBusError};
@@ -672,12 +672,15 @@ pub mod effect {
         /// `append_events!` macro, which guarantees the broadcast happens AFTER
         /// successful persistence.
         BroadcastOnly(Box<Action>),
-
         // Additional effect variants will be added in future phases:
         // - Http { request, on_success, on_error }
         // - Cancellable { id, effect }
         // - DispatchCommand(Command) - for saga coordination
     }
+
+    /// Inner slot of a [`ResponseChannel`]: a shared, consume-once oneshot sender.
+    pub type ResponseSlot =
+        Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<Result<(), String>>>>>;
 
     /// Wrapper for oneshot response channels used in projection completion tracking.
     ///
@@ -711,10 +714,7 @@ pub mod effect {
     /// This is because response channels are ephemeral communication mechanisms,
     /// not data that should affect equality comparison of actions.
     #[derive(Debug, Clone)]
-    pub struct ResponseChannel(
-        #[allow(clippy::type_complexity)] // Necessary for Arc<Mutex<Option<Sender>>> pattern
-        pub Option<Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<Result<(), String>>>>>>,
-    );
+    pub struct ResponseChannel(pub Option<ResponseSlot>);
 
     impl PartialEq for ResponseChannel {
         fn eq(&self, _other: &Self) -> bool {
@@ -753,10 +753,7 @@ pub mod effect {
         /// - The mutex lock failed
         /// - The receiver was dropped
         #[allow(clippy::result_unit_err)] // Unit error is appropriate here - caller doesn't need details
-        pub fn send(
-            &self,
-            result: Result<(), String>,
-        ) -> Result<(), ()> {
+        pub fn send(&self, result: Result<(), String>) -> Result<(), ()> {
             if let Some(arc) = &self.0 {
                 if let Ok(mut guard) = arc.lock() {
                     if let Some(sender) = guard.take() {
@@ -1432,23 +1429,22 @@ mod tests {
 
     #[test]
     fn test_smallvec_inline_storage() {
-        use crate::{smallvec, SmallVec};
+        use crate::{SmallVec, smallvec};
 
         // Test that ≤4 effects stay on stack (no heap allocation)
-        let effects: SmallVec<[Effect<TestAction>; 4]> = smallvec![
-            Effect::None,
-            Effect::None,
-            Effect::None,
-            Effect::None,
-        ];
+        let effects: SmallVec<[Effect<TestAction>; 4]> =
+            smallvec![Effect::None, Effect::None, Effect::None, Effect::None,];
 
         assert_eq!(effects.len(), 4);
-        assert!(!effects.spilled(), "Should NOT spill to heap with 4 effects");
+        assert!(
+            !effects.spilled(),
+            "Should NOT spill to heap with 4 effects"
+        );
     }
 
     #[test]
     fn test_smallvec_heap_spillover() {
-        use crate::{smallvec, SmallVec};
+        use crate::{SmallVec, smallvec};
 
         // Test that >4 effects correctly spill to heap
         let effects: SmallVec<[Effect<TestAction>; 4]> = smallvec![
@@ -1464,16 +1460,13 @@ mod tests {
 
         // Verify all effects are accessible
         for (i, effect) in effects.iter().enumerate() {
-            assert!(
-                matches!(effect, Effect::None),
-                "Effect {i} should be None"
-            );
+            assert!(matches!(effect, Effect::None), "Effect {i} should be None");
         }
     }
 
     #[test]
     fn test_smallvec_many_effects() {
-        use crate::{smallvec, SmallVec};
+        use crate::{SmallVec, smallvec};
 
         // Test with significantly more effects (10)
         let effects: SmallVec<[Effect<TestAction>; 4]> = smallvec![
@@ -1501,9 +1494,7 @@ mod tests {
         use crate::SmallVec;
 
         // Test that collect works correctly (common pattern in reducers)
-        let effects: SmallVec<[Effect<TestAction>; 4]> = (0..6)
-            .map(|_| Effect::None)
-            .collect();
+        let effects: SmallVec<[Effect<TestAction>; 4]> = (0..6).map(|_| Effect::None).collect();
 
         assert_eq!(effects.len(), 6);
         assert!(effects.spilled(), "Collected 6 effects should spill");
@@ -1577,7 +1568,7 @@ mod tests {
     #[tokio::test]
     async fn test_effect_stream_async() {
         use futures::stream;
-        use tokio::time::{sleep, Duration as TokioDuration};
+        use tokio::time::{Duration as TokioDuration, sleep};
 
         // Create async stream with delays
         let effect: Effect<TestAction> =
