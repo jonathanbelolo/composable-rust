@@ -429,13 +429,19 @@ where
     }
 
     /// Build the per-cycle [`EventMetadata`] snapshot from the invocation's
-    /// metadata context and subject. Extracted so the durable path can stamp
-    /// domain events and journal markers with the **identical** snapshot.
+    /// metadata context and subject, timestamped by the invocation's
+    /// **injected clock** (deterministic under `FixedClock`). Extracted so
+    /// the durable path can stamp domain events and journal markers with the
+    /// **identical** snapshot.
     pub(crate) fn stamped_metadata(
         metadata_context: &MetadataContext,
         ctx: &InvocationContext<'_>,
     ) -> crate::EventMetadata {
-        metadata_context.to_event_metadata_with_subject(ctx.subject, ctx.origin_subject_id)
+        metadata_context.to_event_metadata_with_subject_at(
+            ctx.subject,
+            ctx.origin_subject_id,
+            ctx.clock.now(),
+        )
     }
 
     /// Serialize events with a pre-computed metadata snapshot.

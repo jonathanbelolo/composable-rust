@@ -393,31 +393,62 @@ impl MetadataContext {
         self
     }
 
-    /// Create [`EventMetadata`] with the current timestamp
+    /// Create [`EventMetadata`] with the current wall-clock timestamp.
+    ///
+    /// Prefer [`to_event_metadata_at`](Self::to_event_metadata_at) with a
+    /// timestamp from the injected [`Clock`] where one is available.
     #[must_use]
     pub fn to_event_metadata(&self) -> EventMetadata {
+        self.to_event_metadata_at(chrono::Utc::now())
+    }
+
+    /// Create [`EventMetadata`] stamped with the given timestamp.
+    ///
+    /// The timestamp is truncated to **microsecond precision** (see
+    /// [`EventMetadata::timestamp`]).
+    #[must_use]
+    pub fn to_event_metadata_at(&self, timestamp: chrono::DateTime<chrono::Utc>) -> EventMetadata {
         EventMetadata {
             correlation_id: self.correlation_id.clone(),
             causation_id: self.causation_id.clone(),
             user_id: self.user_id.clone(),
             author_id: None,
             origin_subject_id: None,
-            timestamp: chrono::Utc::now(),
+            timestamp: truncate_to_micros(timestamp),
         }
     }
 
-    /// Create [`EventMetadata`] with the current timestamp, stamping identity
+    /// Create [`EventMetadata`] with the current wall-clock timestamp,
+    /// stamping identity from the given subject.
+    ///
+    /// Prefer
+    /// [`to_event_metadata_with_subject_at`](Self::to_event_metadata_with_subject_at)
+    /// with a timestamp from the injected [`Clock`] where one is available.
+    #[must_use]
+    pub fn to_event_metadata_with_subject(
+        &self,
+        subject: &Subject,
+        origin_subject_id: Option<&SubjectId>,
+    ) -> EventMetadata {
+        self.to_event_metadata_with_subject_at(subject, origin_subject_id, chrono::Utc::now())
+    }
+
+    /// Create [`EventMetadata`] stamped with the given timestamp and identity
     /// from the given subject.
     ///
     /// `author_id` is taken from [`Subject::id`] — [`Subject::Anonymous`] and
     /// [`Subject::System`] stamp `None` (a `SubjectId` only exists for
     /// [`Subject::Authenticated`]). `origin_subject_id` is threaded through
     /// for saga-emitted events and is `None` on non-saga paths.
+    ///
+    /// The timestamp is truncated to **microsecond precision** (see
+    /// [`EventMetadata::timestamp`]).
     #[must_use]
-    pub fn to_event_metadata_with_subject(
+    pub fn to_event_metadata_with_subject_at(
         &self,
         subject: &Subject,
         origin_subject_id: Option<&SubjectId>,
+        timestamp: chrono::DateTime<chrono::Utc>,
     ) -> EventMetadata {
         EventMetadata {
             correlation_id: self.correlation_id.clone(),
@@ -425,9 +456,19 @@ impl MetadataContext {
             user_id: self.user_id.clone(),
             author_id: subject.id().cloned(),
             origin_subject_id: origin_subject_id.cloned(),
-            timestamp: chrono::Utc::now(),
+            timestamp: truncate_to_micros(timestamp),
         }
     }
+}
+
+/// Truncate a timestamp to microsecond precision.
+///
+/// Event metadata is stamped at microsecond precision so `PostgreSQL`
+/// `TIMESTAMPTZ` (which stores microseconds) round-trips exactly. The policy
+/// lives here, at the metadata boundary — [`Clock`] implementations stay
+/// honest and report full resolution.
+fn truncate_to_micros(timestamp: chrono::DateTime<chrono::Utc>) -> chrono::DateTime<chrono::Utc> {
+    timestamp - chrono::Duration::nanoseconds(i64::from(timestamp.timestamp_subsec_nanos() % 1_000))
 }
 
 /// Core infrastructure dependencies required by the [`Handler`]
@@ -641,6 +682,10 @@ pub struct EventMetadata {
     pub origin_subject_id: Option<SubjectId>,
 
     /// Timestamp when the event was created
+    ///
+    /// Stamped from the invocation's injected [`Clock`] and truncated to
+    /// **microsecond precision** at stamping, so `PostgreSQL` `TIMESTAMPTZ`
+    /// (microsecond storage) round-trips it exactly.
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
@@ -851,6 +896,29 @@ mod tests {
         assert_eq!(metadata.correlation_id, Some("req-1".to_string()));
         assert_eq!(metadata.author_id, Some(SubjectId::new("user-9")));
         assert_eq!(metadata.origin_subject_id, None);
+    }
+
+    #[test]
+    fn metadata_timestamps_truncate_to_microseconds() {
+        let ctx = MetadataContext::new();
+        // A timestamp carrying sub-microsecond precision (…789 nanoseconds).
+        let ts = chrono::DateTime::from_timestamp_nanos(1_700_000_000_123_456_789);
+
+        let metadata = ctx.to_event_metadata_at(ts);
+        assert_eq!(
+            metadata.timestamp.timestamp_subsec_nanos() % 1_000,
+            0,
+            "sub-microsecond digits must be truncated at stamping"
+        );
+        assert_eq!(
+            metadata.timestamp.timestamp_micros(),
+            ts.timestamp_micros(),
+            "truncation must not lose microseconds"
+        );
+
+        // The subject variant flows through the same truncation.
+        let with_subject = ctx.to_event_metadata_with_subject_at(&Subject::System, None, ts);
+        assert_eq!(with_subject.timestamp, metadata.timestamp);
     }
 
     #[test]

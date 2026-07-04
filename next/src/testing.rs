@@ -1536,6 +1536,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handler_stamps_metadata_timestamp_from_injected_clock() {
+        // µs-precision fixture time: the stamped value must equal it EXACTLY
+        // (clock-threaded, not wall-clock; truncation is a no-op at µs).
+        let fixed = chrono::DateTime::from_timestamp_micros(1_700_000_000_000_123)
+            .expect("valid timestamp");
+        let env = TestEnvironment::new(FixedClock::new(fixed));
+        let env_handle = env.clone();
+
+        let handler = Handler::new(AggregateLogic, NoOpCallExecutor, NoOpQueryFetcher, env);
+        handler.handle(CreateCmd { id: 3 }).await.unwrap();
+
+        let stored = env_handle.event_store().events_for_stream("agg-3");
+        let metadata = stored[0]
+            .metadata
+            .as_ref()
+            .expect("handler must stamp metadata");
+        assert_eq!(
+            metadata.timestamp, fixed,
+            "event timestamps must come from the injected clock"
+        );
+    }
+
+    #[tokio::test]
     async fn handler_defaults_to_system_subject_stamping_no_author_id() {
         // No fixture → current_subject() = None → the Handler resolves
         // Subject::System, which stamps author_id: None (a SubjectId only
