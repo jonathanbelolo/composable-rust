@@ -24,8 +24,9 @@
 #![warn(missing_docs)]
 
 use composable_rust_next::{
-    AtomicError, EventMetadata, EventStore, EventStoreError, ProjectionError, SerializedEvent,
-    StreamId, Version,
+    AtomicError, CALL_COMPLETED_EVENT_TYPE, CALL_DISPATCHED_EVENT_TYPE, CallCompleted,
+    CallDispatched, DynAtomicPersist, EventMetadata, EventStore, EventStoreError, ProjectionError,
+    Projector, SagaInstanceRecord, SagaRegistry, SerializedEvent, StreamId, Version,
 };
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -606,6 +607,371 @@ impl EventStore for PostgresEventStore {
             Ok(final_version)
         }
         .instrument(span)
+    }
+}
+
+/// Run two transactional projectors sequentially on the same transaction.
+///
+/// Lets a consumer compose their domain projector with the
+/// [`SagaJournalProjector`] on the atomic path:
+/// `&(my_projector, journal_projector)`. The first error short-circuits and
+/// rolls back the entire transaction — which is the point. Nest tuples for
+/// more than two.
+impl<A: PgTransactionalProjector, B: PgTransactionalProjector> PgTransactionalProjector for (A, B) {
+    async fn project_in_tx(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        final_version: Version,
+        events: &[SerializedEvent],
+    ) -> Result<(), ProjectionError> {
+        self.0
+            .project_in_tx(&mut *conn, final_version, events)
+            .await?;
+        self.1
+            .project_in_tx(&mut *conn, final_version, events)
+            .await
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Durable-saga call journal (registry projection + recovery queries)
+// ═══════════════════════════════════════════════════════════════════
+
+/// Projects the durable-saga call journal markers into `saga_call_journal`.
+///
+/// Consumes `$saga.call_dispatched` / `$saga.call_completed` events and
+/// maintains one row per dispatched call (`completed_at IS NULL` =
+/// outstanding). All statements are idempotent upserts, so replay and
+/// [`rebuild_from_store`](Self::rebuild_from_store) are safe.
+///
+/// It reads `stream_id` from the marker **payloads** (projector traits
+/// deliver events without stream context) and each call's ID from the
+/// event's stamped stream version.
+///
+/// # Wiring
+///
+/// Implements both projector traits:
+///
+/// - [`PgTransactionalProjector`] — the **recommended** path: compose with
+///   your domain projector as `&(domain_projector, journal_projector)` in
+///   [`PostgresEventStore::append_with_projection`] /
+///   [`PostgresAtomicPersist`], so journal rows commit atomically with the
+///   events. Registry-based recovery is only trustworthy on this path.
+/// - [`Projector`] — the non-atomic path. Caveat: a crash between append
+///   and project loses journal rows **permanently** (there is no catch-up
+///   subscription), in either direction: a lost dispatch row hides an
+///   instance from the recovery sweep; a lost completion row leaves a
+///   zombie the sweep retries forever (harmlessly — `resume` returns
+///   `NoOutstandingCalls`). If a registry-listed instance repeatedly
+///   resolves to `NoOutstandingCalls`, run
+///   [`rebuild_from_store`](Self::rebuild_from_store) to heal it.
+///
+/// # Logic tag
+///
+/// Construct with the saga type's `DurableBusinessLogic::LOGIC_TAG` so the
+/// tag stamped on journal rows can never drift from the logic:
+///
+/// ```rust,ignore
+/// let journal = SagaJournalProjector::new(pool.clone(), MySagaLogic::LOGIC_TAG);
+/// ```
+#[derive(Clone)]
+pub struct SagaJournalProjector {
+    pool: PgPool,
+    logic_tag: &'static str,
+}
+
+impl SagaJournalProjector {
+    /// Create a journal projector for one saga type.
+    #[must_use]
+    pub const fn new(pool: PgPool, logic_tag: &'static str) -> Self {
+        Self { pool, logic_tag }
+    }
+
+    /// Apply marker events on an open connection (shared by both paths).
+    async fn project_on_conn(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        events: &[SerializedEvent],
+    ) -> Result<(), ProjectionError> {
+        for event in events {
+            match event.event_type.as_str() {
+                CALL_DISPATCHED_EVENT_TYPE => {
+                    let marker: CallDispatched =
+                        bincode::deserialize(&event.payload).map_err(|e| {
+                            ProjectionError::Deserialization(format!(
+                                "{CALL_DISPATCHED_EVENT_TYPE}: {e}"
+                            ))
+                        })?;
+                    let call_id = event.version.ok_or_else(|| {
+                        ProjectionError::Custom(format!(
+                            "{CALL_DISPATCHED_EVENT_TYPE} marker missing stream version"
+                        ))
+                    })?;
+                    let call_id = i64::try_from(call_id.as_u64())
+                        .map_err(|e| ProjectionError::Custom(format!("call_id overflow: {e}")))?;
+                    let dispatched_at = event
+                        .metadata
+                        .as_ref()
+                        .map_or_else(chrono::Utc::now, |m| m.timestamp);
+
+                    sqlx::query(
+                        r"
+                        INSERT INTO saga_call_journal (stream_id, call_id, logic_tag, dispatched_at)
+                        VALUES ($1, $2, $3, $4)
+                        ON CONFLICT (stream_id, call_id) DO NOTHING
+                        ",
+                    )
+                    .bind(&marker.stream_id)
+                    .bind(call_id)
+                    .bind(self.logic_tag)
+                    .bind(dispatched_at)
+                    .execute(&mut *conn)
+                    .await
+                    .map_err(|e| ProjectionError::Database(e.to_string()))?;
+                },
+                CALL_COMPLETED_EVENT_TYPE => {
+                    let marker: CallCompleted =
+                        bincode::deserialize(&event.payload).map_err(|e| {
+                            ProjectionError::Deserialization(format!(
+                                "{CALL_COMPLETED_EVENT_TYPE}: {e}"
+                            ))
+                        })?;
+                    let call_id = i64::try_from(marker.call_id.as_u64())
+                        .map_err(|e| ProjectionError::Custom(format!("call_id overflow: {e}")))?;
+                    let completed_at = event
+                        .metadata
+                        .as_ref()
+                        .map_or_else(chrono::Utc::now, |m| m.timestamp);
+
+                    // Upsert: covers a completion racing ahead of its
+                    // dispatched row during rebuilds, and COALESCE keeps the
+                    // first completion time under duplicate markers
+                    // (at-least-once double-resume).
+                    sqlx::query(
+                        r"
+                        INSERT INTO saga_call_journal
+                            (stream_id, call_id, logic_tag, dispatched_at, completed_at)
+                        VALUES ($1, $2, $3, $4, $4)
+                        ON CONFLICT (stream_id, call_id) DO UPDATE
+                        SET completed_at =
+                            COALESCE(saga_call_journal.completed_at, EXCLUDED.completed_at)
+                        ",
+                    )
+                    .bind(&marker.stream_id)
+                    .bind(call_id)
+                    .bind(self.logic_tag)
+                    .bind(completed_at)
+                    .execute(&mut *conn)
+                    .await
+                    .map_err(|e| ProjectionError::Database(e.to_string()))?;
+                },
+                _ => {},
+            }
+        }
+        Ok(())
+    }
+
+    /// Rebuild journal rows from the `events` table (disaster recovery, or
+    /// healing after non-atomic-path projection loss).
+    ///
+    /// Replays every `$saga.*` marker whose **row** `stream_id` starts with
+    /// `stream_id_prefix` through the same idempotent statements. Pass your
+    /// saga type's stream prefix (e.g. `"spec-saga-"`) — the events table
+    /// carries no logic tag, so the prefix is what scopes the rebuild to
+    /// streams this projector's tag actually owns.
+    ///
+    /// The query filters by exact marker event types (index-served by
+    /// `idx_events_type`); the prefix filter runs in Rust.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProjectionError`] on query failure or undecodable marker
+    /// payloads.
+    pub async fn rebuild_from_store(&self, stream_id_prefix: &str) -> Result<(), ProjectionError> {
+        let rows = sqlx::query(
+            r"
+            SELECT stream_id, version, event_type, event_data, metadata
+            FROM events
+            WHERE event_type IN ($1, $2)
+            ORDER BY stream_id, version ASC
+            ",
+        )
+        .bind(CALL_DISPATCHED_EVENT_TYPE)
+        .bind(CALL_COMPLETED_EVENT_TYPE)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| ProjectionError::Database(e.to_string()))?;
+
+        let events: Vec<SerializedEvent> = rows
+            .into_iter()
+            .filter(|row| {
+                row.get::<String, _>("stream_id")
+                    .starts_with(stream_id_prefix)
+            })
+            .map(|row| {
+                let stream_id: String = row.get("stream_id");
+                let version_i64: i64 = row.get("version");
+                let version = Version::new(version_i64.try_into().unwrap_or(0));
+                SerializedEvent {
+                    event_type: row.get("event_type"),
+                    payload: row.get("event_data"),
+                    metadata: metadata_from_json(&stream_id, version, row.get("metadata")),
+                    version: Some(version),
+                }
+            })
+            .collect();
+
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| ProjectionError::Database(e.to_string()))?;
+        self.project_on_conn(&mut conn, &events).await
+    }
+}
+
+impl std::fmt::Debug for SagaJournalProjector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SagaJournalProjector")
+            .field("logic_tag", &self.logic_tag)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PgTransactionalProjector for SagaJournalProjector {
+    fn project_in_tx<'a>(
+        &'a self,
+        conn: &'a mut sqlx::PgConnection,
+        _final_version: Version,
+        events: &'a [SerializedEvent],
+    ) -> impl std::future::Future<Output = Result<(), ProjectionError>> + Send + 'a {
+        self.project_on_conn(conn, events)
+    }
+}
+
+impl Projector for SagaJournalProjector {
+    async fn project(&self, events: &[SerializedEvent]) -> Result<(), ProjectionError> {
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| ProjectionError::Database(e.to_string()))?;
+        self.project_on_conn(&mut conn, events).await
+    }
+}
+
+/// [`SagaRegistry`] over the `saga_call_journal` table.
+///
+/// The recovery sweep's query side: instances with at least one
+/// outstanding call, filtered by logic tag, served by the partial index
+/// (`O(outstanding)`).
+#[derive(Clone)]
+pub struct PostgresSagaRegistry {
+    pool: PgPool,
+}
+
+impl PostgresSagaRegistry {
+    /// Create a registry over the given pool.
+    #[must_use]
+    pub const fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+impl std::fmt::Debug for PostgresSagaRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PostgresSagaRegistry")
+            .finish_non_exhaustive()
+    }
+}
+
+impl SagaRegistry for PostgresSagaRegistry {
+    type Error = sqlx::Error;
+
+    async fn instances_with_outstanding_calls(
+        &self,
+        logic_tag: &str,
+    ) -> Result<Vec<SagaInstanceRecord>, sqlx::Error> {
+        let rows = sqlx::query(
+            r"
+            SELECT stream_id, logic_tag,
+                   COUNT(*) AS outstanding,
+                   MIN(dispatched_at) AS oldest
+            FROM saga_call_journal
+            WHERE completed_at IS NULL AND logic_tag = $1
+            GROUP BY stream_id, logic_tag
+            ORDER BY oldest ASC
+            ",
+        )
+        .bind(logic_tag)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| SagaInstanceRecord {
+                stream_id: StreamId::new(row.get::<String, _>("stream_id")),
+                logic_tag: row.get("logic_tag"),
+                outstanding_calls: row
+                    .get::<i64, _>("outstanding")
+                    .try_into()
+                    .unwrap_or_default(),
+                oldest_dispatched_at: row.get("oldest"),
+            })
+            .collect())
+    }
+}
+
+/// [`DynAtomicPersist`] over [`PostgresEventStore::append_with_projection`].
+///
+/// Wire this into a `HandlerEnvironment::atomic_persist` so events and
+/// projections (including the [`SagaJournalProjector`]) commit in one
+/// transaction:
+///
+/// ```rust,ignore
+/// let atomic = PostgresAtomicPersist::new(
+///     store.clone(),
+///     (my_projector, SagaJournalProjector::new(pool, MySagaLogic::LOGIC_TAG)),
+/// );
+/// ```
+///
+/// # Invariant
+///
+/// Must wrap the **same** store the environment's `event_store()` returns
+/// (see `HandlerEnvironment::atomic_persist`).
+pub struct PostgresAtomicPersist<P: PgTransactionalProjector> {
+    store: PostgresEventStore,
+    projector: P,
+}
+
+impl<P: PgTransactionalProjector> PostgresAtomicPersist<P> {
+    /// Create an atomic persist over the given store and transactional
+    /// projector (compose several with tuples).
+    #[must_use]
+    pub const fn new(store: PostgresEventStore, projector: P) -> Self {
+        Self { store, projector }
+    }
+}
+
+impl<P: PgTransactionalProjector> std::fmt::Debug for PostgresAtomicPersist<P> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PostgresAtomicPersist")
+            .finish_non_exhaustive()
+    }
+}
+
+impl<P: PgTransactionalProjector> DynAtomicPersist for PostgresAtomicPersist<P> {
+    fn append_and_project<'a>(
+        &'a self,
+        stream_id: &'a StreamId,
+        expected_version: Option<Version>,
+        events: Vec<SerializedEvent>,
+    ) -> futures::future::BoxFuture<'a, Result<Version, AtomicError>> {
+        Box::pin(async move {
+            self.store
+                .append_with_projection(stream_id, expected_version, events, &self.projector)
+                .await
+        })
     }
 }
 
