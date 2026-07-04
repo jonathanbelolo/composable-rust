@@ -115,6 +115,17 @@ async fn postgres_event_store_integration() {
     let db = TestDb::new().await;
 
     // ═══════════════════════════════════════════════════════════════════════
+    // SECTION 0: EventStore conformance suite (shared contract with InMemory)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    {
+        db.reset().await;
+        let store = db.store();
+        composable_rust_next::conformance::event_store_conformance(&store, "conformance-pg").await;
+        println!("  [PASS] event_store_conformance");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
     // SECTION 1: Basic Operations
     // ═══════════════════════════════════════════════════════════════════════
 

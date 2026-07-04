@@ -168,3 +168,27 @@ jobs:
         run: cargo doc --no-deps --all-features
         env:
           RUSTDOCFLAGS: "-D warnings"
+
+  msrv:
+    name: MSRV (next crates)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # next/postgres-next don't touch rdkafka — no system deps needed.
+      - name: Install Rust (MSRV)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.85.0
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      # The explicit +1.85.0 override is REQUIRED: rust-toolchain.toml pins
+      # 1.91.0 and outranks the installed default, but not the CLI override —
+      # without it this job would silently check 1.91.
+      - name: Check MSRV
+        run: cargo +1.85.0 check -p composable-rust-next -p composable-rust-postgres-next --all-features
