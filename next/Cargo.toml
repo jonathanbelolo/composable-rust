@@ -23,6 +23,7 @@ thiserror = { workspace = true }
 
 # Observability
 tracing = { workspace = true }
+metrics = { workspace = true }
 
 # Time
 chrono = { workspace = true }

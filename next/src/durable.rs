@@ -51,6 +51,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use futures::stream::{FuturesUnordered, StreamExt};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use tracing::Instrument;
 
 use crate::{
     BusinessLogic, BusinessResult, CallExecutor, CancellationToken, EventMetadata, EventStore,
@@ -356,6 +357,50 @@ struct RunState {
     origin: Option<SubjectId>,
 }
 
+/// RAII guard for the `saga.durable.calls_in_flight` gauge.
+///
+/// Increments on dispatch, decrements on completion — and `Drop` decrements
+/// whatever remains, so the gauge stays correct on **every** exit path:
+/// completion, suspension, error, and the caller dropping the run future
+/// mid-await (which no explicit code path could catch).
+struct InFlightGauge {
+    logic_tag: &'static str,
+    count: u64,
+}
+
+impl InFlightGauge {
+    const fn new(logic_tag: &'static str) -> Self {
+        Self {
+            logic_tag,
+            count: 0,
+        }
+    }
+
+    fn increment(&mut self) {
+        self.count += 1;
+        metrics::gauge!("saga.durable.calls_in_flight", "logic_tag" => self.logic_tag)
+            .increment(1.0);
+    }
+
+    fn decrement(&mut self) {
+        if self.count > 0 {
+            self.count -= 1;
+            metrics::gauge!("saga.durable.calls_in_flight", "logic_tag" => self.logic_tag)
+                .decrement(1.0);
+        }
+    }
+}
+
+impl Drop for InFlightGauge {
+    fn drop(&mut self) {
+        if self.count > 0 {
+            #[allow(clippy::cast_precision_loss)] // In-flight counts are tiny
+            metrics::gauge!("saga.durable.calls_in_flight", "logic_tag" => self.logic_tag)
+                .decrement(self.count as f64);
+        }
+    }
+}
+
 /// What one durable cycle decided.
 enum CycleOutcome<C, R> {
     /// `Respond` on the initial cycle.
@@ -390,6 +435,23 @@ where
     QF: QueryFetcher<T::Input, Env::Projections>,
     Env: HandlerEnvironment,
 {
+    /// Record the `saga.durable.runs.total` outcome counter.
+    fn record_run_outcome(result: &Result<DurableOutcome<T::Response>, HandlerError<T::Error>>) {
+        let outcome = match result {
+            Ok(DurableOutcome::Completed { .. }) => "completed",
+            Ok(DurableOutcome::Query(_)) => "query",
+            Ok(DurableOutcome::Suspended { .. }) => "suspended",
+            Ok(DurableOutcome::NoOutstandingCalls) => "no_outstanding",
+            Err(_) => "error",
+        };
+        metrics::counter!(
+            "saga.durable.runs.total",
+            "logic_tag" => T::LOGIC_TAG,
+            "outcome" => outcome
+        )
+        .increment(1);
+    }
+
     /// Handle input in durable mode: per-completion feedback cycles with a
     /// crash-safe call journal.
     ///
@@ -438,6 +500,26 @@ where
         cancel: CancellationToken,
     ) -> Result<DurableOutcome<T::Response>, HandlerError<T::Error>> {
         let stream_id = T::stream_id(&input);
+        let span = tracing::info_span!(
+            "saga.durable_run",
+            stream_id = %stream_id,
+            logic_tag = T::LOGIC_TAG,
+            mode = "start",
+        );
+        let result = self
+            .handle_durable_inner(stream_id, input, cancel)
+            .instrument(span)
+            .await;
+        Self::record_run_outcome(&result);
+        result
+    }
+
+    async fn handle_durable_inner(
+        &self,
+        stream_id: StreamId,
+        input: T::Input,
+        cancel: CancellationToken,
+    ) -> Result<DurableOutcome<T::Response>, HandlerError<T::Error>> {
         let origin = self
             .env
             .current_subject()
@@ -560,6 +642,22 @@ where
         stream_id: &StreamId,
         cancel: CancellationToken,
     ) -> Result<DurableOutcome<T::Response>, HandlerError<T::Error>> {
+        let span = tracing::info_span!(
+            "saga.durable_run",
+            stream_id = %stream_id,
+            logic_tag = T::LOGIC_TAG,
+            mode = "resume",
+        );
+        let result = self.resume_inner(stream_id, cancel).instrument(span).await;
+        Self::record_run_outcome(&result);
+        result
+    }
+
+    async fn resume_inner(
+        &self,
+        stream_id: &StreamId,
+        cancel: CancellationToken,
+    ) -> Result<DurableOutcome<T::Response>, HandlerError<T::Error>> {
         let events = self
             .env
             .event_store()
@@ -582,6 +680,9 @@ where
             })?;
             initial_calls.push((call_id, call));
         }
+
+        metrics::counter!("saga.durable.calls_resumed.total", "logic_tag" => T::LOGIC_TAG)
+            .increment(initial_calls.len() as u64);
 
         let run = RunState {
             outstanding: BTreeSet::new(),
@@ -637,9 +738,11 @@ where
             });
         }
 
+        let mut in_flight_gauge = InFlightGauge::new(T::LOGIC_TAG);
         let mut in_flight = FuturesUnordered::new();
         for (id, call) in initial_calls {
             run.in_flight_since.insert(id, tokio::time::Instant::now());
+            in_flight_gauge.increment();
             in_flight.push(dispatch_one(&self.call_executor, id, call));
         }
 
@@ -689,6 +792,12 @@ where
                     // same append as the saga's reaction to it.
                     run.outstanding.remove(&call_id);
                     run.in_flight_since.remove(&call_id);
+                    in_flight_gauge.decrement();
+                    metrics::counter!(
+                        "saga.durable.calls_completed.total",
+                        "logic_tag" => T::LOGIC_TAG
+                    )
+                    .increment(1);
                     let input = T::completion_input(stream_id, call_id, result);
                     match self
                         .durable_cycle(stream_id, input, Some(call_id), &mut run)
@@ -710,6 +819,7 @@ where
                                 if !draining {
                                     run.in_flight_since
                                         .insert(id, tokio::time::Instant::now());
+                                    in_flight_gauge.increment();
                                     in_flight.push(
                                         dispatch_one(&self.call_executor, id, call),
                                     );
@@ -748,8 +858,26 @@ where
     ///
     /// Version-conflict retries are per-cycle (fresh `attempts` budget) and
     /// re-fetch for fresh state while `completed` stays in hand.
-    #[allow(clippy::too_many_lines)] // One cycle's full fetch→process→persist state machine
     async fn durable_cycle(
+        &self,
+        stream_id: &StreamId,
+        input: T::Input,
+        completed: Option<CallId>,
+        run: &mut RunState,
+    ) -> Result<CycleOutcome<T::Call, T::Response>, HandlerError<T::Error>> {
+        let span = tracing::debug_span!("saga.durable_cycle", call_id = ?completed);
+        let started = std::time::Instant::now();
+        let result = self
+            .durable_cycle_inner(stream_id, input, completed, run)
+            .instrument(span)
+            .await;
+        metrics::histogram!("saga.durable.cycle.duration_seconds", "logic_tag" => T::LOGIC_TAG)
+            .record(started.elapsed().as_secs_f64());
+        result
+    }
+
+    #[allow(clippy::too_many_lines)] // One cycle's full fetch→process→persist state machine
+    async fn durable_cycle_inner(
         &self,
         stream_id: &StreamId,
         input: T::Input,
@@ -835,6 +963,11 @@ where
                             ..
                         })) if attempts < self.max_retries => {
                             attempts += 1;
+                            tracing::warn!(
+                                attempt = attempts,
+                                actual_version = actual.as_u64(),
+                                "version conflict; retrying durable cycle"
+                            );
                             run.carried_version = Some(actual);
                             current_input = prepared_input;
                         },
@@ -873,6 +1006,11 @@ where
                             run.domain_events_total += events.len();
                             run.dispatched_total = new_dispatched_total;
                             run.carried_version = Some(final_version);
+                            metrics::counter!(
+                                "saga.durable.calls_dispatched.total",
+                                "logic_tag" => T::LOGIC_TAG
+                            )
+                            .increment(calls.len() as u64);
 
                             // The dispatched markers are the LAST `calls.len()`
                             // events of the append, so their (version-derived)
@@ -890,6 +1028,11 @@ where
                             ..
                         })) if attempts < self.max_retries => {
                             attempts += 1;
+                            tracing::warn!(
+                                attempt = attempts,
+                                actual_version = actual.as_u64(),
+                                "version conflict; retrying durable cycle"
+                            );
                             run.carried_version = Some(actual);
                             current_input = prepared_input;
                         },
@@ -1107,6 +1250,32 @@ mod tests {
         assert_eq!(id.as_u64(), 42);
         assert_eq!(format!("{id}"), "call@v42");
         assert_eq!(CallId::new(42), id);
+    }
+
+    #[test]
+    fn in_flight_gauge_counts_and_saturates() {
+        // No metrics recorder installed: the macros are no-ops, so this
+        // pins the guard's internal accounting (what Drop will flush).
+        let mut gauge = InFlightGauge::new("test");
+        gauge.increment();
+        gauge.increment();
+        assert_eq!(gauge.count, 2);
+        gauge.decrement();
+        assert_eq!(gauge.count, 1);
+        gauge.decrement();
+        gauge.decrement(); // saturates at zero, no underflow
+        assert_eq!(gauge.count, 0);
+        drop(gauge); // Drop with zero remainder: no-op, no panic
+    }
+
+    #[test]
+    fn in_flight_gauge_drop_flushes_remainder() {
+        let mut gauge = InFlightGauge::new("test");
+        gauge.increment();
+        gauge.increment();
+        // Dropping with count > 0 must not panic (it decrements the
+        // remainder on the real recorder in production).
+        drop(gauge);
     }
 
     #[test]
