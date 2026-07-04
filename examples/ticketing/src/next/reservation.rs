@@ -5,7 +5,7 @@
 //!
 //! # Note
 //!
-//! This is separate from [`ReservationSagaBusinessLogic`](super::ReservationSagaBusinessLogic)
+//! This is separate from `ReservationSagaBusinessLogic` (in the parent module)
 //! which handles the reservation workflow (create, cancel, etc.). This aggregate
 //! is purely for read operations.
 //!

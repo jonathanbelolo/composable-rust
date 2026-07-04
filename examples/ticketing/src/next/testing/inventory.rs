@@ -502,7 +502,7 @@ use crate::next::inventory::{InventoryBusinessLogic, InventoryError, InventoryRe
 
 /// Test environment that uses our custom projector type.
 ///
-/// This is necessary because [`TestEnvironment`] has a fixed `InMemoryProjector` type,
+/// This is necessary because `TestEnvironment` has a fixed `InMemoryProjector` type,
 /// but we need our [`InMemoryInventoryProjector`] to update the shared projection store.
 #[derive(Clone)]
 pub struct InventoryTestEnvironment<C: Clock> {

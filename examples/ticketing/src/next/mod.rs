@@ -40,7 +40,7 @@
 //!
 //! [`BusinessLogic`]: composable_rust_next::BusinessLogic
 //! [`Handler`]: composable_rust_next::Handler
-//! [`EventInventorySagaLogic`]: saga::EventInventorySagaLogic
+//! `EventInventorySagaLogic` lives in the `saga` module.
 
 pub mod analytics;
 pub mod call_executor;

@@ -640,7 +640,7 @@ use super::inventory::{InventoryCommand, SectionAvailabilityDto};
 
 /// PostgreSQL-backed projection queries for inventory/availability.
 ///
-/// Reads from the `inventory` table populated by [`InventoryProjector`].
+/// Reads from the `inventory` table populated by `InventoryProjector`.
 #[derive(Clone)]
 pub struct InventoryProjectionQueries {
     pool: PgPool,
@@ -987,7 +987,7 @@ use crate::types::{CustomerId, Money, PaymentId, ReservationId};
 
 /// PostgreSQL-backed projection queries for payments.
 ///
-/// Reads from the `payments` table populated by [`PaymentProjector`].
+/// Reads from the `payments` table populated by `PaymentProjector`.
 #[derive(Clone)]
 pub struct PaymentProjectionQueries {
     pool: PgPool,

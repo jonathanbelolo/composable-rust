@@ -263,7 +263,7 @@ impl<P: Projection> ProjectionTestHarness<P> {
     ///
     /// # Errors
     ///
-    /// Returns [`ProjectionError`] if any event fails to apply.
+    /// Returns [`ProjectionError`](composable_rust_core::projection::ProjectionError) if any event fails to apply.
     pub async fn given_events(&mut self, events: Vec<P::Event>) -> Result<&mut Self> {
         for event in events {
             self.projection.apply_event(&event).await?;
@@ -275,7 +275,7 @@ impl<P: Projection> ProjectionTestHarness<P> {
     ///
     /// # Errors
     ///
-    /// Returns [`ProjectionError`] if the event fails to apply.
+    /// Returns [`ProjectionError`](composable_rust_core::projection::ProjectionError) if the event fails to apply.
     pub async fn given_event(&mut self, event: P::Event) -> Result<&mut Self> {
         self.projection.apply_event(&event).await?;
         Ok(self)
@@ -285,7 +285,7 @@ impl<P: Projection> ProjectionTestHarness<P> {
     ///
     /// # Errors
     ///
-    /// Returns [`ProjectionError`] if the query fails.
+    /// Returns [`ProjectionError`](composable_rust_core::projection::ProjectionError) if the query fails.
     ///
     /// # Panics
     ///
@@ -304,7 +304,7 @@ impl<P: Projection> ProjectionTestHarness<P> {
     ///
     /// # Errors
     ///
-    /// Returns [`ProjectionError`] if the query fails.
+    /// Returns [`ProjectionError`](composable_rust_core::projection::ProjectionError) if the query fails.
     ///
     /// # Panics
     ///
@@ -323,7 +323,7 @@ impl<P: Projection> ProjectionTestHarness<P> {
     ///
     /// # Errors
     ///
-    /// Returns [`ProjectionError`] if the query fails.
+    /// Returns [`ProjectionError`](composable_rust_core::projection::ProjectionError) if the query fails.
     pub async fn get_data(&self, key: &str) -> Result<Option<Vec<u8>>> {
         self.store.get(key).await
     }

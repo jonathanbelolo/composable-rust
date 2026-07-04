@@ -343,7 +343,7 @@ impl MagicLinkConfig {
     ///
     /// The URL is validated at runtime in [`verify_magic_link`] to prevent open
     /// redirect attacks. Invalid URLs will result in a 400 Bad Request response.
-    /// Use [`validate_redirect_url`] to validate URLs before configuration if needed.
+    /// Use `validate_redirect_url` (crate-internal) to validate URLs before configuration if needed.
     ///
     /// # Example
     ///
@@ -541,7 +541,7 @@ impl MagicLinkConfigBuilder {
 /// - Cause reputation damage to your email sending domain
 ///
 /// You MUST add rate limiting at the infrastructure or middleware layer.
-/// See the [module documentation](self) for implementation options.
+/// See the module documentation for implementation options.
 ///
 /// # Errors
 ///

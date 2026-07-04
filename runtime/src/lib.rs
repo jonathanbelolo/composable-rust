@@ -2089,7 +2089,7 @@ pub mod store {
 
         /// Send an action with metadata and wait for a matching result action
         ///
-        /// Like [`send_and_wait_for`] but propagates metadata (e.g., correlation IDs)
+        /// Like [`Self::send_and_wait_for`] but propagates metadata (e.g., correlation IDs)
         /// through the effect chain for distributed tracing and request tracking.
         ///
         /// # Arguments
@@ -2162,7 +2162,8 @@ pub mod store {
         /// # Notes
         ///
         /// - Only actions produced by effects are broadcast (not initial actions sent via `send`)
-        /// - If the receiver lags, it will skip old actions and receive [`RecvError::Lagged`]
+        /// - If the receiver lags, it will skip old actions and receive
+        ///   [`RecvError::Lagged`](tokio::sync::broadcast::error::RecvError::Lagged)
         /// - The receiver must be consumed in a loop or it will block the channel
         ///
         /// # Example
@@ -3293,6 +3294,7 @@ mod tests {
             type Action = EventStoreAction;
             type Environment = EventStoreEnv;
 
+            #[allow(clippy::too_many_lines)] // Test-fixture reducer: one match arm per scenario
             fn reduce(
                 &self,
                 state: &mut Self::State,
@@ -4735,7 +4737,7 @@ mod tests {
                             state.reducer_calls.push(format!("regular:{message}"));
                             SmallVec::new()
                         }
-                        _ => SmallVec::new(),
+                        BroadcastTestAction::BroadcastedMessage { .. } => SmallVec::new(),
                     }
                 }
             }

@@ -39,7 +39,7 @@ use crate::types::{CustomerId, Money, PaymentId, PaymentMethod, ReservationId};
 /// # CQRS Pattern
 ///
 /// Write commands include a `fetched` field that contains validation data
-/// pre-loaded from projections by the [`QueryFetcher`]. This follows the CQRS
+/// pre-loaded from projections by the `QueryFetcher`. This follows the CQRS
 /// principle: validation data comes from projections, not from loading state
 /// from the event store.
 #[derive(Debug, Clone)]

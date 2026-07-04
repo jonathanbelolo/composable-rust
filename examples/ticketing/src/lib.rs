@@ -99,7 +99,7 @@
 //!
 //! # Usage
 //!
-//! See the [aggregates] module for reducer implementations and tests.
+//! See the `aggregates` module for reducer implementations and tests.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

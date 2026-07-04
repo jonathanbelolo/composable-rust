@@ -1,4 +1,4 @@
-//! Tests for Effect::PublishWithResponse
+//! Tests for `Effect::PublishWithResponse`
 //!
 //! This effect enables projection completion tracking by:
 //! 1. Creating a oneshot channel for response signaling
@@ -117,14 +117,12 @@ async fn test_publish_with_response_success() {
 
     // Spawn projection consumer that signals success
     tokio::spawn(async move {
-        if let Ok(action) = projection_rx.recv().await {
-            if let TestAction::ProcessCommand { respond_to, .. } = action {
-                // Simulate projection processing
-                tokio::time::sleep(Duration::from_millis(10)).await;
+        if let Ok(TestAction::ProcessCommand { respond_to, .. }) = projection_rx.recv().await {
+            // Simulate projection processing
+            tokio::time::sleep(Duration::from_millis(10)).await;
 
-                // Signal success
-                let _ = respond_to.send(Ok(()));
-            }
+            // Signal success
+            let _ = respond_to.send(Ok(()));
         }
     });
 
@@ -168,14 +166,12 @@ async fn test_publish_with_response_failure() {
 
     // Spawn projection consumer that signals failure
     tokio::spawn(async move {
-        if let Ok(action) = projection_rx.recv().await {
-            if let TestAction::ProcessCommand { respond_to, .. } = action {
-                // Simulate projection processing error
-                tokio::time::sleep(Duration::from_millis(10)).await;
+        if let Ok(TestAction::ProcessCommand { respond_to, .. }) = projection_rx.recv().await {
+            // Simulate projection processing error
+            tokio::time::sleep(Duration::from_millis(10)).await;
 
-                // Signal failure
-                let _ = respond_to.send(Err("Database connection failed".to_string()));
-            }
+            // Signal failure
+            let _ = respond_to.send(Err("Database connection failed".to_string()));
         }
     });
 
@@ -219,11 +215,9 @@ async fn test_publish_with_response_channel_closed() {
 
     // Spawn projection consumer that drops the sender without signaling
     tokio::spawn(async move {
-        if let Ok(action) = projection_rx.recv().await {
-            if let TestAction::ProcessCommand { respond_to, .. } = action {
-                // Drop the sender without sending anything
-                drop(respond_to);
-            }
+        if let Ok(TestAction::ProcessCommand { respond_to, .. }) = projection_rx.recv().await {
+            // Drop the sender without sending anything
+            drop(respond_to);
         }
     });
 

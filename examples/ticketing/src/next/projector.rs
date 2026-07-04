@@ -8,7 +8,7 @@
 //! - [`EventProjector`]: Updates the events read model
 //! - [`InventoryProjector`]: Updates the inventory/seats availability read model
 //! - [`PaymentProjector`]: Updates the payment history read model
-//! - [`EventInventorySagaProjector`]: In-memory projection for saga state
+//! - `EventInventorySagaProjector`: In-memory projection for saga state
 
 use composable_rust_next::{
     AtomicError, BusinessLogic, DynAtomicPersist, ProjectionError, Projector, SerializedEvent,
