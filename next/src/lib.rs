@@ -151,6 +151,10 @@ pub use version::Version;
 pub trait EventStore: Send + Sync {
     /// Load events from a stream (for projection rebuilding)
     ///
+    /// `from_version` is **inclusive**: `Some(v)` returns all events with
+    /// version `>= v`; `None` returns the whole stream. All implementations
+    /// must honor this contract.
+    ///
     /// This is typically used for:
     /// - Rebuilding projections from scratch
     /// - Debugging and auditing

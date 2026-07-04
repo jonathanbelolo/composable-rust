@@ -276,8 +276,11 @@ impl EventStore for InMemoryEventStore {
             return Ok(Vec::new()); // Empty stream
         };
 
+        // `from_version` is INCLUSIVE, matching `PostgresEventStore`'s
+        // `WHERE version >= $2` (events sit at versions 1.., so the event
+        // with version v is at index v-1).
         #[allow(clippy::cast_possible_truncation)] // Event streams won't exceed usize on 32-bit
-        let start_idx = from_version.map_or(0, |v| v.as_u64() as usize);
+        let start_idx = from_version.map_or(0, |v| (v.as_u64() as usize).saturating_sub(1));
 
         Ok(events.iter().skip(start_idx).cloned().collect())
     }
@@ -999,8 +1002,12 @@ mod tests {
         assert_eq!(events[0].event_type, "Event1");
         assert_eq!(events[1].event_type, "Event2");
 
-        // Load from version
+        // Load from version — INCLUSIVE, matching PostgresEventStore
         let events = store.load(&stream_id, Some(Version::new(1))).await.unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_type, "Event1");
+
+        let events = store.load(&stream_id, Some(Version::new(2))).await.unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, "Event2");
     }
