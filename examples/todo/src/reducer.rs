@@ -4,9 +4,7 @@
 //! produce events, and apply events to update state.
 
 use crate::types::{TodoAction, TodoId, TodoItem, TodoState};
-use composable_rust_core::{
-    effect::Effect, environment::Clock, reducer::Reducer, SmallVec,
-};
+use composable_rust_core::{SmallVec, effect::Effect, environment::Clock, reducer::Reducer};
 
 /// Environment dependencies for the Todo reducer
 #[derive(Clone)]
@@ -84,24 +82,24 @@ impl TodoReducer {
                 let item = TodoItem::new(id.clone(), title.clone(), *created_at);
                 state.todos.insert(id.clone(), item);
                 state.last_error = None;
-            }
+            },
             TodoAction::TodoCompleted { id, completed_at } => {
                 if let Some(todo) = state.todos.get_mut(id) {
                     todo.complete(*completed_at);
                 }
                 state.last_error = None;
-            }
+            },
             TodoAction::TodoDeleted { id } => {
                 state.todos.remove(id);
                 state.last_error = None;
-            }
+            },
             TodoAction::ValidationFailed { error } => {
                 state.last_error = Some(error.clone());
-            }
+            },
             // Commands are not applied to state
             TodoAction::CreateTodo { .. }
             | TodoAction::CompleteTodo { .. }
-            | TodoAction::DeleteTodo { .. } => {}
+            | TodoAction::DeleteTodo { .. } => {},
         }
     }
 }
@@ -148,7 +146,7 @@ impl Reducer for TodoReducer {
                 Self::apply_event(state, &event);
 
                 SmallVec::new()
-            }
+            },
 
             TodoAction::CompleteTodo { id } => {
                 // Validate command
@@ -172,7 +170,7 @@ impl Reducer for TodoReducer {
                 Self::apply_event(state, &event);
 
                 SmallVec::new()
-            }
+            },
 
             TodoAction::DeleteTodo { id } => {
                 // Validate command
@@ -193,7 +191,7 @@ impl Reducer for TodoReducer {
                 Self::apply_event(state, &event);
 
                 SmallVec::new()
-            }
+            },
 
             // ========== Events ==========
             TodoAction::TodoCreated { .. }
@@ -204,7 +202,7 @@ impl Reducer for TodoReducer {
                 // or are being replayed from event store
                 Self::apply_event(state, &action);
                 SmallVec::new()
-            }
+            },
         }
     }
 }
@@ -215,7 +213,7 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use composable_rust_core::environment::SystemClock;
-    use composable_rust_testing::{assertions, ReducerTest};
+    use composable_rust_testing::{ReducerTest, assertions};
     use std::sync::Arc;
 
     fn create_test_env() -> TodoEnvironment {
@@ -263,11 +261,13 @@ mod tests {
             .then_state(|state| {
                 assert_eq!(state.count(), 1); // Still only one todo
                 assert!(state.last_error.is_some());
-                assert!(state
-                    .last_error
-                    .as_ref()
-                    .unwrap()
-                    .contains("already exists"));
+                assert!(
+                    state
+                        .last_error
+                        .as_ref()
+                        .unwrap()
+                        .contains("already exists")
+                );
             })
             .then_effects(assertions::assert_no_effects)
             .run();
@@ -285,7 +285,13 @@ mod tests {
             .then_state(|state| {
                 assert_eq!(state.count(), 0);
                 assert!(state.last_error.is_some());
-                assert!(state.last_error.as_ref().unwrap().contains("cannot be empty"));
+                assert!(
+                    state
+                        .last_error
+                        .as_ref()
+                        .unwrap()
+                        .contains("cannot be empty")
+                );
             })
             .then_effects(assertions::assert_no_effects)
             .run();

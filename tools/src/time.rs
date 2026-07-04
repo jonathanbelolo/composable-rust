@@ -37,11 +37,10 @@ pub fn current_time_tool() -> (Tool, ToolExecutorFn) {
 
     let executor = Arc::new(|input: String| {
         Box::pin(async move {
-            let parsed: serde_json::Value = serde_json::from_str(&input).map_err(|e| {
-                ToolError {
+            let parsed: serde_json::Value =
+                serde_json::from_str(&input).map_err(|e| ToolError {
                     message: format!("Invalid input JSON: {e}"),
-                }
-            })?;
+                })?;
 
             let now_utc = Utc::now();
             let now_local = Local::now();
@@ -66,9 +65,7 @@ pub fn current_time_tool() -> (Tool, ToolExecutorFn) {
             });
 
             Ok(result.to_string())
-        }) as std::pin::Pin<
-            Box<dyn std::future::Future<Output = ToolResult> + Send>,
-        >
+        }) as std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send>>
     }) as ToolExecutorFn;
 
     (tool, executor)
@@ -95,7 +92,8 @@ mod tests {
         let result = executor(input).await;
         assert!(result.is_ok());
 
-        let output: serde_json::Value = serde_json::from_str(&result.expect("should succeed")).expect("valid JSON");
+        let output: serde_json::Value =
+            serde_json::from_str(&result.expect("should succeed")).expect("valid JSON");
         assert!(output["utc"].is_string());
         assert!(output["unix_timestamp"].is_number());
     }
@@ -112,7 +110,8 @@ mod tests {
         let result = executor(input).await;
         assert!(result.is_ok());
 
-        let output: serde_json::Value = serde_json::from_str(&result.expect("should succeed")).expect("valid JSON");
+        let output: serde_json::Value =
+            serde_json::from_str(&result.expect("should succeed")).expect("valid JSON");
         assert!(output["timezone"].is_string());
         assert_eq!(output["timezone_name"], "America/New_York");
     }
@@ -128,9 +127,11 @@ mod tests {
 
         let result = executor(input).await;
         assert!(result.is_err());
-        assert!(result
-            .expect_err("should fail")
-            .message
-            .contains("Invalid timezone"));
+        assert!(
+            result
+                .expect_err("should fail")
+                .message
+                .contains("Invalid timezone")
+        );
     }
 }

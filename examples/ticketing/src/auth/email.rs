@@ -3,8 +3,8 @@
 //! Prints emails to stdout for demo/development purposes.
 //! In production, replace with SMTP or cloud email service.
 
-use composable_rust_auth::{providers::EmailProvider, Result};
 use chrono::{DateTime, Utc};
+use composable_rust_auth::{Result, providers::EmailProvider};
 use tracing::info;
 
 /// Console email provider (prints to stdout for demo purposes)
@@ -89,12 +89,7 @@ impl EmailProvider for ConsoleEmailProvider {
         Ok(())
     }
 
-    async fn send_verification_email(
-        &self,
-        to: &str,
-        token: &str,
-        base_url: &str,
-    ) -> Result<()> {
+    async fn send_verification_email(&self, to: &str, token: &str, base_url: &str) -> Result<()> {
         let verification_link = format!("{base_url}/auth/verify-email?token={token}");
 
         info!(
@@ -116,12 +111,7 @@ impl EmailProvider for ConsoleEmailProvider {
         Ok(())
     }
 
-    async fn send_security_alert(
-        &self,
-        to: &str,
-        subject: &str,
-        message: &str,
-    ) -> Result<()> {
+    async fn send_security_alert(&self, to: &str, subject: &str, message: &str) -> Result<()> {
         info!(
             "\n\n\
             ┌────────────────────────────────────────────────────────────────┐\n\

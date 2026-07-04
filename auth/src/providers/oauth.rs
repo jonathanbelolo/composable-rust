@@ -1,8 +1,8 @@
 //! OAuth2/OIDC provider trait.
 
+use super::OAuthUserInfo;
 use crate::error::Result;
 use crate::state::OAuthProvider;
-use super::OAuthUserInfo;
 
 /// `OAuth2`/`OIDC` provider.
 ///

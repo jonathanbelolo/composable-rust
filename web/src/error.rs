@@ -4,9 +4,9 @@
 //! and HTTP responses, implementing Axum's `IntoResponse` trait.
 
 use axum::{
+    Json,
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
 use serde::Serialize;
 use std::fmt;
@@ -101,11 +101,7 @@ impl AppError {
     /// Create a 409 Conflict error.
     #[must_use]
     pub fn conflict(message: impl Into<String>) -> Self {
-        Self::new(
-            StatusCode::CONFLICT,
-            message.into(),
-            "CONFLICT".to_string(),
-        )
+        Self::new(StatusCode::CONFLICT, message.into(), "CONFLICT".to_string())
     }
 
     /// Create a 422 Unprocessable Entity error.

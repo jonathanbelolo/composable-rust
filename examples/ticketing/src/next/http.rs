@@ -46,9 +46,9 @@
 //! ```
 
 use axum::{
-    extract::{FromRequestParts, Path, State},
-    http::{request::Parts, StatusCode},
     Json,
+    extract::{FromRequestParts, Path, State},
+    http::{StatusCode, request::Parts},
 };
 use chrono::{DateTime, Utc};
 use composable_rust_next::{
@@ -60,17 +60,17 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use super::{
+    EventBusinessLogic, EventCommand, EventError, InventoryBusinessLogic, PaymentBusinessLogic,
     call_executor::EventInventorySagaCallExecutor,
     environment::{NoOpEventBus, NoOpProjector, ProductionEnvironment, TicketingEnvironment},
     event::{EventDto, EventResponse as DomainEventResponse},
     event_inventory_saga::{EventInventorySagaLogic, SagaError, SagaInput},
     projection_queries::{
-        EventInventorySagaProjectionQueries, EventInventorySagaQueryFetcher, EventProjectionQueries,
-        EventQueryFetcher,
+        EventInventorySagaProjectionQueries, EventInventorySagaQueryFetcher,
+        EventProjectionQueries, EventQueryFetcher,
     },
     projector::{EventProjector, InventoryProjector, PaymentProjector},
     reservation_saga::ReservationSagaError,
-    EventBusinessLogic, EventCommand, EventError, InventoryBusinessLogic, PaymentBusinessLogic,
 };
 use crate::types::{
     Capacity, CustomerId, EventDate, EventId, Money, PricingTier, ReservationId, SeatType,
@@ -134,12 +134,8 @@ pub type QueryEnabledEnvironment = TicketingEnvironment<
 ///
 /// For write commands (Create, Publish, Cancel), the fetcher passes
 /// the input through unchanged.
-pub type QueryEnabledEventHandler = Handler<
-    EventBusinessLogic,
-    NoOpCallExecutor,
-    EventQueryFetcher,
-    QueryEnabledEnvironment,
->;
+pub type QueryEnabledEventHandler =
+    Handler<EventBusinessLogic, NoOpCallExecutor, EventQueryFetcher, QueryEnabledEnvironment>;
 
 // ───────────────────────────────────────────────────────────────────────────
 // Full Event Handler (Query + Projection)
@@ -168,12 +164,8 @@ pub type FullEventEnvironment = TicketingEnvironment<
 /// - Uses `EventProjector` to update projections after writes
 ///
 /// Use this for write commands that need pre-fetched data (Publish, Cancel, Update).
-pub type FullEventHandler = Handler<
-    EventBusinessLogic,
-    NoOpCallExecutor,
-    EventQueryFetcher,
-    FullEventEnvironment,
->;
+pub type FullEventHandler =
+    Handler<EventBusinessLogic, NoOpCallExecutor, EventQueryFetcher, FullEventEnvironment>;
 
 /// Shared state containing handlers.
 ///
@@ -379,36 +371,32 @@ fn to_app_error(err: HandlerError<EventError>) -> AppError {
     match err {
         HandlerError::Business(EventError::AlreadyExists) => {
             AppError::conflict("Event already exists")
-        }
+        },
         HandlerError::Business(EventError::NotFound) => AppError::not_found("Event", "unknown"),
         HandlerError::Business(EventError::InvalidStateTransition { from, to }) => {
             AppError::bad_request(format!("Invalid state transition from {from:?} to {to:?}"))
-        }
+        },
         HandlerError::Business(EventError::ValidationFailed { message }) => {
             AppError::bad_request(message)
-        }
+        },
         HandlerError::Business(EventError::Forbidden) => {
             AppError::forbidden("Not authorized to access this resource")
-        }
+        },
         HandlerError::Load(e) => AppError::internal(format!("Failed to load state: {e}")),
         HandlerError::Persist(e) => AppError::internal(format!("Failed to persist: {e}")),
         HandlerError::Projection(e) => AppError::internal(format!("Projection failed: {e}")),
         HandlerError::Broadcast(e) => AppError::internal(format!("Broadcast failed: {e}")),
-        HandlerError::Serialization(e) => {
-            AppError::internal(format!("Serialization failed: {e}"))
-        }
-        HandlerError::QueryFetch(e) => {
-            AppError::internal(format!("Query fetch failed: {e}"))
-        }
+        HandlerError::Serialization(e) => AppError::internal(format!("Serialization failed: {e}")),
+        HandlerError::QueryFetch(e) => AppError::internal(format!("Query fetch failed: {e}")),
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Saga exceeded max iterations: {max_iterations}"))
-        }
+        },
         err @ (HandlerError::DoneWithOutstandingCalls { .. }
         | HandlerError::SagaStuck
         | HandlerError::RespondInFeedbackCycle
         | HandlerError::TotalCallsExceeded { .. }) => {
             AppError::internal(format!("Durable saga error: {err}"))
-        }
+        },
     }
 }
 
@@ -418,32 +406,30 @@ fn event_inventory_saga_to_app_error(err: HandlerError<SagaError>) -> AppError {
     match err {
         HandlerError::Business(SagaError::AlreadyInProgress) => {
             AppError::conflict("Saga already in progress")
-        }
+        },
         HandlerError::Business(SagaError::InvalidStateTransition { from, to }) => {
             AppError::bad_request(format!("Invalid saga transition from {from:?} to {to:?}"))
-        }
+        },
         HandlerError::Business(SagaError::ValidationFailed(message)) => {
             AppError::bad_request(message)
-        }
+        },
         HandlerError::Load(e) => AppError::internal(format!("Failed to load saga state: {e}")),
         HandlerError::Persist(e) => AppError::internal(format!("Failed to persist saga: {e}")),
         HandlerError::Projection(e) => AppError::internal(format!("Saga projection failed: {e}")),
         HandlerError::Broadcast(e) => AppError::internal(format!("Saga broadcast failed: {e}")),
         HandlerError::Serialization(e) => {
             AppError::internal(format!("Saga serialization failed: {e}"))
-        }
-        HandlerError::QueryFetch(e) => {
-            AppError::internal(format!("Saga query fetch failed: {e}"))
-        }
+        },
+        HandlerError::QueryFetch(e) => AppError::internal(format!("Saga query fetch failed: {e}")),
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Saga exceeded max iterations: {max_iterations}"))
-        }
+        },
         err @ (HandlerError::DoneWithOutstandingCalls { .. }
         | HandlerError::SagaStuck
         | HandlerError::RespondInFeedbackCycle
         | HandlerError::TotalCallsExceeded { .. }) => {
             AppError::internal(format!("Durable saga error: {err}"))
-        }
+        },
     }
 }
 
@@ -453,35 +439,33 @@ fn reservation_saga_to_app_error(err: HandlerError<ReservationSagaError>) -> App
     match err {
         HandlerError::Business(ReservationSagaError::AlreadyInProgress) => {
             AppError::conflict("Reservation saga already in progress")
-        }
+        },
         HandlerError::Business(ReservationSagaError::InvalidStateTransition { from }) => {
             AppError::bad_request(format!("Invalid saga transition from {from:?}"))
-        }
+        },
         HandlerError::Business(ReservationSagaError::MissingData(field)) => {
             AppError::internal(format!("Missing saga data: {field}"))
-        }
+        },
         HandlerError::Business(ReservationSagaError::ValidationFailed(message)) => {
             AppError::bad_request(message)
-        }
+        },
         HandlerError::Load(e) => AppError::internal(format!("Failed to load saga state: {e}")),
         HandlerError::Persist(e) => AppError::internal(format!("Failed to persist saga: {e}")),
         HandlerError::Projection(e) => AppError::internal(format!("Saga projection failed: {e}")),
         HandlerError::Broadcast(e) => AppError::internal(format!("Saga broadcast failed: {e}")),
         HandlerError::Serialization(e) => {
             AppError::internal(format!("Saga serialization failed: {e}"))
-        }
-        HandlerError::QueryFetch(e) => {
-            AppError::internal(format!("Saga query fetch failed: {e}"))
-        }
+        },
+        HandlerError::QueryFetch(e) => AppError::internal(format!("Saga query fetch failed: {e}")),
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Saga exceeded max iterations: {max_iterations}"))
-        }
+        },
         err @ (HandlerError::DoneWithOutstandingCalls { .. }
         | HandlerError::SagaStuck
         | HandlerError::RespondInFeedbackCycle
         | HandlerError::TotalCallsExceeded { .. }) => {
             AppError::internal(format!("Durable saga error: {err}"))
-        }
+        },
     }
 }
 
@@ -909,7 +893,7 @@ pub async fn list_my_events(
             let events: Vec<GetEventQueryResponse> = dtos.into_iter().map(Into::into).collect();
             let total = events.len();
             Ok(Json(ListEventsQueryResponse { events, total }))
-        }
+        },
         _ => Err(AppError::internal("Unexpected response type")),
     }
 }
@@ -988,7 +972,9 @@ where
             }
         }
 
-        Err(AppError::unauthorized("Authentication required: provide Bearer token or user_id query parameter"))
+        Err(AppError::unauthorized(
+            "Authentication required: provide Bearer token or user_id query parameter",
+        ))
     }
 }
 
@@ -1179,7 +1165,7 @@ pub async fn list_events(
                 page,
                 page_size,
             }))
-        }
+        },
         _ => Err(AppError::internal("Unexpected response type")),
     }
 }
@@ -1237,7 +1223,7 @@ pub async fn get_event_pricing(
                 event_id: *event_id.as_uuid(),
                 pricing_tiers: tiers,
             }))
-        }
+        },
         _ => Err(AppError::internal("Unexpected response type")),
     }
 }
@@ -1333,7 +1319,13 @@ pub async fn add_venue_sections(
     let sections: Vec<VenueSection> = request
         .sections
         .into_iter()
-        .map(|s| VenueSection::new(s.name, Capacity::new(s.capacity), SeatType::GeneralAdmission))
+        .map(|s| {
+            VenueSection::new(
+                s.name,
+                Capacity::new(s.capacity),
+                SeatType::GeneralAdmission,
+            )
+        })
         .collect();
 
     let command = EventCommand::AddVenueSections {
@@ -1365,7 +1357,10 @@ use super::{
         PaymentCommand, PaymentDto, PaymentDtoStatus, PaymentError,
         PaymentResponse as DomainPaymentResponse,
     },
-    projection_queries::{InventoryProjectionQueries, InventoryQueryFetcher, PaymentProjectionQueries, PaymentQueryFetcher},
+    projection_queries::{
+        InventoryProjectionQueries, InventoryQueryFetcher, PaymentProjectionQueries,
+        PaymentQueryFetcher,
+    },
 };
 use crate::types::{PaymentId, PaymentMethod};
 
@@ -1401,12 +1396,8 @@ pub type PaymentQueryEnvironment = TicketingEnvironment<
 >;
 
 /// Payment handler with query support.
-pub type QueryEnabledPaymentHandler = Handler<
-    PaymentBusinessLogic,
-    NoOpCallExecutor,
-    PaymentQueryFetcher,
-    PaymentQueryEnvironment,
->;
+pub type QueryEnabledPaymentHandler =
+    Handler<PaymentBusinessLogic, NoOpCallExecutor, PaymentQueryFetcher, PaymentQueryEnvironment>;
 
 /// Extended state including all query-enabled handlers.
 #[derive(Clone)]
@@ -1490,21 +1481,20 @@ fn inventory_to_app_error(err: HandlerError<InventoryError>) -> AppError {
     match err {
         HandlerError::Business(InventoryError::AlreadyInitialized) => {
             AppError::conflict("Inventory already initialized")
-        }
+        },
         HandlerError::Business(InventoryError::NotInitialized) => {
             AppError::not_found("Inventory", "section")
-        }
-        HandlerError::Business(InventoryError::InsufficientInventory { requested, available }) => {
-            AppError::bad_request(format!(
-                "Insufficient inventory: requested {requested}, available {available}"
-            ))
-        }
+        },
+        HandlerError::Business(InventoryError::InsufficientInventory {
+            requested,
+            available,
+        }) => AppError::bad_request(format!(
+            "Insufficient inventory: requested {requested}, available {available}"
+        )),
         HandlerError::Business(InventoryError::ReservationNotFound(id)) => {
             AppError::not_found("Reservation", id.to_string())
-        }
-        HandlerError::Business(InventoryError::ValidationFailed(msg)) => {
-            AppError::bad_request(msg)
-        }
+        },
+        HandlerError::Business(InventoryError::ValidationFailed(msg)) => AppError::bad_request(msg),
         HandlerError::Load(e) => AppError::internal(format!("Failed to load: {e}")),
         HandlerError::Persist(e) => AppError::internal(format!("Failed to persist: {e}")),
         HandlerError::Projection(e) => AppError::internal(format!("Projection failed: {e}")),
@@ -1513,13 +1503,13 @@ fn inventory_to_app_error(err: HandlerError<InventoryError>) -> AppError {
         HandlerError::QueryFetch(e) => AppError::internal(format!("Query fetch failed: {e}")),
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Saga exceeded max iterations: {max_iterations}"))
-        }
+        },
         err @ (HandlerError::DoneWithOutstandingCalls { .. }
         | HandlerError::SagaStuck
         | HandlerError::RespondInFeedbackCycle
         | HandlerError::TotalCallsExceeded { .. }) => {
             AppError::internal(format!("Durable saga error: {err}"))
-        }
+        },
     }
 }
 
@@ -1580,7 +1570,7 @@ pub async fn get_event_availability(
                 sections,
                 total_available,
             }))
-        }
+        },
         _ => Err(AppError::internal("Unexpected response type")),
     }
 }
@@ -1623,25 +1613,23 @@ fn payment_to_app_error(err: HandlerError<PaymentError>) -> AppError {
     match err {
         HandlerError::Business(PaymentError::AlreadyExists(id)) => {
             AppError::conflict(format!("Payment already exists: {id}"))
-        }
+        },
         HandlerError::Business(PaymentError::NotFound(id)) => {
             AppError::not_found("Payment", id.to_string())
-        }
+        },
         HandlerError::Business(PaymentError::PaymentNotFound) => {
             AppError::not_found("Payment", "unknown")
-        }
+        },
         HandlerError::Business(PaymentError::InvalidAmount(msg)) => {
             AppError::bad_request(format!("Invalid amount: {msg}"))
-        }
+        },
         HandlerError::Business(PaymentError::CannotRefund(msg)) => {
             AppError::bad_request(format!("Cannot refund: {msg}"))
-        }
-        HandlerError::Business(PaymentError::ValidationFailed(msg)) => {
-            AppError::bad_request(msg)
-        }
+        },
+        HandlerError::Business(PaymentError::ValidationFailed(msg)) => AppError::bad_request(msg),
         HandlerError::Business(PaymentError::PaymentDeclined(reason)) => {
             AppError::bad_request(format!("Payment declined: {reason}"))
-        }
+        },
         HandlerError::Load(e) => AppError::internal(format!("Failed to load: {e}")),
         HandlerError::Persist(e) => AppError::internal(format!("Failed to persist: {e}")),
         HandlerError::Projection(e) => AppError::internal(format!("Projection failed: {e}")),
@@ -1650,13 +1638,13 @@ fn payment_to_app_error(err: HandlerError<PaymentError>) -> AppError {
         HandlerError::QueryFetch(e) => AppError::internal(format!("Query fetch failed: {e}")),
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Saga exceeded max iterations: {max_iterations}"))
-        }
+        },
         err @ (HandlerError::DoneWithOutstandingCalls { .. }
         | HandlerError::SagaStuck
         | HandlerError::RespondInFeedbackCycle
         | HandlerError::TotalCallsExceeded { .. }) => {
             AppError::internal(format!("Durable saga error: {err}"))
-        }
+        },
     }
 }
 
@@ -1699,7 +1687,7 @@ impl From<PaymentMethodRequest> for PaymentMethod {
         match req {
             PaymentMethodRequest::CreditCard { last_four } => {
                 PaymentMethod::CreditCard { last_four }
-            }
+            },
             PaymentMethodRequest::PayPal { email } => PaymentMethod::PayPal { email },
             PaymentMethodRequest::ApplePay => PaymentMethod::ApplePay,
         }
@@ -1859,10 +1847,9 @@ pub async fn list_customer_payments(
     match result.into_query_response() {
         Some(DomainPaymentResponse::List(dtos)) => {
             let total = dtos.len();
-            let payments: Vec<PaymentDetailsResponse> =
-                dtos.into_iter().map(Into::into).collect();
+            let payments: Vec<PaymentDetailsResponse> = dtos.into_iter().map(Into::into).collect();
             Ok(Json(ListPaymentsResponse { payments, total }))
-        }
+        },
         _ => Err(AppError::internal("Unexpected response type")),
     }
 }
@@ -1962,12 +1949,8 @@ pub type ReservationInventoryHandler = Handler<
 /// Type alias for the payment handler used in reservation saga.
 ///
 /// Uses `PaymentQueryFetcher` to pre-populate `fetched` fields on write commands.
-pub type ReservationPaymentHandler = Handler<
-    PaymentBusinessLogic,
-    NoOpCallExecutor,
-    PaymentQueryFetcher,
-    PaymentQueryEnvironment,
->;
+pub type ReservationPaymentHandler =
+    Handler<PaymentBusinessLogic, NoOpCallExecutor, PaymentQueryFetcher, PaymentQueryEnvironment>;
 
 /// Type alias for the Reservation Saga Handler.
 ///
@@ -2061,16 +2044,16 @@ fn saga_to_app_error(err: HandlerError<ReservationSagaError>) -> AppError {
     match err {
         HandlerError::Business(ReservationSagaError::AlreadyInProgress) => {
             AppError::conflict("Reservation already in progress")
-        }
+        },
         HandlerError::Business(ReservationSagaError::InvalidStateTransition { from }) => {
             AppError::bad_request(format!("Invalid state transition from {from:?}"))
-        }
+        },
         HandlerError::Business(ReservationSagaError::ValidationFailed(msg)) => {
             AppError::bad_request(msg)
-        }
+        },
         HandlerError::Business(ReservationSagaError::MissingData(field)) => {
             AppError::internal(format!("Missing required data: {field}"))
-        }
+        },
         HandlerError::Load(e) => AppError::internal(format!("Failed to load: {e}")),
         HandlerError::Persist(e) => AppError::internal(format!("Failed to persist: {e}")),
         HandlerError::Projection(e) => AppError::internal(format!("Projection failed: {e}")),
@@ -2079,13 +2062,13 @@ fn saga_to_app_error(err: HandlerError<ReservationSagaError>) -> AppError {
         HandlerError::QueryFetch(e) => AppError::internal(format!("Query fetch failed: {e}")),
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Saga exceeded max iterations: {max_iterations}"))
-        }
+        },
         err @ (HandlerError::DoneWithOutstandingCalls { .. }
         | HandlerError::SagaStuck
         | HandlerError::RespondInFeedbackCycle
         | HandlerError::TotalCallsExceeded { .. }) => {
             AppError::internal(format!("Durable saga error: {err}"))
-        }
+        },
     }
 }
 
@@ -2156,11 +2139,10 @@ pub async fn create_reservation(
                     reservation_id: *reservation_id.as_uuid(),
                     seats_reserved: request.quantity,
                     status: "already_initiated".to_string(),
-                    message: "Reservation already initiated for this idempotency key."
-                        .to_string(),
+                    message: "Reservation already initiated for this idempotency key.".to_string(),
                 }),
             ))
-        }
+        },
         Err(e) => Err(saga_to_app_error(e)),
     }
 }
@@ -2235,8 +2217,8 @@ use super::{
     analytics::{
         AnalyticsBusinessLogic, AnalyticsCommand, AnalyticsError,
         AnalyticsResponse as DomainAnalyticsResponse, CustomerProfileDto, CustomerSpendingDto,
-        EventSalesDto, PopularSectionsDto, PurchaseRecordDto, SectionPopularityDto, SectionSalesDto,
-        TopSpendersDto, TotalRevenueDto,
+        EventSalesDto, PopularSectionsDto, PurchaseRecordDto, SectionPopularityDto,
+        SectionSalesDto, TopSpendersDto, TotalRevenueDto,
     },
     projection_queries::{
         AnalyticsProjectionQueries, AnalyticsQueryFetcher, ReservationProjectionQueries,
@@ -2535,19 +2517,19 @@ fn analytics_to_app_error(err: HandlerError<AnalyticsError>) -> AppError {
     match err {
         HandlerError::Business(AnalyticsError::EventNotFound { event_id }) => {
             AppError::not_found("Event", event_id.as_uuid().to_string())
-        }
+        },
         HandlerError::Business(AnalyticsError::CustomerNotFound { customer_id }) => {
             AppError::not_found("Customer", customer_id.as_uuid().to_string())
-        }
+        },
         HandlerError::Business(AnalyticsError::AccessDenied { .. }) => {
             AppError::forbidden("Not authorized to access this resource")
-        }
-        HandlerError::Business(AnalyticsError::InvalidLimit { limit }) => {
-            AppError::bad_request(format!("Invalid limit: {limit}. Must be between 1 and 100."))
-        }
+        },
+        HandlerError::Business(AnalyticsError::InvalidLimit { limit }) => AppError::bad_request(
+            format!("Invalid limit: {limit}. Must be between 1 and 100."),
+        ),
         HandlerError::Business(AnalyticsError::DataNotFetched) => {
             AppError::internal("Analytics data not fetched")
-        }
+        },
         HandlerError::Load(e) => AppError::internal(format!("Failed to load: {e}")),
         HandlerError::Persist(e) => AppError::internal(format!("Failed to persist: {e}")),
         HandlerError::Projection(e) => AppError::internal(format!("Projection failed: {e}")),
@@ -2556,13 +2538,13 @@ fn analytics_to_app_error(err: HandlerError<AnalyticsError>) -> AppError {
         HandlerError::QueryFetch(e) => AppError::internal(format!("Query fetch failed: {e}")),
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Exceeded max iterations: {max_iterations}"))
-        }
+        },
         err @ (HandlerError::DoneWithOutstandingCalls { .. }
         | HandlerError::SagaStuck
         | HandlerError::RespondInFeedbackCycle
         | HandlerError::TotalCallsExceeded { .. }) => {
             AppError::internal(format!("Durable saga error: {err}"))
-        }
+        },
     }
 }
 
@@ -2804,13 +2786,13 @@ fn reservation_query_to_app_error(err: HandlerError<ReservationQueryError>) -> A
     match err {
         HandlerError::Business(ReservationQueryError::ReservationNotFound { reservation_id }) => {
             AppError::not_found("Reservation", reservation_id.as_uuid().to_string())
-        }
+        },
         HandlerError::Business(ReservationQueryError::AccessDenied { .. }) => {
             AppError::forbidden("Not authorized to access these reservations")
-        }
+        },
         HandlerError::Business(ReservationQueryError::DataNotFetched) => {
             AppError::internal("Reservation data not fetched")
-        }
+        },
         HandlerError::Load(e) => AppError::internal(format!("Failed to load: {e}")),
         HandlerError::Persist(e) => AppError::internal(format!("Failed to persist: {e}")),
         HandlerError::Projection(e) => AppError::internal(format!("Projection failed: {e}")),
@@ -2819,13 +2801,13 @@ fn reservation_query_to_app_error(err: HandlerError<ReservationQueryError>) -> A
         HandlerError::QueryFetch(e) => AppError::internal(format!("Query fetch failed: {e}")),
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Exceeded max iterations: {max_iterations}"))
-        }
+        },
         err @ (HandlerError::DoneWithOutstandingCalls { .. }
         | HandlerError::SagaStuck
         | HandlerError::RespondInFeedbackCycle
         | HandlerError::TotalCallsExceeded { .. }) => {
             AppError::internal(format!("Durable saga error: {err}"))
-        }
+        },
     }
 }
 
@@ -2888,7 +2870,7 @@ pub async fn list_user_reservations(
                 reservations,
                 total: dto.total,
             }))
-        }
+        },
         _ => Err(AppError::internal("Unexpected response type")),
     }
 }
@@ -2914,10 +2896,7 @@ pub fn analytics_routes() -> Router<AnalyticsAppState> {
             get(get_popular_sections),
         )
         .route("/analytics/revenue", get(get_total_revenue))
-        .route(
-            "/analytics/customers/top-spenders",
-            get(get_top_spenders),
-        )
+        .route("/analytics/customers/top-spenders", get(get_top_spenders))
         .route(
             "/analytics/customers/{customer_id}/profile",
             get(get_customer_profile),
@@ -3007,7 +2986,10 @@ fn create_pricing_tiers_for_saga(request: &CreateEventWithInventoryRequest) -> V
 // Router Setup
 // ═══════════════════════════════════════════════════════════════════════════
 
-use axum::{routing::{get, patch, post, put}, Router};
+use axum::{
+    Router,
+    routing::{get, patch, post, put},
+};
 
 /// Create the event creation router using the Event-Inventory saga.
 ///
@@ -3076,8 +3058,14 @@ pub fn query_routes() -> Router<QueryAppState> {
 /// - GET /api/v2/events/:event_id/sections/:section/availability - Get section availability
 pub fn availability_routes() -> Router<FullQueryAppState> {
     Router::new()
-        .route("/events/{event_id}/availability", get(get_event_availability))
-        .route("/events/{event_id}/total-available", get(get_total_available))
+        .route(
+            "/events/{event_id}/availability",
+            get(get_event_availability),
+        )
+        .route(
+            "/events/{event_id}/total-available",
+            get(get_total_available),
+        )
         .route(
             "/events/{event_id}/sections/{section}/availability",
             get(get_section_availability),
@@ -3097,7 +3085,10 @@ pub fn payment_routes() -> Router<FullQueryAppState> {
         .route("/payments", post(process_payment))
         .route("/payments/{payment_id}", get(get_payment))
         .route("/payments/{payment_id}/refund", post(refund_payment))
-        .route("/customers/{customer_id}/payments", get(list_customer_payments))
+        .route(
+            "/customers/{customer_id}/payments",
+            get(list_customer_payments),
+        )
 }
 
 /// Create health check routes.

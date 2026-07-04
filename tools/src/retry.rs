@@ -149,7 +149,7 @@ where
                 .map_err(|_| ToolError {
                     message: format!("Tool execution timed out after {:?}", config.timeout),
                 })?
-        }
+        },
 
         RetryPolicy::Fixed { attempts, delay } => {
             let mut last_error = None;
@@ -162,7 +162,7 @@ where
                         if attempt < attempts - 1 {
                             tokio::time::sleep(*delay).await;
                         }
-                    }
+                    },
                     Err(_) => {
                         last_error = Some(ToolError {
                             message: format!("Tool execution timed out after {:?}", config.timeout),
@@ -170,12 +170,12 @@ where
                         if attempt < attempts - 1 {
                             tokio::time::sleep(*delay).await;
                         }
-                    }
+                    },
                 }
             }
 
             Err(last_error.expect("At least one attempt should have occurred"))
-        }
+        },
 
         RetryPolicy::Exponential {
             attempts,
@@ -194,7 +194,7 @@ where
                             tokio::time::sleep(current_delay).await;
                             current_delay = current_delay.mul_f64(*multiplier);
                         }
-                    }
+                    },
                     Err(_) => {
                         last_error = Some(ToolError {
                             message: format!("Tool execution timed out after {:?}", config.timeout),
@@ -203,12 +203,12 @@ where
                             tokio::time::sleep(current_delay).await;
                             current_delay = current_delay.mul_f64(*multiplier);
                         }
-                    }
+                    },
                 }
             }
 
             Err(last_error.expect("At least one attempt should have occurred"))
-        }
+        },
     }
 }
 
@@ -216,8 +216,8 @@ where
 #[allow(clippy::expect_used)] // Test code can use expect
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     #[test]
     #[allow(clippy::panic)] // Test validates enum variant
@@ -227,7 +227,7 @@ mod tests {
             RetryPolicy::Fixed { attempts, delay } => {
                 assert_eq!(attempts, 3);
                 assert_eq!(delay, Duration::from_millis(100));
-            }
+            },
             _ => panic!("Expected Fixed policy"),
         }
     }
@@ -379,9 +379,11 @@ mod tests {
         .await;
 
         assert!(result.is_err());
-        assert!(result
-            .expect_err("should timeout")
-            .message
-            .contains("timed out"));
+        assert!(
+            result
+                .expect_err("should timeout")
+                .message
+                .contains("timed out")
+        );
     }
 }

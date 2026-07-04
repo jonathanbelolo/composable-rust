@@ -5,7 +5,7 @@
 
 use crate::auth::setup::TicketingAuthStore;
 use crate::config::Config;
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{Json, extract::State, http::StatusCode};
 use composable_rust_auth::AuthAction;
 use composable_rust_web::{AppError, ClientIp, CorrelationId, UserAgent};
 use serde::{Deserialize, Serialize};
@@ -105,7 +105,12 @@ pub async fn send_magic_link(
     let result = store
         .send_and_wait_for(
             action,
-            |a| matches!(a, AuthAction::MagicLinkSent { .. } | AuthAction::MagicLinkFailed { .. }),
+            |a| {
+                matches!(
+                    a,
+                    AuthAction::MagicLinkSent { .. } | AuthAction::MagicLinkFailed { .. }
+                )
+            },
             Duration::from_secs(10),
         )
         .await
@@ -129,10 +134,10 @@ pub async fn send_magic_link(
                     magic_link_token,
                 }),
             ))
-        }
-        AuthAction::MagicLinkFailed { error, .. } => {
-            Err(AppError::internal(format!("Failed to send magic link: {error}")))
-        }
+        },
+        AuthAction::MagicLinkFailed { error, .. } => Err(AppError::internal(format!(
+            "Failed to send magic link: {error}"
+        ))),
         _ => Err(AppError::internal("Unexpected action received")),
     }
 }
@@ -248,11 +253,11 @@ pub async fn verify_magic_link(
                     expires_at: session.expires_at.to_rfc3339(),
                 }),
             ))
-        }
+        },
         AuthAction::MagicLinkFailed { error, .. } => Err(AppError::unauthorized(error)),
-        AuthAction::SessionCreationFailed { error, .. } => {
-            Err(AppError::internal(format!("Session creation failed: {error}")))
-        }
+        AuthAction::SessionCreationFailed { error, .. } => Err(AppError::internal(format!(
+            "Session creation failed: {error}"
+        ))),
         _ => Err(AppError::internal("Unexpected action received")),
     }
 }

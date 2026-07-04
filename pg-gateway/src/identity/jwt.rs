@@ -21,7 +21,7 @@
 //! ```
 
 use super::types::{Claims, Identity};
-use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 
 /// JWT validation errors.
 #[derive(Debug, thiserror::Error)]
@@ -337,16 +337,18 @@ impl JwtValidator {
             validation.required_spec_claims.insert("iss".to_string());
         }
 
-        let token_data = decode::<Claims>(token, &self.config.decoding_key, &validation)
-            .map_err(|e| match e.kind() {
+        let token_data =
+            decode::<Claims>(token, &self.config.decoding_key, &validation).map_err(|e| match e
+                .kind()
+            {
                 jsonwebtoken::errors::ErrorKind::ExpiredSignature => JwtError::Expired,
                 jsonwebtoken::errors::ErrorKind::InvalidSignature => JwtError::InvalidSignature,
                 jsonwebtoken::errors::ErrorKind::InvalidAudience => {
                     JwtError::InvalidClaims("Invalid audience".to_string())
-                }
+                },
                 jsonwebtoken::errors::ErrorKind::InvalidIssuer => {
                     JwtError::InvalidClaims("Invalid issuer".to_string())
-                }
+                },
                 jsonwebtoken::errors::ErrorKind::MissingRequiredClaim(claim) => {
                     // Map missing aud/iss to more specific messages
                     if claim == "aud" {
@@ -356,14 +358,14 @@ impl JwtValidator {
                     } else {
                         JwtError::InvalidClaims(format!("Missing required claim: {claim}"))
                     }
-                }
+                },
                 jsonwebtoken::errors::ErrorKind::InvalidToken
                 | jsonwebtoken::errors::ErrorKind::InvalidAlgorithm
                 | jsonwebtoken::errors::ErrorKind::Base64(_)
                 | jsonwebtoken::errors::ErrorKind::Json(_)
                 | jsonwebtoken::errors::ErrorKind::Utf8(_) => {
                     JwtError::InvalidFormat(e.to_string())
-                }
+                },
                 _ => JwtError::InvalidClaims(e.to_string()),
             })?;
 
@@ -412,16 +414,18 @@ impl JwtValidator {
             validation.required_spec_claims.insert("iss".to_string());
         }
 
-        let token_data = decode::<Claims>(token, &self.config.decoding_key, &validation)
-            .map_err(|e| match e.kind() {
+        let token_data =
+            decode::<Claims>(token, &self.config.decoding_key, &validation).map_err(|e| match e
+                .kind()
+            {
                 jsonwebtoken::errors::ErrorKind::ExpiredSignature => JwtError::Expired,
                 jsonwebtoken::errors::ErrorKind::InvalidSignature => JwtError::InvalidSignature,
                 jsonwebtoken::errors::ErrorKind::InvalidAudience => {
                     JwtError::InvalidClaims("Invalid audience".to_string())
-                }
+                },
                 jsonwebtoken::errors::ErrorKind::InvalidIssuer => {
                     JwtError::InvalidClaims("Invalid issuer".to_string())
-                }
+                },
                 jsonwebtoken::errors::ErrorKind::MissingRequiredClaim(claim) => {
                     // Map missing aud/iss to more specific messages
                     if claim == "aud" {
@@ -431,14 +435,14 @@ impl JwtValidator {
                     } else {
                         JwtError::InvalidClaims(format!("Missing required claim: {claim}"))
                     }
-                }
+                },
                 jsonwebtoken::errors::ErrorKind::InvalidToken
                 | jsonwebtoken::errors::ErrorKind::InvalidAlgorithm
                 | jsonwebtoken::errors::ErrorKind::Base64(_)
                 | jsonwebtoken::errors::ErrorKind::Json(_)
                 | jsonwebtoken::errors::ErrorKind::Utf8(_) => {
                     JwtError::InvalidFormat(e.to_string())
-                }
+                },
                 _ => JwtError::InvalidClaims(e.to_string()),
             })?;
 
@@ -450,7 +454,7 @@ impl JwtValidator {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use jsonwebtoken::{encode, EncodingKey, Header};
+    use jsonwebtoken::{EncodingKey, Header, encode};
     use serde::{Deserialize, Serialize};
 
     fn create_test_token(claims: &Claims, secret: &str) -> String {
@@ -692,7 +696,9 @@ mod tests {
 
         let result = validator.validate(&token);
         // Token without audience should be rejected when audience is required
-        assert!(matches!(result, Err(JwtError::InvalidClaims(ref msg)) if msg.to_lowercase().contains("audience")));
+        assert!(
+            matches!(result, Err(JwtError::InvalidClaims(ref msg)) if msg.to_lowercase().contains("audience"))
+        );
     }
 
     #[test]
@@ -734,7 +740,9 @@ mod tests {
 
         let result = validator.validate(&token);
         // Token without issuer should be rejected when issuer is required
-        assert!(matches!(result, Err(JwtError::InvalidClaims(ref msg)) if msg.to_lowercase().contains("issuer")));
+        assert!(
+            matches!(result, Err(JwtError::InvalidClaims(ref msg)) if msg.to_lowercase().contains("issuer"))
+        );
     }
 
     #[test]
@@ -773,7 +781,9 @@ mod tests {
         let validator_wrong = JwtValidator::new(config_wrong);
 
         let result_wrong = validator_wrong.validate_claims(&token);
-        assert!(matches!(result_wrong, Err(JwtError::InvalidClaims(msg)) if msg.contains("audience")));
+        assert!(
+            matches!(result_wrong, Err(JwtError::InvalidClaims(msg)) if msg.contains("audience"))
+        );
     }
 
     #[test]

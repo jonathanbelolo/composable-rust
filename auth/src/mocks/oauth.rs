@@ -1,8 +1,8 @@
 //! Mock `OAuth2` provider for testing.
 
 use crate::error::{AuthError, Result};
-use crate::providers::{OAuth2Provider, OAuthUserInfo};
 use crate::providers::oauth::OAuthTokenResponse;
+use crate::providers::{OAuth2Provider, OAuthUserInfo};
 use crate::state::OAuthProvider;
 use std::future::Future;
 

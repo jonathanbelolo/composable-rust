@@ -4,9 +4,14 @@
 //! patterns and WebSocket event streaming without coupling to HTTP layer.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // Test code can use unwrap/expect/panic
-#![allow(clippy::needless_continue, clippy::match_same_arms, clippy::collapsible_if, clippy::collapsible_match)] // Test code - allow pedantic warnings
+#![allow(
+    clippy::needless_continue,
+    clippy::match_same_arms,
+    clippy::collapsible_if,
+    clippy::collapsible_match
+)] // Test code - allow pedantic warnings
 
-use composable_rust_core::{effect::Effect, reducer::Reducer, smallvec, SmallVec};
+use composable_rust_core::{SmallVec, effect::Effect, reducer::Reducer, smallvec};
 use composable_rust_runtime::Store;
 use std::sync::Arc;
 use std::time::Duration;
@@ -59,14 +64,12 @@ impl Reducer for TestReducer {
         match action {
             TestAction::StartSaga { id } => {
                 state.saga_steps.clear();
-                smallvec![
-                    Effect::Future(Box::pin(async move {
-                        // Simulate async work
-                        tokio::time::sleep(Duration::from_millis(10)).await;
-                        Some(TestAction::StepCompleted { id, step: 1 })
-                    })),
-                ]
-            }
+                smallvec![Effect::Future(Box::pin(async move {
+                    // Simulate async work
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    Some(TestAction::StepCompleted { id, step: 1 })
+                })),]
+            },
 
             TestAction::StepCompleted { id, step } => {
                 state.saga_steps.push(step);
@@ -83,12 +86,12 @@ impl Reducer for TestReducer {
                         Some(TestAction::SagaCompleted { id })
                     }))]
                 }
-            }
+            },
 
             TestAction::SagaCompleted { .. } | TestAction::SagaFailed { .. } => {
                 // Terminal actions, no effects
                 smallvec![Effect::None]
-            }
+            },
 
             TestAction::Increment => {
                 state.counter += 1;
@@ -96,11 +99,11 @@ impl Reducer for TestReducer {
                 smallvec![Effect::Future(Box::pin(async move {
                     Some(TestAction::Incremented { value })
                 }))]
-            }
+            },
 
             TestAction::Incremented { .. } => {
                 smallvec![Effect::None]
-            }
+            },
         }
     }
 }
@@ -214,7 +217,11 @@ async fn test_concurrent_subscribers() {
     // Wait for all to complete
     for (i, handle) in handles.into_iter().enumerate() {
         let result = handle.await.expect("Task panicked");
-        assert!(result.is_ok(), "Saga {} should complete successfully", i + 1);
+        assert!(
+            result.is_ok(),
+            "Saga {} should complete successfully",
+            i + 1
+        );
     }
 
     // Verify final state - sagas may interleave but all should have run
@@ -360,7 +367,7 @@ async fn test_lagging_subscriber() {
             Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
                 lagged = true;
                 continue; // Skip and continue
-            }
+            },
             Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
             Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
         }
@@ -534,11 +541,7 @@ async fn test_parallel_effects_broadcasting() {
         }
     }
 
-    let store = Arc::new(Store::new(
-        ParallelState,
-        ParallelReducer,
-        TestEnvironment,
-    ));
+    let store = Arc::new(Store::new(ParallelState, ParallelReducer, TestEnvironment));
 
     let mut rx = store.subscribe_actions();
 
@@ -642,7 +645,7 @@ async fn test_channel_closed_on_store_drop() {
         .send_and_wait_for(
             TestAction::Increment,
             |action| matches!(action, TestAction::SagaCompleted { .. }), // Will never match
-            Duration::from_secs(10), // Long timeout
+            Duration::from_secs(10),                                     // Long timeout
         )
         .await;
 
@@ -734,13 +737,16 @@ async fn test_custom_broadcast_capacity() {
             Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
                 lagged = true;
                 continue;
-            }
+            },
             Err(_) => break,
         }
     }
 
     // With capacity 2, we should have lagged
-    assert!(lagged || received < 5, "Should lag or miss actions with small buffer");
+    assert!(
+        lagged || received < 5,
+        "Should lag or miss actions with small buffer"
+    );
 }
 
 /// Test saga failure scenario
@@ -775,7 +781,7 @@ async fn test_saga_failure_broadcasting() {
                 FailAction::Start => smallvec![Effect::Future(Box::pin(async {
                     // Simulate failure
                     Some(FailAction::Failed {
-                        error: "Test error".to_string()
+                        error: "Test error".to_string(),
                     })
                 }))],
                 FailAction::Failed { .. } => smallvec![Effect::None],

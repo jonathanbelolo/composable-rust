@@ -49,4 +49,4 @@ pub use composable_rust_core::agent::{Tool, ToolExecutorFn, ToolResult};
 
 // Re-export commonly used types
 pub use registry::ToolRegistry;
-pub use retry::{execute_with_retry, RetryPolicy, ToolConfig};
+pub use retry::{RetryPolicy, ToolConfig, execute_with_retry};

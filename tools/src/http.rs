@@ -59,23 +59,18 @@ pub fn http_request_tool() -> (Tool, ToolExecutorFn) {
 
     let executor = Arc::new(|input: String| {
         Box::pin(async move {
-            let parsed: serde_json::Value = serde_json::from_str(&input).map_err(|e| {
-                ToolError {
+            let parsed: serde_json::Value =
+                serde_json::from_str(&input).map_err(|e| ToolError {
                     message: format!("Invalid input JSON: {e}"),
-                }
+                })?;
+
+            let method = parsed["method"].as_str().ok_or_else(|| ToolError {
+                message: "Missing 'method' field".to_string(),
             })?;
 
-            let method = parsed["method"]
-                .as_str()
-                .ok_or_else(|| ToolError {
-                    message: "Missing 'method' field".to_string(),
-                })?;
-
-            let url = parsed["url"]
-                .as_str()
-                .ok_or_else(|| ToolError {
-                    message: "Missing 'url' field".to_string(),
-                })?;
+            let url = parsed["url"].as_str().ok_or_else(|| ToolError {
+                message: "Missing 'url' field".to_string(),
+            })?;
 
             // Security: Only allow http:// and https://
             if !url.starts_with("http://") && !url.starts_with("https://") {
@@ -96,7 +91,7 @@ pub fn http_request_tool() -> (Tool, ToolExecutorFn) {
                     return Err(ToolError {
                         message: format!("Unsupported method: {method}"),
                     });
-                }
+                },
             };
 
             // Add headers if provided
@@ -125,9 +120,7 @@ pub fn http_request_tool() -> (Tool, ToolExecutorFn) {
                 .map(|(k, v)| {
                     (
                         k.as_str().to_string(),
-                        serde_json::Value::String(
-                            v.to_str().unwrap_or("<invalid>").to_string(),
-                        ),
+                        serde_json::Value::String(v.to_str().unwrap_or("<invalid>").to_string()),
                     )
                 })
                 .collect();
@@ -159,9 +152,7 @@ pub fn http_request_tool() -> (Tool, ToolExecutorFn) {
             });
 
             Ok(result.to_string())
-        }) as std::pin::Pin<
-            Box<dyn std::future::Future<Output = ToolResult> + Send>,
-        >
+        }) as std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send>>
     }) as ToolExecutorFn;
 
     (tool, executor)
@@ -198,17 +189,14 @@ pub fn http_get_tool() -> (Tool, ToolExecutorFn) {
 
     let executor = Arc::new(|input: String| {
         Box::pin(async move {
-            let parsed: serde_json::Value = serde_json::from_str(&input).map_err(|e| {
-                ToolError {
+            let parsed: serde_json::Value =
+                serde_json::from_str(&input).map_err(|e| ToolError {
                     message: format!("Invalid input JSON: {e}"),
-                }
-            })?;
-
-            let url = parsed["url"]
-                .as_str()
-                .ok_or_else(|| ToolError {
-                    message: "Missing 'url' field".to_string(),
                 })?;
+
+            let url = parsed["url"].as_str().ok_or_else(|| ToolError {
+                message: "Missing 'url' field".to_string(),
+            })?;
 
             // Security: Only allow http:// and https://
             if !url.starts_with("http://") && !url.starts_with("https://") {
@@ -229,9 +217,7 @@ pub fn http_get_tool() -> (Tool, ToolExecutorFn) {
                 .map(|(k, v)| {
                     (
                         k.as_str().to_string(),
-                        serde_json::Value::String(
-                            v.to_str().unwrap_or("<invalid>").to_string(),
-                        ),
+                        serde_json::Value::String(v.to_str().unwrap_or("<invalid>").to_string()),
                     )
                 })
                 .collect();
@@ -263,9 +249,7 @@ pub fn http_get_tool() -> (Tool, ToolExecutorFn) {
             });
 
             Ok(result.to_string())
-        }) as std::pin::Pin<
-            Box<dyn std::future::Future<Output = ToolResult> + Send>,
-        >
+        }) as std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send>>
     }) as ToolExecutorFn;
 
     (tool, executor)
@@ -289,8 +273,8 @@ pub fn http_get_tool() -> (Tool, ToolExecutorFn) {
 pub fn http_get_markdown_tool() -> (Tool, ToolExecutorFn) {
     let tool = Tool {
         name: "http_get_markdown".to_string(),
-        description:
-            "Make HTTP GET request and convert HTML to Markdown for token efficiency".to_string(),
+        description: "Make HTTP GET request and convert HTML to Markdown for token efficiency"
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -305,17 +289,14 @@ pub fn http_get_markdown_tool() -> (Tool, ToolExecutorFn) {
 
     let executor = Arc::new(|input: String| {
         Box::pin(async move {
-            let parsed: serde_json::Value = serde_json::from_str(&input).map_err(|e| {
-                ToolError {
+            let parsed: serde_json::Value =
+                serde_json::from_str(&input).map_err(|e| ToolError {
                     message: format!("Invalid input JSON: {e}"),
-                }
-            })?;
-
-            let url = parsed["url"]
-                .as_str()
-                .ok_or_else(|| ToolError {
-                    message: "Missing 'url' field".to_string(),
                 })?;
+
+            let url = parsed["url"].as_str().ok_or_else(|| ToolError {
+                message: "Missing 'url' field".to_string(),
+            })?;
 
             // Security: Only allow http:// and https://
             if !url.starts_with("http://") && !url.starts_with("https://") {
@@ -336,9 +317,7 @@ pub fn http_get_markdown_tool() -> (Tool, ToolExecutorFn) {
                 .map(|(k, v)| {
                     (
                         k.as_str().to_string(),
-                        serde_json::Value::String(
-                            v.to_str().unwrap_or("<invalid>").to_string(),
-                        ),
+                        serde_json::Value::String(v.to_str().unwrap_or("<invalid>").to_string()),
                     )
                 })
                 .collect();
@@ -377,9 +356,7 @@ pub fn http_get_markdown_tool() -> (Tool, ToolExecutorFn) {
             });
 
             Ok(result.to_string())
-        }) as std::pin::Pin<
-            Box<dyn std::future::Future<Output = ToolResult> + Send>,
-        >
+        }) as std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send>>
     }) as ToolExecutorFn;
 
     (tool, executor)
@@ -423,10 +400,7 @@ mod tests {
 
         let result = executor(input).await;
         assert!(result.is_err());
-        assert!(result
-            .expect_err("should fail")
-            .message
-            .contains("http://"));
+        assert!(result.expect_err("should fail").message.contains("http://"));
     }
 
     #[tokio::test]
@@ -440,9 +414,6 @@ mod tests {
 
         let result = executor(input).await;
         assert!(result.is_err());
-        assert!(result
-            .expect_err("should fail")
-            .message
-            .contains("http://"));
+        assert!(result.expect_err("should fail").message.contains("http://"));
     }
 }

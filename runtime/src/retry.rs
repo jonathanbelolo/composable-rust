@@ -85,8 +85,7 @@ impl RetryPolicy {
             return self.initial_delay;
         }
 
-        let delay_ms = self.initial_delay.as_millis() as f64
-            * self.multiplier.powi(attempt as i32);
+        let delay_ms = self.initial_delay.as_millis() as f64 * self.multiplier.powi(attempt as i32);
 
         let delay = Duration::from_millis(delay_ms as u64);
 
@@ -181,10 +180,7 @@ impl RetryPolicyBuilder {
 /// # Ok(())
 /// # }
 /// ```
-pub async fn retry_with_backoff<F, Fut, T, E>(
-    policy: RetryPolicy,
-    mut operation: F,
-) -> Result<T, E>
+pub async fn retry_with_backoff<F, Fut, T, E>(policy: RetryPolicy, mut operation: F) -> Result<T, E>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T, E>>,
@@ -197,13 +193,10 @@ where
         match operation().await {
             Ok(result) => {
                 if attempt > 0 {
-                    tracing::info!(
-                        attempt,
-                        "Operation succeeded after retry"
-                    );
+                    tracing::info!(attempt, "Operation succeeded after retry");
                 }
                 return Ok(result);
-            }
+            },
             Err(err) => {
                 if attempt >= policy.max_retries {
                     tracing::error!(
@@ -225,7 +218,7 @@ where
                 last_error = Some(err);
                 sleep(delay).await;
                 attempt += 1;
-            }
+            },
         }
     }
 }
@@ -281,13 +274,10 @@ where
         match operation().await {
             Ok(result) => {
                 if attempt > 0 {
-                    tracing::info!(
-                        attempt,
-                        "Operation succeeded after retry"
-                    );
+                    tracing::info!(attempt, "Operation succeeded after retry");
                 }
                 return Ok(result);
-            }
+            },
             Err(err) => {
                 if !is_retryable(&err) {
                     tracing::warn!(
@@ -317,7 +307,7 @@ where
                 last_error = Some(err);
                 sleep(delay).await;
                 attempt += 1;
-            }
+            },
         }
     }
 }
@@ -326,8 +316,8 @@ where
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Test code can use unwrap/expect
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn test_retry_policy_delay_calculation() {

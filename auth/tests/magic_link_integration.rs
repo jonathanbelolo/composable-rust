@@ -5,8 +5,8 @@ use composable_rust_auth::{
     environment::AuthEnvironment,
     mocks::{
         MockChallengeStore, MockDeviceRepository, MockEmailProvider, MockOAuth2Provider,
-        MockOAuthTokenStore, MockRateLimiter, MockRiskCalculator, MockSessionStore,
-        MockTokenStore, MockUserRepository, MockWebAuthnProvider,
+        MockOAuthTokenStore, MockRateLimiter, MockRiskCalculator, MockSessionStore, MockTokenStore,
+        MockUserRepository, MockWebAuthnProvider,
     },
     reducers::MagicLinkReducer,
     state::AuthState,
@@ -379,13 +379,20 @@ async fn test_magic_link_token_uniqueness() {
     }
 
     // All tokens should be unique
-    let unique_count = tokens.iter().collect::<std::collections::HashSet<_>>().len();
+    let unique_count = tokens
+        .iter()
+        .collect::<std::collections::HashSet<_>>()
+        .len();
     assert_eq!(unique_count, 10, "Magic link tokens should be unique");
 
     // All tokens should be non-empty and correct length
     for token in &tokens {
         assert!(!token.is_empty(), "Token should not be empty");
-        assert_eq!(token.len(), 43, "Token should be 43 characters (256 bits base64url)");
+        assert_eq!(
+            token.len(),
+            43,
+            "Token should be 43 characters (256 bits base64url)"
+        );
     }
 }
 
@@ -487,7 +494,9 @@ async fn test_magic_link_custom_ttl() {
     );
 
     let magic_link_state = state.magic_link_state.as_ref().unwrap();
-    let expires_in = magic_link_state.expires_at.signed_duration_since(chrono::Utc::now());
+    let expires_in = magic_link_state
+        .expires_at
+        .signed_duration_since(chrono::Utc::now());
 
     // Should expire in approximately 5 minutes (allow 1 minute tolerance for test execution)
     assert!(expires_in.num_minutes() >= 4 && expires_in.num_minutes() <= 6);

@@ -4,15 +4,15 @@ use crate::environment::ProductionEnvironment;
 use crate::reducer::ProductionAgentReducer;
 use crate::types::{AgentAction, AgentEnvironment, AgentState};
 use axum::{
+    Json, Router,
     extract::State as AxumState,
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
-    Json, Router,
 };
+use composable_rust_agent_patterns::AgentMetrics;
 use composable_rust_agent_patterns::audit::AuditLogger;
 use composable_rust_agent_patterns::health::{HealthStatus, SystemHealthCheck};
-use composable_rust_agent_patterns::AgentMetrics;
 use composable_rust_runtime::Store;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -23,7 +23,8 @@ use tracing::info;
 #[derive(Clone)]
 pub struct ServerState<A: AuditLogger + Send + Sync + Clone + 'static> {
     /// Agent store (manages state, reducer, environment)
-    pub store: Arc<Store<AgentState, AgentAction, ProductionEnvironment<A>, ProductionAgentReducer<A>>>,
+    pub store:
+        Arc<Store<AgentState, AgentAction, ProductionEnvironment<A>, ProductionAgentReducer<A>>>,
     /// Environment (for direct access to LLM calls)
     pub environment: Arc<ProductionEnvironment<A>>,
     /// Metrics
@@ -126,7 +127,7 @@ async fn chat_handler<A: AuditLogger + Send + Sync + Clone + 'static>(
         Err(e) => {
             tracing::error!("LLM call failed: {:?}", e);
             format!("I apologize, but I encountered an error: {:?}", e)
-        }
+        },
     };
 
     // Process response (persists to EventStore)
@@ -155,9 +156,7 @@ async fn health_handler<A: AuditLogger + Send + Sync + Clone + 'static>(
     AxumState(state): AxumState<ServerState<A>>,
 ) -> Response {
     let results = state.health_registry.check_all().await;
-    let all_healthy = results
-        .values()
-        .all(|r| r.status == HealthStatus::Healthy);
+    let all_healthy = results.values().all(|r| r.status == HealthStatus::Healthy);
 
     let status = if all_healthy {
         StatusCode::OK
@@ -179,9 +178,7 @@ async fn readiness_handler<A: AuditLogger + Send + Sync + Clone + 'static>(
     AxumState(state): AxumState<ServerState<A>>,
 ) -> Response {
     let results = state.health_registry.check_all().await;
-    let all_ready = results
-        .values()
-        .all(|r| r.status == HealthStatus::Healthy);
+    let all_ready = results.values().all(|r| r.status == HealthStatus::Healthy);
 
     if all_ready {
         (StatusCode::OK, "ready").into_response()
@@ -202,13 +199,13 @@ async fn metrics_handler<A: AuditLogger + Send + Sync + Clone + 'static>(
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Test code can use unwrap/expect
 mod tests {
     use super::*;
+    use crate::environment::ProductionEnvironment;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
     use composable_rust_agent_patterns::audit::InMemoryAuditLogger;
     use composable_rust_agent_patterns::security::SecurityMonitor;
     use composable_rust_core::environment::{Clock, SystemClock};
     use composable_rust_testing::mocks::InMemoryEventStore;
-    use crate::environment::ProductionEnvironment;
-    use axum::body::Body;
-    use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
     #[tokio::test]
@@ -223,7 +220,7 @@ mod tests {
         let pool = sqlx::PgPool::connect_lazy("postgres://test").expect("Test pool");
         let projection_store = Arc::new(composable_rust_projections::PostgresProjectionStore::new(
             pool,
-            "test".to_string()
+            "test".to_string(),
         ));
 
         let environment = Arc::new(ProductionEnvironment::new(
@@ -234,10 +231,7 @@ mod tests {
             event_bus,
             projection_store,
         ));
-        let reducer = ProductionAgentReducer::new(
-            audit_logger,
-            security_monitor,
-        );
+        let reducer = ProductionAgentReducer::new(audit_logger, security_monitor);
         let state = AgentState::new();
         let store = Arc::new(Store::new(state, reducer, (*environment).clone()));
 
@@ -271,7 +265,7 @@ mod tests {
         let pool = sqlx::PgPool::connect_lazy("postgres://test").expect("Test pool");
         let projection_store = Arc::new(composable_rust_projections::PostgresProjectionStore::new(
             pool,
-            "test".to_string()
+            "test".to_string(),
         ));
 
         let environment = Arc::new(ProductionEnvironment::new(
@@ -282,10 +276,7 @@ mod tests {
             event_bus,
             projection_store,
         ));
-        let reducer = ProductionAgentReducer::new(
-            audit_logger,
-            security_monitor,
-        );
+        let reducer = ProductionAgentReducer::new(audit_logger, security_monitor);
         let state = AgentState::new();
         let store = Arc::new(Store::new(state, reducer, (*environment).clone()));
 

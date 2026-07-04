@@ -56,7 +56,9 @@ impl SessionStore for MockSessionStore {
         let session = session.clone();
 
         async move {
-            let mut sessions_guard = sessions.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
+            let mut sessions_guard = sessions
+                .lock()
+                .map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
 
             if sessions_guard.contains_key(&session.session_id) {
                 return Err(AuthError::DatabaseError(
@@ -104,14 +106,13 @@ impl SessionStore for MockSessionStore {
         }
     }
 
-    fn get_session(
-        &self,
-        session_id: SessionId,
-    ) -> impl Future<Output = Result<Session>> + Send {
+    fn get_session(&self, session_id: SessionId) -> impl Future<Output = Result<Session>> + Send {
         let sessions = Arc::clone(&self.sessions);
 
         async move {
-            let mut sessions_guard = sessions.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
+            let mut sessions_guard = sessions
+                .lock()
+                .map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
 
             let session = sessions_guard
                 .get_mut(&session_id)
@@ -146,7 +147,8 @@ impl SessionStore for MockSessionStore {
 
             // Sliding window session refresh (extends absolute expiration if enabled)
             if session.enable_sliding_refresh {
-                let original_duration = session.expires_at.signed_duration_since(session.created_at);
+                let original_duration =
+                    session.expires_at.signed_duration_since(session.created_at);
                 session.expires_at = now + original_duration;
             }
 
@@ -154,15 +156,14 @@ impl SessionStore for MockSessionStore {
         }
     }
 
-    fn update_session(
-        &self,
-        session: &Session,
-    ) -> impl Future<Output = Result<()>> + Send {
+    fn update_session(&self, session: &Session) -> impl Future<Output = Result<()>> + Send {
         let sessions = Arc::clone(&self.sessions);
         let session = session.clone();
 
         async move {
-            let mut sessions_guard = sessions.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
+            let mut sessions_guard = sessions
+                .lock()
+                .map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
 
             // Get existing session for validation
             let existing_session = sessions_guard
@@ -231,10 +232,7 @@ impl SessionStore for MockSessionStore {
         }
     }
 
-    fn delete_session(
-        &self,
-        session_id: SessionId,
-    ) -> impl Future<Output = Result<()>> + Send {
+    fn delete_session(&self, session_id: SessionId) -> impl Future<Output = Result<()>> + Send {
         let sessions = Arc::clone(&self.sessions);
 
         async move {
@@ -246,14 +244,13 @@ impl SessionStore for MockSessionStore {
         }
     }
 
-    fn delete_user_sessions(
-        &self,
-        user_id: UserId,
-    ) -> impl Future<Output = Result<usize>> + Send {
+    fn delete_user_sessions(&self, user_id: UserId) -> impl Future<Output = Result<usize>> + Send {
         let sessions = Arc::clone(&self.sessions);
 
         async move {
-            let mut sessions_guard = sessions.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
+            let mut sessions_guard = sessions
+                .lock()
+                .map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
 
             let session_ids_to_delete: Vec<SessionId> = sessions_guard
                 .iter()
@@ -271,14 +268,13 @@ impl SessionStore for MockSessionStore {
         }
     }
 
-    fn exists(
-        &self,
-        session_id: SessionId,
-    ) -> impl Future<Output = Result<bool>> + Send {
+    fn exists(&self, session_id: SessionId) -> impl Future<Output = Result<bool>> + Send {
         let sessions = Arc::clone(&self.sessions);
 
         async move {
-            let sessions_guard = sessions.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
+            let sessions_guard = sessions
+                .lock()
+                .map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
 
             if let Some(session) = sessions_guard.get(&session_id) {
                 // Check if expired
@@ -296,7 +292,9 @@ impl SessionStore for MockSessionStore {
         let sessions = Arc::clone(&self.sessions);
 
         async move {
-            let sessions_guard = sessions.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
+            let sessions_guard = sessions
+                .lock()
+                .map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
 
             if let Some(session) = sessions_guard.get(&session_id) {
                 let now = chrono::Utc::now();
@@ -318,7 +316,9 @@ impl SessionStore for MockSessionStore {
         let sessions = Arc::clone(&self.sessions);
 
         async move {
-            let sessions_guard = sessions.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
+            let sessions_guard = sessions
+                .lock()
+                .map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
 
             // Return all non-expired sessions for this user
             let session_ids: Vec<SessionId> = sessions_guard
@@ -340,7 +340,9 @@ impl SessionStore for MockSessionStore {
         let sessions = Arc::clone(&self.sessions);
 
         async move {
-            let mut sessions_guard = sessions.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
+            let mut sessions_guard = sessions
+                .lock()
+                .map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
 
             // Get existing session
             let mut session = sessions_guard

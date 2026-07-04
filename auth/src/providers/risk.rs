@@ -1,7 +1,7 @@
 //! Risk calculator trait.
 
+use super::{LoginContext, RiskAssessment};
 use crate::error::Result;
-use super::{RiskAssessment, LoginContext};
 
 /// Risk calculator.
 ///

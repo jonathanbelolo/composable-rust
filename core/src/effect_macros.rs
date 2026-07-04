@@ -57,18 +57,16 @@ macro_rules! append_events {
         on_success: |$success_param:ident| $success_body:expr,
         on_error: |$error_param:ident| $error_body:expr
     ) => {
-        $crate::effect::Effect::EventStore(
-            $crate::effect::EventStoreOperation::AppendEvents {
-                event_store: ::std::sync::Arc::clone(&$store),
-                stream_id: $crate::stream::StreamId::new($stream),
-                expected_version: $expected,
-                events: $events,
-                metadata: $metadata,
-                broadcast_on_success: ::std::option::Option::Some(::std::boxed::Box::new($broadcast)),
-                on_success: ::std::boxed::Box::new(move |$success_param| $success_body),
-                on_error: ::std::boxed::Box::new(move |$error_param| $error_body),
-            }
-        )
+        $crate::effect::Effect::EventStore($crate::effect::EventStoreOperation::AppendEvents {
+            event_store: ::std::sync::Arc::clone(&$store),
+            stream_id: $crate::stream::StreamId::new($stream),
+            expected_version: $expected,
+            events: $events,
+            metadata: $metadata,
+            broadcast_on_success: ::std::option::Option::Some(::std::boxed::Box::new($broadcast)),
+            on_success: ::std::boxed::Box::new(move |$success_param| $success_body),
+            on_error: ::std::boxed::Box::new(move |$error_param| $error_body),
+        })
     };
     // With metadata, without broadcast_on_success
     (
@@ -80,18 +78,16 @@ macro_rules! append_events {
         on_success: |$success_param:ident| $success_body:expr,
         on_error: |$error_param:ident| $error_body:expr
     ) => {
-        $crate::effect::Effect::EventStore(
-            $crate::effect::EventStoreOperation::AppendEvents {
-                event_store: ::std::sync::Arc::clone(&$store),
-                stream_id: $crate::stream::StreamId::new($stream),
-                expected_version: $expected,
-                events: $events,
-                metadata: $metadata,
-                broadcast_on_success: ::std::option::Option::None,
-                on_success: ::std::boxed::Box::new(move |$success_param| $success_body),
-                on_error: ::std::boxed::Box::new(move |$error_param| $error_body),
-            }
-        )
+        $crate::effect::Effect::EventStore($crate::effect::EventStoreOperation::AppendEvents {
+            event_store: ::std::sync::Arc::clone(&$store),
+            stream_id: $crate::stream::StreamId::new($stream),
+            expected_version: $expected,
+            events: $events,
+            metadata: $metadata,
+            broadcast_on_success: ::std::option::Option::None,
+            on_success: ::std::boxed::Box::new(move |$success_param| $success_body),
+            on_error: ::std::boxed::Box::new(move |$error_param| $error_body),
+        })
     };
     // With broadcast_on_success, without metadata
     (
@@ -103,18 +99,16 @@ macro_rules! append_events {
         on_success: |$success_param:ident| $success_body:expr,
         on_error: |$error_param:ident| $error_body:expr
     ) => {
-        $crate::effect::Effect::EventStore(
-            $crate::effect::EventStoreOperation::AppendEvents {
-                event_store: ::std::sync::Arc::clone(&$store),
-                stream_id: $crate::stream::StreamId::new($stream),
-                expected_version: $expected,
-                events: $events,
-                metadata: ::std::option::Option::None,
-                broadcast_on_success: ::std::option::Option::Some(::std::boxed::Box::new($broadcast)),
-                on_success: ::std::boxed::Box::new(move |$success_param| $success_body),
-                on_error: ::std::boxed::Box::new(move |$error_param| $error_body),
-            }
-        )
+        $crate::effect::Effect::EventStore($crate::effect::EventStoreOperation::AppendEvents {
+            event_store: ::std::sync::Arc::clone(&$store),
+            stream_id: $crate::stream::StreamId::new($stream),
+            expected_version: $expected,
+            events: $events,
+            metadata: ::std::option::Option::None,
+            broadcast_on_success: ::std::option::Option::Some(::std::boxed::Box::new($broadcast)),
+            on_success: ::std::boxed::Box::new(move |$success_param| $success_body),
+            on_error: ::std::boxed::Box::new(move |$error_param| $error_body),
+        })
     };
     // Without metadata or broadcast_on_success (backward compatible)
     (
@@ -125,18 +119,16 @@ macro_rules! append_events {
         on_success: |$success_param:ident| $success_body:expr,
         on_error: |$error_param:ident| $error_body:expr
     ) => {
-        $crate::effect::Effect::EventStore(
-            $crate::effect::EventStoreOperation::AppendEvents {
-                event_store: ::std::sync::Arc::clone(&$store),
-                stream_id: $crate::stream::StreamId::new($stream),
-                expected_version: $expected,
-                events: $events,
-                metadata: ::std::option::Option::None,
-                broadcast_on_success: ::std::option::Option::None,
-                on_success: ::std::boxed::Box::new(move |$success_param| $success_body),
-                on_error: ::std::boxed::Box::new(move |$error_param| $error_body),
-            }
-        )
+        $crate::effect::Effect::EventStore($crate::effect::EventStoreOperation::AppendEvents {
+            event_store: ::std::sync::Arc::clone(&$store),
+            stream_id: $crate::stream::StreamId::new($stream),
+            expected_version: $expected,
+            events: $events,
+            metadata: ::std::option::Option::None,
+            broadcast_on_success: ::std::option::Option::None,
+            on_success: ::std::boxed::Box::new(move |$success_param| $success_body),
+            on_error: ::std::boxed::Box::new(move |$error_param| $error_body),
+        })
     };
 }
 
@@ -164,15 +156,13 @@ macro_rules! load_events {
         on_success: |$success_param:ident| $success_body:expr,
         on_error: |$error_param:ident| $error_body:expr
     ) => {
-        $crate::effect::Effect::EventStore(
-            $crate::effect::EventStoreOperation::LoadEvents {
-                event_store: ::std::sync::Arc::clone(&$store),
-                stream_id: $crate::stream::StreamId::new($stream),
-                from_version: $from,
-                on_success: ::std::boxed::Box::new(move |$success_param| $success_body),
-                on_error: ::std::boxed::Box::new(move |$error_param| $error_body),
-            }
-        )
+        $crate::effect::Effect::EventStore($crate::effect::EventStoreOperation::LoadEvents {
+            event_store: ::std::sync::Arc::clone(&$store),
+            stream_id: $crate::stream::StreamId::new($stream),
+            from_version: $from,
+            on_success: ::std::boxed::Box::new(move |$success_param| $success_body),
+            on_error: ::std::boxed::Box::new(move |$error_param| $error_body),
+        })
     };
 }
 
@@ -200,15 +190,13 @@ macro_rules! publish_event {
         on_success: || $success_body:expr,
         on_error: |$error_param:ident| $error_body:expr
     ) => {
-        $crate::effect::Effect::PublishEvent(
-            $crate::effect::EventBusOperation::Publish {
-                event_bus: ::std::sync::Arc::clone(&$bus),
-                topic: $topic.to_string(),
-                event: $event,
-                on_success: ::std::boxed::Box::new(move |()| $success_body),
-                on_error: ::std::boxed::Box::new(move |$error_param| $error_body),
-            }
-        )
+        $crate::effect::Effect::PublishEvent($crate::effect::EventBusOperation::Publish {
+            event_bus: ::std::sync::Arc::clone(&$bus),
+            topic: $topic.to_string(),
+            event: $event,
+            on_success: ::std::boxed::Box::new(move |()| $success_body),
+            on_error: ::std::boxed::Box::new(move |$error_param| $error_body),
+        })
     };
 }
 

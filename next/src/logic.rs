@@ -1,7 +1,7 @@
 //! The unified `BusinessLogic` trait for aggregates and sagas
 
-use crate::{BusinessResult, Clock, SerializationError, SerializedEvent, StreamId};
 use crate::InvocationContext;
+use crate::{BusinessResult, Clock, SerializationError, SerializedEvent, StreamId};
 use serde::{Serialize, de::DeserializeOwned};
 
 /// Unified trait for all business logic—aggregates and sagas alike

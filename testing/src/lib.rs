@@ -531,11 +531,12 @@ pub mod mocks {
                     }
 
                     // Get current version WITHOUT mutating (use get, not entry)
-                    let current_version = store
-                        .get(operation.stream_id.as_str())
-                        .map_or(composable_rust_core::stream::Version::new(0), |stream_events| {
+                    let current_version = store.get(operation.stream_id.as_str()).map_or(
+                        composable_rust_core::stream::Version::new(0),
+                        |stream_events| {
                             composable_rust_core::stream::Version::new(stream_events.len() as u64)
-                        });
+                        },
+                    );
 
                     // Check optimistic concurrency
                     if let Some(expected) = operation.expected_version {
@@ -558,7 +559,11 @@ pub mod mocks {
                     );
 
                     // Store validated operation
-                    validated_operations.push(Some((operation.stream_id, operation.events, new_version)));
+                    validated_operations.push(Some((
+                        operation.stream_id,
+                        operation.events,
+                        new_version,
+                    )));
                     // Return last event's version (which is new_version, not new_version - 1)
                     results.push(Ok(new_version));
                 }
@@ -567,9 +572,7 @@ pub mod mocks {
                 for (stream_id, mut events, _new_version) in
                     validated_operations.into_iter().flatten()
                 {
-                    let stream_events = store
-                        .entry(stream_id.as_str().to_string())
-                        .or_default();
+                    let stream_events = store.entry(stream_id.as_str().to_string()).or_default();
                     stream_events.append(&mut events);
                 }
 
@@ -1054,17 +1057,15 @@ pub mod test_store {
                             if let Ok(mut queue) = queue_clone.lock() {
                                 queue.push_back(action);
                             }
-                        }
+                        },
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                             // Log but continue - test might still work
-                            eprintln!(
-                                "TestStore: Action queue lagged, {skipped} actions skipped"
-                            );
-                        }
+                            eprintln!("TestStore: Action queue lagged, {skipped} actions skipped");
+                        },
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                             // Store was dropped, exit the loop
                             break;
-                        }
+                        },
                     }
                 }
             });
@@ -1145,7 +1146,9 @@ pub mod test_store {
             E: Clone,
             F: Fn(&A) -> bool,
         {
-            self.store.send_and_wait_for(action, predicate, timeout).await
+            self.store
+                .send_and_wait_for(action, predicate, timeout)
+                .await
         }
 
         /// Read current state via a closure
@@ -1350,7 +1353,7 @@ pub use mocks::{FixedClock, test_clock};
 pub use projection_mocks::{
     InMemoryProjectionCheckpoint, InMemoryProjectionStore, ProjectionTestHarness,
 };
-pub use reducer_test::{assertions, ReducerTest};
+pub use reducer_test::{ReducerTest, assertions};
 pub use test_store::{ExpectedActions, TestStore, TestStoreError};
 
 // Placeholder test module
@@ -1360,7 +1363,7 @@ pub use test_store::{ExpectedActions, TestStore, TestStoreError};
 #[allow(dead_code)] // Test types may have unused variants
 mod tests {
     use super::*;
-    use composable_rust_core::{effect::Effect, reducer::Reducer, smallvec, SmallVec};
+    use composable_rust_core::{SmallVec, effect::Effect, reducer::Reducer, smallvec};
 
     #[test]
     fn test_fixed_clock() {
@@ -1921,10 +1924,7 @@ mod tests {
         let results = store.append_batch(batch).await.unwrap();
 
         assert_eq!(results.len(), 1);
-        assert!(matches!(
-            results[0],
-            Err(EventStoreError::DatabaseError(_))
-        ));
+        assert!(matches!(results[0], Err(EventStoreError::DatabaseError(_))));
     }
 
     // ========== TestStore Effect Queuing Tests ==========
@@ -1942,7 +1942,10 @@ mod tests {
             .unwrap();
 
         // Wait for the effect to complete
-        handle.wait_with_timeout(StdDuration::from_secs(5)).await.ok();
+        handle
+            .wait_with_timeout(StdDuration::from_secs(5))
+            .await
+            .ok();
 
         // Give the background task time to capture the action
         tokio::time::sleep(StdDuration::from_millis(50)).await;
@@ -1953,7 +1956,10 @@ mod tests {
 
         // The action was also fed back to the store, so state should be updated
         let value = store.state(|s| s.value).await;
-        assert_eq!(value, 1, "Action1 should have been processed, incrementing value");
+        assert_eq!(
+            value, 1,
+            "Action1 should have been processed, incrementing value"
+        );
 
         store.assert_no_pending_actions();
     }
@@ -1978,7 +1984,10 @@ mod tests {
 
         // The action was processed, so state should be updated
         let value = store.state(|s| s.value).await;
-        assert_eq!(value, 2, "Action2 should have been processed, incrementing value by 2");
+        assert_eq!(
+            value, 2,
+            "Action2 should have been processed, incrementing value by 2"
+        );
 
         // Give the background task time to capture the action, then clean up
         tokio::time::sleep(StdDuration::from_millis(50)).await;
@@ -2004,7 +2013,10 @@ mod tests {
             .unwrap();
 
         // Wait for effects to complete
-        handle.wait_with_timeout(StdDuration::from_secs(5)).await.ok();
+        handle
+            .wait_with_timeout(StdDuration::from_secs(5))
+            .await
+            .ok();
 
         // Give background task time to capture actions
         tokio::time::sleep(StdDuration::from_millis(100)).await;

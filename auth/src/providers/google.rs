@@ -263,10 +263,7 @@ impl OAuth2Provider for GoogleOAuthProvider {
 
         // Verify email is verified
         if !google_user.email_verified {
-            tracing::warn!(
-                "Google user email not verified: {}",
-                google_user.email
-            );
+            tracing::warn!("Google user email not verified: {}", google_user.email);
             return Err(AuthError::EmailNotVerified);
         }
 
@@ -404,10 +401,8 @@ mod tests {
 
     #[test]
     fn test_google_provider_creation() {
-        let google = GoogleOAuthProvider::new(
-            "test_client_id".to_string(),
-            "test_secret".to_string(),
-        );
+        let google =
+            GoogleOAuthProvider::new("test_client_id".to_string(), "test_secret".to_string());
 
         assert_eq!(google.scopes, vec!["openid", "email", "profile"]);
         assert!(google.request_refresh_token);
@@ -417,24 +412,20 @@ mod tests {
 
     #[test]
     fn test_custom_scopes() {
-        let google = GoogleOAuthProvider::new(
-            "test_client_id".to_string(),
-            "test_secret".to_string(),
-        )
-        .with_scopes(vec!["openid".to_string(), "email".to_string()]);
+        let google =
+            GoogleOAuthProvider::new("test_client_id".to_string(), "test_secret".to_string())
+                .with_scopes(vec!["openid".to_string(), "email".to_string()]);
 
         assert_eq!(google.scopes, vec!["openid", "email"]);
     }
 
     #[test]
     fn test_builder_methods() {
-        let google = GoogleOAuthProvider::new(
-            "test_client_id".to_string(),
-            "test_secret".to_string(),
-        )
-        .with_refresh_token(false)
-        .with_force_consent(true)
-        .with_incremental_authorization(false);
+        let google =
+            GoogleOAuthProvider::new("test_client_id".to_string(), "test_secret".to_string())
+                .with_refresh_token(false)
+                .with_force_consent(true)
+                .with_incremental_authorization(false);
 
         assert!(!google.request_refresh_token);
         assert!(google.force_consent);
@@ -443,10 +434,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_authorization_url() {
-        let google = GoogleOAuthProvider::new(
-            "test_client_id".to_string(),
-            "test_secret".to_string(),
-        );
+        let google =
+            GoogleOAuthProvider::new("test_client_id".to_string(), "test_secret".to_string());
 
         let url = google
             .build_authorization_url(
@@ -468,12 +457,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_authorization_url_without_optional_params() {
-        let google = GoogleOAuthProvider::new(
-            "test_client_id".to_string(),
-            "test_secret".to_string(),
-        )
-        .with_refresh_token(false)
-        .with_incremental_authorization(false);
+        let google =
+            GoogleOAuthProvider::new("test_client_id".to_string(), "test_secret".to_string())
+                .with_refresh_token(false)
+                .with_incremental_authorization(false);
 
         let url = google
             .build_authorization_url(
@@ -490,10 +477,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_wrong_provider_returns_error() {
-        let google = GoogleOAuthProvider::new(
-            "test_client_id".to_string(),
-            "test_secret".to_string(),
-        );
+        let google =
+            GoogleOAuthProvider::new("test_client_id".to_string(), "test_secret".to_string());
 
         let result = google
             .build_authorization_url(
@@ -508,10 +493,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_exchange_code_wrong_provider() {
-        let google = GoogleOAuthProvider::new(
-            "test_client_id".to_string(),
-            "test_secret".to_string(),
-        );
+        let google =
+            GoogleOAuthProvider::new("test_client_id".to_string(), "test_secret".to_string());
 
         let result = google
             .exchange_code(
@@ -526,24 +509,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_fetch_user_info_wrong_provider() {
-        let google = GoogleOAuthProvider::new(
-            "test_client_id".to_string(),
-            "test_secret".to_string(),
-        );
+        let google =
+            GoogleOAuthProvider::new("test_client_id".to_string(), "test_secret".to_string());
 
-        let result = google
-            .fetch_user_info(OAuthProvider::GitHub, "token")
-            .await;
+        let result = google.fetch_user_info(OAuthProvider::GitHub, "token").await;
 
         assert!(matches!(result, Err(AuthError::InvalidOAuthProvider)));
     }
 
     #[tokio::test]
     async fn test_refresh_token_wrong_provider() {
-        let google = GoogleOAuthProvider::new(
-            "test_client_id".to_string(),
-            "test_secret".to_string(),
-        );
+        let google =
+            GoogleOAuthProvider::new("test_client_id".to_string(), "test_secret".to_string());
 
         let result = google
             .refresh_token(OAuthProvider::GitHub, "refresh_token")

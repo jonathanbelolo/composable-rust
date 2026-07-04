@@ -25,11 +25,11 @@
 //! ]);
 //! ```
 
+use composable_rust_anthropic::{Message, MessagesRequest};
 use composable_rust_core::agent::AgentEnvironment;
 use composable_rust_core::effect::Effect;
 use composable_rust_core::reducer::Reducer;
-use composable_rust_anthropic::{Message, MessagesRequest};
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 use std::marker::PhantomData;
 
 /// A step in the prompt chain
@@ -181,7 +181,7 @@ impl<E: AgentEnvironment> Reducer for PromptChainReducer<E> {
                     // For now, return None as placeholder
                     None
                 }))]
-            }
+            },
 
             ChainAction::StepComplete { step, result } => {
                 // Verify this is the expected step
@@ -222,18 +222,18 @@ impl<E: AgentEnvironment> Reducer for PromptChainReducer<E> {
                     // Placeholder - environment will implement actual LLM call
                     None
                 }))]
-            }
+            },
 
             ChainAction::Complete { .. } => {
                 // Chain is complete, no more effects
                 smallvec![Effect::None]
-            }
+            },
 
             ChainAction::Error { .. } => {
                 // Error occurred, stop chain
                 state.completed = true;
                 smallvec![Effect::None]
-            }
+            },
         }
     }
 }

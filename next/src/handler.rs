@@ -378,8 +378,7 @@ where
                 BusinessResult::Continue { events, calls } => {
                     if !events.is_empty() {
                         let stream_id = T::stream_id(&prepared_input);
-                        let serialized =
-                            Self::serialize_events(&events, metadata_context, &ctx)?;
+                        let serialized = Self::serialize_events(&events, metadata_context, &ctx)?;
 
                         // Persist and project (atomically if available) with retry
                         match self

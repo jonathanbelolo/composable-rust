@@ -49,6 +49,6 @@
 mod magic_link;
 
 pub use magic_link::{
-    request_magic_link, verify_magic_link, MagicLinkConfig, MagicLinkConfigBuilder,
-    MagicLinkRequest, MagicLinkResponse, VerifyParams,
+    MagicLinkConfig, MagicLinkConfigBuilder, MagicLinkRequest, MagicLinkResponse, VerifyParams,
+    request_magic_link, verify_magic_link,
 };

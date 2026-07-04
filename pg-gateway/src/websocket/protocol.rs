@@ -66,12 +66,10 @@ impl SubscriptionRequest {
             (None, Some(stream), None) => Ok(super::Subscription::Stream(stream)),
             // Invalid combinations
             (None, None, _) => Err("Must specify 'context' or 'stream'".to_string()),
-            (Some(_), Some(_), _) => {
-                Err("Cannot specify both 'context' and 'stream'".to_string())
-            }
+            (Some(_), Some(_), _) => Err("Cannot specify both 'context' and 'stream'".to_string()),
             (None, Some(_), Some(_)) => {
                 Err("Cannot use 'event_type' with 'stream' subscription".to_string())
-            }
+            },
         }
     }
 }
@@ -223,7 +221,12 @@ mod tests {
         };
 
         assert_eq!(subscriptions.len(), 1);
-        let sub = subscriptions.into_iter().next().unwrap().into_subscription().unwrap();
+        let sub = subscriptions
+            .into_iter()
+            .next()
+            .unwrap()
+            .into_subscription()
+            .unwrap();
         assert!(matches!(sub, super::super::Subscription::Context(ctx) if ctx == "sales"));
     }
 
@@ -236,7 +239,12 @@ mod tests {
             panic!("Expected Subscribe message");
         };
 
-        let sub = subscriptions.into_iter().next().unwrap().into_subscription().unwrap();
+        let sub = subscriptions
+            .into_iter()
+            .next()
+            .unwrap()
+            .into_subscription()
+            .unwrap();
         assert!(matches!(sub, super::super::Subscription::Stream(s) if s == "order-123"));
     }
 
@@ -249,7 +257,12 @@ mod tests {
             panic!("Expected Subscribe message");
         };
 
-        let sub = subscriptions.into_iter().next().unwrap().into_subscription().unwrap();
+        let sub = subscriptions
+            .into_iter()
+            .next()
+            .unwrap()
+            .into_subscription()
+            .unwrap();
         assert!(matches!(
             sub,
             super::super::Subscription::Pattern { context, event_type }
@@ -298,7 +311,8 @@ mod tests {
 
     #[test]
     fn serialize_subscribed() {
-        let msg = ServerMessage::subscribed(vec!["sales".to_string(), "stream:order-123".to_string()]);
+        let msg =
+            ServerMessage::subscribed(vec!["sales".to_string(), "stream:order-123".to_string()]);
         let json = msg.to_json().unwrap();
         assert!(json.contains("\"type\":\"subscribed\""));
         assert!(json.contains("\"subscriptions\""));

@@ -41,8 +41,8 @@ use crate::error::{AuthError, Result};
 use crate::providers::{OAuthTokenData, OAuthTokenStore};
 use crate::state::{OAuthProvider, UserId};
 use aes_gcm::{
-    aead::{Aead, AeadCore, KeyInit, OsRng},
     Aes256Gcm, Nonce,
+    aead::{Aead, AeadCore, KeyInit, OsRng},
 };
 use chrono::Utc;
 use redis::aio::ConnectionManager;
@@ -93,9 +93,8 @@ impl RedisOAuthTokenStore {
             ));
         }
 
-        let client = Client::open(redis_url).map_err(|e| {
-            AuthError::InternalError(format!("Failed to create Redis client: {e}"))
-        })?;
+        let client = Client::open(redis_url)
+            .map_err(|e| AuthError::InternalError(format!("Failed to create Redis client: {e}")))?;
 
         let conn_manager = ConnectionManager::new(client).await.map_err(|e| {
             AuthError::InternalError(format!("Failed to create Redis connection manager: {e}"))
@@ -252,7 +251,7 @@ impl OAuthTokenStore for RedisOAuthTokenStore {
                     .map_err(|e| AuthError::SerializationError(e.to_string()))?;
 
                 Ok(Some(tokens))
-            }
+            },
             None => Ok(None),
         }
     }
@@ -366,10 +365,7 @@ mod tests {
         // Manually retrieve raw encrypted data from Redis
         let mut conn = store.conn_manager.clone();
         let token_key = RedisOAuthTokenStore::token_key(&user_id, provider);
-        let raw_data: Vec<u8> = conn
-            .get(&token_key)
-            .await
-            .expect("Failed to get raw data");
+        let raw_data: Vec<u8> = conn.get(&token_key).await.expect("Failed to get raw data");
 
         // Verify the raw data does NOT contain the plaintext tokens
         let raw_string = String::from_utf8_lossy(&raw_data);

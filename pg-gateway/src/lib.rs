@@ -110,10 +110,10 @@ pub mod identity;
 pub mod pool;
 
 pub use error::ApiError;
-pub use pool::{create_pool, DbConfig};
+pub use pool::{DbConfig, create_pool};
 
 // Re-export commonly used identity types at crate root
-pub use identity::{execute_with_identity, set_identity_context, Claims, Identity};
+pub use identity::{Claims, Identity, execute_with_identity, set_identity_context};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // JWT and Auth (Requires auth-handlers feature)
@@ -138,8 +138,8 @@ pub mod websocket;
 
 #[cfg(feature = "websocket")]
 pub use websocket::{
-    pg_notify_listener, ws_handler, ClientMessage, ConnectionId, EventNotification, ServerMessage,
-    Subscription, SubscriptionRequest, WsConnection, WsManager, WsState,
+    ClientMessage, ConnectionId, EventNotification, ServerMessage, Subscription,
+    SubscriptionRequest, WsConnection, WsManager, WsState, pg_notify_listener, ws_handler,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -150,7 +150,9 @@ pub use websocket::{
 pub mod tasks;
 
 #[cfg(feature = "tasks")]
-pub use tasks::{OutboxConfig, OutboxTask, OutboxWorker, OutboxWorkerBuilder, TaskError, TaskExecutor};
+pub use tasks::{
+    OutboxConfig, OutboxTask, OutboxWorker, OutboxWorkerBuilder, TaskError, TaskExecutor,
+};
 
 #[cfg(feature = "tasks-email")]
 pub use tasks::builtins::{EmailConfig, EmailExecutor, EmailTask};
@@ -170,8 +172,8 @@ pub mod auth;
 
 #[cfg(feature = "auth-handlers")]
 pub use auth::{
-    request_magic_link, verify_magic_link, MagicLinkConfig, MagicLinkConfigBuilder,
-    MagicLinkRequest, MagicLinkResponse, VerifyParams,
+    MagicLinkConfig, MagicLinkConfigBuilder, MagicLinkRequest, MagicLinkResponse, VerifyParams,
+    request_magic_link, verify_magic_link,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -180,6 +182,6 @@ pub use auth::{
 
 #[cfg(feature = "http")]
 pub use pool::{
-    check_database, check_outbox, health_check, health_check_with_outbox, HealthChecks,
-    HealthConfig, HealthResponse, HealthStatus,
+    HealthChecks, HealthConfig, HealthResponse, HealthStatus, check_database, check_outbox,
+    health_check, health_check_with_outbox,
 };

@@ -329,7 +329,7 @@ where
                     match validate_jwt(token, config.jwt_validator()) {
                         Ok(identity) => return Ok(Self(Some(identity))),
                         Err(ApiError::Internal) => return Err(ApiError::Internal),
-                        Err(_) => {} // Continue to try session cookie
+                        Err(_) => {}, // Continue to try session cookie
                     }
                 }
             }
@@ -342,7 +342,7 @@ where
                     match validate_session(session_id, config.pool()).await {
                         Ok(identity) => return Ok(Self(Some(identity))),
                         Err(ApiError::Internal) => return Err(ApiError::Internal),
-                        Err(_) => {} // No valid session
+                        Err(_) => {}, // No valid session
                     }
                 }
             }
@@ -391,9 +391,9 @@ mod tests {
     async fn identity_config_debug_redacts() {
         let config = IdentityConfig {
             pool: sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap(),
-            jwt_validator: Arc::new(JwtValidator::new(super::super::jwt::JwtConfig::with_secret(
-                "secret",
-            ))),
+            jwt_validator: Arc::new(JwtValidator::new(
+                super::super::jwt::JwtConfig::with_secret("secret"),
+            )),
             session_cookie_name: "session".to_string(),
         };
 

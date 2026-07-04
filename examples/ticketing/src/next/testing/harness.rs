@@ -27,20 +27,18 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use composable_rust_next::{
+    Clock, FixedClock, HandleResult, Handler, HandlerEnvironment, HandlerError, MetadataContext,
+    NoOpCallExecutor, Projector,
     testing::{InMemoryEventBus, InMemoryEventStore},
-    Clock, Handler, HandlerEnvironment, HandlerError, HandleResult, MetadataContext,
-    NoOpCallExecutor, Projector, FixedClock,
 };
 
-use crate::next::{
-    InventoryBusinessLogic, InventoryCommand, PaymentBusinessLogic,
-    ReservationSagaLogic, ReservationSagaInput, ReservationSagaError, ReservationSagaState,
-};
-use crate::next::call_executor::{
-    InventoryHandler, PaymentHandler, ReservationSagaCallExecutor,
-};
+use crate::next::call_executor::{InventoryHandler, PaymentHandler, ReservationSagaCallExecutor};
 use crate::next::inventory::InventoryDto;
 use crate::next::payment::PaymentDto;
+use crate::next::{
+    InventoryBusinessLogic, InventoryCommand, PaymentBusinessLogic, ReservationSagaError,
+    ReservationSagaInput, ReservationSagaLogic, ReservationSagaState,
+};
 use crate::types::{CustomerId, EventId, PaymentId, ReservationId};
 
 use super::inventory::{
@@ -254,7 +252,7 @@ impl<PQ: composable_rust_next::ProjectionQueries>
             ReservationSagaInput::InitiateReservation { .. } => {
                 // New saga, no state to fetch
                 input
-            }
+            },
             ReservationSagaInput::CancelReservation {
                 reservation_id,
                 fetched: _,
@@ -264,7 +262,7 @@ impl<PQ: composable_rust_next::ProjectionQueries>
                     reservation_id,
                     fetched,
                 }
-            }
+            },
             ReservationSagaInput::ExpireReservation {
                 reservation_id,
                 fetched: _,
@@ -274,7 +272,7 @@ impl<PQ: composable_rust_next::ProjectionQueries>
                     reservation_id,
                     fetched,
                 }
-            }
+            },
             ReservationSagaInput::Feedback {
                 reservation_id,
                 results,
@@ -286,7 +284,7 @@ impl<PQ: composable_rust_next::ProjectionQueries>
                     results,
                     fetched,
                 }
-            }
+            },
         };
 
         async move { Ok(composable_rust_next::FetchResult::new_entity(prepared)) }
@@ -298,9 +296,9 @@ impl<PQ: composable_rust_next::ProjectionQueries>
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
-use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(test)]
 use futures::future::BoxFuture;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(test)]
 use crate::next::payment::{PaymentCommand, PaymentError, PaymentResponse};
@@ -345,12 +343,18 @@ impl PaymentHandler for FailingPaymentHandler {
         command: PaymentCommand,
     ) -> BoxFuture<'_, Result<HandleResult<PaymentResponse>, HandlerError<PaymentError>>> {
         let should_fail = self.should_fail.load(Ordering::SeqCst);
-        let reason = self.failure_reason.read().map(|r| r.clone()).unwrap_or_default();
+        let reason = self
+            .failure_reason
+            .read()
+            .map(|r| r.clone())
+            .unwrap_or_default();
 
         if should_fail {
             // Return a business error that simulates payment failure
             Box::pin(async move {
-                Err(HandlerError::Business(PaymentError::PaymentDeclined(reason)))
+                Err(HandlerError::Business(PaymentError::PaymentDeclined(
+                    reason,
+                )))
             })
         } else {
             self.inner.handle(command)
@@ -460,8 +464,7 @@ impl FailableReservationSagaTestHarness {
         let saga_query_fetcher = InMemorySagaQueryFetcher::new(event_store.clone());
 
         // Create saga environment
-        let combined_projector =
-            CombinedProjector::new(inventory_projector, payment_projector);
+        let combined_projector = CombinedProjector::new(inventory_projector, payment_projector);
 
         let saga_env = SagaTestEnvironment {
             clock: clock.clone(),
@@ -492,7 +495,8 @@ impl FailableReservationSagaTestHarness {
 
     /// Configure the payment handler to fail with the given reason.
     pub fn set_payment_failure(&self, should_fail: bool, reason: &str) {
-        self.failing_payment_handler.set_should_fail(should_fail, reason);
+        self.failing_payment_handler
+            .set_should_fail(should_fail, reason);
     }
 
     /// Initialize inventory for an event.
@@ -539,7 +543,10 @@ impl FailableReservationSagaTestHarness {
     }
 
     /// Get saga state by rebuilding from events.
-    pub async fn get_saga_state(&self, reservation_id: ReservationId) -> Option<ReservationSagaState> {
+    pub async fn get_saga_state(
+        &self,
+        reservation_id: ReservationId,
+    ) -> Option<ReservationSagaState> {
         use crate::next::ReservationSagaEvent;
         use composable_rust_next::{BusinessLogic, StreamId};
 
@@ -693,8 +700,7 @@ impl ReservationSagaTestHarness {
         let saga_query_fetcher = InMemorySagaQueryFetcher::new(event_store.clone());
 
         // Create saga environment
-        let combined_projector =
-            CombinedProjector::new(inventory_projector, payment_projector);
+        let combined_projector = CombinedProjector::new(inventory_projector, payment_projector);
 
         let saga_env = SagaTestEnvironment {
             clock: clock.clone(),
@@ -820,21 +826,14 @@ impl ReservationSagaTestHarness {
     }
 
     /// Get inventory for a section.
-    pub async fn get_inventory(
-        &self,
-        event_id: EventId,
-        section: &str,
-    ) -> Option<InventoryDto> {
+    pub async fn get_inventory(&self, event_id: EventId, section: &str) -> Option<InventoryDto> {
         self.inventory_projections
             .get_inventory(event_id, section)
             .await
     }
 
     /// Get payment by ID.
-    pub async fn get_payment(
-        &self,
-        payment_id: PaymentId,
-    ) -> Option<PaymentDto> {
+    pub async fn get_payment(&self, payment_id: PaymentId) -> Option<PaymentDto> {
         self.payment_projections.get_payment(payment_id).await
     }
 
@@ -985,7 +984,10 @@ mod tests {
 
         // Assert: Should succeed (saga processing works even if inventory fails)
         // The saga handles the error internally and emits InventoryReservationFailed event
-        assert!(result.is_ok(), "Saga should succeed even if inventory fails, got: {result:?}");
+        assert!(
+            result.is_ok(),
+            "Saga should succeed even if inventory fails, got: {result:?}"
+        );
 
         // Check saga state - should have failed on inventory reservation
         let state = harness.get_saga_state(reservation_id).await;
@@ -1016,7 +1018,9 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result,
-            Err(HandlerError::Business(ReservationSagaError::ValidationFailed(_)))
+            Err(HandlerError::Business(
+                ReservationSagaError::ValidationFailed(_)
+            ))
         ));
     }
 
@@ -1042,7 +1046,9 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result,
-            Err(HandlerError::Business(ReservationSagaError::ValidationFailed(_)))
+            Err(HandlerError::Business(
+                ReservationSagaError::ValidationFailed(_)
+            ))
         ));
     }
 
@@ -1142,13 +1148,7 @@ mod tests {
         // Act: Make 2 reservations of 4 seats each (8 total)
         for i in 0..2 {
             let result = harness
-                .initiate_reservation(
-                    ReservationId::new(),
-                    event_id,
-                    CustomerId::new(),
-                    "VIP",
-                    4,
-                )
+                .initiate_reservation(ReservationId::new(), event_id, CustomerId::new(), "VIP", 4)
                 .await;
             assert!(
                 result.is_ok(),
@@ -1164,13 +1164,7 @@ mod tests {
 
         // Act: Third reservation of 4 seats should fail (only 2 available)
         let result = harness
-            .initiate_reservation(
-                ReservationId::new(),
-                event_id,
-                CustomerId::new(),
-                "VIP",
-                4,
-            )
+            .initiate_reservation(ReservationId::new(), event_id, CustomerId::new(), "VIP", 4)
             .await;
 
         // Assert: Should succeed (saga handles failure internally)
@@ -1205,7 +1199,10 @@ mod tests {
 
         // Verify inventory was reduced
         let inventory = harness.get_inventory(event_id, "VIP").await.unwrap();
-        assert_eq!(inventory.available_count, 95, "Should have 95 available after reservation");
+        assert_eq!(
+            inventory.available_count, 95,
+            "Should have 95 available after reservation"
+        );
 
         // Act: Cancel the reservation
         let cancel_result = harness.cancel_reservation(reservation_id).await;
@@ -1241,7 +1238,10 @@ mod tests {
 
         // Verify published events include expected types
         let published = harness.published_events();
-        let event_types: Vec<&str> = published.iter().map(|(_, e)| e.event_type.as_str()).collect();
+        let event_types: Vec<&str> = published
+            .iter()
+            .map(|(_, e)| e.event_type.as_str())
+            .collect();
 
         // Expected sequence:
         // 1. InventoryInitialized (from setup)
@@ -1308,7 +1308,10 @@ mod tests {
             .await;
 
         // Assert: Saga should succeed (handles failure internally)
-        assert!(result.is_ok(), "Saga should succeed even when payment fails, got: {result:?}");
+        assert!(
+            result.is_ok(),
+            "Saga should succeed even when payment fails, got: {result:?}"
+        );
 
         // Verify saga ended in Failed state (after compensation)
         let state = harness.get_saga_state(reservation_id).await;
@@ -1329,7 +1332,10 @@ mod tests {
 
         // Verify the event sequence shows the compensation flow
         let published = harness.published_events();
-        let event_types: Vec<&str> = published.iter().map(|(_, e)| e.event_type.as_str()).collect();
+        let event_types: Vec<&str> = published
+            .iter()
+            .map(|(_, e)| e.event_type.as_str())
+            .collect();
 
         // Should have saga events showing failure and compensation
         assert!(

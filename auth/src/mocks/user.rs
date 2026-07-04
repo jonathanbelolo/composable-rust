@@ -1,7 +1,7 @@
 //! Mock user repository for testing.
 
 use crate::error::{AuthError, Result};
-use crate::providers::{User, UserRepository, OAuthLink, MagicLinkToken, PasskeyCredential};
+use crate::providers::{MagicLinkToken, OAuthLink, PasskeyCredential, User, UserRepository};
 use crate::state::{OAuthProvider, UserId};
 use std::collections::HashMap;
 use std::future::Future;
@@ -37,10 +37,7 @@ impl Default for MockUserRepository {
 }
 
 impl UserRepository for MockUserRepository {
-    fn get_user_by_id(
-        &self,
-        user_id: UserId,
-    ) -> impl Future<Output = Result<User>> + Send {
+    fn get_user_by_id(&self, user_id: UserId) -> impl Future<Output = Result<User>> + Send {
         let users = Arc::clone(&self.users);
 
         async move {
@@ -53,10 +50,7 @@ impl UserRepository for MockUserRepository {
         }
     }
 
-    fn get_user_by_email(
-        &self,
-        email: &str,
-    ) -> impl Future<Output = Result<User>> + Send {
+    fn get_user_by_email(&self, email: &str) -> impl Future<Output = Result<User>> + Send {
         let users_by_email = Arc::clone(&self.users_by_email);
         let email = email.to_string();
 
@@ -70,17 +64,18 @@ impl UserRepository for MockUserRepository {
         }
     }
 
-    fn create_user(
-        &self,
-        user: &User,
-    ) -> impl Future<Output = Result<User>> + Send {
+    fn create_user(&self, user: &User) -> impl Future<Output = Result<User>> + Send {
         let users = Arc::clone(&self.users);
         let users_by_email = Arc::clone(&self.users_by_email);
         let user = user.clone();
 
         async move {
-            let mut users_guard = users.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
-            let mut email_guard = users_by_email.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
+            let mut users_guard = users
+                .lock()
+                .map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
+            let mut email_guard = users_by_email
+                .lock()
+                .map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
 
             // Check if email already exists
             if email_guard.contains_key(&user.email) {
@@ -94,17 +89,18 @@ impl UserRepository for MockUserRepository {
         }
     }
 
-    fn update_user(
-        &self,
-        user: &User,
-    ) -> impl Future<Output = Result<User>> + Send {
+    fn update_user(&self, user: &User) -> impl Future<Output = Result<User>> + Send {
         let users = Arc::clone(&self.users);
         let users_by_email = Arc::clone(&self.users_by_email);
         let user = user.clone();
 
         async move {
-            let mut users_guard = users.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
-            let mut email_guard = users_by_email.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
+            let mut users_guard = users
+                .lock()
+                .map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
+            let mut email_guard = users_by_email
+                .lock()
+                .map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
 
             if !users_guard.contains_key(&user.user_id) {
                 return Err(AuthError::ResourceNotFound);
@@ -117,10 +113,7 @@ impl UserRepository for MockUserRepository {
         }
     }
 
-    fn email_exists(
-        &self,
-        email: &str,
-    ) -> impl Future<Output = Result<bool>> + Send {
+    fn email_exists(&self, email: &str) -> impl Future<Output = Result<bool>> + Send {
         let users_by_email = Arc::clone(&self.users_by_email);
         let email = email.to_string();
 
@@ -157,39 +150,24 @@ impl UserRepository for MockUserRepository {
         async move { Ok(link) }
     }
 
-    async fn delete_oauth_link(
-        &self,
-        _user_id: UserId,
-        _provider: OAuthProvider,
-    ) -> Result<()> {
+    async fn delete_oauth_link(&self, _user_id: UserId, _provider: OAuthProvider) -> Result<()> {
         Ok(())
     }
 
     // Magic link tokens - simplified implementations
-    async fn create_magic_link_token(
-        &self,
-        _token: &MagicLinkToken,
-    ) -> Result<()> {
+    async fn create_magic_link_token(&self, _token: &MagicLinkToken) -> Result<()> {
         Ok(())
     }
 
-    async fn get_magic_link_token(
-        &self,
-        _token_hash: &str,
-    ) -> Result<MagicLinkToken> {
+    async fn get_magic_link_token(&self, _token_hash: &str) -> Result<MagicLinkToken> {
         Err(AuthError::MagicLinkInvalid)
     }
 
-    async fn mark_magic_link_used(
-        &self,
-        _token_hash: &str,
-    ) -> Result<()> {
+    async fn mark_magic_link_used(&self, _token_hash: &str) -> Result<()> {
         Ok(())
     }
 
-    async fn delete_expired_magic_links(
-        &self,
-    ) -> Result<usize> {
+    async fn delete_expired_magic_links(&self) -> Result<usize> {
         Ok(0)
     }
 
@@ -250,11 +228,7 @@ impl UserRepository for MockUserRepository {
         }
     }
 
-    async fn update_passkey_counter(
-        &self,
-        _credential_id: &str,
-        _counter: u32,
-    ) -> Result<()> {
+    async fn update_passkey_counter(&self, _credential_id: &str, _counter: u32) -> Result<()> {
         Ok(())
     }
 
@@ -359,8 +333,8 @@ mod tests {
 
         for handle in handles {
             match handle.await.unwrap() {
-                Ok(true) => successful_updates += 1,  // CAS succeeded
-                Ok(false) => failed_updates += 1,     // CAS failed (concurrent modification)
+                Ok(true) => successful_updates += 1, // CAS succeeded
+                Ok(false) => failed_updates += 1,    // CAS failed (concurrent modification)
                 Err(_) => panic!("Unexpected error during concurrent update"),
             }
         }
@@ -465,7 +439,10 @@ mod tests {
             .update_passkey_counter_atomic(&credential_id, 100, 106)
             .await
             .unwrap();
-        assert!(!result, "Update with stale counter should fail (CAS rejection)");
+        assert!(
+            !result,
+            "Update with stale counter should fail (CAS rejection)"
+        );
 
         // Verify counter unchanged (still 105)
         let final_credential = repo.get_passkey_credential(&credential_id).await.unwrap();
@@ -527,8 +504,16 @@ mod tests {
 
         // Should return both credentials
         assert_eq!(credentials.len(), 2);
-        assert!(credentials.iter().any(|c| c.credential_id == "credential_1"));
-        assert!(credentials.iter().any(|c| c.credential_id == "credential_2"));
+        assert!(
+            credentials
+                .iter()
+                .any(|c| c.credential_id == "credential_1")
+        );
+        assert!(
+            credentials
+                .iter()
+                .any(|c| c.credential_id == "credential_2")
+        );
     }
 
     #[tokio::test]
@@ -614,11 +599,16 @@ mod tests {
         repo.create_passkey_credential(&credential).await.unwrap();
 
         // Verify credential exists
-        let retrieved = repo.get_passkey_credential("test_credential").await.unwrap();
+        let retrieved = repo
+            .get_passkey_credential("test_credential")
+            .await
+            .unwrap();
         assert_eq!(retrieved.credential_id, "test_credential");
 
         // Delete credential
-        repo.delete_passkey_credential("test_credential").await.unwrap();
+        repo.delete_passkey_credential("test_credential")
+            .await
+            .unwrap();
 
         // Verify credential is deleted
         let result = repo.get_passkey_credential("test_credential").await;
@@ -636,7 +626,9 @@ mod tests {
         let repo = MockUserRepository::new();
 
         // Attempt to delete credential that doesn't exist
-        let result = repo.delete_passkey_credential("nonexistent_credential").await;
+        let result = repo
+            .delete_passkey_credential("nonexistent_credential")
+            .await;
 
         // Should succeed (idempotent delete)
         assert!(result.is_ok());
@@ -678,7 +670,9 @@ mod tests {
         assert_eq!(credentials.len(), 2);
 
         // Delete one credential
-        repo.delete_passkey_credential("credential_1").await.unwrap();
+        repo.delete_passkey_credential("credential_1")
+            .await
+            .unwrap();
 
         // Verify only one credential remains
         let credentials = repo.get_user_passkey_credentials(user_id).await.unwrap();

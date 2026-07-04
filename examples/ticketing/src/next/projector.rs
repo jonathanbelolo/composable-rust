@@ -20,13 +20,12 @@ use tracing::instrument;
 
 use crate::types::{EventId, ReservationId};
 
-use super::{
-    EventEvent, EventInventorySagaLogic, InventoryEvent, PaymentEvent,
-    ReservationSagaLogic,
-};
 use super::event_inventory_saga::{EVENT_INVENTORY_SAGA_STATE_VERSION, SagaEvent, SagaState};
 use super::reservation_saga::{
     RESERVATION_SAGA_STATE_VERSION, ReservationSagaEvent, ReservationSagaState,
+};
+use super::{
+    EventEvent, EventInventorySagaLogic, InventoryEvent, PaymentEvent, ReservationSagaLogic,
 };
 
 /// Projector for the Event aggregate read model.
@@ -105,7 +104,7 @@ impl EventProjector {
                 .map_err(|e| ProjectionError::Database(e.to_string()))?;
 
                 tracing::debug!(event_id = %event_id, "Projected EventCreated");
-            }
+            },
 
             EventEvent::Updated {
                 event_id,
@@ -158,7 +157,7 @@ impl EventProjector {
                     .map_err(|e| ProjectionError::Database(e.to_string()))?;
 
                 tracing::debug!(event_id = %event_id, "Projected EventUpdated");
-            }
+            },
 
             EventEvent::Published {
                 event_id,
@@ -178,7 +177,7 @@ impl EventProjector {
                 .map_err(|e| ProjectionError::Database(e.to_string()))?;
 
                 tracing::debug!(event_id = %event_id, "Projected EventPublished");
-            }
+            },
 
             EventEvent::Cancelled {
                 event_id,
@@ -200,7 +199,7 @@ impl EventProjector {
                 .map_err(|e| ProjectionError::Database(e.to_string()))?;
 
                 tracing::debug!(event_id = %event_id, "Projected EventCancelled");
-            }
+            },
 
             EventEvent::PricingUpdated {
                 event_id,
@@ -226,7 +225,7 @@ impl EventProjector {
                 .map_err(|e| ProjectionError::Database(e.to_string()))?;
 
                 tracing::debug!(event_id = %event_id, "Projected EventPricingUpdated");
-            }
+            },
 
             EventEvent::VenueSectionsAdded {
                 event_id,
@@ -234,13 +233,12 @@ impl EventProjector {
                 added_at,
             } => {
                 // Fetch existing venue to update it
-                let existing_venue: Option<serde_json::Value> = sqlx::query_scalar(
-                    "SELECT venue FROM events_projection WHERE event_id = $1",
-                )
-                .bind(event_id.as_uuid())
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(|e| ProjectionError::Database(e.to_string()))?;
+                let existing_venue: Option<serde_json::Value> =
+                    sqlx::query_scalar("SELECT venue FROM events_projection WHERE event_id = $1")
+                        .bind(event_id.as_uuid())
+                        .fetch_optional(&self.pool)
+                        .await
+                        .map_err(|e| ProjectionError::Database(e.to_string()))?;
 
                 if let Some(mut venue_json) = existing_venue {
                     // Add sections to existing venue
@@ -257,12 +255,12 @@ impl EventProjector {
 
                         // Update total capacity
                         if let Some(capacity_obj) = venue_obj.get_mut("capacity") {
-                            if let Some(current_cap) = capacity_obj.get("value").and_then(serde_json::Value::as_u64)
+                            if let Some(current_cap) = capacity_obj
+                                .get("value")
+                                .and_then(serde_json::Value::as_u64)
                             {
-                                let additional: u64 = sections
-                                    .iter()
-                                    .map(|s| u64::from(s.capacity.value()))
-                                    .sum();
+                                let additional: u64 =
+                                    sections.iter().map(|s| u64::from(s.capacity.value())).sum();
                                 capacity_obj["value"] =
                                     serde_json::Value::Number((current_cap + additional).into());
                             }
@@ -289,7 +287,7 @@ impl EventProjector {
                         "Projected EventVenueSectionsAdded"
                     );
                 }
-            }
+            },
         }
 
         Ok(())
@@ -437,7 +435,7 @@ impl InventoryProjector {
                     seat_count = seats.len(),
                     "Projected InventoryInitialized with individual seats"
                 );
-            }
+            },
 
             InventoryEvent::SeatsReserved {
                 reservation_id,
@@ -517,7 +515,7 @@ impl InventoryProjector {
                     expires_at = %expires_at,
                     "Projected SeatsReserved"
                 );
-            }
+            },
 
             // SeatsConfirmed: update reservation status, reserved seats become sold
             InventoryEvent::SeatsConfirmed {
@@ -604,7 +602,7 @@ impl InventoryProjector {
                         "SeatsConfirmed for unknown reservation - inventory not updated"
                     );
                 }
-            }
+            },
 
             // SeatsReleased: update reservation status and return seats to available pool
             InventoryEvent::SeatsReleased {
@@ -696,7 +694,7 @@ impl InventoryProjector {
                 .execute(&self.pool)
                 .await
                 .map_err(|e| ProjectionError::Database(e.to_string()))?;
-            }
+            },
         }
 
         Ok(())
@@ -810,7 +808,7 @@ impl PaymentProjector {
                 .map_err(|e| ProjectionError::Database(e.to_string()))?;
 
                 tracing::debug!(payment_id = %payment_id, "Projected PaymentProcessed");
-            }
+            },
 
             PaymentEvent::PaymentSucceeded {
                 payment_id,
@@ -834,7 +832,7 @@ impl PaymentProjector {
                 .map_err(|e| ProjectionError::Database(e.to_string()))?;
 
                 tracing::debug!(payment_id = %payment_id, "Projected PaymentSucceeded");
-            }
+            },
 
             PaymentEvent::PaymentFailed {
                 payment_id,
@@ -858,7 +856,7 @@ impl PaymentProjector {
                 .map_err(|e| ProjectionError::Database(e.to_string()))?;
 
                 tracing::debug!(payment_id = %payment_id, "Projected PaymentFailed");
-            }
+            },
 
             PaymentEvent::PaymentRefunded {
                 payment_id,
@@ -888,7 +886,7 @@ impl PaymentProjector {
                 .map_err(|e| ProjectionError::Database(e.to_string()))?;
 
                 tracing::debug!(payment_id = %payment_id, "Projected PaymentRefunded");
-            }
+            },
         }
 
         Ok(())
@@ -998,7 +996,7 @@ impl PgTransactionalProjector for PgEventInventorySagaStateProjector {
                 serde_json::from_value(json).map_err(|e| {
                     ProjectionError::Deserialization(format!("saga_state_event_inventory: {e}"))
                 })?
-            }
+            },
             None => SagaState::default(),
         };
         for saga_event in &decoded {
@@ -1092,7 +1090,9 @@ fn reservation_saga_id_of(event: &ReservationSagaEvent) -> ReservationId {
         | ReservationSagaEvent::ReservationExpired { reservation_id, .. }
         | ReservationSagaEvent::ReservationCancelled { reservation_id, .. }
         | ReservationSagaEvent::ReservationCompensated { reservation_id, .. }
-        | ReservationSagaEvent::InventoryReservationFailed { reservation_id, .. } => *reservation_id,
+        | ReservationSagaEvent::InventoryReservationFailed { reservation_id, .. } => {
+            *reservation_id
+        },
     }
 }
 
@@ -1135,7 +1135,7 @@ async fn update_reservations_projection_tx(
             .execute(&mut *conn)
             .await
             .map_err(db_err)?;
-        }
+        },
         ReservationSagaEvent::SeatsAllocated {
             reservation_id,
             total_amount,
@@ -1153,22 +1153,22 @@ async fn update_reservations_projection_tx(
             .execute(&mut *conn)
             .await
             .map_err(db_err)?;
-        }
+        },
         ReservationSagaEvent::PaymentRequested { reservation_id, .. } => {
             set_reservation_status(conn, *reservation_id, "payment_pending").await?;
-        }
+        },
         ReservationSagaEvent::PaymentSucceeded { reservation_id, .. } => {
             set_reservation_status(conn, *reservation_id, "payment_completed").await?;
-        }
+        },
         ReservationSagaEvent::PaymentFailed { reservation_id, .. }
         | ReservationSagaEvent::ReservationCancelled { reservation_id, .. }
         | ReservationSagaEvent::ReservationCompensated { reservation_id, .. }
         | ReservationSagaEvent::InventoryReservationFailed { reservation_id, .. } => {
             set_reservation_status(conn, *reservation_id, "cancelled").await?;
-        }
+        },
         ReservationSagaEvent::ReservationExpired { reservation_id, .. } => {
             set_reservation_status(conn, *reservation_id, "expired").await?;
-        }
+        },
         ReservationSagaEvent::ReservationCompleted {
             reservation_id,
             completed_at,
@@ -1186,7 +1186,7 @@ async fn update_reservations_projection_tx(
             .execute(&mut *conn)
             .await
             .map_err(db_err)?;
-        }
+        },
     }
 
     Ok(())
@@ -1272,7 +1272,7 @@ impl PgTransactionalProjector for PgReservationSagaStateProjector {
                 }
                 serde_json::from_value(json)
                     .map_err(|e| ProjectionError::Deserialization(format!("saga_state: {e}")))?
-            }
+            },
             None => ReservationSagaState::default(),
         };
         for saga_event in &decoded {
@@ -1356,4 +1356,3 @@ impl DynAtomicPersist for PgAtomicPersist {
         })
     }
 }
-

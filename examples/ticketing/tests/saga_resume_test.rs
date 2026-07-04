@@ -376,8 +376,16 @@ async fn saga_runs_to_terminal_through_real_handler() {
         .await
         .expect("query")
         .expect("saga_state row exists");
-    assert_eq!(state.phase, ReservationSagaPhase::Failed, "saga reached terminal");
-    assert_eq!(version, Version::new(2), "two events appended via the Handler");
+    assert_eq!(
+        state.phase,
+        ReservationSagaPhase::Failed,
+        "saga reached terminal"
+    );
+    assert_eq!(
+        version,
+        Version::new(2),
+        "two events appended via the Handler"
+    );
 
     let events = PostgresEventStore::from_pool(pool)
         .load(&saga_stream(reservation_id), None)
@@ -409,7 +417,9 @@ async fn duplicate_initiation_conflicts_through_real_handler() {
     assert!(
         matches!(
             dup,
-            Err(HandlerError::Persist(EventStoreError::VersionConflict { .. }))
+            Err(HandlerError::Persist(
+                EventStoreError::VersionConflict { .. }
+            ))
         ),
         "duplicate initiation must conflict, got {dup:?}"
     );
@@ -533,7 +543,11 @@ async fn event_inventory_saga_state_survives_restart_and_enforces_occ() {
         .await
         .expect("query")
         .expect("saga_state_event_inventory row exists");
-    assert_eq!(version, Version::new(2), "rehydrated version == stream version");
+    assert_eq!(
+        version,
+        Version::new(2),
+        "rehydrated version == stream version"
+    );
     assert_eq!(
         state.phase,
         EventInventorySagaPhase::InitializingInventory,

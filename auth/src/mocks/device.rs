@@ -1,8 +1,8 @@
 //! Mock device repository for testing.
 
+use crate::actions::DeviceTrustLevel;
 use crate::error::{AuthError, Result};
 use crate::providers::{Device, DeviceRepository};
-use crate::actions::DeviceTrustLevel;
 use crate::state::{DeviceId, UserId};
 use std::collections::HashMap;
 use std::future::Future;
@@ -71,12 +71,16 @@ impl DeviceRepository for MockDeviceRepository {
             const MAX_LIMIT: i64 = 1000;
             const DEFAULT_LIMIT: i64 = 100;
 
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Safe: clamped to MAX_LIMIT (1000)
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            // Safe: clamped to MAX_LIMIT (1000)
             let limit = limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT) as usize;
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Safe: clamped to non-negative values
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            // Safe: clamped to non-negative values
             let offset = offset.unwrap_or(0).max(0) as usize;
 
-            let devices_guard = devices.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
+            let devices_guard = devices
+                .lock()
+                .map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
 
             // Sort by last_seen DESC (most recent first)
             let mut user_devices: Vec<Device> = devices_guard
@@ -88,20 +92,14 @@ impl DeviceRepository for MockDeviceRepository {
             user_devices.sort_by(|a, b| b.last_seen.cmp(&a.last_seen));
 
             // Apply pagination
-            let paginated: Vec<Device> = user_devices
-                .into_iter()
-                .skip(offset)
-                .take(limit)
-                .collect();
+            let paginated: Vec<Device> =
+                user_devices.into_iter().skip(offset).take(limit).collect();
 
             Ok(paginated)
         }
     }
 
-    fn create_device(
-        &self,
-        device: &Device,
-    ) -> impl Future<Output = Result<Device>> + Send {
+    fn create_device(&self, device: &Device) -> impl Future<Output = Result<Device>> + Send {
         let devices = Arc::clone(&self.devices);
         let device = device.clone();
 
@@ -110,10 +108,14 @@ impl DeviceRepository for MockDeviceRepository {
             crate::utils::validate_device_name(&device.name)?;
             crate::utils::validate_platform(&device.platform)?;
 
-            let mut devices_guard = devices.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
+            let mut devices_guard = devices
+                .lock()
+                .map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
 
             if devices_guard.contains_key(&device.device_id) {
-                return Err(AuthError::DatabaseError("Device ID already exists".to_string()));
+                return Err(AuthError::DatabaseError(
+                    "Device ID already exists".to_string(),
+                ));
             }
 
             devices_guard.insert(device.device_id, device.clone());
@@ -130,7 +132,9 @@ impl DeviceRepository for MockDeviceRepository {
         let device = device.clone();
 
         async move {
-            let mut devices_guard = devices.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
+            let mut devices_guard = devices
+                .lock()
+                .map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
 
             let existing = devices_guard
                 .get(&device.device_id)
@@ -160,7 +164,9 @@ impl DeviceRepository for MockDeviceRepository {
         let devices = Arc::clone(&self.devices);
 
         async move {
-            let mut devices_guard = devices.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
+            let mut devices_guard = devices
+                .lock()
+                .map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
 
             let device = devices_guard
                 .get_mut(&device_id)
@@ -185,7 +191,9 @@ impl DeviceRepository for MockDeviceRepository {
         let devices = Arc::clone(&self.devices);
 
         async move {
-            let mut devices_guard = devices.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
+            let mut devices_guard = devices
+                .lock()
+                .map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
 
             let device = devices_guard
                 .get_mut(&device_id)
@@ -239,14 +247,14 @@ impl DeviceRepository for MockDeviceRepository {
         let platform = platform.to_string();
 
         async move {
-            let devices_guard = devices.lock().map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
+            let devices_guard = devices
+                .lock()
+                .map_err(|_| AuthError::InternalError("Mutex lock failed".to_string()))?;
 
             let found_device = devices_guard
                 .values()
                 .find(|d| {
-                    d.user_id == user_id
-                        && d.platform == platform
-                        && d.name.contains(&user_agent)
+                    d.user_id == user_id && d.platform == platform && d.name.contains(&user_agent)
                 })
                 .cloned();
 
@@ -300,7 +308,10 @@ mod tests {
 
         // User 1 can access their own device
         let result = repo.get_device(user1, created.device_id).await;
-        assert!(result.is_ok(), "Owner should be able to access their device");
+        assert!(
+            result.is_ok(),
+            "Owner should be able to access their device"
+        );
     }
 
     #[tokio::test]
@@ -368,7 +379,10 @@ mod tests {
 
         // Verify device still exists
         let result = repo.get_device(user1, created.device_id).await;
-        assert!(result.is_ok(), "Device should still exist after failed delete");
+        assert!(
+            result.is_ok(),
+            "Device should still exist after failed delete"
+        );
     }
 
     #[tokio::test]
@@ -449,7 +463,11 @@ mod tests {
 
         // Get devices with default pagination (should return 100)
         let devices = repo.get_user_devices(user_id, None, None).await.unwrap();
-        assert_eq!(devices.len(), 100, "Default limit should return 100 devices");
+        assert_eq!(
+            devices.len(),
+            100,
+            "Default limit should return 100 devices"
+        );
     }
 
     #[tokio::test]
@@ -478,7 +496,10 @@ mod tests {
         }
 
         // Get devices with custom limit of 10
-        let devices = repo.get_user_devices(user_id, Some(10), None).await.unwrap();
+        let devices = repo
+            .get_user_devices(user_id, Some(10), None)
+            .await
+            .unwrap();
         assert_eq!(devices.len(), 10, "Custom limit should return 10 devices");
     }
 
@@ -508,7 +529,10 @@ mod tests {
         }
 
         // Try to get 2000 devices (should be capped at 1000)
-        let devices = repo.get_user_devices(user_id, Some(2000), None).await.unwrap();
+        let devices = repo
+            .get_user_devices(user_id, Some(2000), None)
+            .await
+            .unwrap();
         assert_eq!(
             devices.len(),
             50,
@@ -542,15 +566,24 @@ mod tests {
         }
 
         // Get first 10 devices
-        let page1 = repo.get_user_devices(user_id, Some(10), Some(0)).await.unwrap();
+        let page1 = repo
+            .get_user_devices(user_id, Some(10), Some(0))
+            .await
+            .unwrap();
         assert_eq!(page1.len(), 10);
 
         // Get second 10 devices
-        let page2 = repo.get_user_devices(user_id, Some(10), Some(10)).await.unwrap();
+        let page2 = repo
+            .get_user_devices(user_id, Some(10), Some(10))
+            .await
+            .unwrap();
         assert_eq!(page2.len(), 10);
 
         // Get third 10 devices
-        let page3 = repo.get_user_devices(user_id, Some(10), Some(20)).await.unwrap();
+        let page3 = repo
+            .get_user_devices(user_id, Some(10), Some(20))
+            .await
+            .unwrap();
         assert_eq!(page3.len(), 10);
 
         // Verify no overlap between pages
@@ -590,7 +623,10 @@ mod tests {
         }
 
         // Try negative offset (should be treated as 0)
-        let devices = repo.get_user_devices(user_id, Some(5), Some(-10)).await.unwrap();
+        let devices = repo
+            .get_user_devices(user_id, Some(5), Some(-10))
+            .await
+            .unwrap();
         assert_eq!(devices.len(), 5, "Negative offset should be treated as 0");
     }
 }

@@ -136,11 +136,12 @@ impl CustomerOrderHistoryProjection {
     ///
     /// Returns [`ProjectionError::Storage`] if query fails.
     pub async fn count_by_status(&self, status: &str) -> Result<i64> {
-        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM order_projections WHERE status = $1")
-            .bind(status)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| ProjectionError::Storage(format!("Failed to count orders: {e}")))?;
+        let (count,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM order_projections WHERE status = $1")
+                .bind(status)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| ProjectionError::Storage(format!("Failed to count orders: {e}")))?;
         Ok(count)
     }
 }
@@ -197,7 +198,7 @@ impl Projection for CustomerOrderHistoryProjection {
                 .map_err(|e| ProjectionError::Storage(format!("Failed to insert order: {e}")))?;
 
                 Ok(())
-            }
+            },
 
             // When an order is cancelled, update the status and reason
             OrderAction::OrderCancelled {
@@ -225,7 +226,7 @@ impl Projection for CustomerOrderHistoryProjection {
                 .map_err(|e| ProjectionError::Storage(format!("Failed to update order: {e}")))?;
 
                 Ok(())
-            }
+            },
 
             // When an order is shipped, update the status and tracking
             OrderAction::OrderShipped {
@@ -253,7 +254,7 @@ impl Projection for CustomerOrderHistoryProjection {
                 .map_err(|e| ProjectionError::Storage(format!("Failed to update order: {e}")))?;
 
                 Ok(())
-            }
+            },
 
             // Ignore commands and internal events
             OrderAction::PlaceOrder { .. }
@@ -263,7 +264,7 @@ impl Projection for CustomerOrderHistoryProjection {
             | OrderAction::EventPersisted { .. } => {
                 // Commands and internal events are not persisted to the projection
                 Ok(())
-            }
+            },
         }
     }
 

@@ -93,10 +93,7 @@ impl WebAuthnProvider for MockWebAuthnProvider {
         Ok("mock_challenge_id".to_string())
     }
 
-    async fn extract_challenge_from_assertion(
-        &self,
-        _assertion_response: &str,
-    ) -> Result<String> {
+    async fn extract_challenge_from_assertion(&self, _assertion_response: &str) -> Result<String> {
         // In a real implementation, this would parse the assertion response
         // and extract the challenge that was embedded by the client.
         // For testing, we return the mock auth challenge_id.

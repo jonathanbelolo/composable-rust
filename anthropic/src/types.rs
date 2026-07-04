@@ -183,10 +183,7 @@ mod tests {
         let msg = Message::tool_result("tool_123".to_string(), "result".to_string(), false);
         assert_eq!(msg.role, Role::User);
         assert_eq!(msg.content.len(), 1);
-        assert!(matches!(
-            msg.content[0],
-            ContentBlock::ToolResult { .. }
-        ));
+        assert!(matches!(msg.content[0], ContentBlock::ToolResult { .. }));
     }
 
     #[test]

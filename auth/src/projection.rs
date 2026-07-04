@@ -67,7 +67,7 @@ pub struct AuthProjection {
 #[cfg(feature = "postgres")]
 impl AuthProjection {
     /// Create a new auth projection.
-    #[must_use] 
+    #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
     }
@@ -312,7 +312,9 @@ impl AuthProjection {
                 )
                 .execute(&self.pool)
                 .await
-                .map_err(|e| ProjectionError::Storage(format!("Failed to update device access: {e}")))?;
+                .map_err(|e| {
+                    ProjectionError::Storage(format!("Failed to update device access: {e}"))
+                })?;
             }
         }
 
@@ -408,7 +410,9 @@ impl AuthProjection {
             )
             .execute(&self.pool)
             .await
-            .map_err(|e| ProjectionError::Storage(format!("Failed to link passkey to device: {e}")))?;
+            .map_err(|e| {
+                ProjectionError::Storage(format!("Failed to link passkey to device: {e}"))
+            })?;
         }
 
         Ok(())
@@ -443,7 +447,9 @@ impl AuthProjection {
             )
             .execute(&self.pool)
             .await
-            .map_err(|e| ProjectionError::Storage(format!("Failed to update passkey usage: {e}")))?;
+            .map_err(|e| {
+                ProjectionError::Storage(format!("Failed to update passkey usage: {e}"))
+            })?;
         }
 
         Ok(())
@@ -487,22 +493,30 @@ impl Projection for AuthProjection {
         sqlx::query!("TRUNCATE TABLE users_projection CASCADE")
             .execute(&self.pool)
             .await
-            .map_err(|e| ProjectionError::Storage(format!("Failed to truncate users_projection: {e}")))?;
+            .map_err(|e| {
+                ProjectionError::Storage(format!("Failed to truncate users_projection: {e}"))
+            })?;
 
         sqlx::query!("TRUNCATE TABLE devices_projection CASCADE")
             .execute(&self.pool)
             .await
-            .map_err(|e| ProjectionError::Storage(format!("Failed to truncate devices_projection: {e}")))?;
+            .map_err(|e| {
+                ProjectionError::Storage(format!("Failed to truncate devices_projection: {e}"))
+            })?;
 
         sqlx::query!("TRUNCATE TABLE oauth_links_projection CASCADE")
             .execute(&self.pool)
             .await
-            .map_err(|e| ProjectionError::Storage(format!("Failed to truncate oauth_links_projection: {e}")))?;
+            .map_err(|e| {
+                ProjectionError::Storage(format!("Failed to truncate oauth_links_projection: {e}"))
+            })?;
 
         sqlx::query!("TRUNCATE TABLE passkeys_projection CASCADE")
             .execute(&self.pool)
             .await
-            .map_err(|e| ProjectionError::Storage(format!("Failed to truncate passkeys_projection: {e}")))?;
+            .map_err(|e| {
+                ProjectionError::Storage(format!("Failed to truncate passkeys_projection: {e}"))
+            })?;
 
         Ok(())
     }
@@ -524,10 +538,7 @@ impl Projection for AuthProjection {
 ///
 /// The calculated trust level (Unknown, Recognized, or Familiar).
 /// Does NOT return Trusted or `HighlyTrusted` (those are set manually).
-fn calculate_progressive_trust(
-    login_count: i32,
-    first_seen: DateTime<Utc>,
-) -> DeviceTrustLevel {
+fn calculate_progressive_trust(login_count: i32, first_seen: DateTime<Utc>) -> DeviceTrustLevel {
     let age_days = (Utc::now() - first_seen).num_days();
 
     // Progressive trust based on usage patterns

@@ -47,14 +47,14 @@
 
 use axum::{
     extract::{
-        ws::{Message, WebSocket},
         State, WebSocketUpgrade,
+        ws::{Message, WebSocket},
     },
     response::Response,
 };
 use composable_rust_core::reducer::Reducer;
 use composable_rust_runtime::Store;
-use futures::{stream::StreamExt, SinkExt};
+use futures::{SinkExt, stream::StreamExt};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
@@ -179,7 +179,7 @@ where
                 Err(e) => {
                     error!(error = %e, "Failed to serialize action");
                     continue;
-                }
+                },
             };
 
             // Send to client
@@ -205,34 +205,34 @@ where
                             if let Err(e) = store.send(action).await {
                                 error!(error = %e, "Failed to dispatch action");
                             }
-                        }
+                        },
                         Ok(WsMessage::Ping) => {
                             debug!("Received ping from client");
                             // Pong responses handled by Axum automatically
-                        }
+                        },
                         Ok(msg) => {
                             warn!(?msg, "Unexpected message type from client");
-                        }
+                        },
                         Err(e) => {
                             error!(error = %e, "Failed to parse WebSocket message");
                             // Note: Can't send error back since we split the socket
-                        }
+                        },
                     }
-                }
+                },
                 Message::Binary(_) => {
                     warn!("Received unexpected binary message");
-                }
+                },
                 Message::Ping(_) => {
                     debug!("Received ping");
                     // Axum handles pong automatically
-                }
+                },
                 Message::Pong(_) => {
                     debug!("Received pong");
-                }
+                },
                 Message::Close(_) => {
                     info!("Client requested close");
                     break;
-                }
+                },
             }
         }
 
@@ -274,7 +274,10 @@ mod tests {
             topic: None,
         };
         let json = serde_json::to_string(&cmd).expect("Serialize");
-        assert_eq!(json, r#"{"type":"command","action":"Increment","topic":null}"#);
+        assert_eq!(
+            json,
+            r#"{"type":"command","action":"Increment","topic":null}"#
+        );
 
         // Test Command deserialization
         let parsed: WsMessage<TestAction> = serde_json::from_str(&json).expect("Deserialize");
@@ -292,7 +295,10 @@ mod tests {
             topic: "test_topic".to_string(),
         };
         let json = serde_json::to_string(&event).expect("Serialize");
-        assert_eq!(json, r#"{"type":"event","action":"Decrement","topic":"test_topic"}"#);
+        assert_eq!(
+            json,
+            r#"{"type":"event","action":"Decrement","topic":"test_topic"}"#
+        );
 
         // Test Error serialization
         let error = WsMessage::<TestAction>::Error {

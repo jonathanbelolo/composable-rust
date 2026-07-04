@@ -130,7 +130,6 @@ pub enum InventoryCommand {
     // ═══════════════════════════════════════════════════════════════════════
     // Query Commands
     // ═══════════════════════════════════════════════════════════════════════
-
     /// Get availability for a specific section.
     ///
     /// The `fetched` field is populated by the Handler before calling process().
@@ -413,29 +412,37 @@ impl BusinessLogic for InventoryBusinessLogic {
 
     fn stream_id(input: &Self::Input) -> StreamId {
         match input {
-            InventoryCommand::Initialize { event_id, section, .. } => {
-                StreamId::new(format!("inventory-{}-{}", event_id.as_uuid(), section))
-            }
-            InventoryCommand::Reserve { event_id, section, .. } => {
-                StreamId::new(format!("inventory-{}-{}", event_id.as_uuid(), section))
-            }
+            InventoryCommand::Initialize {
+                event_id, section, ..
+            } => StreamId::new(format!("inventory-{}-{}", event_id.as_uuid(), section)),
+            InventoryCommand::Reserve {
+                event_id, section, ..
+            } => StreamId::new(format!("inventory-{}-{}", event_id.as_uuid(), section)),
             InventoryCommand::Confirm { reservation_id, .. } => {
                 // For confirm/release, we need the event_id and section from the reservation
                 // In practice, the caller knows these - we'll use a placeholder pattern
                 // Real implementation would include event_id and section in the command
-                StreamId::new(format!("inventory-reservation-{}", reservation_id.as_uuid()))
-            }
-            InventoryCommand::Release { reservation_id, .. } => {
-                StreamId::new(format!("inventory-reservation-{}", reservation_id.as_uuid()))
-            }
+                StreamId::new(format!(
+                    "inventory-reservation-{}",
+                    reservation_id.as_uuid()
+                ))
+            },
+            InventoryCommand::Release { reservation_id, .. } => StreamId::new(format!(
+                "inventory-reservation-{}",
+                reservation_id.as_uuid()
+            )),
             // Query commands - use query stream IDs (not persisted)
-            InventoryCommand::GetSectionAvailability { event_id, section, .. } => {
-                StreamId::new(format!("query-inventory-{}-{}", event_id.as_uuid(), section))
-            }
+            InventoryCommand::GetSectionAvailability {
+                event_id, section, ..
+            } => StreamId::new(format!(
+                "query-inventory-{}-{}",
+                event_id.as_uuid(),
+                section
+            )),
             InventoryCommand::GetEventAvailability { event_id, .. }
             | InventoryCommand::GetTotalAvailable { event_id, .. } => {
                 StreamId::new(format!("query-inventory-{}", event_id.as_uuid()))
-            }
+            },
         }
     }
 
@@ -466,9 +473,7 @@ impl BusinessLogic for InventoryBusinessLogic {
                 }
 
                 // Generate seat IDs
-                let seats: Vec<SeatId> = (0..capacity.value())
-                    .map(|_| SeatId::new())
-                    .collect();
+                let seats: Vec<SeatId> = (0..capacity.value()).map(|_| SeatId::new()).collect();
 
                 Ok(BusinessResult::Done(vec![InventoryEvent::Initialized {
                     event_id,
@@ -477,7 +482,7 @@ impl BusinessLogic for InventoryBusinessLogic {
                     seats,
                     initialized_at: now,
                 }]))
-            }
+            },
 
             InventoryCommand::Reserve {
                 reservation_id,
@@ -517,7 +522,7 @@ impl BusinessLogic for InventoryBusinessLogic {
                     expires_at,
                     reserved_at: now,
                 }]))
-            }
+            },
 
             InventoryCommand::Confirm {
                 reservation_id,
@@ -525,8 +530,8 @@ impl BusinessLogic for InventoryBusinessLogic {
                 fetched,
             } => {
                 // Validation: reservation must exist
-                let reservation = fetched
-                    .ok_or(InventoryError::ReservationNotFound(reservation_id))?;
+                let reservation =
+                    fetched.ok_or(InventoryError::ReservationNotFound(reservation_id))?;
 
                 Ok(BusinessResult::Done(vec![InventoryEvent::SeatsConfirmed {
                     reservation_id,
@@ -534,7 +539,7 @@ impl BusinessLogic for InventoryBusinessLogic {
                     seats: reservation.seats,
                     confirmed_at: now,
                 }]))
-            }
+            },
 
             InventoryCommand::Release {
                 reservation_id,
@@ -542,8 +547,8 @@ impl BusinessLogic for InventoryBusinessLogic {
                 fetched,
             } => {
                 // Validation: reservation must exist
-                let reservation = fetched
-                    .ok_or(InventoryError::ReservationNotFound(reservation_id))?;
+                let reservation =
+                    fetched.ok_or(InventoryError::ReservationNotFound(reservation_id))?;
 
                 Ok(BusinessResult::Done(vec![InventoryEvent::SeatsReleased {
                     reservation_id,
@@ -551,40 +556,35 @@ impl BusinessLogic for InventoryBusinessLogic {
                     reason,
                     released_at: now,
                 }]))
-            }
+            },
 
             // ═══════════════════════════════════════════════════════════════
             // Query Commands (data pre-fetched by Handler)
             // ═══════════════════════════════════════════════════════════════
-
             InventoryCommand::GetSectionAvailability {
                 event_id: _,
                 section: _,
                 fetched,
             } => {
                 let availability = fetched.ok_or(InventoryError::NotInitialized)?;
-                Ok(BusinessResult::Respond(InventoryResponse::SectionAvailability(
-                    availability,
-                )))
-            }
+                Ok(BusinessResult::Respond(
+                    InventoryResponse::SectionAvailability(availability),
+                ))
+            },
 
             InventoryCommand::GetEventAvailability {
                 event_id: _,
                 fetched,
-            } => {
-                Ok(BusinessResult::Respond(InventoryResponse::EventAvailability(
-                    fetched,
-                )))
-            }
+            } => Ok(BusinessResult::Respond(
+                InventoryResponse::EventAvailability(fetched),
+            )),
 
             InventoryCommand::GetTotalAvailable {
                 event_id: _,
                 fetched,
-            } => {
-                Ok(BusinessResult::Respond(InventoryResponse::TotalAvailable(
-                    fetched,
-                )))
-            }
+            } => Ok(BusinessResult::Respond(InventoryResponse::TotalAvailable(
+                fetched,
+            ))),
         }
     }
 
@@ -605,7 +605,7 @@ impl BusinessLogic for InventoryBusinessLogic {
                 for seat_id in seats {
                     state.seats.insert(*seat_id, SeatStatus::Available);
                 }
-            }
+            },
 
             InventoryEvent::SeatsReserved {
                 reservation_id,
@@ -630,7 +630,7 @@ impl BusinessLogic for InventoryBusinessLogic {
                         expires_at: *expires_at,
                     },
                 );
-            }
+            },
 
             InventoryEvent::SeatsConfirmed {
                 reservation_id,
@@ -648,7 +648,7 @@ impl BusinessLogic for InventoryBusinessLogic {
                 }
 
                 state.reservations.remove(reservation_id);
-            }
+            },
 
             InventoryEvent::SeatsReleased {
                 reservation_id,
@@ -661,7 +661,7 @@ impl BusinessLogic for InventoryBusinessLogic {
                 }
 
                 state.reservations.remove(reservation_id);
-            }
+            },
         }
     }
 
@@ -690,7 +690,11 @@ mod tests {
     }
 
     /// Helper to create an InventoryDto for testing
-    fn inventory_dto(initialized: bool, capacity: u32, available_seats: Vec<SeatId>) -> InventoryDto {
+    fn inventory_dto(
+        initialized: bool,
+        capacity: u32,
+        available_seats: Vec<SeatId>,
+    ) -> InventoryDto {
         InventoryDto {
             initialized,
             capacity,
@@ -718,13 +722,15 @@ mod tests {
             BusinessResult::Done(events) => {
                 assert_eq!(events.len(), 1);
                 match &events[0] {
-                    InventoryEvent::Initialized { capacity, seats, .. } => {
+                    InventoryEvent::Initialized {
+                        capacity, seats, ..
+                    } => {
                         assert_eq!(*capacity, 100);
                         assert_eq!(seats.len(), 100);
-                    }
+                    },
                     _ => panic!("Expected Initialized event"),
                 }
-            }
+            },
             _ => panic!("Expected Done result"),
         }
     }
@@ -773,10 +779,10 @@ mod tests {
                 match &events[0] {
                     InventoryEvent::SeatsReserved { seats, .. } => {
                         assert_eq!(seats.len(), 5);
-                    }
+                    },
                     _ => panic!("Expected SeatsReserved event"),
                 }
-            }
+            },
             _ => panic!("Expected Done result"),
         }
     }

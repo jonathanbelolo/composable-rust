@@ -151,7 +151,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Error (as expected): {error}");
     }
 
-    println!("\nBob's balance unchanged: {}", state.balance(&bob_id).unwrap());
+    println!(
+        "\nBob's balance unchanged: {}",
+        state.balance(&bob_id).unwrap()
+    );
 
     println!("\n=== Demo Complete ===");
     println!("\nKey Concepts Demonstrated:");

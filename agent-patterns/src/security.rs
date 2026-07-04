@@ -198,33 +198,45 @@ impl SecurityIncident {
             source,
             format!("{failed_attempts} failed login attempts detected"),
         );
-        incident.metadata.insert("failed_attempts".to_string(), failed_attempts.to_string());
+        incident
+            .metadata
+            .insert("failed_attempts".to_string(), failed_attempts.to_string());
         incident
     }
 
     /// Create a prompt injection incident
     #[must_use]
-    pub fn prompt_injection(source: impl Into<String>, detection_method: impl Into<String>) -> Self {
+    pub fn prompt_injection(
+        source: impl Into<String>,
+        detection_method: impl Into<String>,
+    ) -> Self {
         let mut incident = Self::new(
             IncidentType::PromptInjection,
             ThreatLevel::High,
             source,
             "Prompt injection attack detected",
         );
-        incident.metadata.insert("detection_method".to_string(), detection_method.into());
+        incident
+            .metadata
+            .insert("detection_method".to_string(), detection_method.into());
         incident
     }
 
     /// Create a privilege escalation incident
     #[must_use]
-    pub fn privilege_escalation(source: impl Into<String>, attempted_action: impl Into<String>) -> Self {
+    pub fn privilege_escalation(
+        source: impl Into<String>,
+        attempted_action: impl Into<String>,
+    ) -> Self {
         let mut incident = Self::new(
             IncidentType::PrivilegeEscalation,
             ThreatLevel::Critical,
             source,
             "Privilege escalation attempt detected",
         );
-        incident.metadata.insert("attempted_action".to_string(), attempted_action.into());
+        incident
+            .metadata
+            .insert("attempted_action".to_string(), attempted_action.into());
         incident
     }
 
@@ -359,7 +371,10 @@ impl SecurityMonitor {
     /// # Errors
     ///
     /// Currently never returns an error, but returns `Result` for future extensibility.
-    pub async fn report_incident(&self, incident: SecurityIncident) -> Result<String, SecurityError> {
+    pub async fn report_incident(
+        &self,
+        incident: SecurityIncident,
+    ) -> Result<String, SecurityError> {
         let incident_id = incident.id.clone();
 
         // Generate alert for high/critical incidents
@@ -407,7 +422,12 @@ impl SecurityMonitor {
             .read()
             .await
             .iter()
-            .filter(|i| matches!(i.status, IncidentStatus::Open | IncidentStatus::Investigating))
+            .filter(|i| {
+                matches!(
+                    i.status,
+                    IncidentStatus::Open | IncidentStatus::Investigating
+                )
+            })
             .cloned()
             .collect()
     }
@@ -441,7 +461,12 @@ impl SecurityMonitor {
         let total_incidents = incidents.len();
         let active_incidents = incidents
             .iter()
-            .filter(|i| matches!(i.status, IncidentStatus::Open | IncidentStatus::Investigating))
+            .filter(|i| {
+                matches!(
+                    i.status,
+                    IncidentStatus::Open | IncidentStatus::Investigating
+                )
+            })
             .count();
 
         // Group by threat level
@@ -558,7 +583,7 @@ impl SecurityMonitor {
 
     /// Clear all incidents (for testing)
     #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)] // Test code can use unwrap/expect
+    #[allow(clippy::unwrap_used, clippy::expect_used)] // Test code can use unwrap/expect
     pub async fn clear(&self) {
         self.incidents.write().await.clear();
         self.alerts.write().await.clear();
@@ -605,7 +630,10 @@ mod tests {
         assert_eq!(incident.incident_type, IncidentType::BruteForceAttack);
         assert_eq!(incident.source, "192.168.1.100");
         assert_eq!(incident.status, IncidentStatus::Open);
-        assert_eq!(incident.metadata.get("failed_attempts"), Some(&"10".to_string()));
+        assert_eq!(
+            incident.metadata.get("failed_attempts"),
+            Some(&"10".to_string())
+        );
     }
 
     #[test]
@@ -629,7 +657,10 @@ mod tests {
 
         assert_eq!(incident.affected_resources.len(), 1);
         assert_eq!(incident.related_events.len(), 1);
-        assert_eq!(incident.metadata.get("reason"), Some(&"invalid_token".to_string()));
+        assert_eq!(
+            incident.metadata.get("reason"),
+            Some(&"invalid_token".to_string())
+        );
     }
 
     #[test]
@@ -668,7 +699,10 @@ mod tests {
         let incident = SecurityIncident::brute_force_attack("192.168.1.100", 10);
         let id = monitor.report_incident(incident).await.unwrap();
 
-        monitor.update_incident_status(&id, IncidentStatus::Resolved).await.unwrap();
+        monitor
+            .update_incident_status(&id, IncidentStatus::Resolved)
+            .await
+            .unwrap();
 
         let updated = monitor.get_incident(&id).await.unwrap();
         assert_eq!(updated.status, IncidentStatus::Resolved);
@@ -694,9 +728,18 @@ mod tests {
     async fn test_get_incidents_by_threat() {
         let monitor = SecurityMonitor::new();
 
-        monitor.report_incident(SecurityIncident::brute_force_attack("ip1", 5)).await.unwrap();
-        monitor.report_incident(SecurityIncident::brute_force_attack("ip2", 25)).await.unwrap();
-        monitor.report_incident(SecurityIncident::prompt_injection("user1", "method")).await.unwrap();
+        monitor
+            .report_incident(SecurityIncident::brute_force_attack("ip1", 5))
+            .await
+            .unwrap();
+        monitor
+            .report_incident(SecurityIncident::brute_force_attack("ip2", 25))
+            .await
+            .unwrap();
+        monitor
+            .report_incident(SecurityIncident::prompt_injection("user1", "method"))
+            .await
+            .unwrap();
 
         let high_threat = monitor.get_incidents_by_threat(ThreatLevel::High).await;
         assert_eq!(high_threat.len(), 2); // 25 attempts → High, prompt injection → High
@@ -706,15 +749,28 @@ mod tests {
     async fn test_security_dashboard() {
         let monitor = SecurityMonitor::new();
 
-        monitor.report_incident(SecurityIncident::brute_force_attack("192.168.1.100", 10)).await.unwrap();
-        monitor.report_incident(SecurityIncident::brute_force_attack("192.168.1.100", 15)).await.unwrap();
-        monitor.report_incident(SecurityIncident::prompt_injection("user1", "pattern")).await.unwrap();
+        monitor
+            .report_incident(SecurityIncident::brute_force_attack("192.168.1.100", 10))
+            .await
+            .unwrap();
+        monitor
+            .report_incident(SecurityIncident::brute_force_attack("192.168.1.100", 15))
+            .await
+            .unwrap();
+        monitor
+            .report_incident(SecurityIncident::prompt_injection("user1", "pattern"))
+            .await
+            .unwrap();
 
         let dashboard = monitor.get_dashboard().await.unwrap();
 
         assert_eq!(dashboard.total_incidents, 3);
         assert_eq!(dashboard.active_incidents, 3);
-        assert!(dashboard.incidents_by_type.contains_key("brute_force_attack"));
+        assert!(
+            dashboard
+                .incidents_by_type
+                .contains_key("brute_force_attack")
+        );
         assert!(dashboard.incidents_by_type.contains_key("prompt_injection"));
     }
 
@@ -739,9 +795,18 @@ mod tests {
         let monitor = SecurityMonitor::new();
 
         // Same IP, multiple incidents
-        monitor.report_incident(SecurityIncident::brute_force_attack("192.168.1.100", 10)).await.unwrap();
-        monitor.report_incident(SecurityIncident::brute_force_attack("192.168.1.100", 15)).await.unwrap();
-        monitor.report_incident(SecurityIncident::brute_force_attack("192.168.1.101", 5)).await.unwrap();
+        monitor
+            .report_incident(SecurityIncident::brute_force_attack("192.168.1.100", 10))
+            .await
+            .unwrap();
+        monitor
+            .report_incident(SecurityIncident::brute_force_attack("192.168.1.100", 15))
+            .await
+            .unwrap();
+        monitor
+            .report_incident(SecurityIncident::brute_force_attack("192.168.1.101", 5))
+            .await
+            .unwrap();
 
         let dashboard = monitor.get_dashboard().await.unwrap();
 

@@ -24,7 +24,9 @@
 //! }
 //! ```
 
-use opentelemetry::{propagation::TextMapPropagator, trace::TraceContextExt, Context as OtelContext};
+use opentelemetry::{
+    Context as OtelContext, propagation::TextMapPropagator, trace::TraceContextExt,
+};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use std::collections::HashMap;
 use tracing::Span;
@@ -52,7 +54,9 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 /// }
 /// ```
 #[must_use]
-pub fn extract_trace_context<S: std::hash::BuildHasher>(headers: &HashMap<String, String, S>) -> Option<OtelContext> {
+pub fn extract_trace_context<S: std::hash::BuildHasher>(
+    headers: &HashMap<String, String, S>,
+) -> Option<OtelContext> {
     let propagator = TraceContextPropagator::new();
 
     // Extract returns the current context if no trace context found
@@ -252,9 +256,7 @@ mod tests {
 
     #[test]
     fn test_inject_and_extract_roundtrip() {
-        let subscriber = tracing_subscriber::fmt()
-            .with_test_writer()
-            .finish();
+        let subscriber = tracing_subscriber::fmt().with_test_writer().finish();
 
         tracing::subscriber::with_default(subscriber, || {
             let span = tracing::info_span!("parent_span");
@@ -274,9 +276,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_http_request_with_trace_error_on_invalid_url() {
-        let subscriber = tracing_subscriber::fmt()
-            .with_test_writer()
-            .finish();
+        let subscriber = tracing_subscriber::fmt().with_test_writer().finish();
 
         tracing::subscriber::with_default(subscriber, || {
             let span = tracing::info_span!("test");

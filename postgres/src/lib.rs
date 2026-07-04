@@ -607,80 +607,81 @@ impl EventStore for PostgresEventStore {
             from_version = ?from_version,
         );
 
-        Box::pin(async move {
-            // Metrics: Start timing
-            let start = std::time::Instant::now();
+        Box::pin(
+            async move {
+                // Metrics: Start timing
+                let start = std::time::Instant::now();
 
-            tracing::debug!(
-                stream_id = %stream_id,
-                from_version = ?from_version,
-                "Loading events from stream"
-            );
+                tracing::debug!(
+                    stream_id = %stream_id,
+                    from_version = ?from_version,
+                    "Loading events from stream"
+                );
 
-            let events = if let Some(from_ver) = from_version {
-                sqlx::query(
-                    r"
+                let events = if let Some(from_ver) = from_version {
+                    sqlx::query(
+                        r"
                 SELECT event_type, event_version, event_data, metadata
                 FROM events
                 WHERE stream_id = $1 AND version >= $2
                 ORDER BY version ASC
                 ",
-                )
-                .bind(stream_id.as_str())
-                .bind(i64::try_from(from_ver.value()).map_err(|e| {
-                    EventStoreError::DatabaseError(format!("Version overflow: {e}"))
-                })?)
-                .fetch_all(&self.pool)
-                .await
-            } else {
-                sqlx::query(
-                    r"
+                    )
+                    .bind(stream_id.as_str())
+                    .bind(i64::try_from(from_ver.value()).map_err(|e| {
+                        EventStoreError::DatabaseError(format!("Version overflow: {e}"))
+                    })?)
+                    .fetch_all(&self.pool)
+                    .await
+                } else {
+                    sqlx::query(
+                        r"
                 SELECT event_type, event_version, event_data, metadata
                 FROM events
                 WHERE stream_id = $1
                 ORDER BY version ASC
                 ",
-                )
-                .bind(stream_id.as_str())
-                .fetch_all(&self.pool)
-                .await
+                    )
+                    .bind(stream_id.as_str())
+                    .fetch_all(&self.pool)
+                    .await
+                }
+                .map_err(|e| EventStoreError::DatabaseError(e.to_string()))?;
+
+                let event_vec: Vec<SerializedEvent> = events
+                    .into_iter()
+                    .map(|row| {
+                        let metadata_json: Option<sqlx::types::JsonValue> = row.get("metadata");
+                        let metadata =
+                            metadata_json.and_then(|json| EventMetadata::from_json(&json).ok());
+                        SerializedEvent {
+                            event_type: row.get("event_type"),
+                            event_version: row.get("event_version"),
+                            data: row.get("event_data"),
+                            metadata,
+                        }
+                    })
+                    .collect();
+
+                tracing::debug!(
+                    stream_id = %stream_id,
+                    event_count = event_vec.len(),
+                    "Loaded events from stream"
+                );
+
+                // Metrics: Record success, duration, and event count
+                let duration = start.elapsed();
+                metrics::histogram!("event_store.load.duration_seconds")
+                    .record(duration.as_secs_f64());
+                // Note: Precision loss for counts > 2^52 (~4.5 quadrillion) is acceptable
+                #[allow(clippy::cast_precision_loss)]
+                metrics::histogram!("event_store.load.event_count").record(event_vec.len() as f64);
+                metrics::counter!("event_store.load.total", "result" => "success").increment(1);
+
+                Ok(event_vec)
             }
-            .map_err(|e| EventStoreError::DatabaseError(e.to_string()))?;
-
-            let event_vec: Vec<SerializedEvent> = events
-                .into_iter()
-                .map(|row| {
-                    let metadata_json: Option<sqlx::types::JsonValue> = row.get("metadata");
-                    let metadata = metadata_json.and_then(|json| {
-                        EventMetadata::from_json(&json).ok()
-                    });
-                    SerializedEvent {
-                        event_type: row.get("event_type"),
-                        event_version: row.get("event_version"),
-                        data: row.get("event_data"),
-                        metadata,
-                    }
-                })
-                .collect();
-
-            tracing::debug!(
-                stream_id = %stream_id,
-                event_count = event_vec.len(),
-                "Loaded events from stream"
-            );
-
-            // Metrics: Record success, duration, and event count
-            let duration = start.elapsed();
-            metrics::histogram!("event_store.load.duration_seconds")
-                .record(duration.as_secs_f64());
-            // Note: Precision loss for counts > 2^52 (~4.5 quadrillion) is acceptable
-            #[allow(clippy::cast_precision_loss)]
-            metrics::histogram!("event_store.load.event_count")
-                .record(event_vec.len() as f64);
-            metrics::counter!("event_store.load.total", "result" => "success").increment(1);
-
-            Ok(event_vec)
-        }.instrument(span))
+            .instrument(span),
+        )
     }
 
     fn save_snapshot(
@@ -698,16 +699,17 @@ impl EventStore for PostgresEventStore {
             state_size = state.len(),
         );
 
-        Box::pin(async move {
-            tracing::debug!(
-                stream_id = %stream_id,
-                version = ?version,
-                state_size = state.len(),
-                "Saving snapshot"
-            );
+        Box::pin(
+            async move {
+                tracing::debug!(
+                    stream_id = %stream_id,
+                    version = ?version,
+                    state_size = state.len(),
+                    "Saving snapshot"
+                );
 
-            sqlx::query(
-                r"
+                sqlx::query(
+                    r"
             INSERT INTO snapshots (stream_id, version, state_data, created_at)
             VALUES ($1, $2, $3, now())
             ON CONFLICT (stream_id) DO UPDATE
@@ -715,26 +717,26 @@ impl EventStore for PostgresEventStore {
                 state_data = EXCLUDED.state_data,
                 created_at = EXCLUDED.created_at
             ",
-            )
-            .bind(stream_id.as_str())
-            .bind(
-                i64::try_from(version.value()).map_err(|e| {
+                )
+                .bind(stream_id.as_str())
+                .bind(i64::try_from(version.value()).map_err(|e| {
                     EventStoreError::DatabaseError(format!("Version overflow: {e}"))
-                })?,
-            )
-            .bind(&state)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| EventStoreError::DatabaseError(e.to_string()))?;
+                })?)
+                .bind(&state)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| EventStoreError::DatabaseError(e.to_string()))?;
 
-            tracing::debug!(
-                stream_id = %stream_id,
-                version = ?version,
-                "Snapshot saved successfully"
-            );
+                tracing::debug!(
+                    stream_id = %stream_id,
+                    version = ?version,
+                    "Snapshot saved successfully"
+                );
 
-            Ok(())
-        }.instrument(span))
+                Ok(())
+            }
+            .instrument(span),
+        )
     }
 
     fn load_snapshot(
@@ -753,57 +755,62 @@ impl EventStore for PostgresEventStore {
             stream_id = %stream_id,
         );
 
-        Box::pin(async move {
-            tracing::debug!(stream_id = %stream_id, "Loading snapshot");
+        Box::pin(
+            async move {
+                tracing::debug!(stream_id = %stream_id, "Loading snapshot");
 
-            let result = sqlx::query(
-                r"
+                let result = sqlx::query(
+                    r"
             SELECT version, state_data
             FROM snapshots
             WHERE stream_id = $1
             ",
-            )
-            .bind(stream_id.as_str())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|e| EventStoreError::DatabaseError(e.to_string()))?;
+                )
+                .bind(stream_id.as_str())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| EventStoreError::DatabaseError(e.to_string()))?;
 
-            if let Some(row) = result {
-                let version: i64 = row.get("version");
-                let state_data: Vec<u8> = row.get("state_data");
+                if let Some(row) = result {
+                    let version: i64 = row.get("version");
+                    let state_data: Vec<u8> = row.get("state_data");
 
-                // Convert i64 to u64 with proper error handling
-                let version_u64 = u64::try_from(version).map_err(|e| {
-                    EventStoreError::DatabaseError(format!(
-                        "Invalid negative version {version} in snapshot: {e}"
-                    ))
-                })?;
+                    // Convert i64 to u64 with proper error handling
+                    let version_u64 = u64::try_from(version).map_err(|e| {
+                        EventStoreError::DatabaseError(format!(
+                            "Invalid negative version {version} in snapshot: {e}"
+                        ))
+                    })?;
 
-                tracing::debug!(
-                    stream_id = %stream_id,
-                    version = version_u64,
-                    "Snapshot loaded successfully"
-                );
+                    tracing::debug!(
+                        stream_id = %stream_id,
+                        version = version_u64,
+                        "Snapshot loaded successfully"
+                    );
 
-                Ok(Some((Version::new(version_u64), state_data)))
-            } else {
-                tracing::debug!(stream_id = %stream_id, "No snapshot found");
-                Ok(None)
+                    Ok(Some((Version::new(version_u64), state_data)))
+                } else {
+                    tracing::debug!(stream_id = %stream_id, "No snapshot found");
+                    Ok(None)
+                }
             }
-        }.instrument(span))
+            .instrument(span),
+        )
     }
 
     fn append_batch(
         &self,
         batch: Vec<BatchAppend>,
     ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Vec<Result<Version, EventStoreError>>, EventStoreError>> + Send + '_>,
+        Box<
+            dyn std::future::Future<
+                    Output = Result<Vec<Result<Version, EventStoreError>>, EventStoreError>,
+                > + Send
+                + '_,
+        >,
     > {
         // Create tracing span for distributed tracing
-        let span = tracing::info_span!(
-            "event_store.append_batch",
-            batch_size = batch.len(),
-        );
+        let span = tracing::info_span!("event_store.append_batch", batch_size = batch.len(),);
 
         Box::pin(async move {
             // Helper struct for validated events (defined at scope start)
@@ -946,26 +953,28 @@ impl EventStore for PostgresEventStore {
             stream_id = %stream_id,
         );
 
-        Box::pin(async move {
-            // Use COUNT for O(1) performance with indexed stream_id
-            let count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM events WHERE stream_id = $1",
-            )
-            .bind(stream_id.as_str())
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| EventStoreError::DatabaseError(e.to_string()))?;
+        Box::pin(
+            async move {
+                // Use COUNT for O(1) performance with indexed stream_id
+                let count: i64 =
+                    sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE stream_id = $1")
+                        .bind(stream_id.as_str())
+                        .fetch_one(&self.pool)
+                        .await
+                        .map_err(|e| EventStoreError::DatabaseError(e.to_string()))?;
 
-            // Convert i64 to u64 with proper error handling
-            let version = u64::try_from(count).map_err(|e| {
-                EventStoreError::DatabaseError(format!(
-                    "Invalid negative count {count} from database: {e}"
-                ))
-            })?;
+                // Convert i64 to u64 with proper error handling
+                let version = u64::try_from(count).map_err(|e| {
+                    EventStoreError::DatabaseError(format!(
+                        "Invalid negative count {count} from database: {e}"
+                    ))
+                })?;
 
-            tracing::debug!(stream_id = %stream_id, version, "Retrieved stream version");
-            Ok(Version::new(version))
-        }.instrument(span))
+                tracing::debug!(stream_id = %stream_id, version, "Retrieved stream version");
+                Ok(Version::new(version))
+            }
+            .instrument(span),
+        )
     }
 }
 

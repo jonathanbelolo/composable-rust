@@ -4,14 +4,14 @@
 //! including authentication, message processing, and event forwarding.
 
 use super::{
-    protocol::{error_codes, ClientMessage, ServerMessage},
     ConnectionId, Subscription, WsManager,
+    protocol::{ClientMessage, ServerMessage, error_codes},
 };
 use crate::identity::Identity;
 use axum::{
     extract::{
-        ws::{Message, WebSocket},
         State, WebSocketUpgrade,
+        ws::{Message, WebSocket},
     },
     response::Response,
 };
@@ -110,17 +110,17 @@ async fn handle_connection(socket: WebSocket, identity: Identity, manager: Arc<W
                             break;
                         }
                     }
-                }
+                },
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
                     tracing::warn!(
                         connection_id = %conn_id,
                         lagged_count = count,
                         "WebSocket connection lagging behind broadcasts"
                     );
-                }
+                },
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                     break;
-                }
+                },
             }
         }
     });
@@ -136,7 +136,7 @@ async fn handle_connection(socket: WebSocket, identity: Identity, manager: Arc<W
                     "WebSocket receive error"
                 );
                 break;
-            }
+            },
         };
 
         match msg {
@@ -148,7 +148,7 @@ async fn handle_connection(socket: WebSocket, identity: Identity, manager: Arc<W
                         "Error handling WebSocket message"
                     );
                 }
-            }
+            },
             Message::Binary(_) => {
                 // Binary messages not supported
                 let error = ServerMessage::error(
@@ -156,21 +156,21 @@ async fn handle_connection(socket: WebSocket, identity: Identity, manager: Arc<W
                     "Binary messages not supported",
                 );
                 let _ = manager_for_send.send_to(conn_id, &error).await;
-            }
+            },
             Message::Ping(data) => {
                 // Axum handles ping/pong automatically, but we can respond too
                 let _ = manager_for_send
                     .send_to(conn_id, &ServerMessage::pong())
                     .await;
                 tracing::trace!(connection_id = %conn_id, data_len = data.len(), "Received ping");
-            }
+            },
             Message::Pong(_) => {
                 // Ignore pong messages
-            }
+            },
             Message::Close(_) => {
                 tracing::debug!(connection_id = %conn_id, "WebSocket close received");
                 break;
-            }
+            },
         }
     }
 
@@ -197,14 +197,14 @@ async fn handle_message(
     match message {
         ClientMessage::Subscribe { subscriptions } => {
             handle_subscribe(manager, conn_id, subscriptions).await
-        }
+        },
         ClientMessage::Unsubscribe { subscriptions } => {
             handle_unsubscribe(manager, conn_id, subscriptions).await
-        }
+        },
         ClientMessage::Ping => {
             let _ = manager.send_to(conn_id, &ServerMessage::pong()).await;
             Ok(())
-        }
+        },
     }
 }
 
@@ -224,10 +224,10 @@ async fn handle_subscribe(
                 if manager.subscribe(conn_id, sub) {
                     added.push(display);
                 }
-            }
+            },
             Err(e) => {
                 errors.push(e);
-            }
+            },
         }
     }
 

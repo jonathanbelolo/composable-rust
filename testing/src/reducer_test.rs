@@ -206,9 +206,7 @@ pub mod assertions {
     #[allow(clippy::panic)] // Test assertion
     pub fn assert_has_publish_event_effect<A>(effects: &[Effect<A>]) {
         assert!(
-            effects
-                .iter()
-                .any(|e| matches!(e, Effect::PublishEvent(_))),
+            effects.iter().any(|e| matches!(e, Effect::PublishEvent(_))),
             "Expected at least one PublishEvent effect, but none found"
         );
     }
@@ -250,11 +248,11 @@ mod tests {
                 TestAction::Increment => {
                     state.count += 1;
                     smallvec::smallvec![Effect::None]
-                }
+                },
                 TestAction::Decrement => {
                     state.count -= 1;
                     smallvec::smallvec![Effect::None]
-                }
+                },
             }
         }
     }

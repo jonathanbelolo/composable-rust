@@ -118,9 +118,7 @@ impl ResourceManager {
 
         // Run auth migrations
         info!("Running auth migrations...");
-        sqlx::migrate!("./migrations_auth")
-            .run(&auth_pool)
-            .await?;
+        sqlx::migrate!("./migrations_auth").run(&auth_pool).await?;
         info!("Auth migrations complete");
 
         // NOTE: there is intentionally no separate analytics database. Analytics read

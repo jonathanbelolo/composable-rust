@@ -22,7 +22,7 @@
 use composable_rust_core::agent::AgentEnvironment;
 use composable_rust_core::effect::Effect;
 use composable_rust_core::reducer::Reducer;
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 use std::collections::HashMap;
 use std::marker::PhantomData;
 
@@ -78,7 +78,9 @@ impl AggregationState {
     /// Check if all responses collected
     #[must_use]
     pub fn all_responses_collected(&self) -> bool {
-        !self.sources.is_empty() && self.pending.is_empty() && self.responses.len() == self.sources.len()
+        !self.sources.is_empty()
+            && self.pending.is_empty()
+            && self.responses.len() == self.sources.len()
     }
 
     /// Get result
@@ -175,7 +177,9 @@ impl<E> AggregationReducer<E> {
             }
         }
 
-        output.push_str("\n[In real implementation, would use LLM to synthesize unified perspective]");
+        output.push_str(
+            "\n[In real implementation, would use LLM to synthesize unified perspective]",
+        );
 
         output
     }
@@ -230,9 +234,12 @@ impl<E: AgentEnvironment> Reducer for AggregationReducer<E> {
                 }
 
                 effects
-            }
+            },
 
-            AggregationAction::SourceResponse { source_id, response } => {
+            AggregationAction::SourceResponse {
+                source_id,
+                response,
+            } => {
                 // Remove from pending
                 state.pending.retain(|id| id != &source_id);
 
@@ -247,7 +254,7 @@ impl<E: AgentEnvironment> Reducer for AggregationReducer<E> {
                 } else {
                     smallvec![Effect::None]
                 }
-            }
+            },
 
             AggregationAction::Synthesize => {
                 // Synthesize all responses
@@ -256,20 +263,22 @@ impl<E: AgentEnvironment> Reducer for AggregationReducer<E> {
                 state.completed = true;
 
                 smallvec![Effect::Future(Box::pin(async move {
-                    Some(AggregationAction::Complete { result: synthesized })
+                    Some(AggregationAction::Complete {
+                        result: synthesized,
+                    })
                 }))]
-            }
+            },
 
             AggregationAction::Complete { .. } => {
                 // Already complete
                 smallvec![Effect::None]
-            }
+            },
 
             AggregationAction::Error { .. } => {
                 // Error occurred
                 state.completed = true;
                 smallvec![Effect::None]
-            }
+            },
         }
     }
 }
@@ -296,19 +305,35 @@ mod tests {
             &self.config
         }
 
-        fn call_claude(&self, _request: composable_rust_anthropic::MessagesRequest) -> Effect<AgentAction> {
+        fn call_claude(
+            &self,
+            _request: composable_rust_anthropic::MessagesRequest,
+        ) -> Effect<AgentAction> {
             Effect::None
         }
 
-        fn call_claude_streaming(&self, _request: composable_rust_anthropic::MessagesRequest) -> Effect<AgentAction> {
+        fn call_claude_streaming(
+            &self,
+            _request: composable_rust_anthropic::MessagesRequest,
+        ) -> Effect<AgentAction> {
             Effect::None
         }
 
-        fn execute_tool(&self, _tool_use_id: String, _tool_name: String, _tool_input: String) -> Effect<AgentAction> {
+        fn execute_tool(
+            &self,
+            _tool_use_id: String,
+            _tool_name: String,
+            _tool_input: String,
+        ) -> Effect<AgentAction> {
             Effect::None
         }
 
-        fn execute_tool_streaming(&self, _tool_use_id: String, _tool_name: String, _tool_input: String) -> Effect<AgentAction> {
+        fn execute_tool_streaming(
+            &self,
+            _tool_use_id: String,
+            _tool_name: String,
+            _tool_input: String,
+        ) -> Effect<AgentAction> {
             Effect::None
         }
     }
@@ -336,7 +361,13 @@ mod tests {
             config: AgentConfig::default(),
         };
 
-        let effects = reducer.reduce(&mut state, AggregationAction::Start { sources: Vec::new() }, &env);
+        let effects = reducer.reduce(
+            &mut state,
+            AggregationAction::Start {
+                sources: Vec::new(),
+            },
+            &env,
+        );
 
         assert!(state.is_completed());
         assert_eq!(effects.len(), 1);
@@ -433,8 +464,12 @@ mod tests {
     fn test_synthesize() {
         let reducer: AggregationReducer<MockEnvironment> = AggregationReducer::new();
         let mut state = AggregationState::new();
-        state.responses.insert("source1".to_string(), Ok("data1".to_string()));
-        state.responses.insert("source2".to_string(), Ok("data2".to_string()));
+        state
+            .responses
+            .insert("source1".to_string(), Ok("data1".to_string()));
+        state
+            .responses
+            .insert("source2".to_string(), Ok("data2".to_string()));
 
         let env = MockEnvironment {
             config: AgentConfig::default(),
@@ -451,8 +486,12 @@ mod tests {
     fn test_synthesize_with_errors() {
         let reducer: AggregationReducer<MockEnvironment> = AggregationReducer::new();
         let mut state = AggregationState::new();
-        state.responses.insert("source1".to_string(), Ok("data1".to_string()));
-        state.responses.insert("source2".to_string(), Err("error".to_string()));
+        state
+            .responses
+            .insert("source1".to_string(), Ok("data1".to_string()));
+        state
+            .responses
+            .insert("source2".to_string(), Err("error".to_string()));
 
         let env = MockEnvironment {
             config: AgentConfig::default(),

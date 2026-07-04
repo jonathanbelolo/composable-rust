@@ -26,13 +26,13 @@
 
 use anyhow::Result;
 use axum::{
+    Json, Router,
     extract::{Path, State},
     http::StatusCode,
     routing::{get, post},
-    Json, Router,
 };
 use composable_rust_pg_gateway::{
-    create_pool, execute_with_identity, ApiError, DbConfig, Identity,
+    ApiError, DbConfig, Identity, create_pool, execute_with_identity,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -184,11 +184,7 @@ async fn get_item(
 ///
 /// In production, use the `Identity` extractor with JWT/session validation.
 fn mock_identity() -> Identity {
-    Identity::new(
-        "demo-user-123",
-        "demo-tenant-456",
-        vec!["user".to_string()],
-    )
+    Identity::new("demo-user-123", "demo-tenant-456", vec!["user".to_string()])
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -240,8 +236,9 @@ async fn main() -> Result<()> {
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "thin_server_example=info,composable_rust_pg_gateway=info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                "thin_server_example=info,composable_rust_pg_gateway=info".into()
+            }),
         )
         .init();
 

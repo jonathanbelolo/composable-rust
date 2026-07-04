@@ -36,8 +36,8 @@
 
 use super::types::Identity;
 use futures::future::BoxFuture;
-use sqlx::postgres::PgConnection;
 use sqlx::PgPool;
+use sqlx::postgres::PgConnection;
 
 /// Set identity context on a `PostgreSQL` connection.
 ///

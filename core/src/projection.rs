@@ -247,11 +247,7 @@ pub trait ProjectionStore: Send + Sync {
     /// # Errors
     ///
     /// Returns [`ProjectionError::Storage`] if save fails.
-    fn save(
-        &self,
-        key: &str,
-        data: &[u8],
-    ) -> impl Future<Output = Result<()>> + Send;
+    fn save(&self, key: &str, data: &[u8]) -> impl Future<Output = Result<()>> + Send;
 
     /// Get projection data by key.
     ///
@@ -267,10 +263,7 @@ pub trait ProjectionStore: Send + Sync {
     /// # Errors
     ///
     /// Returns [`ProjectionError::Storage`] if retrieval fails.
-    fn get(
-        &self,
-        key: &str,
-    ) -> impl Future<Output = Result<Option<Vec<u8>>>> + Send;
+    fn get(&self, key: &str) -> impl Future<Output = Result<Option<Vec<u8>>>> + Send;
 
     /// Delete projection data by key.
     ///

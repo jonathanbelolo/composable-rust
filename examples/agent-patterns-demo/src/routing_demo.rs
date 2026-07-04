@@ -24,11 +24,17 @@ impl AgentEnvironment for DemoEnvironment {
         &self.config
     }
 
-    fn call_claude(&self, _request: composable_rust_anthropic::MessagesRequest) -> Effect<AgentAction> {
+    fn call_claude(
+        &self,
+        _request: composable_rust_anthropic::MessagesRequest,
+    ) -> Effect<AgentAction> {
         Effect::None
     }
 
-    fn call_claude_streaming(&self, _request: composable_rust_anthropic::MessagesRequest) -> Effect<AgentAction> {
+    fn call_claude_streaming(
+        &self,
+        _request: composable_rust_anthropic::MessagesRequest,
+    ) -> Effect<AgentAction> {
         Effect::None
     }
 
@@ -51,21 +57,24 @@ fn main() {
         Box::pin(async move {
             println!("  🔧 Technical specialist processing: {}", input);
             Ok("Technical issue resolved: Reset router and update firmware.".to_string())
-        }) as std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
+        })
+            as std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
     });
 
     let billing_specialist = Arc::new(|input: String| {
         Box::pin(async move {
             println!("  💰 Billing specialist processing: {}", input);
             Ok("Billing inquiry handled: Invoice sent to registered email.".to_string())
-        }) as std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
+        })
+            as std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
     });
 
     let sales_specialist = Arc::new(|input: String| {
         Box::pin(async move {
             println!("  📈 Sales specialist processing: {}", input);
             Ok("Sales inquiry handled: Product demo scheduled for next week.".to_string())
-        }) as std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
+        })
+            as std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
     });
 
     // Define routes
@@ -102,7 +111,10 @@ fn main() {
         },
         &env,
     );
-    println!("   Classification step initiated ({} effects)", effects.len());
+    println!(
+        "   Classification step initiated ({} effects)",
+        effects.len()
+    );
 
     // Simulate classification result
     state = RouterState::new();

@@ -20,14 +20,17 @@
 //! ```
 
 use crate::auth::setup::TicketingAuthStore;
-use composable_rust_auth::{AuthAction, state::{Session, SessionId, UserId}};
-use composable_rust_web::{
-    error::AppError,
-    extractors::{ClientIp, CorrelationId},
-};
 use axum::{
     extract::{FromRequestParts, State},
     http::request::Parts,
+};
+use composable_rust_auth::{
+    AuthAction,
+    state::{Session, SessionId, UserId},
+};
+use composable_rust_web::{
+    error::AppError,
+    extractors::{ClientIp, CorrelationId},
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -52,7 +55,9 @@ where
 
         // Parse "Bearer <token>"
         if !auth_header.starts_with("Bearer ") {
-            return Err(AppError::unauthorized("Invalid authorization format. Expected 'Bearer <token>'"));
+            return Err(AppError::unauthorized(
+                "Invalid authorization format. Expected 'Bearer <token>'",
+            ));
         }
 
         let token = auth_header
@@ -81,8 +86,7 @@ pub struct SessionUser {
 }
 
 // Implementation for Arc<TicketingAuthStore> (used by auth routes)
-impl FromRequestParts<Arc<TicketingAuthStore>> for SessionUser
-{
+impl FromRequestParts<Arc<TicketingAuthStore>> for SessionUser {
     type Rejection = AppError;
 
     async fn from_request_parts(
@@ -100,9 +104,12 @@ impl FromRequestParts<Arc<TicketingAuthStore>> for SessionUser
 
             if bearer.0 == test_token {
                 // Legacy: exact match returns hardcoded test user
-                const TEST_USER_UUID: uuid::Uuid = uuid::Uuid::from_bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
-                const TEST_SESSION_UUID: uuid::Uuid = uuid::Uuid::from_bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
-                const TEST_DEVICE_UUID: uuid::Uuid = uuid::Uuid::from_bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]);
+                const TEST_USER_UUID: uuid::Uuid =
+                    uuid::Uuid::from_bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+                const TEST_SESSION_UUID: uuid::Uuid =
+                    uuid::Uuid::from_bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+                const TEST_DEVICE_UUID: uuid::Uuid =
+                    uuid::Uuid::from_bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]);
 
                 let test_user_id = UserId(TEST_USER_UUID);
                 let test_device_id = composable_rust_auth::state::DeviceId(TEST_DEVICE_UUID);
@@ -172,7 +179,9 @@ impl FromRequestParts<Arc<TicketingAuthStore>> for SessionUser
         // Extract client IP and correlation ID using framework extractors
         let client_ip = ClientIp::from_request_parts(parts, state)
             .await
-            .unwrap_or(ClientIp(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)));
+            .unwrap_or(ClientIp(std::net::IpAddr::V4(
+                std::net::Ipv4Addr::LOCALHOST,
+            )));
 
         let correlation_id = CorrelationId::from_request_parts(parts, state)
             .await
@@ -193,7 +202,12 @@ impl FromRequestParts<Arc<TicketingAuthStore>> for SessionUser
         let response = store
             .send_and_wait_for(
                 action,
-                |a| matches!(a, AuthAction::SessionValidated { .. } | AuthAction::SessionExpired { .. }),
+                |a| {
+                    matches!(
+                        a,
+                        AuthAction::SessionValidated { .. } | AuthAction::SessionExpired { .. }
+                    )
+                },
                 Duration::from_secs(5),
             )
             .await
@@ -201,16 +215,14 @@ impl FromRequestParts<Arc<TicketingAuthStore>> for SessionUser
 
         // Handle validation result
         match response {
-            AuthAction::SessionValidated { session, .. } => {
-                Ok(Self {
-                    user_id: session.user_id,
-                    session,
-                })
-            }
-            AuthAction::SessionExpired { .. } => {
-                Err(AppError::unauthorized("Session expired"))
-            }
-            _ => Err(AppError::internal("Unexpected response from session validation")),
+            AuthAction::SessionValidated { session, .. } => Ok(Self {
+                user_id: session.user_id,
+                session,
+            }),
+            AuthAction::SessionExpired { .. } => Err(AppError::unauthorized("Session expired")),
+            _ => Err(AppError::internal(
+                "Unexpected response from session validation",
+            )),
         }
     }
 }
@@ -234,8 +246,7 @@ pub struct RequireAdmin {
     pub session: Session,
 }
 
-impl FromRequestParts<Arc<TicketingAuthStore>> for RequireAdmin
-{
+impl FromRequestParts<Arc<TicketingAuthStore>> for RequireAdmin {
     type Rejection = AppError;
 
     async fn from_request_parts(

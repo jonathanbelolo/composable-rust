@@ -3,7 +3,7 @@
 //! This module provides a background task that listens to `PostgreSQL`
 //! notification channels and broadcasts events to WebSocket clients.
 
-use super::{notification::RawNotification, EventNotification, WsManager};
+use super::{EventNotification, WsManager, notification::RawNotification};
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
@@ -95,14 +95,14 @@ pub async fn pg_notify_listener(pool: PgPool, manager: Arc<WsManager>, config: L
         match run_listener(&pool, &manager, &config).await {
             Ok(()) => {
                 tracing::info!("PostgreSQL listener connection closed, reconnecting...");
-            }
+            },
             Err(e) => {
                 tracing::error!(
                     error = %e,
                     delay_secs = config.reconnect_delay.as_secs(),
                     "PostgreSQL listener error, reconnecting..."
                 );
-            }
+            },
         }
 
         tokio::time::sleep(config.reconnect_delay).await;
@@ -141,26 +141,24 @@ async fn run_listener(
 
         // Parse the notification payload
         match serde_json::from_str::<RawNotification>(notification.payload()) {
-            Ok(raw) => {
-                match EventNotification::try_from(raw) {
-                    Ok(event) => {
-                        tracing::debug!(
-                            global_id = event.global_id(),
-                            context = %event.context(),
-                            event_type = %event.event_type(),
-                            "Broadcasting event to WebSocket clients"
-                        );
-                        manager.broadcast(event);
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            channel = %notification.channel(),
-                            "Failed to parse event timestamp"
-                        );
-                    }
-                }
-            }
+            Ok(raw) => match EventNotification::try_from(raw) {
+                Ok(event) => {
+                    tracing::debug!(
+                        global_id = event.global_id(),
+                        context = %event.context(),
+                        event_type = %event.event_type(),
+                        "Broadcasting event to WebSocket clients"
+                    );
+                    manager.broadcast(event);
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        channel = %notification.channel(),
+                        "Failed to parse event timestamp"
+                    );
+                },
+            },
             Err(e) => {
                 tracing::warn!(
                     error = %e,
@@ -168,7 +166,7 @@ async fn run_listener(
                     payload = %notification.payload(),
                     "Failed to parse notification payload"
                 );
-            }
+            },
         }
     }
 }

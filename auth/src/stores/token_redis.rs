@@ -114,14 +114,11 @@ impl RedisTokenStore {
     /// # }
     /// ```
     pub async fn new(redis_url: &str) -> Result<Self> {
-        let client = Client::open(redis_url).map_err(|e| {
-            AuthError::InternalError(format!("Failed to create Redis client: {e}"))
-        })?;
+        let client = Client::open(redis_url)
+            .map_err(|e| AuthError::InternalError(format!("Failed to create Redis client: {e}")))?;
 
         let conn_manager = ConnectionManager::new(client).await.map_err(|e| {
-            AuthError::InternalError(format!(
-                "Failed to create Redis connection manager: {e}"
-            ))
+            AuthError::InternalError(format!("Failed to create Redis connection manager: {e}"))
         })?;
 
         tracing::info!("RedisTokenStore initialized successfully");
@@ -214,10 +211,8 @@ impl TokenStore for RedisTokenStore {
             //
             // constant_time_eq prevents this by always taking the same time
             // regardless of where the first mismatch occurs.
-            let token_matches = constant_time_eq::constant_time_eq(
-                token.as_bytes(),
-                token_data.token.as_bytes(),
-            );
+            let token_matches =
+                constant_time_eq::constant_time_eq(token.as_bytes(), token_data.token.as_bytes());
 
             // ✅ SECURITY: Defense-in-depth expiration check
             //
@@ -288,10 +283,7 @@ impl TokenStore for RedisTokenStore {
         })?;
 
         if deleted > 0 {
-            tracing::debug!(
-                token_id = token_id,
-                "Deleted token from Redis"
-            );
+            tracing::debug!(token_id = token_id, "Deleted token from Redis");
         } else {
             tracing::trace!(
                 token_id = token_id,

@@ -117,9 +117,9 @@ mod protocol;
 mod subscription;
 
 pub use connection::{ConnectionId, WsConnection};
-pub use handler::{ws_handler, WsState};
-pub use listener::{pg_notify_listener, pg_notify_listener_default, ListenerConfig};
+pub use handler::{WsState, ws_handler};
+pub use listener::{ListenerConfig, pg_notify_listener, pg_notify_listener_default};
 pub use manager::{SharedWsManager, WsManager, WsManagerBuilder};
 pub use notification::EventNotification;
-pub use protocol::{error_codes, ClientMessage, ServerMessage, SubscriptionRequest};
+pub use protocol::{ClientMessage, ServerMessage, SubscriptionRequest, error_codes};
 pub use subscription::Subscription;

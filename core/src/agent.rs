@@ -362,11 +362,15 @@ mod tests {
         assert!(state.all_tool_results_received());
 
         // Add pending result
-        state.pending_tool_results.insert("tool_1".to_string(), None);
+        state
+            .pending_tool_results
+            .insert("tool_1".to_string(), None);
         assert!(!state.all_tool_results_received());
 
         // Add result
-        state.pending_tool_results.insert("tool_1".to_string(), Some(Ok("result".to_string())));
+        state
+            .pending_tool_results
+            .insert("tool_1".to_string(), Some(Ok("result".to_string())));
         assert!(state.all_tool_results_received());
     }
 
@@ -385,15 +389,26 @@ mod tests {
         let mut state = BasicAgentState::new(config);
 
         // Start streaming tool
-        state.streaming_tools.insert("tool_1".to_string(), String::new());
+        state
+            .streaming_tools
+            .insert("tool_1".to_string(), String::new());
         assert!(state.streaming_tools.contains_key("tool_1"));
 
         // Accumulate chunks
-        if let Some(s) = state.streaming_tools.get_mut("tool_1") { s.push_str("chunk1 "); }
-        if let Some(s) = state.streaming_tools.get_mut("tool_1") { s.push_str("chunk2 "); }
-        if let Some(s) = state.streaming_tools.get_mut("tool_1") { s.push_str("chunk3"); }
+        if let Some(s) = state.streaming_tools.get_mut("tool_1") {
+            s.push_str("chunk1 ");
+        }
+        if let Some(s) = state.streaming_tools.get_mut("tool_1") {
+            s.push_str("chunk2 ");
+        }
+        if let Some(s) = state.streaming_tools.get_mut("tool_1") {
+            s.push_str("chunk3");
+        }
 
-        assert_eq!(state.streaming_tools.get("tool_1"), Some(&"chunk1 chunk2 chunk3".to_string()));
+        assert_eq!(
+            state.streaming_tools.get("tool_1"),
+            Some(&"chunk1 chunk2 chunk3".to_string())
+        );
 
         // Complete streaming tool
         state.streaming_tools.remove("tool_1");

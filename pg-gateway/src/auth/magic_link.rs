@@ -49,10 +49,10 @@
 
 use crate::ApiError;
 use axum::{
-    extract::{Query, State},
-    http::{header, StatusCode},
-    response::{IntoResponse, Response},
     Json,
+    extract::{Query, State},
+    http::{StatusCode, header},
+    response::{IntoResponse, Response},
 };
 use chrono::{DateTime, Utc};
 use cookie::{Cookie, SameSite};
@@ -278,7 +278,7 @@ impl Default for MagicLinkConfig {
             cookie_same_site: SameSite::Lax,
             cookie_max_age_days: 30,
             redirect_url: "/dashboard".to_string(),
-            ttl_seconds: 600, // 10 minutes - short TTL for security
+            ttl_seconds: 600,       // 10 minutes - short TTL for security
             use_host_prefix: false, // Opt-in for compatibility
         }
     }
@@ -490,7 +490,9 @@ impl MagicLinkConfigBuilder {
             cookie_secure: self.cookie_secure.unwrap_or(default.cookie_secure),
             cookie_http_only: self.cookie_http_only.unwrap_or(default.cookie_http_only),
             cookie_same_site: self.cookie_same_site.unwrap_or(default.cookie_same_site),
-            cookie_max_age_days: self.cookie_max_age_days.unwrap_or(default.cookie_max_age_days),
+            cookie_max_age_days: self
+                .cookie_max_age_days
+                .unwrap_or(default.cookie_max_age_days),
             redirect_url: self.redirect_url.unwrap_or(default.redirect_url),
             ttl_seconds: self.ttl_seconds.unwrap_or(default.ttl_seconds),
             use_host_prefix: self.use_host_prefix.unwrap_or(default.use_host_prefix),
@@ -570,20 +572,19 @@ pub async fn request_magic_link(
     }
 
     // Call PostgreSQL - it handles user lookup, token generation, email queuing
-    let result: Result<MagicLinkResult, _> = sqlx::query_as(
-        "SELECT token, expires_at FROM auth.create_magic_link($1, $2)",
-    )
-    .bind(&req.email)
-    .bind(config.ttl_seconds)
-    .fetch_one(&pool)
-    .await;
+    let result: Result<MagicLinkResult, _> =
+        sqlx::query_as("SELECT token, expires_at FROM auth.create_magic_link($1, $2)")
+            .bind(&req.email)
+            .bind(config.ttl_seconds)
+            .fetch_one(&pool)
+            .await;
 
     // Security: Always return success to prevent user enumeration.
     // Only propagate errors that don't reveal user existence.
     match result {
         Ok(_) => {
             tracing::debug!(email = %req.email, "Magic link created");
-        }
+        },
         Err(sqlx::Error::RowNotFound | sqlx::Error::Database(_)) => {
             // User not found or PostgreSQL returned P0404 - don't reveal this.
             // Add random delay to mitigate timing attacks.
@@ -596,11 +597,11 @@ pub async fn request_magic_link(
             let delay_ms = 50 + (rand::random::<u64>() % 100);
             tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
             tracing::debug!(email = %req.email, "Magic link requested for unknown email");
-        }
+        },
         Err(e) => {
             // Other errors (connection issues) should be propagated
             return Err(e.into());
-        }
+        },
     }
 
     Ok((
@@ -757,9 +758,7 @@ mod tests {
 
     #[test]
     fn builder_partial_override() {
-        let config = MagicLinkConfig::builder()
-            .cookie_name("partial")
-            .build();
+        let config = MagicLinkConfig::builder().cookie_name("partial").build();
 
         // Overridden
         assert_eq!(config.cookie_name, "partial");
@@ -916,9 +915,7 @@ mod tests {
 
     #[test]
     fn host_prefix_enabled_via_builder() {
-        let config = MagicLinkConfig::builder()
-            .use_host_prefix(true)
-            .build();
+        let config = MagicLinkConfig::builder().use_host_prefix(true).build();
         assert!(config.use_host_prefix);
     }
 

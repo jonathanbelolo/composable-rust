@@ -6,9 +6,7 @@
 use crate::types::{
     AccountId, Money, Transfer, TransferAction, TransferId, TransferState, TransferStatus,
 };
-use composable_rust_core::{
-    effect::Effect, environment::Clock, reducer::Reducer, SmallVec,
-};
+use composable_rust_core::{SmallVec, effect::Effect, environment::Clock, reducer::Reducer};
 
 /// Environment dependencies for the Transfer reducer
 #[derive(Clone)]
@@ -78,26 +76,26 @@ impl TransferReducer {
                 );
                 state.transfers.insert(id.clone(), transfer);
                 state.last_error = None;
-            }
+            },
             TransferAction::DebitApplied { transfer_id, .. } => {
                 if let Some(transfer) = state.transfers.get_mut(transfer_id) {
                     transfer.status = TransferStatus::Debited;
                 }
                 state.last_error = None;
-            }
+            },
             TransferAction::CreditApplied { transfer_id, .. } => {
                 if let Some(transfer) = state.transfers.get_mut(transfer_id) {
                     // Credit applied, but wait for TransferCompleted event
                     transfer.status = TransferStatus::Debited; // Stay in Debited until completed
                 }
                 state.last_error = None;
-            }
+            },
             TransferAction::TransferCompleted { transfer_id } => {
                 if let Some(transfer) = state.transfers.get_mut(transfer_id) {
                     transfer.status = TransferStatus::Completed;
                 }
                 state.last_error = None;
-            }
+            },
             TransferAction::TransferFailed {
                 transfer_id,
                 reason,
@@ -108,18 +106,18 @@ impl TransferReducer {
                     };
                 }
                 state.last_error = Some(reason.clone());
-            }
+            },
             TransferAction::TransferCompensated { transfer_id } => {
                 if let Some(transfer) = state.transfers.get_mut(transfer_id) {
                     transfer.status = TransferStatus::Compensated;
                 }
                 state.last_error = None;
-            }
+            },
             TransferAction::ValidationFailed { error } => {
                 state.last_error = Some(error.clone());
-            }
+            },
             // Commands are not applied to state
-            TransferAction::InitiateTransfer { .. } => {}
+            TransferAction::InitiateTransfer { .. } => {},
         }
     }
 
@@ -184,13 +182,9 @@ impl Reducer for TransferReducer {
                 amount,
             } => {
                 // Validate command
-                if let Err(error) = Self::validate_initiate_transfer(
-                    state,
-                    &id,
-                    &from_account,
-                    &to_account,
-                    amount,
-                ) {
+                if let Err(error) =
+                    Self::validate_initiate_transfer(state, &id, &from_account, &to_account, amount)
+                {
                     Self::apply_event(
                         state,
                         &TransferAction::ValidationFailed {
@@ -215,14 +209,14 @@ impl Reducer for TransferReducer {
                 // Emit effect to withdraw from source account
                 // In a real implementation, this would trigger the account aggregate
                 SmallVec::new() // Placeholder - will return withdrawal effect
-            }
+            },
 
             // ========== Events ==========
             TransferAction::TransferInitiated { .. } => {
                 // Event replayed from event store
                 Self::apply_event(state, &action);
                 SmallVec::new()
-            }
+            },
 
             TransferAction::DebitApplied {
                 ref transfer_id,
@@ -233,13 +227,14 @@ impl Reducer for TransferReducer {
 
                 // Debit successful, now credit the destination
                 if let Some(transfer) = state.get(transfer_id)
-                    && transfer.status == TransferStatus::Debited {
-                        // Emit effect to deposit to destination
-                        // Placeholder - will return deposit effect
-                    }
+                    && transfer.status == TransferStatus::Debited
+                {
+                    // Emit effect to deposit to destination
+                    // Placeholder - will return deposit effect
+                }
 
                 SmallVec::new()
-            }
+            },
 
             TransferAction::CreditApplied {
                 ref transfer_id,
@@ -255,7 +250,7 @@ impl Reducer for TransferReducer {
                 Self::apply_event(state, &completion_event);
 
                 SmallVec::new()
-            }
+            },
 
             TransferAction::TransferCompleted { .. }
             | TransferAction::TransferFailed { .. }
@@ -263,7 +258,7 @@ impl Reducer for TransferReducer {
             | TransferAction::ValidationFailed { .. } => {
                 Self::apply_event(state, &action);
                 SmallVec::new()
-            }
+            },
         }
     }
 }
@@ -274,7 +269,7 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use composable_rust_core::environment::SystemClock;
-    use composable_rust_testing::{assertions, ReducerTest};
+    use composable_rust_testing::{ReducerTest, assertions};
     use std::sync::Arc;
 
     fn create_test_env() -> TransferEnvironment {
@@ -324,11 +319,13 @@ mod tests {
             .then_state(|state| {
                 assert_eq!(state.count(), 0); // No transfer created
                 assert!(state.last_error.is_some());
-                assert!(state
-                    .last_error
-                    .as_ref()
-                    .unwrap()
-                    .contains("Cannot transfer to the same account"));
+                assert!(
+                    state
+                        .last_error
+                        .as_ref()
+                        .unwrap()
+                        .contains("Cannot transfer to the same account")
+                );
             })
             .then_effects(assertions::assert_no_effects)
             .run();
@@ -350,11 +347,13 @@ mod tests {
             .then_state(|state| {
                 assert_eq!(state.count(), 0);
                 assert!(state.last_error.is_some());
-                assert!(state
-                    .last_error
-                    .as_ref()
-                    .unwrap()
-                    .contains("must be greater than zero"));
+                assert!(
+                    state
+                        .last_error
+                        .as_ref()
+                        .unwrap()
+                        .contains("must be greater than zero")
+                );
             })
             .then_effects(assertions::assert_no_effects)
             .run();

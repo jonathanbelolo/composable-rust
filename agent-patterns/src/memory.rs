@@ -23,7 +23,7 @@
 use composable_rust_core::agent::AgentEnvironment;
 use composable_rust_core::effect::Effect;
 use composable_rust_core::reducer::Reducer;
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 use std::marker::PhantomData;
 
 /// Memory/RAG configuration
@@ -220,9 +220,11 @@ impl<E: AgentEnvironment> Reducer for MemoryReducer<E> {
                 smallvec![Effect::Future(Box::pin(async move {
                     // Placeholder - would query vector store
                     // For now, return empty memories
-                    Some(MemoryAction::MemoriesRetrieved { memories: Vec::new() })
+                    Some(MemoryAction::MemoriesRetrieved {
+                        memories: Vec::new(),
+                    })
                 }))]
-            }
+            },
 
             MemoryAction::MemoriesRetrieved { memories } => {
                 // Filter by threshold
@@ -245,7 +247,7 @@ impl<E: AgentEnvironment> Reducer for MemoryReducer<E> {
                         response: "Response with context".to_string(),
                     })
                 }))]
-            }
+            },
 
             MemoryAction::ResponseGenerated { response } => {
                 state.response = Some(response.clone());
@@ -254,27 +256,30 @@ impl<E: AgentEnvironment> Reducer for MemoryReducer<E> {
                 smallvec![Effect::Future(Box::pin(async move {
                     Some(MemoryAction::Complete { response })
                 }))]
-            }
+            },
 
-            MemoryAction::StoreInteraction { query: _, response: _ } => {
+            MemoryAction::StoreInteraction {
+                query: _,
+                response: _,
+            } => {
                 // Store interaction in vector store for future retrieval
                 // In real implementation, would embed and store
                 smallvec![Effect::Future(Box::pin(async {
                     // Placeholder - would store in vector DB
                     None
                 }))]
-            }
+            },
 
             MemoryAction::Complete { .. } => {
                 // Already complete
                 smallvec![Effect::None]
-            }
+            },
 
             MemoryAction::Error { .. } => {
                 // Error occurred
                 state.completed = true;
                 smallvec![Effect::None]
-            }
+            },
         }
     }
 }
@@ -300,19 +305,35 @@ mod tests {
             &self.config
         }
 
-        fn call_claude(&self, _request: composable_rust_anthropic::MessagesRequest) -> Effect<AgentAction> {
+        fn call_claude(
+            &self,
+            _request: composable_rust_anthropic::MessagesRequest,
+        ) -> Effect<AgentAction> {
             Effect::None
         }
 
-        fn call_claude_streaming(&self, _request: composable_rust_anthropic::MessagesRequest) -> Effect<AgentAction> {
+        fn call_claude_streaming(
+            &self,
+            _request: composable_rust_anthropic::MessagesRequest,
+        ) -> Effect<AgentAction> {
             Effect::None
         }
 
-        fn execute_tool(&self, _tool_use_id: String, _tool_name: String, _tool_input: String) -> Effect<AgentAction> {
+        fn execute_tool(
+            &self,
+            _tool_use_id: String,
+            _tool_name: String,
+            _tool_input: String,
+        ) -> Effect<AgentAction> {
             Effect::None
         }
 
-        fn execute_tool_streaming(&self, _tool_use_id: String, _tool_name: String, _tool_input: String) -> Effect<AgentAction> {
+        fn execute_tool_streaming(
+            &self,
+            _tool_use_id: String,
+            _tool_name: String,
+            _tool_input: String,
+        ) -> Effect<AgentAction> {
             Effect::None
         }
     }
@@ -374,7 +395,9 @@ mod tests {
 
         let effects = reducer.reduce(
             &mut state,
-            MemoryAction::MemoriesRetrieved { memories: Vec::new() },
+            MemoryAction::MemoriesRetrieved {
+                memories: Vec::new(),
+            },
             &env,
         );
 
@@ -409,7 +432,11 @@ mod tests {
             },
         ];
 
-        let effects = reducer.reduce(&mut state, MemoryAction::MemoriesRetrieved { memories }, &env);
+        let effects = reducer.reduce(
+            &mut state,
+            MemoryAction::MemoriesRetrieved { memories },
+            &env,
+        );
 
         assert_eq!(state.memories().len(), 1); // Only high similarity kept
         assert_eq!(state.memories()[0].id, "1");

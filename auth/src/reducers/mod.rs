@@ -8,8 +8,8 @@ pub mod magic_link;
 pub mod oauth;
 pub mod passkey;
 
-use crate::{AuthAction, AuthState, AuthEnvironment};
-use composable_rust_core::{effect::Effect, reducer::Reducer, SmallVec};
+use crate::{AuthAction, AuthEnvironment, AuthState};
+use composable_rust_core::{SmallVec, effect::Effect, reducer::Reducer};
 
 // Re-export
 pub use magic_link::MagicLinkReducer;
@@ -117,18 +117,14 @@ where
             | AuthAction::OAuthSuccess { .. }
             | AuthAction::RefreshOAuthToken { .. }
             | AuthAction::OAuthTokenRefreshed { .. }
-            | AuthAction::OAuthFailed { .. } => {
-                self.oauth.reduce(state, action, env)
-            }
+            | AuthAction::OAuthFailed { .. } => self.oauth.reduce(state, action, env),
 
             // Magic Link actions
             AuthAction::SendMagicLink { .. }
             | AuthAction::MagicLinkSent { .. }
             | AuthAction::VerifyMagicLink { .. }
             | AuthAction::MagicLinkVerified { .. }
-            | AuthAction::MagicLinkFailed { .. } => {
-                self.magic_link.reduce(state, action, env)
-            }
+            | AuthAction::MagicLinkFailed { .. } => self.magic_link.reduce(state, action, env),
 
             // Passkey actions
             AuthAction::InitiatePasskeyRegistration { .. }
@@ -147,7 +143,7 @@ where
             | AuthAction::PasskeyCredentialDeletionFailed { .. }
             | AuthAction::PasskeyAuthenticationFailed { .. } => {
                 self.passkey.reduce(state, action, env)
-            }
+            },
 
             // Session management
             AuthAction::SessionCreated { .. }
@@ -164,20 +160,19 @@ where
                 // Route to magic_link reducer for session management
                 // (could be handled by a dedicated session reducer in future)
                 self.magic_link.reduce(state, action, env)
-            }
+            },
 
             // Event persistence
-            AuthAction::EventPersisted { .. }
-            | AuthAction::EventPersistenceFailed { .. } => {
+            AuthAction::EventPersisted { .. } | AuthAction::EventPersistenceFailed { .. } => {
                 // Event persistence actions don't produce effects
                 SmallVec::new()
-            }
+            },
 
             // Error actions
             AuthAction::SessionCreationFailed { .. } => {
                 // Error actions typically don't produce effects
                 SmallVec::new()
-            }
+            },
         }
     }
 }

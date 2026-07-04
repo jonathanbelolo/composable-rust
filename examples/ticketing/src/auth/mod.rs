@@ -19,37 +19,26 @@ pub mod handlers;
 // Re-export framework components
 pub use composable_rust_auth::{
     // Core types
-    AuthAction, AuthReducer, AuthState,
-    // State types
-    state::{Session, SessionId, UserId, DeviceId},
-    // Error types
-    AuthError, Result,
-    // Store implementations
-    stores::{
-        RedisSessionStore,
-        RedisTokenStore,
-        RedisChallengeStore,
-        RedisOAuthTokenStore,
-        RedisRateLimiter,
-        PostgresUserRepository,
-        PostgresDeviceRepository,
-    },
-    // Provider traits
-    providers::{
-        EmailProvider,
-        OAuth2Provider,
-        WebAuthnProvider,
-        SessionStore,
-        TokenStore,
-        ChallengeStore,
-        OAuthTokenStore,
-        UserRepository,
-        DeviceRepository,
-        RateLimiter,
-        RiskCalculator,
-    },
+    AuthAction,
     // Environment
     AuthEnvironment,
+    // Error types
+    AuthError,
+    AuthReducer,
+    AuthState,
+    Result,
+    // Provider traits
+    providers::{
+        ChallengeStore, DeviceRepository, EmailProvider, OAuth2Provider, OAuthTokenStore,
+        RateLimiter, RiskCalculator, SessionStore, TokenStore, UserRepository, WebAuthnProvider,
+    },
+    // State types
+    state::{DeviceId, Session, SessionId, UserId},
+    // Store implementations
+    stores::{
+        PostgresDeviceRepository, PostgresUserRepository, RedisChallengeStore,
+        RedisOAuthTokenStore, RedisRateLimiter, RedisSessionStore, RedisTokenStore,
+    },
 };
 
 // Re-export our custom email provider

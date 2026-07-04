@@ -123,9 +123,7 @@ impl WsConnection {
         }
 
         // Check if any subscription matches
-        self.subscriptions
-            .iter()
-            .any(|sub| sub.matches(event))
+        self.subscriptions.iter().any(|sub| sub.matches(event))
     }
 
     /// Get the sender channel for this connection.

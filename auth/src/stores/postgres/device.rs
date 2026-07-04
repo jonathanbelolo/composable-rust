@@ -45,7 +45,7 @@ impl PostgresDeviceRepository {
     /// # Arguments
     ///
     /// * `pool` - `PostgreSQL` connection pool
-    #[must_use] 
+    #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
     }
@@ -95,7 +95,7 @@ impl DeviceRepository for PostgresDeviceRepository {
             login_count: row.login_count,
             passkey_credential_id: row.passkey_credential_id,
             public_key: row.public_key,
-            fingerprint: None, // TODO: Add to schema and query
+            fingerprint: None,      // TODO: Add to schema and query
             fingerprint_hash: None, // TODO: Add to schema and query
         })
     }
@@ -145,7 +145,7 @@ impl DeviceRepository for PostgresDeviceRepository {
                 login_count: row.login_count,
                 passkey_credential_id: row.passkey_credential_id,
                 public_key: row.public_key,
-                fingerprint: None, // TODO: Add to schema and query
+                fingerprint: None,      // TODO: Add to schema and query
                 fingerprint_hash: None, // TODO: Add to schema and query
             })
             .collect();
@@ -246,7 +246,9 @@ impl DeviceRepository for PostgresDeviceRepository {
         )
         .execute(&self.pool)
         .await
-        .map_err(|e| AuthError::DatabaseError(format!("Failed to update device trust level: {e}")))?;
+        .map_err(|e| {
+            AuthError::DatabaseError(format!("Failed to update device trust level: {e}"))
+        })?;
 
         if result.rows_affected() == 0 {
             return Err(AuthError::ResourceNotFound); // Device not found or unauthorized
@@ -332,7 +334,8 @@ impl DeviceRepository for PostgresDeviceRepository {
         match row {
             Some(row) => {
                 // Check if user agent is similar (simple check - could be more sophisticated)
-                let ua_match = user_agent.contains(&row.platform) || row.platform.contains(user_agent);
+                let ua_match =
+                    user_agent.contains(&row.platform) || row.platform.contains(user_agent);
 
                 if ua_match {
                     Ok(Some(Device {
@@ -347,13 +350,13 @@ impl DeviceRepository for PostgresDeviceRepository {
                         login_count: row.login_count,
                         passkey_credential_id: row.passkey_credential_id,
                         public_key: row.public_key,
-                        fingerprint: None, // TODO: Add to schema and query
+                        fingerprint: None,      // TODO: Add to schema and query
                         fingerprint_hash: None, // TODO: Add to schema and query
                     }))
                 } else {
                     Ok(None)
                 }
-            }
+            },
             None => Ok(None),
         }
     }

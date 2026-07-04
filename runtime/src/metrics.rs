@@ -100,18 +100,20 @@ impl MetricsServer {
                     self.addr
                 );
                 Ok(())
-            }
+            },
             Err(e) => {
                 let err_msg = e.to_string();
                 if err_msg.contains("already initialized") {
                     // In tests, multiple MetricsServer instances may be created
                     // We'll allow this but warn about it
-                    tracing::warn!("Metrics recorder already initialized, skipping re-initialization");
+                    tracing::warn!(
+                        "Metrics recorder already initialized, skipping re-initialization"
+                    );
                     Ok(())
                 } else {
                     Err(MetricsError::Install(err_msg))
                 }
-            }
+            },
         }
     }
 
@@ -181,20 +183,14 @@ fn register_metrics() {
         "reducer_actions_processed_total",
         "Total number of actions processed by reducers"
     );
-    describe_counter!(
-        "reducer_errors_total",
-        "Total number of reducer errors"
-    );
+    describe_counter!("reducer_errors_total", "Total number of reducer errors");
     describe_histogram!(
         "reducer_execution_duration_seconds",
         "Time taken to execute reducers"
     );
 
     // Effect Metrics
-    describe_counter!(
-        "effects_executed_total",
-        "Total number of effects executed"
-    );
+    describe_counter!("effects_executed_total", "Total number of effects executed");
     describe_counter!(
         "effects_failed_total",
         "Total number of effects that failed"
@@ -227,10 +223,7 @@ fn register_metrics() {
     );
 
     // Retry Metrics
-    describe_counter!(
-        "retry_attempts_total",
-        "Total number of retry attempts"
-    );
+    describe_counter!("retry_attempts_total", "Total number of retry attempts");
     describe_counter!(
         "retry_successes_total",
         "Total number of successful retries"

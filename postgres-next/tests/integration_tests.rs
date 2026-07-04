@@ -773,7 +773,7 @@ async fn postgres_event_store_integration() {
                         "concurrent append must conflict with VersionConflict, got: {e:?}"
                     );
                     conflicts += 1;
-                }
+                },
             }
         }
 
@@ -837,7 +837,7 @@ async fn postgres_event_store_integration() {
                         "concurrent append must conflict with VersionConflict, got: {e:?}"
                     );
                     conflicts += 1;
-                }
+                },
             }
         }
 
@@ -894,7 +894,7 @@ async fn postgres_event_store_integration() {
                         "duplicate initiation must conflict with VersionConflict, got: {e:?}"
                     );
                     conflicts += 1;
-                }
+                },
             }
         }
         assert_eq!(successes, 1, "exactly one initiation should win");

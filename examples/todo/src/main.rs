@@ -64,11 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let status = if todo.completed { "✓" } else { " " };
         println!("  [{}] {}", status, todo.title);
     }
-    println!(
-        "\nCompleted: {}/{}",
-        state.completed_count(),
-        state.count()
-    );
+    println!("\nCompleted: {}/{}", state.completed_count(), state.count());
 
     // Delete a todo
     println!("\nDeleting 'Deploy to production'...");

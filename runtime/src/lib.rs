@@ -377,8 +377,8 @@ impl RetryPolicy {
         // Calculate exponential backoff: initial * multiplier^attempt
         // Note: Cast is safe since max_attempts defaults to 5 (well within i32 range)
         #[allow(clippy::cast_possible_wrap)]
-        let base_delay_secs = self.initial_delay.as_secs_f64()
-            * self.backoff_multiplier.powi(attempt as i32);
+        let base_delay_secs =
+            self.initial_delay.as_secs_f64() * self.backoff_multiplier.powi(attempt as i32);
 
         // Cap at max_delay
         let capped_secs = base_delay_secs.min(self.max_delay.as_secs_f64());
@@ -571,7 +571,8 @@ impl CircuitBreaker {
 
                 if elapsed >= self.timeout {
                     // Transition to HalfOpen
-                    self.state.store(CircuitState::HalfOpen as u8, Ordering::Release);
+                    self.state
+                        .store(CircuitState::HalfOpen as u8, Ordering::Release);
                     self.success_count.store(0, Ordering::Release);
 
                     metrics::counter!("circuit_breaker.state_change", "from" => "open", "to" => "half_open")
@@ -601,7 +602,8 @@ impl CircuitBreaker {
 
                 if successes >= self.success_threshold {
                     // Close the circuit
-                    self.state.store(CircuitState::Closed as u8, Ordering::Release);
+                    self.state
+                        .store(CircuitState::Closed as u8, Ordering::Release);
                     self.failure_count.store(0, Ordering::Release);
                     self.success_count.store(0, Ordering::Release);
 
@@ -626,7 +628,8 @@ impl CircuitBreaker {
 
                 if failures >= self.failure_threshold {
                     // Open the circuit
-                    self.state.store(CircuitState::Open as u8, Ordering::Release);
+                    self.state
+                        .store(CircuitState::Open as u8, Ordering::Release);
 
                     // Note: Truncation acceptable for nanosecond timestamps (wraps every ~584 years)
                     #[allow(clippy::cast_possible_truncation)]
@@ -647,7 +650,8 @@ impl CircuitBreaker {
             },
             CircuitState::HalfOpen => {
                 // Any failure in HalfOpen opens circuit immediately
-                self.state.store(CircuitState::Open as u8, Ordering::Release);
+                self.state
+                    .store(CircuitState::Open as u8, Ordering::Release);
                 self.success_count.store(0, Ordering::Release);
 
                 // Note: Truncation acceptable for nanosecond timestamps (wraps every ~584 years)
@@ -773,7 +777,6 @@ impl<T> DeadLetter<T> {
             last_failed_at: now_nanos,
         }
     }
-
 }
 
 /// Dead Letter Queue for storing failed operations
@@ -945,7 +948,7 @@ impl<T> Default for DeadLetterQueue<T> {
 pub use error::StoreError;
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, Weak};
 use std::time::Duration;
 use tokio::sync::watch;
@@ -1558,10 +1561,7 @@ pub mod store {
                 // Note: Truncation intentional for display percentage
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 let usage_pct = dlq_usage as u32;
-                HealthCheck::degraded(
-                    "store",
-                    format!("Dead letter queue is {usage_pct}% full"),
-                )
+                HealthCheck::degraded("store", format!("Dead letter queue is {usage_pct}% full"))
             } else {
                 HealthCheck::healthy("store")
             };
@@ -1625,7 +1625,8 @@ pub mod store {
                 if start.elapsed() >= timeout {
                     tracing::error!(
                         pending_effects = pending,
-                        "Shutdown timeout: {} effects still running", pending
+                        "Shutdown timeout: {} effects still running",
+                        pending
                     );
                     metrics::counter!("store.shutdown.timeout").increment(1);
                     return Err(StoreError::ShutdownTimeout(pending));
@@ -1813,14 +1814,21 @@ pub mod store {
         }
 
         /// Recursively inject metadata into all `AppendEvents` and `PublishEvent` effects in an effect tree
-        #[allow(clippy::cognitive_complexity, clippy::too_many_lines, clippy::needless_pass_by_value)]
+        #[allow(
+            clippy::cognitive_complexity,
+            clippy::too_many_lines,
+            clippy::needless_pass_by_value
+        )]
         // - Recursive metadata injection requires comprehensive matching
         // - Pass by value avoids cloning when effect doesn't need metadata; clone only for recursive calls
-        fn inject_metadata_into_effect(effect: Effect<A>, metadata: composable_rust_core::event::EventMetadata) -> Effect<A>
+        fn inject_metadata_into_effect(
+            effect: Effect<A>,
+            metadata: composable_rust_core::event::EventMetadata,
+        ) -> Effect<A>
         where
             A: Clone + Send + 'static,
         {
-            use composable_rust_core::effect::{EventStoreOperation, EventBusOperation};
+            use composable_rust_core::effect::{EventBusOperation, EventStoreOperation};
 
             match effect {
                 Effect::EventStore(EventStoreOperation::AppendEvents {
@@ -1908,7 +1916,7 @@ pub mod store {
                         on_success,
                         on_error,
                     })
-                }
+                },
                 Effect::PublishEvent(EventBusOperation::Publish {
                     event_bus,
                     topic,
@@ -1952,7 +1960,10 @@ pub mod store {
                     tracing::debug!(
                         "inject_metadata_into_effect: PublishEvent after_metadata={} correlation_id={:?}",
                         updated_event.metadata.is_some(),
-                        updated_event.metadata.as_ref().and_then(|m| m.correlation_id.as_ref())
+                        updated_event
+                            .metadata
+                            .as_ref()
+                            .and_then(|m| m.correlation_id.as_ref())
                     );
 
                     Effect::PublishEvent(EventBusOperation::Publish {
@@ -1962,7 +1973,7 @@ pub mod store {
                         on_success,
                         on_error,
                     })
-                }
+                },
                 // Recursively process composed effects
                 Effect::Parallel(effects) => Effect::Parallel(
                     effects
@@ -2067,7 +2078,7 @@ pub mod store {
                 loop {
                     match rx.recv().await {
                         Ok(action) if predicate(&action) => return Ok(action),
-                        Ok(_) => {} // Not the action we want, keep waiting
+                        Ok(_) => {}, // Not the action we want, keep waiting
                         Err(broadcast::error::RecvError::Lagged(skipped)) => {
                             // Slow consumer, some actions were dropped
                             // Continue waiting - if terminal action was dropped, timeout will catch it
@@ -2076,10 +2087,10 @@ pub mod store {
                                 "Action observer lagged, {} actions skipped",
                                 skipped
                             );
-                        }
+                        },
                         Err(broadcast::error::RecvError::Closed) => {
                             return Err(StoreError::ChannelClosed);
-                        }
+                        },
                     }
                 }
             })
@@ -2132,17 +2143,17 @@ pub mod store {
                 loop {
                     match rx.recv().await {
                         Ok(action) if predicate(&action) => return Ok(action),
-                        Ok(_) => {} // Not the action we want, keep waiting
+                        Ok(_) => {}, // Not the action we want, keep waiting
                         Err(broadcast::error::RecvError::Lagged(skipped)) => {
                             tracing::warn!(
                                 skipped,
                                 "Action observer lagged, {} actions skipped",
                                 skipped
                             );
-                        }
+                        },
                         Err(broadcast::error::RecvError::Closed) => {
                             return Err(StoreError::ChannelClosed);
-                        }
+                        },
                     }
                 }
             })
@@ -2234,7 +2245,11 @@ pub mod store {
         /// # Returns
         ///
         /// Result from the operation, or the last error if all retries exhausted
-        async fn retry_operation<F, Fut, T, Err>(&self, operation_name: &str, mut f: F) -> Result<T, Err>
+        async fn retry_operation<F, Fut, T, Err>(
+            &self,
+            operation_name: &str,
+            mut f: F,
+        ) -> Result<T, Err>
         where
             F: FnMut() -> Fut,
             Fut: std::future::Future<Output = Result<T, Err>>,
@@ -2260,7 +2275,7 @@ pub mod store {
                             );
                         }
                         return Ok(result);
-                    }
+                    },
                     Err(error) => {
                         // Check if we should retry
                         if !self.retry_policy.should_retry(attempt + 1) {
@@ -2305,7 +2320,7 @@ pub mod store {
 
                         tokio::time::sleep(delay).await;
                         attempt += 1;
-                    }
+                    },
                 }
             }
         }
@@ -2347,8 +2362,7 @@ pub mod store {
             effect: Effect<A>,
             tracking: EffectTracking<A>,
             metadata: Option<composable_rust_core::event::EventMetadata>,
-        )
-        where
+        ) where
             R: Clone,
             E: Clone,
             A: Clone + Send + 'static,
@@ -2376,7 +2390,9 @@ pub mod store {
                         let _pending_guard = pending_guard; // Decrement on drop
 
                         if let Some(action) = fut.await {
-                            tracing::trace!("Effect::Future produced an action, sending to store with metadata");
+                            tracing::trace!(
+                                "Effect::Future produced an action, sending to store with metadata"
+                            );
 
                             // Broadcast to observers (HTTP handlers, WebSockets, metrics)
                             let _ = store.action_broadcast.send(action.clone());
@@ -2421,13 +2437,12 @@ pub mod store {
                             let _ = store.action_broadcast.send(action.clone());
 
                             // Send action back to store with metadata (preserves correlation context)
-                            let _ = store.send_with_metadata(action, metadata_clone.clone()).await;
+                            let _ = store
+                                .send_with_metadata(action, metadata_clone.clone())
+                                .await;
                         }
 
-                        tracing::trace!(
-                            "Effect::Stream completed, processed {} items",
-                            item_count
-                        );
+                        tracing::trace!("Effect::Stream completed, processed {} items", item_count);
                         metrics::histogram!("store.stream_items.total")
                             .record(f64::from(item_count));
                     });
@@ -2471,7 +2486,8 @@ pub mod store {
                 Effect::Sequential(effects) => {
                     let effect_count = effects.len();
                     tracing::trace!("Executing Effect::Sequential with {} effects", effect_count);
-                    metrics::counter!("store.effects.executed", "type" => "sequential").increment(1);
+                    metrics::counter!("store.effects.executed", "type" => "sequential")
+                        .increment(1);
 
                     tracking.increment();
 
@@ -2505,7 +2521,11 @@ pub mod store {
                             };
 
                             // Execute the effect with metadata
-                            store.execute_effect_internal(effect, sub_tracking.clone(), metadata_clone.clone());
+                            store.execute_effect_internal(
+                                effect,
+                                sub_tracking.clone(),
+                                metadata_clone.clone(),
+                            );
 
                             // Wait for this effect to complete before continuing
                             if sub_tracking.counter.load(Ordering::SeqCst) > 0 {
@@ -2519,7 +2539,8 @@ pub mod store {
                     use composable_rust_core::effect::EventStoreOperation;
 
                     tracing::trace!("Executing Effect::EventStore");
-                    metrics::counter!("store.effects.executed", "type" => "event_store").increment(1);
+                    metrics::counter!("store.effects.executed", "type" => "event_store")
+                        .increment(1);
                     tracking.increment();
 
                     // Track global pending effects for shutdown
@@ -2555,45 +2576,63 @@ pub mod store {
                                 );
 
                                 // Merge metadata into events if provided
-                                let events_with_metadata = if let Some(ref effect_metadata) = metadata {
-                                    events.into_iter().map(|mut event| {
-                                        // Merge effect metadata into event metadata
-                                        if let Some(event_meta) = event.metadata.as_mut() {
-                                            // Event already has metadata - merge (effect metadata takes precedence)
-                                            if effect_metadata.correlation_id.is_some() {
-                                                event_meta.correlation_id.clone_from(&effect_metadata.correlation_id);
-                                            }
-                                            if effect_metadata.causation_id.is_some() {
-                                                event_meta.causation_id.clone_from(&effect_metadata.causation_id);
-                                            }
-                                            if effect_metadata.user_id.is_some() {
-                                                event_meta.user_id.clone_from(&effect_metadata.user_id);
-                                            }
-                                            if effect_metadata.timestamp.is_some() {
-                                                event_meta.timestamp.clone_from(&effect_metadata.timestamp);
-                                            }
-                                        } else {
-                                            // Event has no metadata - use effect metadata
-                                            event.metadata = Some(effect_metadata.clone());
-                                        }
-                                        event
-                                    }).collect::<Vec<_>>()
-                                } else {
-                                    events
-                                };
+                                let events_with_metadata =
+                                    if let Some(ref effect_metadata) = metadata {
+                                        events
+                                            .into_iter()
+                                            .map(|mut event| {
+                                                // Merge effect metadata into event metadata
+                                                if let Some(event_meta) = event.metadata.as_mut() {
+                                                    // Event already has metadata - merge (effect metadata takes precedence)
+                                                    if effect_metadata.correlation_id.is_some() {
+                                                        event_meta.correlation_id.clone_from(
+                                                            &effect_metadata.correlation_id,
+                                                        );
+                                                    }
+                                                    if effect_metadata.causation_id.is_some() {
+                                                        event_meta.causation_id.clone_from(
+                                                            &effect_metadata.causation_id,
+                                                        );
+                                                    }
+                                                    if effect_metadata.user_id.is_some() {
+                                                        event_meta
+                                                            .user_id
+                                                            .clone_from(&effect_metadata.user_id);
+                                                    }
+                                                    if effect_metadata.timestamp.is_some() {
+                                                        event_meta
+                                                            .timestamp
+                                                            .clone_from(&effect_metadata.timestamp);
+                                                    }
+                                                } else {
+                                                    // Event has no metadata - use effect metadata
+                                                    event.metadata = Some(effect_metadata.clone());
+                                                }
+                                                event
+                                            })
+                                            .collect::<Vec<_>>()
+                                    } else {
+                                        events
+                                    };
 
                                 // Wrap with retry logic
                                 let stream_id_clone = stream_id.clone();
-                                let result = store.retry_operation("append_events", || {
-                                    let event_store_clone = event_store.clone();
-                                    let stream_id_clone = stream_id_clone.clone();
-                                    let events_clone = events_with_metadata.clone();
-                                    async move {
-                                        event_store_clone
-                                            .append_events(stream_id_clone, expected_version, events_clone)
-                                            .await
-                                    }
-                                }).await;
+                                let result = store
+                                    .retry_operation("append_events", || {
+                                        let event_store_clone = event_store.clone();
+                                        let stream_id_clone = stream_id_clone.clone();
+                                        let events_clone = events_with_metadata.clone();
+                                        async move {
+                                            event_store_clone
+                                                .append_events(
+                                                    stream_id_clone,
+                                                    expected_version,
+                                                    events_clone,
+                                                )
+                                                .await
+                                        }
+                                    })
+                                    .await;
 
                                 match result {
                                     Ok(version) => {
@@ -2605,7 +2644,8 @@ pub mod store {
                                             tracing::trace!(
                                                 "Broadcasting broadcast_on_success action (no reducer re-entry)"
                                             );
-                                            let _ = store.action_broadcast.send(*action_to_broadcast);
+                                            let _ =
+                                                store.action_broadcast.send(*action_to_broadcast);
                                         }
 
                                         // Return on_success action (will be broadcast AND re-enter reducer)
@@ -2632,13 +2672,17 @@ pub mod store {
 
                                 // Wrap with retry logic
                                 let stream_id_clone = stream_id.clone();
-                                let result = store.retry_operation("load_events", || {
-                                    let event_store_clone = event_store.clone();
-                                    let stream_id_clone = stream_id_clone.clone();
-                                    async move {
-                                        event_store_clone.load_events(stream_id_clone, from_version).await
-                                    }
-                                }).await;
+                                let result = store
+                                    .retry_operation("load_events", || {
+                                        let event_store_clone = event_store.clone();
+                                        let stream_id_clone = stream_id_clone.clone();
+                                        async move {
+                                            event_store_clone
+                                                .load_events(stream_id_clone, from_version)
+                                                .await
+                                        }
+                                    })
+                                    .await;
 
                                 match result {
                                     Ok(events) => {
@@ -2672,16 +2716,22 @@ pub mod store {
                                 // Wrap with retry logic
                                 let stream_id_clone = stream_id.clone();
                                 let state_clone = state.clone();
-                                let result = store.retry_operation("save_snapshot", || {
-                                    let event_store_clone = event_store.clone();
-                                    let stream_id_clone = stream_id_clone.clone();
-                                    let state_clone = state_clone.clone();
-                                    async move {
-                                        event_store_clone
-                                            .save_snapshot(stream_id_clone, version, state_clone)
-                                            .await
-                                    }
-                                }).await;
+                                let result = store
+                                    .retry_operation("save_snapshot", || {
+                                        let event_store_clone = event_store.clone();
+                                        let stream_id_clone = stream_id_clone.clone();
+                                        let state_clone = state_clone.clone();
+                                        async move {
+                                            event_store_clone
+                                                .save_snapshot(
+                                                    stream_id_clone,
+                                                    version,
+                                                    state_clone,
+                                                )
+                                                .await
+                                        }
+                                    })
+                                    .await;
 
                                 match result {
                                     Ok(()) => {
@@ -2704,13 +2754,15 @@ pub mod store {
 
                                 // Wrap with retry logic
                                 let stream_id_clone = stream_id.clone();
-                                let result = store.retry_operation("load_snapshot", || {
-                                    let event_store_clone = event_store.clone();
-                                    let stream_id_clone = stream_id_clone.clone();
-                                    async move {
-                                        event_store_clone.load_snapshot(stream_id_clone).await
-                                    }
-                                }).await;
+                                let result = store
+                                    .retry_operation("load_snapshot", || {
+                                        let event_store_clone = event_store.clone();
+                                        let stream_id_clone = stream_id_clone.clone();
+                                        async move {
+                                            event_store_clone.load_snapshot(stream_id_clone).await
+                                        }
+                                    })
+                                    .await;
 
                                 match result {
                                     Ok(snapshot) => {
@@ -2748,7 +2800,8 @@ pub mod store {
                     use composable_rust_core::effect::EventBusOperation;
 
                     tracing::trace!("Executing Effect::PublishEvent");
-                    metrics::counter!("store.effects.executed", "type" => "publish_event").increment(1);
+                    metrics::counter!("store.effects.executed", "type" => "publish_event")
+                        .increment(1);
                     tracking.increment();
                     let tracking_clone = tracking.clone();
                     let store = self.clone();
@@ -2774,14 +2827,18 @@ pub mod store {
                                 // Wrap with retry logic
                                 let topic_clone = topic.clone();
                                 let event_clone = event.clone();
-                                let result = store.retry_operation("publish", || {
-                                    let event_bus_clone = event_bus.clone();
-                                    let topic_clone = topic_clone.clone();
-                                    let event_clone = event_clone.clone();
-                                    async move {
-                                        event_bus_clone.publish(&topic_clone, &event_clone).await
-                                    }
-                                }).await;
+                                let result = store
+                                    .retry_operation("publish", || {
+                                        let event_bus_clone = event_bus.clone();
+                                        let topic_clone = topic_clone.clone();
+                                        let event_clone = event_clone.clone();
+                                        async move {
+                                            event_bus_clone
+                                                .publish(&topic_clone, &event_clone)
+                                                .await
+                                        }
+                                    })
+                                    .await;
 
                                 match result {
                                     Ok(()) => {
@@ -2825,7 +2882,8 @@ pub mod store {
                     use composable_rust_core::ResponseChannel;
 
                     tracing::trace!("Executing Effect::PublishWithResponse");
-                    metrics::counter!("store.effects.executed", "type" => "publish_with_response").increment(1);
+                    metrics::counter!("store.effects.executed", "type" => "publish_with_response")
+                        .increment(1);
                     tracking.increment();
                     let tracking_clone = tracking.clone();
                     let store = self.clone();
@@ -2865,15 +2923,17 @@ pub mod store {
                             Ok(Ok(())) => {
                                 tracing::debug!("Projection signaled success");
                                 on_success()
-                            }
+                            },
                             Ok(Err(error)) => {
                                 tracing::warn!(error = %error, "Projection signaled failure");
                                 on_error(error)
-                            }
+                            },
                             Err(_) => {
-                                tracing::warn!("Projection response channel closed without signaling");
+                                tracing::warn!(
+                                    "Projection response channel closed without signaling"
+                                );
                                 on_error("Projection did not signal completion".to_string())
-                            }
+                            },
                         };
 
                         // Send result action back to store if callback produced one
@@ -2895,7 +2955,8 @@ pub mod store {
                     // Broadcast to observers WITHOUT re-entering the reducer.
                     // This is synchronous - no spawning needed.
                     tracing::trace!("Executing Effect::BroadcastOnly");
-                    metrics::counter!("store.effects.executed", "type" => "broadcast_only").increment(1);
+                    metrics::counter!("store.effects.executed", "type" => "broadcast_only")
+                        .increment(1);
 
                     // Broadcast to action_broadcast channel (for send_and_wait_for, WebSockets, etc.)
                     // Note: We DON'T call send_with_metadata - this action should NOT re-enter the reducer
@@ -2935,7 +2996,7 @@ pub use store::Store;
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Test code can use unwrap/expect
 mod tests {
     use super::*;
-    use composable_rust_core::{effect::Effect, reducer::Reducer, smallvec, SmallVec};
+    use composable_rust_core::{SmallVec, effect::Effect, reducer::Reducer, smallvec};
     use std::time::Duration;
 
     // Test state
@@ -3231,7 +3292,7 @@ mod tests {
         use composable_rust_core::event::SerializedEvent;
         use composable_rust_core::event_store::EventStore;
         use composable_rust_core::stream::{StreamId, Version};
-        use composable_rust_core::{smallvec, SmallVec};
+        use composable_rust_core::{SmallVec, smallvec};
         use std::sync::Arc;
 
         // Test action for EventStore effects
@@ -3934,9 +3995,7 @@ mod tests {
         async fn test_circuit_breaker_call_success() {
             let breaker = CircuitBreaker::new();
 
-            let result = breaker
-                .call(|| async { Ok::<i32, String>(42) })
-                .await;
+            let result = breaker.call(|| async { Ok::<i32, String>(42) }).await;
 
             assert!(result.is_ok());
             #[allow(clippy::unwrap_used)] // Safe: just asserted is_ok()
@@ -3961,9 +4020,7 @@ mod tests {
             assert_eq!(breaker.state(), CircuitState::Open);
 
             // Next call should fail fast
-            let result = breaker
-                .call(|| async { Ok::<i32, String>(42) })
-                .await;
+            let result = breaker.call(|| async { Ok::<i32, String>(42) }).await;
 
             assert!(result.is_err());
             assert!(matches!(result, Err(Either::Left(_))));
@@ -4031,11 +4088,7 @@ mod tests {
             assert_eq!(dlq.len(), 1);
             assert!(!dlq.is_empty());
 
-            dlq.push(
-                "operation2".to_string(),
-                "Database error".to_string(),
-                3,
-            );
+            dlq.push("operation2".to_string(), "Database error".to_string(), 3);
             assert_eq!(dlq.len(), 2);
         }
 
@@ -4043,16 +4096,8 @@ mod tests {
         fn test_dlq_peek() {
             let dlq = DeadLetterQueue::new(10);
 
-            dlq.push(
-                "first".to_string(),
-                "error1".to_string(),
-                1,
-            );
-            dlq.push(
-                "second".to_string(),
-                "error2".to_string(),
-                2,
-            );
+            dlq.push("first".to_string(), "error1".to_string(), 1);
+            dlq.push("second".to_string(), "error2".to_string(), 2);
 
             // Peek should return first entry without removing it
             #[allow(clippy::unwrap_used)] // Test code: just pushed entries
@@ -4142,11 +4187,7 @@ mod tests {
         fn test_dead_letter_metadata() {
             let dlq = DeadLetterQueue::new(10);
 
-            dlq.push(
-                "operation".to_string(),
-                "Connection timeout".to_string(),
-                5,
-            );
+            dlq.push("operation".to_string(), "Connection timeout".to_string(), 5);
 
             #[allow(clippy::unwrap_used)] // Test code: just pushed entry
             let entry = dlq.peek().unwrap();
@@ -4167,11 +4208,7 @@ mod tests {
             for i in 0..10 {
                 let dlq_clone = Arc::clone(&dlq);
                 handles.push(tokio::spawn(async move {
-                    dlq_clone.push(
-                        format!("op{i}"),
-                        "error".to_string(),
-                        1,
-                    );
+                    dlq_clone.push(format!("op{i}"), "error".to_string(), 1);
                 }));
             }
 
@@ -4249,7 +4286,10 @@ mod tests {
                 .with_metadata("errors", "5");
 
             assert_eq!(check.metadata.len(), 2);
-            assert_eq!(check.metadata[0], ("requests".to_string(), "1000".to_string()));
+            assert_eq!(
+                check.metadata[0],
+                ("requests".to_string(), "1000".to_string())
+            );
             assert_eq!(check.metadata[1], ("errors".to_string(), "5".to_string()));
         }
 
@@ -4329,7 +4369,10 @@ mod tests {
 
             let health = store.health();
             assert_eq!(health.status, HealthStatus::Unhealthy);
-            assert_eq!(health.message, Some("Dead letter queue is full".to_string()));
+            assert_eq!(
+                health.message,
+                Some("Dead letter queue is full".to_string())
+            );
         }
 
         #[test]
@@ -4390,9 +4433,8 @@ mod tests {
 
             // Start shutdown in background (should wait for effect)
             let shutdown_store = store.clone();
-            let shutdown_handle = tokio::spawn(async move {
-                shutdown_store.shutdown(Duration::from_secs(5)).await
-            });
+            let shutdown_handle =
+                tokio::spawn(async move { shutdown_store.shutdown(Duration::from_secs(5)).await });
 
             // Give it a moment to start shutdown
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -4446,7 +4488,10 @@ mod tests {
             let result = store.shutdown(Duration::from_millis(50)).await;
 
             // Should timeout because the effect takes 200ms
-            assert!(matches!(result, Err(StoreError::ShutdownTimeout(_))), "Expected ShutdownTimeout, got: {result:?}");
+            assert!(
+                matches!(result, Err(StoreError::ShutdownTimeout(_))),
+                "Expected ShutdownTimeout, got: {result:?}"
+            );
 
             if let Err(StoreError::ShutdownTimeout(pending)) = result {
                 assert!(pending > 0, "Should report pending effects");
@@ -4501,11 +4546,7 @@ mod tests {
         #[test]
         fn test_store_config_new() {
             let retry_policy = RetryPolicy::new().with_max_attempts(5);
-            let config = StoreConfig::new(
-                2000,
-                retry_policy.clone(),
-                Duration::from_secs(45),
-            );
+            let config = StoreConfig::new(2000, retry_policy.clone(), Duration::from_secs(45));
 
             assert_eq!(config.dlq_max_size, 2000);
             assert_eq!(config.default_shutdown_timeout, Duration::from_secs(45));
@@ -4550,18 +4591,8 @@ mod tests {
             let config1 = StoreConfig::default().with_dlq_max_size(100);
             let config2 = StoreConfig::default().with_dlq_max_size(200);
 
-            let store1 = Store::with_config(
-                TestState { value: 0 },
-                TestReducer,
-                TestEnv,
-                config1,
-            );
-            let store2 = Store::with_config(
-                TestState { value: 0 },
-                TestReducer,
-                TestEnv,
-                config2,
-            );
+            let store1 = Store::with_config(TestState { value: 0 }, TestReducer, TestEnv, config1);
+            let store2 = Store::with_config(TestState { value: 0 }, TestReducer, TestEnv, config2);
 
             // Verify each has independent configuration
             assert_eq!(store1.dlq().max_size(), 100);
@@ -4576,7 +4607,10 @@ mod tests {
             let config2 = config1.clone();
 
             assert_eq!(config1.dlq_max_size, config2.dlq_max_size);
-            assert_eq!(config1.default_shutdown_timeout, config2.default_shutdown_timeout);
+            assert_eq!(
+                config1.default_shutdown_timeout,
+                config2.default_shutdown_timeout
+            );
         }
 
         #[test]
@@ -4643,18 +4677,18 @@ mod tests {
                                 message: message.clone(),
                             }
                         ))]
-                    }
+                    },
                     BroadcastTestAction::BroadcastedMessage { message } => {
                         // If we get here, BroadcastOnly is broken (it's re-entering)
                         state
                             .reducer_calls
                             .push(format!("UNEXPECTED_REENTRY:{message}"));
                         SmallVec::new()
-                    }
+                    },
                     BroadcastTestAction::RegularMessage { message } => {
                         state.reducer_calls.push(format!("regular:{message}"));
                         SmallVec::new()
-                    }
+                    },
                 }
             }
         }
@@ -4682,17 +4716,13 @@ mod tests {
 
             // Check that we received the broadcast
             let mut received_broadcast = false;
-            while let Ok(action) =
-                tokio::time::timeout(Duration::from_millis(10), rx.recv()).await
+            while let Ok(action) = tokio::time::timeout(Duration::from_millis(10), rx.recv()).await
             {
                 if let Ok(BroadcastTestAction::BroadcastedMessage { .. }) = action {
                     received_broadcast = true;
                 }
             }
-            assert!(
-                received_broadcast,
-                "BroadcastedMessage should be broadcast"
-            );
+            assert!(received_broadcast, "BroadcastedMessage should be broadcast");
 
             // Check reducer calls - should only have the trigger, NOT the re-entry
             let calls = store.state(|s| s.reducer_calls.clone()).await;
@@ -4732,11 +4762,11 @@ mod tests {
                                     message: message.clone(),
                                 })
                             }))]
-                        }
+                        },
                         BroadcastTestAction::RegularMessage { message } => {
                             state.reducer_calls.push(format!("regular:{message}"));
                             SmallVec::new()
-                        }
+                        },
                         BroadcastTestAction::BroadcastedMessage { .. } => SmallVec::new(),
                     }
                 }

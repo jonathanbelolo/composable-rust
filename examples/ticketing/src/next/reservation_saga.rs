@@ -56,11 +56,13 @@ use chrono::{DateTime, Duration, Utc};
 use composable_rust_next::{BusinessLogic, BusinessResult, Clock, StreamId};
 use serde::{Deserialize, Serialize};
 
-use crate::types::{CustomerId, EventId, Money, PaymentId, PaymentMethod, ReservationId, SeatId, TicketId};
+use crate::types::{
+    CustomerId, EventId, Money, PaymentId, PaymentMethod, ReservationId, SeatId, TicketId,
+};
 
 use super::{
-    InventoryCommand, InventoryError, InventoryEvent, ReleaseReason,
-    PaymentCommand, PaymentError, PaymentEvent,
+    InventoryCommand, InventoryError, InventoryEvent, PaymentCommand, PaymentError, PaymentEvent,
+    ReleaseReason,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -388,7 +390,7 @@ impl BusinessLogic for ReservationSagaLogic {
             | ReservationSagaInput::ExpireReservation { reservation_id, .. }
             | ReservationSagaInput::Feedback { reservation_id, .. } => {
                 StreamId::new(format!("saga-reservation-{}", reservation_id.as_uuid()))
-            }
+            },
         }
     }
 
@@ -416,9 +418,9 @@ impl BusinessLogic for ReservationSagaLogic {
                 }
 
                 if quantity > 8 {
-                    return Err(ReservationSagaError::ValidationFailed(
-                        format!("Cannot reserve more than 8 tickets (requested: {quantity})")
-                    ));
+                    return Err(ReservationSagaError::ValidationFailed(format!(
+                        "Cannot reserve more than 8 tickets (requested: {quantity})"
+                    )));
                 }
 
                 // Calculate expiration (5 minutes from now)
@@ -446,15 +448,19 @@ impl BusinessLogic for ReservationSagaLogic {
                     }],
                     calls: vec![ReservationSagaCall::Inventory(reserve_cmd)],
                 })
-            }
+            },
 
-            ReservationSagaInput::CancelReservation { reservation_id, fetched } => {
+            ReservationSagaInput::CancelReservation {
+                reservation_id,
+                fetched,
+            } => {
                 // Get state from fetched
                 let state = fetched.unwrap_or_default();
 
                 // Can only cancel if in appropriate state
                 match state.phase {
-                    ReservationSagaPhase::ReservingSeats | ReservationSagaPhase::AwaitingPayment => {
+                    ReservationSagaPhase::ReservingSeats
+                    | ReservationSagaPhase::AwaitingPayment => {
                         // Validate we have required data
                         let _event_id = state.event_id.ok_or_else(|| {
                             ReservationSagaError::MissingData("event_id".to_string())
@@ -475,7 +481,7 @@ impl BusinessLogic for ReservationSagaLogic {
                             }],
                             calls: vec![ReservationSagaCall::Inventory(release_cmd)],
                         })
-                    }
+                    },
                     ReservationSagaPhase::Initial => {
                         // Nothing to cancel
                         Ok(BusinessResult::Done(vec![
@@ -485,15 +491,18 @@ impl BusinessLogic for ReservationSagaLogic {
                                 cancelled_at: now,
                             },
                         ]))
-                    }
+                    },
                     _ => {
                         // Already completed, compensating, or failed - ignore
                         Ok(BusinessResult::Done(vec![]))
-                    }
+                    },
                 }
-            }
+            },
 
-            ReservationSagaInput::ExpireReservation { reservation_id, fetched } => {
+            ReservationSagaInput::ExpireReservation {
+                reservation_id,
+                fetched,
+            } => {
                 // Get state from fetched
                 let state = fetched.unwrap_or_default();
 
@@ -516,20 +525,26 @@ impl BusinessLogic for ReservationSagaLogic {
                             }],
                             calls: vec![ReservationSagaCall::Inventory(release_cmd)],
                         })
-                    }
+                    },
                     _ => {
                         // Already completed, compensating, or failed - ignore
                         Ok(BusinessResult::Done(vec![]))
-                    }
+                    },
                 }
-            }
+            },
 
-            ReservationSagaInput::Feedback { reservation_id: _, results, fetched } => {
+            ReservationSagaInput::Feedback {
+                reservation_id: _,
+                results,
+                fetched,
+            } => {
                 let state = fetched.ok_or_else(|| {
-                    ReservationSagaError::ValidationFailed("Saga state required for feedback".to_string())
+                    ReservationSagaError::ValidationFailed(
+                        "Saga state required for feedback".to_string(),
+                    )
                 })?;
                 self.process_feedback(&state, results, now)
-            }
+            },
         }
     }
 
@@ -551,39 +566,43 @@ impl BusinessLogic for ReservationSagaLogic {
                 state.quantity = *quantity;
                 state.expires_at = Some(*expires_at);
                 state.phase = ReservationSagaPhase::ReservingSeats;
-            }
+            },
 
-            ReservationSagaEvent::SeatsAllocated { seats, total_amount, .. } => {
+            ReservationSagaEvent::SeatsAllocated {
+                seats,
+                total_amount,
+                ..
+            } => {
                 state.seats.clone_from(seats);
                 state.total_amount = Some(*total_amount);
                 state.phase = ReservationSagaPhase::AwaitingPayment;
-            }
+            },
 
             ReservationSagaEvent::PaymentRequested { payment_id, .. } => {
                 state.payment_id = Some(*payment_id);
                 state.phase = ReservationSagaPhase::ProcessingPayment;
-            }
+            },
 
             ReservationSagaEvent::PaymentSucceeded { .. } => {
                 // Stay in ProcessingPayment until Completed
-            }
+            },
 
             ReservationSagaEvent::PaymentFailed { reason, .. } => {
                 state.last_error = Some(reason.clone());
                 state.phase = ReservationSagaPhase::Compensating;
-            }
+            },
 
             ReservationSagaEvent::ReservationCompleted { tickets_issued, .. } => {
                 state.tickets.clone_from(tickets_issued);
                 state.phase = ReservationSagaPhase::Completed;
-            }
+            },
 
             ReservationSagaEvent::ReservationExpired { .. }
             | ReservationSagaEvent::ReservationCancelled { .. }
             | ReservationSagaEvent::ReservationCompensated { .. }
             | ReservationSagaEvent::InventoryReservationFailed { .. } => {
                 state.phase = ReservationSagaPhase::Failed;
-            }
+            },
         }
     }
 
@@ -627,32 +646,33 @@ impl ReservationSagaLogic {
         state: &ReservationSagaState,
         results: Vec<ReservationSagaCallResult>,
         now: DateTime<Utc>,
-    ) -> Result<BusinessResult<ReservationSagaEvent, ReservationSagaCall, ()>, ReservationSagaError> {
-        let reservation_id = state.reservation_id.ok_or_else(|| {
-            ReservationSagaError::MissingData("reservation_id".to_string())
-        })?;
+    ) -> Result<BusinessResult<ReservationSagaEvent, ReservationSagaCall, ()>, ReservationSagaError>
+    {
+        let reservation_id = state
+            .reservation_id
+            .ok_or_else(|| ReservationSagaError::MissingData("reservation_id".to_string()))?;
 
         match state.phase {
             ReservationSagaPhase::ReservingSeats => {
                 self.process_inventory_feedback(state, reservation_id, results, now)
-            }
+            },
             ReservationSagaPhase::ProcessingPayment => {
                 self.process_payment_feedback(state, reservation_id, results, now)
-            }
+            },
             ReservationSagaPhase::Compensating => {
                 self.process_compensation_feedback(state, reservation_id, results, now)
-            }
+            },
             ReservationSagaPhase::Completed | ReservationSagaPhase::Failed => {
                 // Terminal states - ignore any remaining feedback (e.g., from Confirm call)
                 // The saga has already completed, so we just return Done with no new events.
                 Ok(BusinessResult::Done(vec![]))
-            }
+            },
             ReservationSagaPhase::Initial | ReservationSagaPhase::AwaitingPayment => {
                 // These phases should not receive feedback
                 Err(ReservationSagaError::InvalidStateTransition {
                     from: state.phase.clone(),
                 })
-            }
+            },
         }
     }
 
@@ -664,7 +684,8 @@ impl ReservationSagaLogic {
         reservation_id: ReservationId,
         results: Vec<ReservationSagaCallResult>,
         now: DateTime<Utc>,
-    ) -> Result<BusinessResult<ReservationSagaEvent, ReservationSagaCall, ()>, ReservationSagaError> {
+    ) -> Result<BusinessResult<ReservationSagaEvent, ReservationSagaCall, ()>, ReservationSagaError>
+    {
         // Find inventory result
         let inventory_result = results.into_iter().find_map(|r| {
             if let ReservationSagaCallResult::Inventory { result, .. } = r {
@@ -674,9 +695,9 @@ impl ReservationSagaLogic {
             }
         });
 
-        let customer_id = state.customer_id.ok_or_else(|| {
-            ReservationSagaError::MissingData("customer_id".to_string())
-        })?;
+        let customer_id = state
+            .customer_id
+            .ok_or_else(|| ReservationSagaError::MissingData("customer_id".to_string()))?;
 
         match inventory_result {
             Some(Ok(events)) => {
@@ -737,7 +758,7 @@ impl ReservationSagaLogic {
                     ],
                     calls: vec![ReservationSagaCall::Payment(payment_cmd)],
                 })
-            }
+            },
 
             Some(Err(e)) => {
                 // Inventory reservation failed - saga fails immediately (nothing to compensate)
@@ -748,7 +769,7 @@ impl ReservationSagaLogic {
                         failed_at: now,
                     },
                 ]))
-            }
+            },
 
             None => Err(ReservationSagaError::ValidationFailed(
                 "Expected Inventory result in feedback".to_string(),
@@ -764,14 +785,15 @@ impl ReservationSagaLogic {
         reservation_id: ReservationId,
         results: Vec<ReservationSagaCallResult>,
         now: DateTime<Utc>,
-    ) -> Result<BusinessResult<ReservationSagaEvent, ReservationSagaCall, ()>, ReservationSagaError> {
-        let payment_id = state.payment_id.ok_or_else(|| {
-            ReservationSagaError::MissingData("payment_id".to_string())
-        })?;
+    ) -> Result<BusinessResult<ReservationSagaEvent, ReservationSagaCall, ()>, ReservationSagaError>
+    {
+        let payment_id = state
+            .payment_id
+            .ok_or_else(|| ReservationSagaError::MissingData("payment_id".to_string()))?;
 
-        let customer_id = state.customer_id.ok_or_else(|| {
-            ReservationSagaError::MissingData("customer_id".to_string())
-        })?;
+        let customer_id = state
+            .customer_id
+            .ok_or_else(|| ReservationSagaError::MissingData("customer_id".to_string()))?;
 
         // Find payment result
         let payment_result = results.into_iter().find_map(|r| {
@@ -785,9 +807,9 @@ impl ReservationSagaLogic {
         match payment_result {
             Some(Ok(events)) => {
                 // Check if payment succeeded
-                let succeeded = events.iter().any(|e| {
-                    matches!(e, PaymentEvent::PaymentSucceeded { .. })
-                });
+                let succeeded = events
+                    .iter()
+                    .any(|e| matches!(e, PaymentEvent::PaymentSucceeded { .. }));
 
                 let failed = events.iter().find_map(|e| {
                     if let PaymentEvent::PaymentFailed { reason, .. } = e {
@@ -818,11 +840,8 @@ impl ReservationSagaLogic {
 
                 if succeeded {
                     // Payment succeeded - confirm seats and issue tickets
-                    let tickets: Vec<TicketId> = state
-                        .seats
-                        .iter()
-                        .map(|_| TicketId::new())
-                        .collect();
+                    let tickets: Vec<TicketId> =
+                        state.seats.iter().map(|_| TicketId::new()).collect();
 
                     let confirm_cmd = InventoryCommand::Confirm {
                         reservation_id,
@@ -851,7 +870,7 @@ impl ReservationSagaLogic {
                 Err(ReservationSagaError::ValidationFailed(
                     "Payment returned no success or failure event".to_string(),
                 ))
-            }
+            },
 
             Some(Err(e)) => {
                 // Payment call failed - compensate by releasing seats
@@ -870,7 +889,7 @@ impl ReservationSagaLogic {
                     }],
                     calls: vec![ReservationSagaCall::Inventory(release_cmd)],
                 })
-            }
+            },
 
             None => Err(ReservationSagaError::ValidationFailed(
                 "Expected Payment result in feedback".to_string(),
@@ -886,7 +905,8 @@ impl ReservationSagaLogic {
         reservation_id: ReservationId,
         _results: Vec<ReservationSagaCallResult>,
         now: DateTime<Utc>,
-    ) -> Result<BusinessResult<ReservationSagaEvent, ReservationSagaCall, ()>, ReservationSagaError> {
+    ) -> Result<BusinessResult<ReservationSagaEvent, ReservationSagaCall, ()>, ReservationSagaError>
+    {
         // Compensation completed (we don't fail on compensation errors - just log)
         let reason = state
             .last_error
@@ -901,7 +921,6 @@ impl ReservationSagaLogic {
             },
         ]))
     }
-
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -950,7 +969,7 @@ mod tests {
                     calls[0],
                     ReservationSagaCall::Inventory(InventoryCommand::Reserve { .. })
                 ));
-            }
+            },
             _ => panic!("Expected Continue result"),
         }
     }
@@ -1056,20 +1075,16 @@ mod tests {
         let seats = vec![SeatId::new(), SeatId::new()];
         let feedback = ReservationSagaInput::Feedback {
             reservation_id,
-            results: vec![
-                ReservationSagaCallResult::Inventory {
-                    result: Ok(vec![
-                        InventoryEvent::SeatsReserved {
-                            reservation_id,
-                            event_id,
-                            section: "VIP".to_string(),
-                            seats: seats.clone(),
-                            expires_at: Utc::now() + Duration::minutes(5),
-                            reserved_at: Utc::now(),
-                        },
-                    ]),
-                },
-            ],
+            results: vec![ReservationSagaCallResult::Inventory {
+                result: Ok(vec![InventoryEvent::SeatsReserved {
+                    reservation_id,
+                    event_id,
+                    section: "VIP".to_string(),
+                    seats: seats.clone(),
+                    expires_at: Utc::now() + Duration::minutes(5),
+                    reserved_at: Utc::now(),
+                }]),
+            }],
             fetched: Some(state),
         };
 
@@ -1091,7 +1106,7 @@ mod tests {
                     calls[0],
                     ReservationSagaCall::Payment(PaymentCommand::ProcessPayment { .. })
                 ));
-            }
+            },
             _ => panic!("Expected Continue result"),
         }
     }
@@ -1115,27 +1130,25 @@ mod tests {
         // Simulate payment success feedback
         let feedback = ReservationSagaInput::Feedback {
             reservation_id,
-            results: vec![
-                ReservationSagaCallResult::Payment {
-                    result: Ok(vec![
-                        PaymentEvent::PaymentProcessed {
-                            payment_id,
-                            reservation_id,
-                            customer_id,
-                            amount: Money::from_dollars(100),
-                            payment_method: PaymentMethod::CreditCard {
-                                last_four: "4242".to_string(),
-                            },
-                            processed_at: Utc::now(),
+            results: vec![ReservationSagaCallResult::Payment {
+                result: Ok(vec![
+                    PaymentEvent::PaymentProcessed {
+                        payment_id,
+                        reservation_id,
+                        customer_id,
+                        amount: Money::from_dollars(100),
+                        payment_method: PaymentMethod::CreditCard {
+                            last_four: "4242".to_string(),
                         },
-                        PaymentEvent::PaymentSucceeded {
-                            payment_id,
-                            transaction_id: "txn_123".to_string(),
-                            succeeded_at: Utc::now(),
-                        },
-                    ]),
-                },
-            ],
+                        processed_at: Utc::now(),
+                    },
+                    PaymentEvent::PaymentSucceeded {
+                        payment_id,
+                        transaction_id: "txn_123".to_string(),
+                        succeeded_at: Utc::now(),
+                    },
+                ]),
+            }],
             fetched: Some(state),
         };
 
@@ -1158,7 +1171,7 @@ mod tests {
                     calls[0],
                     ReservationSagaCall::Inventory(InventoryCommand::Confirm { .. })
                 ));
-            }
+            },
             _ => panic!("Expected Continue result"),
         }
     }
@@ -1182,15 +1195,13 @@ mod tests {
         // Simulate payment failure feedback
         let feedback = ReservationSagaInput::Feedback {
             reservation_id,
-            results: vec![
-                ReservationSagaCallResult::Payment {
-                    result: Ok(vec![PaymentEvent::PaymentFailed {
-                        payment_id,
-                        reason: "Card declined".to_string(),
-                        failed_at: Utc::now(),
-                    }]),
-                },
-            ],
+            results: vec![ReservationSagaCallResult::Payment {
+                result: Ok(vec![PaymentEvent::PaymentFailed {
+                    payment_id,
+                    reason: "Card declined".to_string(),
+                    failed_at: Utc::now(),
+                }]),
+            }],
             fetched: Some(state),
         };
 
@@ -1202,7 +1213,7 @@ mod tests {
                 match &events[0] {
                     ReservationSagaEvent::PaymentFailed { reason, .. } => {
                         assert_eq!(reason, "Card declined");
-                    }
+                    },
                     _ => panic!("Expected PaymentFailed event"),
                 }
                 // Should release seats in inventory (compensation)
@@ -1211,7 +1222,7 @@ mod tests {
                     calls[0],
                     ReservationSagaCall::Inventory(InventoryCommand::Release { .. })
                 ));
-            }
+            },
             _ => panic!("Expected Continue result"),
         }
     }

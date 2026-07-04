@@ -37,12 +37,12 @@ impl Projection for TestProjection {
         event: &Self::Event,
     ) -> composable_rust_core::projection::Result<()> {
         match event {
-            TestEvent::Created { id, data} | TestEvent::Updated { id, data } => {
+            TestEvent::Created { id, data } | TestEvent::Updated { id, data } => {
                 self.store.save(id, data.as_bytes()).await?;
-            }
+            },
             TestEvent::Deleted { id } => {
                 self.store.delete(id).await?;
-            }
+            },
         }
         Ok(())
     }
@@ -199,18 +199,9 @@ async fn test_inmemory_projection_checkpoint_multiple_projections() {
 
     assert_eq!(checkpoint.len(), 3);
 
-    assert_eq!(
-        checkpoint.load_position("proj1").await.unwrap(),
-        Some(pos1)
-    );
-    assert_eq!(
-        checkpoint.load_position("proj2").await.unwrap(),
-        Some(pos2)
-    );
-    assert_eq!(
-        checkpoint.load_position("proj3").await.unwrap(),
-        Some(pos3)
-    );
+    assert_eq!(checkpoint.load_position("proj1").await.unwrap(), Some(pos1));
+    assert_eq!(checkpoint.load_position("proj2").await.unwrap(), Some(pos2));
+    assert_eq!(checkpoint.load_position("proj3").await.unwrap(), Some(pos3));
 }
 
 #[tokio::test]
@@ -223,17 +214,11 @@ async fn test_inmemory_projection_checkpoint_overwrite() {
     let pos2 = EventPosition::new(20, Utc::now());
 
     checkpoint.save_position("proj1", pos1).await.unwrap();
-    assert_eq!(
-        checkpoint.load_position("proj1").await.unwrap(),
-        Some(pos1)
-    );
+    assert_eq!(checkpoint.load_position("proj1").await.unwrap(), Some(pos1));
 
     // Overwrite with new position
     checkpoint.save_position("proj1", pos2).await.unwrap();
-    assert_eq!(
-        checkpoint.load_position("proj1").await.unwrap(),
-        Some(pos2)
-    );
+    assert_eq!(checkpoint.load_position("proj1").await.unwrap(), Some(pos2));
     assert_eq!(checkpoint.len(), 1); // Still only one projection
 }
 

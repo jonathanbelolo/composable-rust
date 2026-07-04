@@ -53,9 +53,8 @@ impl RedisRateLimiter {
     ///
     /// Returns error if connection to `Redis` fails.
     pub async fn new(redis_url: &str) -> Result<Self> {
-        let client = Client::open(redis_url).map_err(|e| {
-            AuthError::InternalError(format!("Failed to create Redis client: {e}"))
-        })?;
+        let client = Client::open(redis_url)
+            .map_err(|e| AuthError::InternalError(format!("Failed to create Redis client: {e}")))?;
 
         let conn_manager = ConnectionManager::new(client).await.map_err(|e| {
             AuthError::InternalError(format!("Failed to create Redis connection manager: {e}"))
@@ -89,7 +88,8 @@ impl RateLimiter for RedisRateLimiter {
         let window_start = now_ms.saturating_sub(window_ms);
 
         // Remove entries outside the window
-        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)] // Safe: Redis zrembyscore accepts isize scores
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        // Safe: Redis zrembyscore accepts isize scores
         let _: () = conn
             .zrembyscore(&rate_key, 0, window_start as isize)
             .await
@@ -122,12 +122,9 @@ impl RateLimiter for RedisRateLimiter {
         let now_ms = Self::current_timestamp_ms();
 
         // Add current timestamp to sorted set
-        let _: () = conn
-            .zadd(&rate_key, now_ms, now_ms)
-            .await
-            .map_err(|e| {
-                AuthError::InternalError(format!("Failed to record rate limit attempt: {e}"))
-            })?;
+        let _: () = conn.zadd(&rate_key, now_ms, now_ms).await.map_err(|e| {
+            AuthError::InternalError(format!("Failed to record rate limit attempt: {e}"))
+        })?;
 
         // Set expiration on the key (window + buffer for cleanup)
         let _: () = conn
@@ -171,7 +168,8 @@ impl RateLimiter for RedisRateLimiter {
         // Note: .ignore() means "don't return this value", NOT "ignore errors".
         // All operations are still executed and errors still propagate.
 
-        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)] // Safe: Redis zrembyscore accepts isize scores
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        // Safe: Redis zrembyscore accepts isize scores
         let (count,): (u64,) = redis::pipe()
             .atomic()
             .zrembyscore(&rate_key, 0, window_start as isize)
@@ -224,9 +222,10 @@ impl RateLimiter for RedisRateLimiter {
         let mut conn = self.conn_manager.clone();
         let rate_key = Self::rate_limit_key(key);
 
-        let _: () = conn.del(&rate_key).await.map_err(|e| {
-            AuthError::InternalError(format!("Failed to reset rate limit: {e}"))
-        })?;
+        let _: () = conn
+            .del(&rate_key)
+            .await
+            .map_err(|e| AuthError::InternalError(format!("Failed to reset rate limit: {e}")))?;
 
         tracing::info!(
             key = %key,

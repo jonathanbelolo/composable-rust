@@ -228,10 +228,7 @@ impl OutboxWorker {
     }
 
     /// Run the LISTEN connection.
-    async fn run_listener(
-        pool: &PgPool,
-        tx: &mpsc::Sender<()>,
-    ) -> Result<(), sqlx::Error> {
+    async fn run_listener(pool: &PgPool, tx: &mpsc::Sender<()>) -> Result<(), sqlx::Error> {
         let mut conn = pool.acquire().await?;
 
         sqlx::query("LISTEN outbox_tasks")
@@ -252,10 +249,10 @@ impl OutboxWorker {
                         // Receiver dropped, exit
                         return Ok(());
                     }
-                }
+                },
                 Err(e) => {
                     return Err(e);
-                }
+                },
             }
         }
     }
@@ -279,7 +276,7 @@ impl OutboxWorker {
             Err(e) => {
                 tracing::error!(error = %e, "Failed to claim tasks");
                 return;
-            }
+            },
         };
 
         if !tasks.is_empty() {
@@ -319,7 +316,7 @@ impl OutboxWorker {
                     duration_ms = start.elapsed().as_millis() as u64,
                     "Task completed"
                 );
-            }
+            },
             Err(TaskError::Temporary(msg)) => {
                 self.fail_task(task.id, &msg).await;
                 tracing::warn!(
@@ -330,7 +327,7 @@ impl OutboxWorker {
                     error = %msg,
                     "Task failed (will retry)"
                 );
-            }
+            },
             Err(TaskError::Permanent(msg)) => {
                 self.fail_task_permanent(task.id, &msg).await;
                 tracing::error!(
@@ -339,7 +336,7 @@ impl OutboxWorker {
                     error = %msg,
                     "Task failed permanently"
                 );
-            }
+            },
         }
     }
 
@@ -379,12 +376,11 @@ impl OutboxWorker {
     /// Mark a task as permanently failed (move to DLQ).
     async fn fail_task_permanent(&self, task_id: i64, error: &str) {
         // Set attempts to max to force DLQ
-        let _ = sqlx::query(
-            "UPDATE outbox.pending_tasks SET attempts = max_attempts WHERE id = $1",
-        )
-        .bind(task_id)
-        .execute(&self.pool)
-        .await;
+        let _ =
+            sqlx::query("UPDATE outbox.pending_tasks SET attempts = max_attempts WHERE id = $1")
+                .bind(task_id)
+                .execute(&self.pool)
+                .await;
 
         self.fail_task(task_id, error).await;
     }
@@ -401,11 +397,11 @@ impl OutboxWorker {
                     count = released,
                     "Released stuck tasks"
                 );
-            }
-            Ok(_) => {}
+            },
+            Ok(_) => {},
             Err(e) => {
                 tracing::error!(error = %e, "Failed to release stuck tasks");
-            }
+            },
         }
     }
 }

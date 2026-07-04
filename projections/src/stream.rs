@@ -123,7 +123,8 @@ pub type Result<T> = std::result::Result<T, ProjectionError>;
 /// ```
 pub struct ProjectionStream {
     /// Event bus subscription stream
-    event_stream: futures::stream::BoxStream<'static, std::result::Result<SerializedEvent, EventBusError>>,
+    event_stream:
+        futures::stream::BoxStream<'static, std::result::Result<SerializedEvent, EventBusError>>,
     /// Checkpoint tracker
     checkpoint: Arc<dyn ProjectionCheckpoint>,
     /// Projection name (for checkpoint key)
@@ -213,7 +214,7 @@ impl ProjectionStream {
                     ProjectionError::EventProcessing(format!(
                         "Failed to subscribe to {topics:?}: {reason}"
                     ))
-                }
+                },
                 _ => ProjectionError::EventProcessing(format!("Subscription error: {e}")),
             })?;
 

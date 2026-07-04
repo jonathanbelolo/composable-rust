@@ -103,9 +103,7 @@ impl Bulkhead {
                     self.name, self.config.acquire_timeout
                 )
             })?
-            .map_err(|e| {
-                format!("Bulkhead {} acquire failed: {}", self.name, e)
-            })?;
+            .map_err(|e| format!("Bulkhead {} acquire failed: {}", self.name, e))?;
 
         info!("Acquired bulkhead permit for {}", self.name);
 
@@ -295,7 +293,11 @@ mod tests {
         }
 
         // Should never exceed max_concurrent
-        assert!(max_seen <= 2, "Max concurrent was {}, expected <= 2", max_seen);
+        assert!(
+            max_seen <= 2,
+            "Max concurrent was {}, expected <= 2",
+            max_seen
+        );
     }
 
     #[tokio::test]

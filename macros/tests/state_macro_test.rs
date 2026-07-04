@@ -1,7 +1,7 @@
 //! Tests for #[derive(State)] macro
 
-use composable_rust_macros::State;
 use composable_rust_core::stream::Version;
+use composable_rust_macros::State;
 
 #[derive(State, Clone, Debug)]
 #[allow(dead_code)] // Test struct fields are intentionally unused

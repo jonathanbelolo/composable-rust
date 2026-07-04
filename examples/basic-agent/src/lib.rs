@@ -25,7 +25,7 @@ use composable_rust_core::{
     effect::Effect,
     reducer::Reducer,
 };
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 
 /// Basic agent reducer
 ///
@@ -95,7 +95,7 @@ where
 
                 // Call Claude (non-streaming for this example)
                 smallvec![env.call_claude(request)]
-            }
+            },
 
             AgentAction::ClaudeResponse {
                 content,
@@ -116,7 +116,7 @@ where
                             // Convert JSON Value to string for tool execution
                             let input_str = serde_json::to_string(input).ok()?;
                             Some((id.clone(), name.clone(), input_str))
-                        }
+                        },
                         _ => None,
                     })
                     .collect();
@@ -142,9 +142,12 @@ where
                     // Other stop reasons (max tokens, etc.)
                     smallvec![Effect::None]
                 }
-            }
+            },
 
-            AgentAction::ToolResult { tool_use_id, result } => {
+            AgentAction::ToolResult {
+                tool_use_id,
+                result,
+            } => {
                 // Store result in collector
                 state
                     .pending_tool_results
@@ -162,11 +165,7 @@ where
                                 Some(Err(err)) => (err.message.clone(), true),
                                 None => return None,
                             };
-                            Some(Message::tool_result(
-                                tool_use_id.clone(),
-                                content,
-                                is_error,
-                            ))
+                            Some(Message::tool_result(tool_use_id.clone(), content, is_error))
                         })
                         .collect();
 
@@ -197,25 +196,25 @@ where
                     // Still waiting for more results
                     smallvec![Effect::None]
                 }
-            }
+            },
 
             AgentAction::StreamChunk { .. } | AgentAction::StreamComplete { .. } => {
                 // Streaming not used in this basic example
                 // (See streaming-agent example for streaming implementation)
                 smallvec![Effect::None]
-            }
+            },
 
             AgentAction::ToolChunk { .. } | AgentAction::ToolComplete { .. } => {
                 // Tool streaming not used in this basic example
                 // (Tool streaming is for long-running tools with progress updates)
                 smallvec![Effect::None]
-            }
+            },
 
             AgentAction::Error { error } => {
                 // Log error, but don't crash
                 eprintln!("Agent error: {error}");
                 smallvec![Effect::None]
-            }
+            },
         }
     }
 }
@@ -293,7 +292,10 @@ mod tests {
                 .unwrap_or_else(|| Ok("mock result".to_string()));
 
             Effect::Future(Box::pin(async move {
-                Some(AgentAction::ToolResult { tool_use_id, result })
+                Some(AgentAction::ToolResult {
+                    tool_use_id,
+                    result,
+                })
             }))
         }
 
