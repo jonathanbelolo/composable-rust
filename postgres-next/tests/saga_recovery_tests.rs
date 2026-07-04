@@ -36,7 +36,7 @@ use composable_rust_next::{
 };
 use composable_rust_postgres_next::{
     PgTransactionalProjector, PostgresAtomicPersist, PostgresEventStore, PostgresSagaRegistry,
-    SagaJournalProjector,
+    SagaJournalProjector, SagaSweepLock,
 };
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
@@ -859,6 +859,58 @@ async fn saga_recovery_integration() {
             "rebuild must reproduce the journal exactly (dispatch/completion state per call)"
         );
         println!("  [PASS] rebuild_from_store_heals_journal");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // SECTION 6: SagaSweepLock — advisory-lock exclusion without pool leaks
+    // ═══════════════════════════════════════════════════════════════════════
+
+    {
+        db.reset().await;
+        let stream = StreamId::new("lock-1");
+
+        let lock = SagaSweepLock::try_acquire(&db.pool, &stream)
+            .await
+            .unwrap()
+            .expect("first acquire must succeed");
+        assert!(
+            SagaSweepLock::try_acquire(&db.pool, &stream)
+                .await
+                .unwrap()
+                .is_none(),
+            "a second acquire on the same instance must be blocked"
+        );
+
+        // Other instances are unaffected.
+        let other = SagaSweepLock::try_acquire(&db.pool, &StreamId::new("lock-2"))
+            .await
+            .unwrap()
+            .expect("a different instance must be lockable");
+        other.release().await.unwrap();
+
+        // Graceful release frees the lock immediately.
+        lock.release().await.unwrap();
+        let reacquired = SagaSweepLock::try_acquire(&db.pool, &stream)
+            .await
+            .unwrap()
+            .expect("released lock must be reacquirable");
+
+        // Drop-without-release also frees it: the guard's detached session
+        // dies with the connection (may take a moment for the server to
+        // notice the socket close).
+        drop(reacquired);
+        let after_drop = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(lock) = SagaSweepLock::try_acquire(&db.pool, &stream).await.unwrap() {
+                    break lock;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("dropping the guard must release the lock");
+        after_drop.release().await.unwrap();
+        println!("  [PASS] saga_sweep_lock_exclusion_and_release");
     }
 
     println!("\nAll saga recovery integration tests passed!");

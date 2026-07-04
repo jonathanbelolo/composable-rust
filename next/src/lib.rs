@@ -100,7 +100,8 @@ pub use cancel::CancellationToken;
 pub use clock::{Clock, FixedClock, SystemClock};
 pub use durable::{
     CALL_COMPLETED_EVENT_TYPE, CALL_DISPATCHED_EVENT_TYPE, CallCompleted, CallDispatched, CallId,
-    DurableBusinessLogic, DurableOutcome, JournalState, is_framework_event_type, scan_journal,
+    DurableBusinessLogic, DurableOutcome, JournalState, SweepReport, is_framework_event_type,
+    scan_journal,
 };
 pub use error::{AtomicError, HandlerError, ProjectionError, SerializationError};
 pub use executor::{CallExecutor, NoOpCallExecutor, UnitCallExecutor};

@@ -582,6 +582,74 @@ async fn concurrent_double_resume_is_safe() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// Recovery sweep
+// ═══════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn recovery_sweep_buckets_instances_correctly() {
+    let env = test_env();
+    let store = env.event_store().clone();
+
+    // Instance 30: suspended with one outstanding call (needs recovery).
+    let (saga, _) = ResumableSaga::new(1);
+    let starter = Handler::new(saga, echo_executor(), NoOpQueryFetcher, env.clone());
+    let pre_cancelled = CancellationToken::new();
+    pre_cancelled.cancel();
+    let outcome = starter
+        .handle_durable(WIn::Start { id: 30 }, pre_cancelled)
+        .await
+        .unwrap();
+    assert!(matches!(outcome, DurableOutcome::Suspended { .. }));
+
+    // Instance 31: ran to completion (balanced journal, stale registry row).
+    let (saga, _) = ResumableSaga::new(1);
+    let finisher = Handler::new(saga, echo_executor(), NoOpQueryFetcher, env.clone());
+    let outcome = finisher
+        .handle_durable(WIn::Start { id: 31 }, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(matches!(outcome, DurableOutcome::Completed { .. }));
+
+    // The registry lists both, plus a row for a stream that never existed.
+    let record = |name: &str| composable_rust_next::SagaInstanceRecord {
+        stream_id: StreamId::new(name),
+        logic_tag: "rsaga".to_string(),
+        outstanding_calls: 1,
+        oldest_dispatched_at: chrono::Utc::now(),
+    };
+    let registry = StaticRegistry {
+        records: vec![record("rsaga-30"), record("rsaga-31"), record("rsaga-32")],
+    };
+
+    let sweeper = Arc::new(Handler::new(
+        ResumableSaga::with_state(1, Arc::new(Mutex::new(HashSet::new()))),
+        echo_executor(),
+        NoOpQueryFetcher,
+        env,
+    ));
+    let report = sweeper
+        .recovery_sweep(&registry, &CancellationToken::new())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        report.resumed,
+        vec![StreamId::new("rsaga-30")],
+        "only the suspended instance is driven"
+    );
+    assert_eq!(
+        report.no_outstanding,
+        vec![StreamId::new("rsaga-31"), StreamId::new("rsaga-32")],
+        "parked/finished and stale rows are left alone"
+    );
+    assert!(report.failed.is_empty(), "failed: {:?}", report.failed);
+
+    // The driven instance actually completed.
+    let journal = scan_journal(&store.events_for_stream("rsaga-30")).unwrap();
+    assert!(journal.outstanding.is_empty());
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // Registry trait shape (compile-level pin + record semantics)
 // ═══════════════════════════════════════════════════════════════════
 

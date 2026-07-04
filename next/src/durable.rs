@@ -48,6 +48,7 @@
 //!   already-persisted events.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::sync::Arc;
 
 use futures::stream::{FuturesUnordered, StreamExt};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -56,7 +57,7 @@ use tracing::Instrument;
 use crate::{
     BusinessLogic, BusinessResult, CallExecutor, CancellationToken, EventMetadata, EventStore,
     EventStoreError, FetchResult, Handler, HandlerEnvironment, HandlerError, InvocationContext,
-    QueryFetcher, SerializationError, SerializedEvent, StreamId, Subject, SubjectId,
+    QueryFetcher, SagaRegistry, SerializationError, SerializedEvent, StreamId, Subject, SubjectId,
     UnitCallExecutor, Version,
 };
 
@@ -1112,6 +1113,90 @@ where
             metadata: Some(metadata.clone()),
             version: None,
         })
+    }
+}
+
+/// Result of a [`recovery_sweep`](Handler::recovery_sweep).
+#[derive(Debug, Default)]
+pub struct SweepReport {
+    /// Instances that were driven: resumed to completion or re-suspended
+    /// (cancelled/drained mid-sweep).
+    pub resumed: Vec<StreamId>,
+
+    /// Instances with nothing outstanding — parked at a gate, already
+    /// finished, or stale registry rows. Left untouched, as they must be.
+    pub no_outstanding: Vec<StreamId>,
+
+    /// Instances whose resume failed, with the rendered error. Repeated
+    /// failures for the same instance deserve an alert (see
+    /// [`resume`](Handler::resume) on the process-error sharp edge).
+    pub failed: Vec<(StreamId, String)>,
+}
+
+impl<T, E, QF, Env> Handler<T, E, QF, Env>
+where
+    T: DurableBusinessLogic,
+    T::Input: Clone,
+    T::Call: Serialize + DeserializeOwned,
+    E: CallExecutor<T::Call, T::CallResult> + UnitCallExecutor<T::Call, T::CallResult> + 'static,
+    QF: QueryFetcher<T::Input, Env::Projections> + 'static,
+    Env: HandlerEnvironment + 'static,
+{
+    /// Resume every instance of **this saga type** that has outstanding
+    /// calls: the packaged recovery sweep.
+    ///
+    /// Queries the registry with [`LOGIC_TAG`](DurableBusinessLogic::LOGIC_TAG)
+    /// — the tag comes from the type, so a sweep can never feed another saga
+    /// type's journal to this handler — then spawns one `resume` task per
+    /// instance (callers hold the handler in an `Arc`; runs on the ambient
+    /// tokio runtime) and reports the outcomes.
+    ///
+    /// Run it at startup and optionally on an interval: `resume` is
+    /// idempotent, instances with nothing outstanding land in
+    /// [`no_outstanding`](SweepReport::no_outstanding) untouched, and an
+    /// instance a live loop is already driving conflicts-and-loses
+    /// harmlessly. Multi-node deployments can skip contended instances with
+    /// an advisory lock (see `SagaSweepLock` in the `PostgreSQL` crate).
+    ///
+    /// # Errors
+    ///
+    /// Returns the registry's error if the sweep query fails. Per-instance
+    /// resume failures do NOT fail the sweep — they land in
+    /// [`SweepReport::failed`].
+    pub async fn recovery_sweep<R: SagaRegistry>(
+        self: Arc<Self>,
+        registry: &R,
+        cancel: &CancellationToken,
+    ) -> Result<SweepReport, R::Error> {
+        let records = registry
+            .instances_with_outstanding_calls(T::LOGIC_TAG)
+            .await?;
+
+        let mut tasks = Vec::with_capacity(records.len());
+        for record in records {
+            let handler = Arc::clone(&self);
+            let token = cancel.clone();
+            let stream_id = record.stream_id.clone();
+            tasks.push((
+                record.stream_id,
+                tokio::spawn(async move { handler.resume(&stream_id, token).await }),
+            ));
+        }
+
+        let mut report = SweepReport::default();
+        for (stream_id, task) in tasks {
+            match task.await {
+                Ok(Ok(DurableOutcome::NoOutstandingCalls)) => {
+                    report.no_outstanding.push(stream_id);
+                },
+                Ok(Ok(_)) => report.resumed.push(stream_id),
+                Ok(Err(e)) => report.failed.push((stream_id, e.to_string())),
+                Err(join_error) => report
+                    .failed
+                    .push((stream_id, format!("resume task panicked: {join_error}"))),
+            }
+        }
+        Ok(report)
     }
 }
 

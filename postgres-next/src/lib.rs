@@ -975,6 +975,110 @@ impl<P: PgTransactionalProjector> DynAtomicPersist for PostgresAtomicPersist<P> 
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// Multi-node sweep coordination
+// ═══════════════════════════════════════════════════════════════════
+
+/// A per-saga-instance `PostgreSQL` advisory lock for recovery sweeps.
+///
+/// Multi-node deployments use this to skip instances another node is
+/// already resuming: acquire before `Handler::resume`, release after.
+/// Without it a double-resume is *safe* (at-least-once) but wasteful —
+/// each in-flight call may execute twice.
+///
+/// # Leak-proof by construction
+///
+/// Advisory locks are **session-scoped**, and pooled connections return to
+/// the pool with their session (and locks!) intact — the classic leak. This
+/// guard therefore [`detach`es](sqlx::pool::PoolConnection::detach) the
+/// connection from the pool before locking: the session belongs to the
+/// guard alone, so even if the guard is dropped without
+/// [`release`](Self::release) (including on panic), closing the connection
+/// ends the session and `PostgreSQL` frees the lock. It can never leak into
+/// the pool.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// match SagaSweepLock::try_acquire(&pool, &record.stream_id).await? {
+///     None => continue, // another node owns this instance
+///     Some(lock) => {
+///         let outcome = handler.resume(&record.stream_id, token).await;
+///         lock.release().await?;
+///         // handle outcome...
+///     }
+/// }
+/// ```
+pub struct SagaSweepLock {
+    conn: Option<sqlx::PgConnection>,
+    stream_id: String,
+}
+
+impl SagaSweepLock {
+    /// Try to acquire the advisory lock for one saga instance.
+    ///
+    /// Returns `Ok(None)` when another session holds the lock (skip the
+    /// instance — someone else is resuming it).
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying `sqlx` error on connection/query failure.
+    pub async fn try_acquire(
+        pool: &PgPool,
+        stream_id: &StreamId,
+    ) -> Result<Option<Self>, sqlx::Error> {
+        // Detach: the session must belong to this guard, never the pool.
+        let mut conn = pool.acquire().await?.detach();
+
+        // hashtextextended: 64-bit key space (fewer collisions than the
+        // 32-bit hashtext).
+        let locked: bool =
+            sqlx::query_scalar("SELECT pg_try_advisory_lock(hashtextextended($1, 0))")
+                .bind(stream_id.as_str())
+                .fetch_one(&mut conn)
+                .await?;
+
+        if locked {
+            Ok(Some(Self {
+                conn: Some(conn),
+                stream_id: stream_id.as_str().to_string(),
+            }))
+        } else {
+            // No lock held; close the detached session eagerly.
+            let _ = sqlx::Connection::close(conn).await;
+            Ok(None)
+        }
+    }
+
+    /// Release the lock and close the session (the graceful path).
+    ///
+    /// Dropping the guard without calling this also releases the lock
+    /// (the detached session dies with the connection), just less tidily.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying `sqlx` error if the unlock or close fails —
+    /// the session still ends either way, so the lock is freed regardless.
+    pub async fn release(mut self) -> Result<(), sqlx::Error> {
+        if let Some(mut conn) = self.conn.take() {
+            sqlx::query("SELECT pg_advisory_unlock(hashtextextended($1, 0))")
+                .bind(&self.stream_id)
+                .execute(&mut conn)
+                .await?;
+            sqlx::Connection::close(conn).await?;
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Debug for SagaSweepLock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SagaSweepLock")
+            .field("stream_id", &self.stream_id)
+            .finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
