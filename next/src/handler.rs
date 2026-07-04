@@ -710,7 +710,8 @@ impl<T: BusinessLogic, E, QF, Env> HandlerBuilder<T, E, QF, Env> {
     /// persisted at timeout, all in-flight calls stay outstanding in the
     /// journal, and `resume` re-dispatches them. Note the trade-off: a
     /// timeout aborts the *sibling* in-flight calls too; their work is
-    /// re-paid on resume.
+    /// re-paid on resume. The watchdog also applies while **draining** — a
+    /// hung call trips it rather than stalling the drain forever.
     #[must_use]
     pub const fn max_call_duration(mut self, max_call_duration: std::time::Duration) -> Self {
         self.max_call_duration = Some(max_call_duration);

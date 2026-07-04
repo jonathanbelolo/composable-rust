@@ -17,7 +17,11 @@
 //! #[tokio::test]
 //! async fn my_store_conforms() {
 //!     let store = MyEventStore::new(...);
-//!     conformance::event_store_conformance(&store, "conformance-mystore").await;
+//!     // The prefix MUST be unique per run on a persistent/shared database
+//!     // (leftover streams from a previous run would break the version
+//!     // assertions) — suffix something run-unique, or reset the store first.
+//!     let prefix = format!("conformance-mystore-{}", std::process::id());
+//!     conformance::event_store_conformance(&store, &prefix).await;
 //! }
 //! ```
 //!
@@ -103,6 +107,31 @@ pub async fn check_version_stamping<S: EventStore>(store: &S, prefix: &str) {
         vec![1, 2, 3],
         "streams must start at version 1 and be sequential"
     );
+
+    // A SECOND append must continue the numbering, not restart it.
+    let final_version = store
+        .append(
+            &id,
+            Some(Version::new(3)),
+            vec![event("E4", b"d"), event("E5", b"e")],
+        )
+        .await
+        .expect("second append must succeed");
+    assert_eq!(
+        final_version,
+        Version::new(5),
+        "the second append's final version must continue from the first"
+    );
+    let events = store.load(&id, None).await.expect("load must succeed");
+    let tail: Vec<u64> = events[3..]
+        .iter()
+        .map(|e| {
+            e.version
+                .expect("load must stamp a version on every event")
+                .as_u64()
+        })
+        .collect();
+    assert_eq!(tail, vec![4, 5], "continuation must be sequential");
 }
 
 /// `load(Some(v))` is **inclusive**: returns all events with version `>= v`.
@@ -178,11 +207,21 @@ pub async fn check_empty_append_rejected<S: EventStore>(store: &S, prefix: &str)
 pub async fn check_metadata_round_trip<S: EventStore>(store: &S, prefix: &str) {
     let id = stream(prefix, "metadata");
 
+    // Populate EVERY field — including the identity fields, so a store
+    // that drops or mangles author/origin (e.g. a JSONB mapping bug)
+    // cannot pass conformance.
+    let subject = crate::Subject::Authenticated {
+        id: crate::SubjectId::new("conformance-author"),
+        attributes: std::collections::HashMap::new(),
+    };
+    let origin = crate::SubjectId::new("conformance-origin");
     let metadata = crate::MetadataContext::new()
         .with_correlation_id("conformance-corr")
         .with_causation_id("conformance-cause")
         .with_user_id("conformance-user")
-        .to_event_metadata_at(
+        .to_event_metadata_with_subject_at(
+            &subject,
+            Some(&origin),
             chrono::DateTime::from_timestamp_micros(1_700_000_000_000_123)
                 .expect("valid timestamp"),
         );
@@ -202,6 +241,14 @@ pub async fn check_metadata_round_trip<S: EventStore>(store: &S, prefix: &str) {
     assert_eq!(loaded.correlation_id, metadata.correlation_id);
     assert_eq!(loaded.causation_id, metadata.causation_id);
     assert_eq!(loaded.user_id, metadata.user_id);
+    assert_eq!(
+        loaded.author_id, metadata.author_id,
+        "author_id must round-trip"
+    );
+    assert_eq!(
+        loaded.origin_subject_id, metadata.origin_subject_id,
+        "origin_subject_id must round-trip"
+    );
     assert_eq!(
         loaded.timestamp, metadata.timestamp,
         "µs-precision timestamps must round-trip exactly"

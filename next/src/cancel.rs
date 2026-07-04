@@ -78,6 +78,11 @@ impl CancellationToken {
     /// Signal **drain**: stop starting calls, let in-flight ones complete
     /// and journal, then suspend. Idempotent; a no-op on an already
     /// cancelled token (abort is stronger).
+    ///
+    /// A configured `max_call_duration` watchdog still applies while
+    /// draining: a hung in-flight call trips `CallStuck` instead of
+    /// stalling the drain forever. Escalate with
+    /// [`cancel`](Self::cancel) to stop waiting immediately.
     pub fn drain(&self) {
         self.tx.send_modify(|state| {
             if *state < CancelState::Drain {

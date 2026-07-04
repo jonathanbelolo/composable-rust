@@ -594,25 +594,20 @@ where
     ///
     /// # Recovery driver (startup sweep)
     ///
-    /// The framework deliberately ships no daemon; a sweep is ~15 lines.
-    /// Enumerate instances with outstanding calls from a `SagaRegistry`
-    /// implementation, filtered by YOUR logic's tag — never feed another
-    /// saga type's streams to this handler:
+    /// Don't hand-roll the sweep —
+    /// [`recovery_sweep`](Handler::recovery_sweep) packages it: it queries
+    /// the registry by this type's
+    /// [`LOGIC_TAG`](DurableBusinessLogic::LOGIC_TAG) (never feeding another
+    /// saga type's streams to this handler), resumes each instance
+    /// concurrently, and returns a bucketed [`SweepReport`]:
     ///
     /// ```rust,ignore
     /// let registry = PostgresSagaRegistry::new(pool.clone());
-    /// for rec in registry
-    ///     .instances_with_outstanding_calls(MySagaLogic::LOGIC_TAG)
-    ///     .await?
-    /// {
-    ///     let handler = Arc::clone(&handler);
-    ///     tokio::spawn(async move {
-    ///         match handler.resume(&rec.stream_id, CancellationToken::new()).await {
-    ///             Ok(DurableOutcome::NoOutstandingCalls) => {} // parked or done: leave it alone
-    ///             Ok(outcome) => tracing::info!(?outcome, stream = %rec.stream_id, "saga resumed"),
-    ///             Err(e) => tracing::error!(%e, stream = %rec.stream_id, "resume failed"),
-    ///         }
-    ///     });
+    /// let report = Arc::clone(&handler)
+    ///     .recovery_sweep(&registry, &CancellationToken::new())
+    ///     .await?;
+    /// for (stream, error) in &report.failed {
+    ///     tracing::error!(%stream, %error, "saga resume failed"); // alert on repeats
     /// }
     /// ```
     ///
@@ -620,15 +615,11 @@ where
     /// and an instance a live loop is already driving will conflict-and-lose
     /// harmlessly.
     ///
-    /// **Multi-node deployments**: skip instances another node owns with a
-    /// Postgres advisory lock — but advisory locks are **session-scoped**
-    /// and sqlx pools reuse sessions. Take the lock on a connection held for
-    /// the entire resume and release it deliberately: either a dedicated
-    /// non-pooled `PgConnection::connect` (dropping it closes the session
-    /// and releases the lock), or a held `PoolConnection` with an explicit
-    /// `SELECT pg_advisory_unlock(...)` before returning it. Never run
-    /// `pg_try_advisory_lock` bare on the pool — the lock leaks into the
-    /// pooled session and silently blocks every future sweep of that stream.
+    /// **Multi-node deployments**: skip instances another node owns with the
+    /// `SagaSweepLock` advisory-lock guard from the `PostgreSQL` crate — it
+    /// holds the lock on a connection **detached** from the pool, so the
+    /// session-scoped lock can never leak into pooled sessions (the classic
+    /// hazard of running `pg_try_advisory_lock` bare on a pool).
     ///
     /// # Errors
     ///
@@ -696,12 +687,13 @@ where
             // The stream's true version; feedback cycles must not trust a
             // possibly-marker-stale fetcher (see RunState::carried_version).
             carried_version: events.last().and_then(|e| e.version),
-            // Recover the run initiator from the stream: durable mode stamps
-            // origin_subject_id on every event from the initial cycle, so
-            // the first stamped origin IS the initiating subject. Post-
-            // resume events stay attributed to them, while author_id
-            // reflects whoever runs the resume (typically System).
-            origin: events.iter().find_map(|e| {
+            // Recover the CURRENT run's initiator: the LAST stamped origin.
+            // Multi-phase sagas park at gates and are re-entered by
+            // (possibly different) users — the most recent origin belongs to
+            // the run being resumed; the FIRST would mis-attribute
+            // post-resume events to an earlier phase's initiator. author_id
+            // still reflects whoever runs the resume (typically System).
+            origin: events.iter().rev().find_map(|e| {
                 e.metadata
                     .as_ref()
                     .and_then(|m| m.origin_subject_id.clone())
@@ -795,16 +787,20 @@ where
                     run.outstanding.remove(&call_id);
                     run.in_flight_since.remove(&call_id);
                     in_flight_gauge.decrement();
+                    let input = T::completion_input(stream_id, call_id, result);
+                    let outcome = self
+                        .durable_cycle(stream_id, input, Some(call_id), &mut run)
+                        .await?;
+                    // Count JOURNALED completions only: a cycle error leaves
+                    // the completion un-journaled (the call re-runs on
+                    // resume and will be counted when it truly completes) —
+                    // counting pre-cycle would double-count across resumes.
                     metrics::counter!(
                         "saga.durable.calls_completed.total",
                         "logic_tag" => T::LOGIC_TAG
                     )
                     .increment(1);
-                    let input = T::completion_input(stream_id, call_id, result);
-                    match self
-                        .durable_cycle(stream_id, input, Some(call_id), &mut run)
-                        .await?
-                    {
+                    match outcome {
                         CycleOutcome::Completed { version } => {
                             return Ok(DurableOutcome::Completed {
                                 version,

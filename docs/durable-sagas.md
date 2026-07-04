@@ -165,7 +165,7 @@ let handler = Arc::new(HandlerBuilder::new(SpecPipelineSaga)
     .call_executor(gpu_executor)
     .query_fetcher(spec_fetcher)
     .environment(env)
-    .max_total_calls(500)                       // lifetime dispatch cap
+    .max_total_calls(500)   // lifetime cap on JOURNALED dispatches (incl. drain-deferred)
     .max_call_duration(Duration::from_secs(30 * 60)) // stuck-call watchdog
     .build());
 ```
@@ -186,7 +186,9 @@ match handler.handle_durable(SpecInput::Start { run_id }, cancel.clone()).await?
 - `cancel.drain()` — **graceful**: no new calls start; in-flight ones complete
   and persist their cycles; top-ups requested while draining are journaled but
   not started; then the run suspends. Kinder to expensive calls; waits for the
-  slowest in-flight one. `cancel()` upgrades a drain.
+  slowest in-flight one. `cancel()` upgrades a drain, and a configured
+  watchdog still applies while draining (a hung call trips `CallStuck`
+  rather than stalling the drain forever).
 - `max_call_duration` — watchdog: if the oldest in-flight call exceeds it, the
   run errors with `CallStuck { call_id, .. }` (crash-equivalent, resumable).
   Alert on it. Note it aborts sibling in-flight work too; that work is re-paid
@@ -237,7 +239,9 @@ instances with `SagaSweepLock`:
 match SagaSweepLock::try_acquire(&pool, &record.stream_id).await? {
     None => continue, // another node owns this instance
     Some(lock) => {
-        let outcome = handler.resume(&record.stream_id, token.clone()).await;
+        let outcome = handler
+            .resume(&record.stream_id, CancellationToken::new())
+            .await;
         lock.release().await?;
     }
 }
@@ -245,7 +249,9 @@ match SagaSweepLock::try_acquire(&pool, &record.stream_id).await? {
 
 The lock detaches its connection from the pool before locking, so it **cannot
 leak into pooled sessions** — dropping the guard (even on panic) closes the
-session and PostgreSQL frees the lock.
+session and PostgreSQL frees the lock. (Each `try_acquire` briefly opens a
+real connection even when it returns `None`; at sweep cadence the churn is
+negligible.)
 
 **At-least-once:** a call whose completion was never journaled re-executes on
 resume. If re-execution isn't naturally idempotent, add payload-hash dedup on

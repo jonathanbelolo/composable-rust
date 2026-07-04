@@ -352,6 +352,65 @@ async fn resume_recovers_origin_subject_attribution() {
 }
 
 #[tokio::test]
+async fn resume_recovers_the_latest_origin_across_phases() {
+    // Multi-phase workflow: phase 1 initiated by user-9, parked at a gate;
+    // phase 2 re-entered by user-13, crashed; resumed by System. Post-resume
+    // events must be attributed to user-13 (the CURRENT run's initiator),
+    // not user-9 — resume takes the LAST stamped origin, not the first.
+    let base = test_env();
+    let resume_env = base.clone();
+    let store = base.event_store().clone();
+    let env_user9 = base.clone().with_subject(Subject::Authenticated {
+        id: SubjectId::new("user-9"),
+        attributes: HashMap::new(),
+    });
+    let env_user13 = base.with_subject(Subject::Authenticated {
+        id: SubjectId::new("user-13"),
+        attributes: HashMap::new(),
+    });
+
+    // Phase 1 (user-9): runs to the gate, journal balanced.
+    let phase1 = Handler::new(GateSaga, echo_executor(), NoOpQueryFetcher, env_user9);
+    let outcome = phase1
+        .handle_durable(WIn::Start { id: 77 }, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(matches!(outcome, DurableOutcome::Completed { .. }));
+
+    // Phase 2 (user-13): journaled dispatch, then "crash" (pre-cancelled).
+    let phase2 = Handler::new(GateSaga, echo_executor(), NoOpQueryFetcher, env_user13);
+    let pre_cancelled = CancellationToken::new();
+    pre_cancelled.cancel();
+    let outcome = phase2
+        .handle_durable(WIn::Start { id: 77 }, pre_cancelled)
+        .await
+        .unwrap();
+    assert!(matches!(outcome, DurableOutcome::Suspended { .. }));
+    let events_before_resume = store.events_for_stream("gate-77").len();
+
+    // Resume as System.
+    let resumer = Handler::new(GateSaga, echo_executor(), NoOpQueryFetcher, resume_env);
+    let outcome = resumer
+        .resume(&StreamId::new("gate-77"), CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(matches!(outcome, DurableOutcome::Completed { .. }));
+
+    let events = store.events_for_stream("gate-77");
+    let post_resume = &events[events_before_resume..];
+    assert!(!post_resume.is_empty());
+    for event in post_resume {
+        let metadata = event.metadata.as_ref().expect("metadata stamped");
+        assert_eq!(
+            metadata.origin_subject_id,
+            Some(SubjectId::new("user-13")),
+            "post-resume events belong to phase 2's initiator, not phase 1's ({})",
+            event.event_type
+        );
+    }
+}
+
+#[tokio::test]
 async fn resume_of_nonexistent_stream_is_a_no_op() {
     let env = test_env();
     let executor = echo_executor();
