@@ -50,6 +50,15 @@ pub const DEFAULT_MAX_RETRIES: u32 = 3;
 /// while still providing protection against bugs.
 pub const DEFAULT_MAX_SAGA_ITERATIONS: u32 = 100;
 
+/// Default maximum total dispatched calls for durable saga runs
+///
+/// Durable mode's runaway guard counts **dispatched calls over the saga
+/// instance's lifetime** instead of loop iterations (completion cycles are
+/// bounded by dispatches; dispatches are the variable that can run away).
+/// Resume seeds the counter from the journal, so the cap survives
+/// crash/resume cycles.
+pub const DEFAULT_MAX_TOTAL_CALLS: u32 = 1_000;
+
 /// Result of handling a command or query
 ///
 /// The handler returns different result types for commands vs queries:
@@ -192,12 +201,13 @@ where
     QF: QueryFetcher<T::Input, Env::Projections>,
     Env: HandlerEnvironment,
 {
-    business: T,
-    call_executor: E,
-    query_fetcher: QF,
-    env: Env,
-    max_retries: u32,
+    pub(crate) business: T,
+    pub(crate) call_executor: E,
+    pub(crate) query_fetcher: QF,
+    pub(crate) env: Env,
+    pub(crate) max_retries: u32,
     max_saga_iterations: u32,
+    pub(crate) max_total_calls: u32,
 }
 
 impl<T, E, QF, Env> Handler<T, E, QF, Env>
@@ -221,6 +231,7 @@ where
             env,
             max_retries: DEFAULT_MAX_RETRIES,
             max_saga_iterations: DEFAULT_MAX_SAGA_ITERATIONS,
+            max_total_calls: DEFAULT_MAX_TOTAL_CALLS,
         }
     }
 
@@ -240,6 +251,7 @@ where
             env,
             max_retries,
             max_saga_iterations: DEFAULT_MAX_SAGA_ITERATIONS,
+            max_total_calls: DEFAULT_MAX_TOTAL_CALLS,
         }
     }
 
@@ -413,9 +425,26 @@ where
         metadata_context: &MetadataContext,
         ctx: &InvocationContext<'_>,
     ) -> Result<Vec<SerializedEvent>, HandlerError<T::Error>> {
-        let metadata = Some(
-            metadata_context.to_event_metadata_with_subject(ctx.subject, ctx.origin_subject_id),
-        );
+        let metadata = Self::stamped_metadata(metadata_context, ctx);
+        Self::serialize_events_with(events, &metadata)
+    }
+
+    /// Build the per-cycle [`EventMetadata`] snapshot from the invocation's
+    /// metadata context and subject. Extracted so the durable path can stamp
+    /// domain events and journal markers with the **identical** snapshot.
+    pub(crate) fn stamped_metadata(
+        metadata_context: &MetadataContext,
+        ctx: &InvocationContext<'_>,
+    ) -> crate::EventMetadata {
+        metadata_context.to_event_metadata_with_subject(ctx.subject, ctx.origin_subject_id)
+    }
+
+    /// Serialize events with a pre-computed metadata snapshot.
+    pub(crate) fn serialize_events_with(
+        events: &[T::Event],
+        metadata: &crate::EventMetadata,
+    ) -> Result<Vec<SerializedEvent>, HandlerError<T::Error>> {
+        let metadata = Some(metadata.clone());
 
         events
             .iter()
@@ -455,7 +484,7 @@ where
     /// If the environment provides [`atomic_persist`](HandlerEnvironment::atomic_persist),
     /// the append and projection commit in a single transaction and `project_and_wait`
     /// is NOT called. Otherwise it falls back to the separate append-then-project flow.
-    async fn persist_and_project(
+    pub(crate) async fn persist_and_project(
         &self,
         stream_id: &StreamId,
         serialized: Vec<SerializedEvent>,
@@ -499,7 +528,10 @@ where
     }
 
     /// Broadcast events to event bus (batch)
-    async fn broadcast(&self, events: &[SerializedEvent]) -> Result<(), HandlerError<T::Error>> {
+    pub(crate) async fn broadcast(
+        &self,
+        events: &[SerializedEvent],
+    ) -> Result<(), HandlerError<T::Error>> {
         if let Some(event_bus) = self.env.event_bus() {
             event_bus
                 .publish_batch(self.env.broadcast_topic(), events)
@@ -568,6 +600,7 @@ pub struct HandlerBuilder<T, E = (), QF = (), Env = ()> {
     env: Env,
     max_retries: u32,
     max_saga_iterations: u32,
+    max_total_calls: u32,
 }
 
 impl<T: BusinessLogic> HandlerBuilder<T, (), (), ()> {
@@ -581,6 +614,7 @@ impl<T: BusinessLogic> HandlerBuilder<T, (), (), ()> {
             env: (),
             max_retries: DEFAULT_MAX_RETRIES,
             max_saga_iterations: DEFAULT_MAX_SAGA_ITERATIONS,
+            max_total_calls: DEFAULT_MAX_TOTAL_CALLS,
         }
     }
 }
@@ -596,6 +630,7 @@ impl<T: BusinessLogic, E, QF, Env> HandlerBuilder<T, E, QF, Env> {
             env: self.env,
             max_retries: self.max_retries,
             max_saga_iterations: self.max_saga_iterations,
+            max_total_calls: self.max_total_calls,
         }
     }
 
@@ -609,6 +644,7 @@ impl<T: BusinessLogic, E, QF, Env> HandlerBuilder<T, E, QF, Env> {
             env: self.env,
             max_retries: self.max_retries,
             max_saga_iterations: self.max_saga_iterations,
+            max_total_calls: self.max_total_calls,
         }
     }
 
@@ -622,6 +658,7 @@ impl<T: BusinessLogic, E, QF, Env> HandlerBuilder<T, E, QF, Env> {
             env,
             max_retries: self.max_retries,
             max_saga_iterations: self.max_saga_iterations,
+            max_total_calls: self.max_total_calls,
         }
     }
 
@@ -639,6 +676,17 @@ impl<T: BusinessLogic, E, QF, Env> HandlerBuilder<T, E, QF, Env> {
     #[must_use]
     pub const fn max_saga_iterations(mut self, max_iterations: u32) -> Self {
         self.max_saga_iterations = max_iterations;
+        self
+    }
+
+    /// Set the maximum total dispatched calls for durable saga runs
+    ///
+    /// Durable mode's runaway guard: the cap on calls dispatched over the
+    /// saga instance's **lifetime** (resume seeds the counter from the
+    /// journal). Default is [`DEFAULT_MAX_TOTAL_CALLS`].
+    #[must_use]
+    pub const fn max_total_calls(mut self, max_total_calls: u32) -> Self {
+        self.max_total_calls = max_total_calls;
         self
     }
 }
@@ -661,6 +709,7 @@ where
             env: self.env,
             max_retries: self.max_retries,
             max_saga_iterations: self.max_saga_iterations,
+            max_total_calls: self.max_total_calls,
         }
     }
 }

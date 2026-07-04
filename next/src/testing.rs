@@ -46,6 +46,7 @@ use crate::{
 };
 use futures::future::BoxFuture;
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::{Arc, RwLock};
 
 // ═══════════════════════════════════════════════════════════════════
@@ -815,6 +816,139 @@ impl DynAtomicPersist for InMemoryAtomicPersist {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// RecordingUnitExecutor
+// ═══════════════════════════════════════════════════════════════════
+
+/// Closure-backed single-call executor that records every dispatched call.
+///
+/// The test double for durable saga runs: `execute_one` logs the call (at
+/// dispatch time, synchronously) and delegates to the provided closure.
+/// Tests control completion timing by wiring `tokio::sync::oneshot`
+/// receivers (or any future) into the closure — a call whose gate never
+/// fires simply stays in flight.
+///
+/// The batch [`CallExecutor`](crate::CallExecutor) impl (required by the
+/// `Handler` struct bounds) runs `execute_one` for each call concurrently.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// // Echo every call immediately:
+/// let executor = RecordingUnitExecutor::new(|call: u64| async move { call });
+///
+/// // Gate call 2 on a oneshot:
+/// let (tx, rx) = tokio::sync::oneshot::channel();
+/// let gates = Arc::new(Mutex::new(HashMap::from([(2u64, rx)])));
+/// let executor = RecordingUnitExecutor::new(move |call: u64| {
+///     let gate = gates.lock().unwrap().remove(&call);
+///     async move {
+///         match gate {
+///             Some(rx) => rx.await.unwrap_or(call),
+///             None => call,
+///         }
+///     }
+/// });
+/// ```
+pub struct RecordingUnitExecutor<C, R> {
+    handler: Arc<dyn Fn(C) -> BoxFuture<'static, R> + Send + Sync>,
+    dispatched: Arc<std::sync::Mutex<Vec<C>>>,
+}
+
+impl<C, R> Clone for RecordingUnitExecutor<C, R> {
+    fn clone(&self) -> Self {
+        Self {
+            handler: Arc::clone(&self.handler),
+            dispatched: Arc::clone(&self.dispatched),
+        }
+    }
+}
+
+impl<C, R> std::fmt::Debug for RecordingUnitExecutor<C, R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let count = self.dispatched.lock().map(|log| log.len()).unwrap_or(0);
+        f.debug_struct("RecordingUnitExecutor")
+            .field("dispatch_count", &count)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<C, R> RecordingUnitExecutor<C, R>
+where
+    C: Clone + Send + 'static,
+    R: Send + 'static,
+{
+    /// Create an executor backed by the given per-call closure.
+    pub fn new<F, Fut>(execute: F) -> Self
+    where
+        F: Fn(C) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = R> + Send + 'static,
+    {
+        Self {
+            handler: Arc::new(move |call| Box::pin(execute(call))),
+            dispatched: Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
+
+    /// All calls dispatched so far, in dispatch order (for test assertions).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
+    #[must_use]
+    #[allow(clippy::expect_used)] // Test infrastructure
+    pub fn dispatched(&self) -> Vec<C> {
+        self.dispatched
+            .lock()
+            .expect("RecordingUnitExecutor lock poisoned")
+            .clone()
+    }
+
+    /// Number of calls dispatched so far.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
+    #[must_use]
+    #[allow(clippy::expect_used)] // Test infrastructure
+    pub fn dispatch_count(&self) -> usize {
+        self.dispatched
+            .lock()
+            .expect("RecordingUnitExecutor lock poisoned")
+            .len()
+    }
+}
+
+impl<C, R> crate::UnitCallExecutor<C, R> for RecordingUnitExecutor<C, R>
+where
+    C: Clone + Send + 'static,
+    R: Send + 'static,
+{
+    #[allow(clippy::expect_used)] // Test infrastructure
+    fn execute_one(&self, call: C) -> impl Future<Output = R> + Send {
+        self.dispatched
+            .lock()
+            .expect("RecordingUnitExecutor lock poisoned")
+            .push(call.clone());
+        (self.handler)(call)
+    }
+}
+
+impl<C, R> crate::CallExecutor<C, R> for RecordingUnitExecutor<C, R>
+where
+    C: Clone + Send + 'static,
+    R: Send + 'static,
+{
+    async fn execute(&self, calls: Vec<C>) -> Vec<R> {
+        futures::future::join_all(
+            calls
+                .into_iter()
+                .map(|call| crate::UnitCallExecutor::execute_one(self, call)),
+        )
+        .await
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════
 
@@ -1034,7 +1168,11 @@ mod tests {
                 |_version, _events| async move {
                     // A concurrent writer commits version 3 while the projection runs.
                     concurrent
-                        .append(&concurrent_stream, Some(Version::new(2)), vec![make_event("E3")])
+                        .append(
+                            &concurrent_stream,
+                            Some(Version::new(2)),
+                            vec![make_event("E3")],
+                        )
                         .await
                         .unwrap();
                     Err(ProjectionError::Custom("boom".to_string()))
@@ -1046,7 +1184,11 @@ mod tests {
 
         let events = store.events_for_stream("saga-1");
         // Seed (v1) + the concurrent E3 (v3) survive; only our E2 (v2) is rolled back.
-        assert_eq!(events.len(), 2, "concurrent writer's event must survive rollback");
+        assert_eq!(
+            events.len(),
+            2,
+            "concurrent writer's event must survive rollback"
+        );
         assert!(
             events.iter().any(|e| e.event_type == "E3"),
             "the concurrent writer's E3 must be preserved"
@@ -1246,7 +1388,9 @@ mod tests {
                     events: vec![SagaEv::Started(id)],
                     calls: vec![id],
                 }),
-                OldSagaIn::Feedback { id, .. } => Ok(BusinessResult::Done(vec![SagaEv::Finished(id)])),
+                OldSagaIn::Feedback { id, .. } => {
+                    Ok(BusinessResult::Done(vec![SagaEv::Finished(id)]))
+                },
             }
         }
 

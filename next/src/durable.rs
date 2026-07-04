@@ -29,11 +29,16 @@
 //! events. Projectors that decode domain events must skip framework types
 //! (check [`is_framework_event_type`]).
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+use futures::stream::{FuturesUnordered, StreamExt};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::{BusinessLogic, SerializationError, SerializedEvent, StreamId, Version};
+use crate::{
+    BusinessLogic, BusinessResult, CallExecutor, CancellationToken, EventMetadata, EventStoreError,
+    FetchResult, Handler, HandlerEnvironment, HandlerError, InvocationContext, QueryFetcher,
+    SerializationError, SerializedEvent, StreamId, Subject, SubjectId, UnitCallExecutor, Version,
+};
 
 /// Event type of the framework marker persisted when a saga call is
 /// dispatched. The marker's **stream version is the call's [`CallId`]**.
@@ -260,6 +265,497 @@ pub fn scan_journal(events: &[SerializedEvent]) -> Result<JournalState, Serializ
         outstanding,
         dispatched_count,
     })
+}
+
+/// Outcome of a durable saga run.
+///
+/// Returned by `Handler::handle_durable` (and later `Handler::resume`).
+/// Deliberately distinct from [`HandleResult`](crate::HandleResult): durable
+/// runs have outcomes the batch path cannot produce.
+#[derive(Debug, Clone)]
+pub enum DurableOutcome<R = ()> {
+    /// The saga returned `Done` with zero outstanding calls.
+    Completed {
+        /// The stream version after the final persist.
+        ///
+        /// Parity quirk inherited from the batch path: an initial `Done` with
+        /// no events under a version-less fetcher reports `v0` even if the
+        /// stream is non-empty (nothing was persisted, so no true version was
+        /// observed).
+        version: Version,
+        /// Total **domain** events persisted across the whole run (journal
+        /// markers excluded).
+        event_count: usize,
+    },
+
+    /// The initial input was a query (`Respond`); nothing was persisted.
+    Query(R),
+
+    /// The run was cancelled.
+    ///
+    /// In-flight calls were aborted (their futures dropped) and no further
+    /// calls were dispatched. The journal still lists `outstanding` as
+    /// dispatched-but-uncompleted, so a later `resume` re-dispatches exactly
+    /// them: cancel ≡ crash ≡ resumable.
+    Suspended {
+        /// The calls that were outstanding at suspension.
+        outstanding: Vec<CallId>,
+    },
+
+    /// Returned only by `resume`: the stream has no outstanding calls.
+    ///
+    /// The instance is parked at a gate, already completed, or the stream
+    /// doesn't exist — deliberately indistinguishable here, because none of
+    /// them are the recovery driver's business to act on.
+    NoOutstandingCalls,
+}
+
+/// Mutable state threaded through one durable run.
+struct RunState {
+    /// Dispatched-but-uncompleted call IDs (mirrors the journal).
+    outstanding: BTreeSet<CallId>,
+    /// Calls dispatched over the instance's lifetime (journal-seeded on
+    /// resume); checked against `max_total_calls`.
+    dispatched_total: u64,
+    /// Domain events persisted this run (markers excluded).
+    domain_events_total: usize,
+    /// The expected version for the next persist.
+    ///
+    /// `None` until the first persist (the initial cycle trusts the
+    /// fetcher's version); afterwards always the previous persist's returned
+    /// final version. Feedback cycles must NOT trust the fetcher here:
+    /// marker events advance the stream on every append, and a projection
+    /// that derives its version from recognized domain events would go
+    /// permanently stale — fetch supplies state, this field supplies the
+    /// version.
+    carried_version: Option<Version>,
+    /// The initiating subject's ID, stamped as `origin_subject_id` on every
+    /// cycle's events and markers.
+    origin: Option<SubjectId>,
+}
+
+/// What one durable cycle decided.
+enum CycleOutcome<C, R> {
+    /// `Respond` on the initial cycle.
+    Query(R),
+    /// `Done` persisted (or the no-op initial `Done([])`).
+    Completed { version: Version },
+    /// `Continue` persisted; these calls (with their journal-assigned IDs)
+    /// must now be dispatched.
+    Dispatched { calls: Vec<(CallId, C)> },
+}
+
+/// Wrap a single call execution so its completion carries the [`CallId`].
+///
+/// Every dispatch site funnels through this one function so all in-flight
+/// futures share a single opaque type (one return-position `impl Future` =
+/// one type), which is what lets them live in one `FuturesUnordered`.
+async fn dispatch_one<C, R, E>(executor: &E, call_id: CallId, call: C) -> (CallId, R)
+where
+    E: UnitCallExecutor<C, R>,
+    C: Send,
+    R: Send,
+{
+    (call_id, executor.execute_one(call).await)
+}
+
+impl<T, E, QF, Env> Handler<T, E, QF, Env>
+where
+    T: DurableBusinessLogic,
+    T::Input: Clone,
+    T::Call: Serialize + DeserializeOwned,
+    E: CallExecutor<T::Call, T::CallResult> + UnitCallExecutor<T::Call, T::CallResult>,
+    QF: QueryFetcher<T::Input, Env::Projections>,
+    Env: HandlerEnvironment,
+{
+    /// Handle input in durable mode: per-completion feedback cycles with a
+    /// crash-safe call journal.
+    ///
+    /// Differences from [`handle`](Handler::handle):
+    ///
+    /// - Calls execute **concurrently**; each completion is delivered to the
+    ///   saga as its own `process()` → persist cycle (durability granularity
+    ///   = one call). The saga tops up its window by returning new calls on
+    ///   each completion.
+    /// - Every cycle's append includes framework journal markers
+    ///   (`$saga.call_dispatched` / `$saga.call_completed`) so recovery can
+    ///   compute exactly which calls never completed.
+    /// - The runaway guard is [`max_total_calls`](crate::HandlerBuilder::max_total_calls)
+    ///   (lifetime dispatched calls), not `max_saga_iterations`.
+    /// - Each cycle gets a fresh `max_retries` version-conflict budget (the
+    ///   batch path shares one budget across the whole run).
+    /// - Cancellation via `cancel` suspends the run: in-flight calls are
+    ///   aborted and stay outstanding in the journal, so a later `resume`
+    ///   re-dispatches exactly them. Cancellation is observed between
+    ///   completion cycles (latency = the in-progress cycle).
+    ///
+    /// # Errors
+    ///
+    /// Everything [`handle`](Handler::handle) returns, plus the durable-mode
+    /// contract errors — all raised **before** persisting anything:
+    ///
+    /// - [`HandlerError::DoneWithOutstandingCalls`]: `Done` while calls are
+    ///   outstanding.
+    /// - [`HandlerError::SagaStuck`]: `Continue` with no calls and none
+    ///   outstanding (nothing can ever wake the saga).
+    /// - [`HandlerError::RespondInFeedbackCycle`]: `Respond` outside the
+    ///   initial cycle.
+    /// - [`HandlerError::TotalCallsExceeded`]: the lifetime dispatch cap.
+    ///
+    /// A `process()` error on a feedback cycle deliberately leaves that
+    /// completion un-journaled (at-least-once): the call re-runs on resume.
+    /// Call failures must therefore be `CallResult` variants the saga
+    /// handles, not `process()` errors.
+    pub async fn handle_durable(
+        &self,
+        input: T::Input,
+        cancel: CancellationToken,
+    ) -> Result<DurableOutcome<T::Response>, HandlerError<T::Error>> {
+        let stream_id = T::stream_id(&input);
+        let origin = self
+            .env
+            .current_subject()
+            .unwrap_or(Subject::System)
+            .id()
+            .cloned();
+
+        let mut run = RunState {
+            outstanding: BTreeSet::new(),
+            dispatched_total: 0,
+            domain_events_total: 0,
+            carried_version: None,
+            origin,
+        };
+
+        let initial_calls = match self
+            .durable_cycle(&stream_id, input, None, &mut run)
+            .await?
+        {
+            CycleOutcome::Query(response) => return Ok(DurableOutcome::Query(response)),
+            CycleOutcome::Completed { version } => {
+                return Ok(DurableOutcome::Completed {
+                    version,
+                    event_count: run.domain_events_total,
+                });
+            },
+            CycleOutcome::Dispatched { calls } => calls,
+        };
+
+        self.run_completion_loop(&stream_id, initial_calls, run, &cancel)
+            .await
+    }
+
+    /// Drive the unordered-completion loop until the saga finishes, errs, or
+    /// is cancelled. `initial_calls` are dispatched first (their journal
+    /// markers are already persisted).
+    async fn run_completion_loop(
+        &self,
+        stream_id: &StreamId,
+        initial_calls: Vec<(CallId, T::Call)>,
+        mut run: RunState,
+        cancel: &CancellationToken,
+    ) -> Result<DurableOutcome<T::Response>, HandlerError<T::Error>> {
+        for (id, _) in &initial_calls {
+            run.outstanding.insert(*id);
+        }
+
+        // A pre-cancelled token suspends before any call starts; the
+        // dispatched markers are journaled, so resume re-dispatches them.
+        if cancel.is_cancelled() {
+            return Ok(DurableOutcome::Suspended {
+                outstanding: run.outstanding.iter().copied().collect(),
+            });
+        }
+
+        let mut in_flight = FuturesUnordered::new();
+        for (id, call) in initial_calls {
+            in_flight.push(dispatch_one(&self.call_executor, id, call));
+        }
+
+        loop {
+            tokio::select! {
+                biased;
+
+                () = cancel.cancelled() => {
+                    // Dropping `in_flight` aborts the calls; their journal
+                    // entries stay outstanding → resumable.
+                    return Ok(DurableOutcome::Suspended {
+                        outstanding: run.outstanding.iter().copied().collect(),
+                    });
+                },
+
+                next = in_flight.next() => {
+                    // Bound and matched here, NOT in the arm pattern: a
+                    // refutable arm pattern would silently disable the branch
+                    // on None and park on cancelled() forever.
+                    let Some((call_id, result)) = next else {
+                        // Defensive: the loop invariant (every cycle either
+                        // finishes the run or keeps calls in flight) makes
+                        // this unreachable.
+                        return Err(HandlerError::SagaStuck);
+                    };
+                    // Remove BEFORE the cycle so the Done-check counts only
+                    // *other* calls; this completion's marker persists in the
+                    // same append as the saga's reaction to it.
+                    run.outstanding.remove(&call_id);
+                    let input = T::completion_input(stream_id, call_id, result);
+                    match self
+                        .durable_cycle(stream_id, input, Some(call_id), &mut run)
+                        .await?
+                    {
+                        CycleOutcome::Completed { version } => {
+                            return Ok(DurableOutcome::Completed {
+                                version,
+                                event_count: run.domain_events_total,
+                            });
+                        },
+                        CycleOutcome::Dispatched { calls } => {
+                            for (id, call) in calls {
+                                run.outstanding.insert(id);
+                                in_flight.push(dispatch_one(&self.call_executor, id, call));
+                            }
+                        },
+                        // durable_cycle rejects Respond on feedback cycles.
+                        CycleOutcome::Query(_) => {
+                            return Err(HandlerError::RespondInFeedbackCycle);
+                        },
+                    }
+                },
+            }
+        }
+    }
+
+    /// One durable cycle: fetch → process → persist (events + journal
+    /// markers, one append) → broadcast.
+    ///
+    /// `completed` is the call whose result produced this cycle's input
+    /// (`None` for the initial cycle); its `$saga.call_completed` marker is
+    /// persisted atomically with whatever the saga emitted in response.
+    ///
+    /// Version-conflict retries are per-cycle (fresh `attempts` budget) and
+    /// re-fetch for fresh state while `completed` stays in hand.
+    #[allow(clippy::too_many_lines)] // One cycle's full fetch→process→persist state machine
+    async fn durable_cycle(
+        &self,
+        stream_id: &StreamId,
+        input: T::Input,
+        completed: Option<CallId>,
+        run: &mut RunState,
+    ) -> Result<CycleOutcome<T::Call, T::Response>, HandlerError<T::Error>> {
+        let mut current_input = input;
+        let mut attempts: u32 = 0;
+
+        loop {
+            let subject = self.env.current_subject().unwrap_or(Subject::System);
+            let metadata_context = self.env.metadata();
+            let ctx = InvocationContext {
+                clock: self.env.clock(),
+                subject: &subject,
+                correlation_id: metadata_context.correlation_id.as_deref(),
+                causation_id: metadata_context.causation_id.as_deref(),
+                origin_subject_id: run.origin.as_ref(),
+            };
+
+            let FetchResult {
+                input: prepared_input,
+                expected_version: fetched_version,
+            } = self
+                .query_fetcher
+                .fetch_with_context(current_input.clone(), self.env.projections(), &ctx)
+                .await
+                .map_err(|e| HandlerError::QueryFetch(e.to_string()))?;
+
+            // The initial cycle trusts the fetcher; every later cycle uses
+            // the version returned by the previous persist (see RunState).
+            let expected_version = run.carried_version.or(fetched_version);
+
+            let result = self
+                .business
+                .process_with_context(prepared_input.clone(), &ctx)
+                .map_err(HandlerError::Business)?;
+
+            match result {
+                BusinessResult::Respond(data) => {
+                    if completed.is_some() || !run.outstanding.is_empty() {
+                        return Err(HandlerError::RespondInFeedbackCycle);
+                    }
+                    return Ok(CycleOutcome::Query(data));
+                },
+
+                BusinessResult::Done(events) => {
+                    if !run.outstanding.is_empty() {
+                        return Err(HandlerError::DoneWithOutstandingCalls {
+                            outstanding: run.outstanding.len(),
+                        });
+                    }
+
+                    if events.is_empty() && completed.is_none() {
+                        // Aggregate-style no-op on the initial cycle: batch
+                        // parity, nothing persisted.
+                        return Ok(CycleOutcome::Completed {
+                            version: expected_version.unwrap_or_else(Version::initial),
+                        });
+                    }
+
+                    let metadata = Self::stamped_metadata(metadata_context, &ctx);
+                    let mut serialized = Self::serialize_events_with(&events, &metadata)?;
+                    Self::reject_reserved_type_names(&serialized)?;
+                    if let Some(call_id) = completed {
+                        serialized.push(Self::completed_marker(stream_id, call_id, &metadata)?);
+                    }
+
+                    match self
+                        .persist_and_project(stream_id, serialized, expected_version)
+                        .await
+                    {
+                        Ok((final_version, versioned)) => {
+                            self.broadcast(&versioned).await?;
+                            run.domain_events_total += events.len();
+                            run.carried_version = Some(final_version);
+                            return Ok(CycleOutcome::Completed {
+                                version: final_version,
+                            });
+                        },
+                        Err(HandlerError::Persist(EventStoreError::VersionConflict {
+                            actual,
+                            ..
+                        })) if attempts < self.max_retries => {
+                            attempts += 1;
+                            run.carried_version = Some(actual);
+                            current_input = prepared_input;
+                        },
+                        Err(e) => return Err(e),
+                    }
+                },
+
+                BusinessResult::Continue { events, calls } => {
+                    if calls.is_empty() && run.outstanding.is_empty() {
+                        return Err(HandlerError::SagaStuck);
+                    }
+
+                    let new_dispatched_total = run.dispatched_total + calls.len() as u64;
+                    if new_dispatched_total > u64::from(self.max_total_calls) {
+                        return Err(HandlerError::TotalCallsExceeded {
+                            max_total_calls: self.max_total_calls,
+                        });
+                    }
+
+                    let metadata = Self::stamped_metadata(metadata_context, &ctx);
+                    let mut serialized = Self::serialize_events_with(&events, &metadata)?;
+                    Self::reject_reserved_type_names(&serialized)?;
+                    if let Some(call_id) = completed {
+                        serialized.push(Self::completed_marker(stream_id, call_id, &metadata)?);
+                    }
+                    for call in &calls {
+                        serialized.push(Self::dispatched_marker(stream_id, call, &metadata)?);
+                    }
+
+                    match self
+                        .persist_and_project(stream_id, serialized, expected_version)
+                        .await
+                    {
+                        Ok((final_version, versioned)) => {
+                            self.broadcast(&versioned).await?;
+                            run.domain_events_total += events.len();
+                            run.dispatched_total = new_dispatched_total;
+                            run.carried_version = Some(final_version);
+
+                            // The dispatched markers are the LAST `calls.len()`
+                            // events of the append, so their (version-derived)
+                            // IDs count back from the final version.
+                            let base = final_version.as_u64() - calls.len() as u64 + 1;
+                            let identified = calls
+                                .into_iter()
+                                .enumerate()
+                                .map(|(i, call)| (CallId::new(base + i as u64), call))
+                                .collect();
+                            return Ok(CycleOutcome::Dispatched { calls: identified });
+                        },
+                        Err(HandlerError::Persist(EventStoreError::VersionConflict {
+                            actual,
+                            ..
+                        })) if attempts < self.max_retries => {
+                            attempts += 1;
+                            run.carried_version = Some(actual);
+                            current_input = prepared_input;
+                        },
+                        Err(e) => return Err(e),
+                    }
+                },
+            }
+        }
+    }
+
+    /// Reject domain events whose type names invade the reserved `$`
+    /// namespace. Enforced only on the durable path so the batch path stays
+    /// byte-for-byte unchanged.
+    fn reject_reserved_type_names(
+        events: &[SerializedEvent],
+    ) -> Result<(), HandlerError<T::Error>> {
+        for event in events {
+            if is_framework_event_type(&event.event_type) {
+                return Err(HandlerError::Serialization(SerializationError::Encode(
+                    format!(
+                        "domain event type '{}' uses the reserved '$' framework prefix",
+                        event.event_type
+                    ),
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Build a `$saga.call_completed` marker event.
+    fn completed_marker(
+        stream_id: &StreamId,
+        call_id: CallId,
+        metadata: &EventMetadata,
+    ) -> Result<SerializedEvent, HandlerError<T::Error>> {
+        let marker = CallCompleted {
+            stream_id: stream_id.as_str().to_string(),
+            call_id,
+        };
+        let payload = bincode::serialize(&marker).map_err(|e| {
+            HandlerError::Serialization(SerializationError::Encode(format!(
+                "{CALL_COMPLETED_EVENT_TYPE}: {e}"
+            )))
+        })?;
+        Ok(SerializedEvent {
+            event_type: CALL_COMPLETED_EVENT_TYPE.to_string(),
+            payload,
+            metadata: Some(metadata.clone()),
+            version: None,
+        })
+    }
+
+    /// Build a `$saga.call_dispatched` marker event carrying the serialized
+    /// call for re-dispatch on resume.
+    fn dispatched_marker(
+        stream_id: &StreamId,
+        call: &T::Call,
+        metadata: &EventMetadata,
+    ) -> Result<SerializedEvent, HandlerError<T::Error>> {
+        let call_bytes = bincode::serialize(call).map_err(|e| {
+            HandlerError::Serialization(SerializationError::Encode(format!(
+                "{CALL_DISPATCHED_EVENT_TYPE}: call payload: {e}"
+            )))
+        })?;
+        let marker = CallDispatched {
+            stream_id: stream_id.as_str().to_string(),
+            call: call_bytes,
+        };
+        let payload = bincode::serialize(&marker).map_err(|e| {
+            HandlerError::Serialization(SerializationError::Encode(format!(
+                "{CALL_DISPATCHED_EVENT_TYPE}: {e}"
+            )))
+        })?;
+        Ok(SerializedEvent {
+            event_type: CALL_DISPATCHED_EVENT_TYPE.to_string(),
+            payload,
+            metadata: Some(metadata.clone()),
+            version: None,
+        })
+    }
 }
 
 #[cfg(test)]
