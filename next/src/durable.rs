@@ -31,9 +31,9 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::{SerializationError, SerializedEvent, Version};
+use crate::{BusinessLogic, SerializationError, SerializedEvent, StreamId, Version};
 
 /// Event type of the framework marker persisted when a saga call is
 /// dispatched. The marker's **stream version is the call's [`CallId`]**.
@@ -120,6 +120,61 @@ pub struct CallCompleted {
 
     /// The completed call (the stream version of its dispatched marker).
     pub call_id: CallId,
+}
+
+/// Business logic that can run in durable mode.
+///
+/// Extends [`BusinessLogic`] with what per-call durability needs:
+///
+/// - **Serializable calls** (`Call: Serialize + DeserializeOwned`): the
+///   handler journals each dispatched call's payload in a
+///   `$saga.call_dispatched` marker so recovery can re-dispatch it without
+///   re-running business logic.
+/// - **A stable logic tag** ([`LOGIC_TAG`](Self::LOGIC_TAG)): recovery
+///   sweeps filter the saga registry by this tag so a stream journaled by
+///   one saga type is never fed to another type's handler (whose `Call`
+///   deserialization would read garbage).
+/// - **Crash-safe feedback construction**
+///   ([`completion_input`](Self::completion_input)): after a restart there
+///   is no prior input to thread a correlation key from, so the feedback
+///   input for a completion must be constructible from the stream ID alone.
+///
+/// # Durable feedback is uniform
+///
+/// Durable mode **never** calls
+/// [`feedback_input`](BusinessLogic::feedback_input) /
+/// [`feedback_input_from`](BusinessLogic::feedback_input_from). Every
+/// completion — in a live run and after a resume alike — is delivered
+/// through [`completion_input`](Self::completion_input), so in-run and
+/// post-resume behavior are identical by construction.
+pub trait DurableBusinessLogic: BusinessLogic
+where
+    Self::Call: Serialize + DeserializeOwned,
+{
+    /// Stable identifier for this saga type.
+    ///
+    /// Persisted in the saga registry (keyed per journal row) and used by
+    /// recovery sweeps to select only streams this logic can decode. Like
+    /// event type names, it must never change once instances exist in
+    /// production.
+    const LOGIC_TAG: &'static str;
+
+    /// Build the feedback input for one completed call.
+    ///
+    /// Called once per completion with the saga's stream ID, the completed
+    /// call's ID, and its result. The saga's stream naming is defined by
+    /// [`stream_id`](BusinessLogic::stream_id), so extracting the typed
+    /// correlation key (e.g. a saga UUID) from `stream_id` is application
+    /// knowledge the implementation already has.
+    ///
+    /// The returned input flows through the normal
+    /// `QueryFetcher` fetch, which supplies the saga's current state from
+    /// its projection — exactly as for any other input.
+    fn completion_input(
+        stream_id: &StreamId,
+        call_id: CallId,
+        result: Self::CallResult,
+    ) -> Self::Input;
 }
 
 /// The call journal folded out of a saga stream.
@@ -350,5 +405,80 @@ mod tests {
         assert!(is_framework_event_type(CALL_COMPLETED_EVENT_TYPE));
         assert!(is_framework_event_type("$anything"));
         assert!(!is_framework_event_type("OrderPlaced"));
+    }
+
+    // ── rebuild_state_from_serialized skips framework markers ──
+
+    use crate::{BusinessResult, Clock};
+    use std::convert::Infallible;
+
+    #[derive(Clone, Serialize, Deserialize)]
+    enum MiniEv {
+        Bumped,
+    }
+
+    #[derive(Default)]
+    struct MiniState {
+        bumps: u32,
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("mini error")]
+    struct MiniErr;
+
+    struct MiniLogic;
+
+    impl BusinessLogic for MiniLogic {
+        type State = MiniState;
+        type Input = ();
+        type Event = MiniEv;
+        type Error = MiniErr;
+        type Call = Infallible;
+        type CallResult = Infallible;
+        type Response = ();
+
+        fn stream_id(_input: &()) -> StreamId {
+            StreamId::new("mini")
+        }
+
+        fn process(
+            &self,
+            _input: (),
+            _clock: &dyn Clock,
+        ) -> Result<BusinessResult<MiniEv, Infallible, ()>, MiniErr> {
+            Ok(BusinessResult::done_empty())
+        }
+
+        fn apply(&self, state: &mut MiniState, _event: &MiniEv) {
+            state.bumps += 1;
+        }
+
+        fn event_type_name(_event: &MiniEv) -> &'static str {
+            "Bumped"
+        }
+    }
+
+    #[test]
+    fn rebuild_state_skips_framework_markers() {
+        let bump = |version: u64| SerializedEvent {
+            event_type: "Bumped".to_string(),
+            #[allow(clippy::unwrap_used)]
+            payload: bincode::serialize(&MiniEv::Bumped).unwrap(),
+            metadata: None,
+            version: Some(Version::new(version)),
+        };
+
+        // Domain events interleaved with journal markers, as a durable saga
+        // stream really looks.
+        let events = vec![
+            bump(1),
+            dispatched_event("mini", 2, b"call"),
+            completed_event("mini", 3, 2),
+            bump(4),
+        ];
+
+        #[allow(clippy::unwrap_used)]
+        let state = MiniLogic.rebuild_state_from_serialized(&events).unwrap();
+        assert_eq!(state.bumps, 2, "markers must not reach apply()");
     }
 }

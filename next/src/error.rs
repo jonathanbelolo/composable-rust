@@ -138,6 +138,49 @@ pub enum HandlerError<E: std::error::Error> {
         /// The maximum iterations that were allowed
         max_iterations: u32,
     },
+
+    /// Durable saga returned `Done` while calls were still outstanding
+    ///
+    /// Nothing was persisted: persisting `Done` would strand the
+    /// outstanding journal entries and make recovery re-drive a saga that
+    /// believes it is finished. A durable saga must consume every
+    /// dispatched call's completion before returning `Done`.
+    #[error("saga returned Done with {outstanding} outstanding call(s)")]
+    DoneWithOutstandingCalls {
+        /// Number of dispatched-but-uncompleted calls at the time of the error
+        outstanding: usize,
+    },
+
+    /// Durable saga can never be woken again
+    ///
+    /// The saga returned `Continue` with no new calls while no calls were
+    /// outstanding — no completion will ever arrive, so the loop would
+    /// wait forever. Nothing was persisted. A saga that wants to park at a
+    /// human-review gate must return `Done` instead.
+    #[error("saga returned Continue with no calls and none outstanding; it can never be woken")]
+    SagaStuck,
+
+    /// Durable saga returned `Respond` in a feedback cycle
+    ///
+    /// A `Respond` persists nothing, so the completion that triggered the
+    /// cycle could not be journaled and the call would silently re-run
+    /// after a restart. Queries are only legal as the *initial* input of a
+    /// durable run.
+    #[error("saga returned Respond in a feedback cycle; the completion cannot be journaled")]
+    RespondInFeedbackCycle,
+
+    /// Durable saga exceeded the maximum total dispatched calls
+    ///
+    /// This is durable mode's runaway guard (the analogue of
+    /// [`SagaIterationsExceeded`](Self::SagaIterationsExceeded)): it counts
+    /// **dispatched calls over the saga instance's lifetime** (resume seeds
+    /// the counter from the journal), because completion cycles are bounded
+    /// by dispatches and dispatches are the variable that can run away.
+    #[error("saga exceeded maximum total calls ({max_total_calls})")]
+    TotalCallsExceeded {
+        /// The configured cap on lifetime dispatched calls
+        max_total_calls: u32,
+    },
 }
 
 impl<E: std::error::Error> HandlerError<E> {

@@ -83,6 +83,50 @@ pub trait CallExecutor<C, R>: Send + Sync {
     fn execute(&self, calls: Vec<C>) -> impl Future<Output = Vec<R>> + Send;
 }
 
+/// Trait for executing a single saga call to completion
+///
+/// The durable saga loop (`Handler::handle_durable`) dispatches each call
+/// individually and consumes completions **as they land**, so it needs a
+/// single-call execution primitive instead of [`CallExecutor`]'s
+/// batch-in/batch-out shape. The handler owns the unordered-completion
+/// machinery; implementations stay trivial.
+///
+/// # Infallibility
+///
+/// `execute_one` is infallible at the type level: a failed call is an `R`
+/// variant the saga handles in `process` (retry/backoff policy is
+/// application-side). Implementations should convert transport errors into
+/// a failure variant of `R` rather than panicking.
+///
+/// # Relationship to [`CallExecutor`]
+///
+/// The durable handler entry points require both traits (the `Handler`
+/// struct itself is bounded on [`CallExecutor`]). Implementing the batch
+/// method on top of `execute_one` is a one-liner:
+///
+/// ```rust,ignore
+/// impl CallExecutor<MyCall, MyResult> for MyExecutor {
+///     async fn execute(&self, calls: Vec<MyCall>) -> Vec<MyResult> {
+///         futures::future::join_all(calls.into_iter().map(|c| self.execute_one(c))).await
+///     }
+/// }
+/// ```
+pub trait UnitCallExecutor<C, R>: Send + Sync {
+    /// Execute a single call to completion.
+    ///
+    /// The returned future is polled concurrently with all other in-flight
+    /// calls of the saga run; it may be dropped before completion when the
+    /// run is cancelled (the call is then re-dispatched on resume).
+    fn execute_one(&self, call: C) -> impl Future<Output = R> + Send;
+}
+
+impl UnitCallExecutor<Infallible, Infallible> for NoOpCallExecutor {
+    /// Never invoked: an `Infallible` call cannot be constructed.
+    async fn execute_one(&self, call: Infallible) -> Infallible {
+        match call {}
+    }
+}
+
 /// No-op executor for aggregates (which never make calls)
 ///
 /// This is the canonical executor for aggregates. Since aggregates use

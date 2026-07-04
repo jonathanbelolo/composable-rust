@@ -332,18 +332,25 @@ pub trait BusinessLogic: Send + Sync + 'static {
     /// [`Event`](Self::Event)s and folding them through [`apply`](Self::apply).
     ///
     /// Replay hard-fails on a decode error rather than silently dropping events
-    /// (which would yield a wrong `State`).
+    /// (which would yield a wrong `State`) — with one principled exception:
+    /// events in the reserved framework namespace (types beginning with `$`,
+    /// e.g. the durable-saga call journal markers) are skipped by their
+    /// **explicit reserved prefix**, not by decode-failure tolerance. They are
+    /// not domain events and never reach [`apply`](Self::apply).
     ///
     /// # Errors
     ///
     /// Returns [`SerializationError::Decode`] (tagged with the event type) if any
-    /// payload fails to decode.
+    /// domain event payload fails to decode.
     fn rebuild_state_from_serialized(
         &self,
         events: &[SerializedEvent],
     ) -> Result<Self::State, SerializationError> {
         let mut state = Self::State::default();
         for event in events {
+            if crate::durable::is_framework_event_type(&event.event_type) {
+                continue;
+            }
             let decoded: Self::Event = bincode::deserialize(&event.payload)
                 .map_err(|e| SerializationError::Decode(format!("{}: {e}", event.event_type)))?;
             self.apply(&mut state, &decoded);
@@ -361,6 +368,13 @@ pub trait BusinessLogic: Send + Sync + 'static {
     /// These names are persisted in the event store. Once an event type name
     /// is used in production, it should never change. For schema evolution,
     /// create new event types (e.g., `EventCreatedV2`) rather than renaming.
+    ///
+    /// # Reserved namespace
+    ///
+    /// Names must **not** begin with `$` — that prefix is reserved for
+    /// framework events (see [`is_framework_event_type`](crate::is_framework_event_type),
+    /// e.g. the durable-saga call journal markers). The durable persist path
+    /// rejects `$`-prefixed domain type names at runtime.
     fn event_type_name(event: &Self::Event) -> &'static str;
 
     /// Process input with subject/correlation context.
