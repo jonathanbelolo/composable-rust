@@ -15,16 +15,12 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
-use chrono::Utc;
-use composable_rust_next::testing::{
-    InMemoryAtomicPersist, InMemoryProjector, RecordingUnitExecutor, TestEnvironment,
-};
+use composable_rust_next::testing::{InMemoryAtomicPersist, InMemoryProjector};
 use composable_rust_next::{
     BusinessLogic, BusinessResult, CALL_COMPLETED_EVENT_TYPE, CALL_DISPATCHED_EVENT_TYPE,
     CallCompleted, CallId, CancellationToken, Clock, DurableBusinessLogic, DurableOutcome,
-    EventStore, FetchResult, FixedClock, Handler, HandlerBuilder, HandlerError, NoOpQueryFetcher,
+    EventStore, FetchResult, Handler, HandlerBuilder, HandlerError, NoOpQueryFetcher,
     ProjectionQueries, QueryFetcher, SerializedEvent, StreamId, Subject, SubjectId, Version,
     scan_journal,
 };
@@ -34,188 +30,11 @@ use tokio::sync::oneshot;
 // Shared fixtures
 // ═══════════════════════════════════════════════════════════════════
 
-#[derive(Clone)]
-#[allow(dead_code)] // `call_id` is carried for realism; these sagas key off `result`
-enum WIn {
-    Start {
-        id: u64,
-    },
-    Completion {
-        id: u64,
-        call_id: CallId,
-        result: u64,
-    },
-}
-
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-enum WEv {
-    Started(u64),
-    Progress(u64),
-    Finished(u64),
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("saga error")]
-struct WErr;
-
-#[derive(Default)]
-struct WState;
-
-fn w_event_type_name(event: &WEv) -> &'static str {
-    match event {
-        WEv::Started(_) => "WStarted",
-        WEv::Progress(_) => "WProgress",
-        WEv::Finished(_) => "WFinished",
-    }
-}
-
-fn w_stream_id(prefix: &str, input: &WIn) -> StreamId {
-    let id = match input {
-        WIn::Start { id } | WIn::Completion { id, .. } => *id,
-    };
-    StreamId::new(format!("{prefix}-{id}"))
-}
-
-fn w_completion_input(prefix: &str, stream_id: &StreamId, call_id: CallId, result: u64) -> WIn {
-    let id = stream_id
-        .as_str()
-        .strip_prefix(prefix)
-        .and_then(|s| s.strip_prefix('-'))
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    WIn::Completion {
-        id,
-        call_id,
-        result,
-    }
-}
-
-/// Saga that keeps `window` calls in flight until `total` calls completed.
-///
-/// Internal atomics stand in for projection state (tests run under
-/// `NoOpQueryFetcher`); no test using this saga triggers version-conflict
-/// retries, which would re-run `process` and double-count.
-struct WindowSaga {
-    window: u64,
-    total: u64,
-    next_call: Arc<AtomicU64>,
-    completions: Arc<AtomicU64>,
-}
-
-impl WindowSaga {
-    fn new(window: u64, total: u64) -> Self {
-        Self {
-            window,
-            total,
-            next_call: Arc::new(AtomicU64::new(1)),
-            completions: Arc::new(AtomicU64::new(0)),
-        }
-    }
-}
-
-impl BusinessLogic for WindowSaga {
-    type State = WState;
-    type Input = WIn;
-    type Event = WEv;
-    type Error = WErr;
-    type Call = u64;
-    type CallResult = u64;
-    type Response = ();
-
-    fn stream_id(input: &WIn) -> StreamId {
-        w_stream_id("wsaga", input)
-    }
-
-    fn process(
-        &self,
-        input: WIn,
-        _clock: &dyn Clock,
-    ) -> Result<BusinessResult<WEv, u64, ()>, WErr> {
-        match input {
-            WIn::Start { id } => {
-                let width = self.window.min(self.total);
-                let calls: Vec<u64> = (1..=width).collect();
-                self.next_call.store(width + 1, Ordering::SeqCst);
-                Ok(BusinessResult::Continue {
-                    events: vec![WEv::Started(id)],
-                    calls,
-                })
-            },
-            WIn::Completion { id, result, .. } => {
-                let done = self.completions.fetch_add(1, Ordering::SeqCst) + 1;
-                if done == self.total {
-                    return Ok(BusinessResult::Done(vec![
-                        WEv::Progress(result),
-                        WEv::Finished(id),
-                    ]));
-                }
-                let next = self.next_call.load(Ordering::SeqCst);
-                let calls = if next <= self.total {
-                    self.next_call.store(next + 1, Ordering::SeqCst);
-                    vec![next]
-                } else {
-                    Vec::new()
-                };
-                Ok(BusinessResult::Continue {
-                    events: vec![WEv::Progress(result)],
-                    calls,
-                })
-            },
-        }
-    }
-
-    fn apply(&self, _state: &mut WState, _event: &WEv) {}
-
-    fn event_type_name(event: &WEv) -> &'static str {
-        w_event_type_name(event)
-    }
-}
-
-impl DurableBusinessLogic for WindowSaga {
-    const LOGIC_TAG: &'static str = "wsaga";
-
-    fn completion_input(stream_id: &StreamId, call_id: CallId, result: u64) -> WIn {
-        w_completion_input("wsaga", stream_id, call_id, result)
-    }
-}
-
-type Gates = Arc<Mutex<HashMap<u64, oneshot::Receiver<u64>>>>;
-
-/// Executor whose listed calls complete only when their oneshot gate fires;
-/// unlisted calls echo immediately.
-fn gated_executor(gates: Gates) -> RecordingUnitExecutor<u64, u64> {
-    RecordingUnitExecutor::new(move |call: u64| {
-        let gate = gates.lock().unwrap().remove(&call);
-        async move {
-            match gate {
-                Some(rx) => rx.await.unwrap_or(call),
-                None => call,
-            }
-        }
-    })
-}
-
-fn echo_executor() -> RecordingUnitExecutor<u64, u64> {
-    RecordingUnitExecutor::new(|call: u64| async move { call })
-}
-
-fn test_env() -> TestEnvironment<FixedClock> {
-    TestEnvironment::new(FixedClock::new(Utc::now()))
-}
-
-fn count_type(events: &[SerializedEvent], event_type: &str) -> usize {
-    events.iter().filter(|e| e.event_type == event_type).count()
-}
-
-async fn wait_for(what: &str, cond: impl Fn() -> bool) {
-    let deadline = tokio::time::timeout(Duration::from_secs(5), async {
-        while !cond() {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await;
-    assert!(deadline.is_ok(), "timeout waiting for: {what}");
-}
+mod common;
+use common::{
+    Gates, WErr, WEv, WIn, WState, WindowSaga, count_type, echo_executor, gated_executor, test_env,
+    w_completion_input, w_event_type_name, w_stream_id, wait_for,
+};
 
 // ═══════════════════════════════════════════════════════════════════
 // Acceptance scenario 2: straggler independence
