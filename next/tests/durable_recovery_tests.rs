@@ -25,7 +25,7 @@ use composable_rust_next::{
     BusinessLogic, BusinessResult, CALL_COMPLETED_EVENT_TYPE, CALL_DISPATCHED_EVENT_TYPE,
     CallDispatched, CallId, CancellationToken, Clock, DurableBusinessLogic, DurableOutcome,
     EventStore, Handler, HandlerBuilder, HandlerError, NoOpQueryFetcher, SerializedEvent, StreamId,
-    scan_journal,
+    Subject, SubjectId, scan_journal,
 };
 use tokio::sync::oneshot;
 
@@ -291,6 +291,64 @@ async fn parked_saga_is_left_alone_by_resume_and_reenters_normally() {
         .unwrap();
     assert!(matches!(outcome, DurableOutcome::Completed { .. }));
     assert!(store.events_for_stream("gate-2").len() > parked_event_count);
+}
+
+#[tokio::test]
+async fn resume_recovers_origin_subject_attribution() {
+    // Base env cloned BEFORE the subject fixture: same shared store, no
+    // subject — the resuming process runs as System.
+    let base = test_env();
+    let resume_env = base.clone();
+    let store = base.event_store().clone();
+    let start_env = base.with_subject(Subject::Authenticated {
+        id: SubjectId::new("user-9"),
+        attributes: HashMap::new(),
+    });
+
+    // user-9 starts the run; a pre-cancelled token journals the dispatch
+    // and suspends without executing anything.
+    let (saga, completed_state) = ResumableSaga::new(1);
+    let starter = Handler::new(saga, echo_executor(), NoOpQueryFetcher, start_env);
+    let pre_cancelled = CancellationToken::new();
+    pre_cancelled.cancel();
+    let outcome = starter
+        .handle_durable(WIn::Start { id: 6 }, pre_cancelled)
+        .await
+        .unwrap();
+    assert!(matches!(outcome, DurableOutcome::Suspended { .. }));
+    let events_before_resume = store.events_for_stream("rsaga-6").len();
+
+    // Resume as System: post-resume events must stay attributed to the
+    // initiating user (origin recovered from the stream) while author_id
+    // reflects the resuming subject (None for System).
+    let resumer = Handler::new(
+        ResumableSaga::with_state(1, completed_state),
+        echo_executor(),
+        NoOpQueryFetcher,
+        resume_env,
+    );
+    let outcome = resumer
+        .resume(&StreamId::new("rsaga-6"), CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(matches!(outcome, DurableOutcome::Completed { .. }));
+
+    let events = store.events_for_stream("rsaga-6");
+    let post_resume = &events[events_before_resume..];
+    assert!(!post_resume.is_empty(), "resume must have appended events");
+    for event in post_resume {
+        let metadata = event.metadata.as_ref().expect("metadata stamped");
+        assert_eq!(
+            metadata.origin_subject_id,
+            Some(SubjectId::new("user-9")),
+            "post-resume events must keep the initiator's origin ({})",
+            event.event_type
+        );
+        assert_eq!(
+            metadata.author_id, None,
+            "System-authored: author_id reflects the resuming subject"
+        );
+    }
 }
 
 #[tokio::test]

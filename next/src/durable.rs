@@ -593,10 +593,16 @@ where
             // The stream's true version; feedback cycles must not trust a
             // possibly-marker-stale fetcher (see RunState::carried_version).
             carried_version: events.last().and_then(|e| e.version),
-            // The initiating subject is not recoverable here; resumed cycles
-            // run without an origin. (Reading it back from the stream's
-            // first event metadata is deliberately deferred.)
-            origin: None,
+            // Recover the run initiator from the stream: durable mode stamps
+            // origin_subject_id on every event from the initial cycle, so
+            // the first stamped origin IS the initiating subject. Post-
+            // resume events stay attributed to them, while author_id
+            // reflects whoever runs the resume (typically System).
+            origin: events.iter().find_map(|e| {
+                e.metadata
+                    .as_ref()
+                    .and_then(|m| m.origin_subject_id.clone())
+            }),
         };
 
         self.run_completion_loop(stream_id, initial_calls, run, &cancel)
