@@ -28,6 +28,24 @@
 //! so projections and bus subscribers observe saga progress as ordinary
 //! events. Projectors that decode domain events must skip framework types
 //! (check [`is_framework_event_type`]).
+//!
+//! # Invariants durable sagas must uphold
+//!
+//! - **Stream-ID stability**: every input of one saga instance — the
+//!   initial command and every [`completion_input`](DurableBusinessLogic::completion_input)
+//!   — must map to the same [`BusinessLogic::stream_id`](crate::BusinessLogic::stream_id).
+//!   The loop derives the stream once, at entry.
+//! - **Fetchers preserve input fields**: on a version-conflict retry the
+//!   prepared input is re-fetched; a `QueryFetcher` that drops or rewrites
+//!   input fields while populating `fetched` would corrupt the retried
+//!   cycle (this matches the batch path's existing contract).
+//! - **Call failures are `CallResult` variants**, never `process()` errors:
+//!   a `process()` error on a feedback cycle deliberately leaves the
+//!   completion un-journaled, so the call re-runs on every resume.
+//! - **Broadcast is best-effort after persist** (as in batch mode): a
+//!   broadcast failure kills the run crash-equivalently; the journal stays
+//!   consistent and `resume` recovers, but does **not** re-broadcast
+//!   already-persisted events.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
