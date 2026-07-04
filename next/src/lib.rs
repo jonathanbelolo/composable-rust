@@ -78,6 +78,7 @@
 
 mod cancel;
 mod clock;
+pub mod conformance;
 mod durable;
 mod error;
 mod executor;

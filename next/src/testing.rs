@@ -292,6 +292,14 @@ impl EventStore for InMemoryEventStore {
         expected_version: Option<Version>,
         events: Vec<SerializedEvent>,
     ) -> Result<Version, EventStoreError> {
+        // Reject empty batches, matching PostgresEventStore (pinned by the
+        // conformance suite).
+        if events.is_empty() {
+            return Err(EventStoreError::Serialization(
+                "Cannot append empty event list".to_string(),
+            ));
+        }
+
         let mut streams = self
             .streams
             .write()
