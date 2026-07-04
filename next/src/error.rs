@@ -7,6 +7,7 @@ use crate::{EventBusError, EventStoreError};
 /// Projections update read models (query-side databases) from events.
 /// These errors indicate issues with that process.
 #[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
 pub enum ProjectionError {
     /// Database error during projection
     #[error("database error: {0}")]
@@ -32,6 +33,7 @@ pub enum ProjectionError {
 /// so the `Handler` can map each to the right [`HandlerError`] and preserve
 /// optimistic-concurrency retries.
 #[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
 pub enum AtomicError {
     /// The event-store append failed; carries `VersionConflict` for retry.
     #[error("append failed: {0}")]
@@ -76,6 +78,7 @@ pub enum AtomicError {
 /// }
 /// ```
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum HandlerError<E: std::error::Error> {
     /// Business logic error (validation, invalid state transition)
     ///
@@ -220,6 +223,7 @@ impl<E: std::error::Error> HandlerError<E> {
 
 /// Serialization errors for event encoding/decoding
 #[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
 pub enum SerializationError {
     /// Failed to encode an event
     #[error("failed to encode event: {0}")]

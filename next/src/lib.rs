@@ -693,6 +693,7 @@ pub struct EventMetadata {
 
 /// Error from event store operations
 #[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
 pub enum EventStoreError {
     /// Version conflict during append
     #[error("version conflict: expected {expected:?}, found {actual:?}")]
@@ -718,6 +719,7 @@ pub enum EventStoreError {
 
 /// Error from event bus operations
 #[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
 pub enum EventBusError {
     /// Connection error
     #[error("connection error: {0}")]

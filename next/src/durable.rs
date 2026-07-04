@@ -294,6 +294,7 @@ pub fn scan_journal(events: &[SerializedEvent]) -> Result<JournalState, Serializ
 /// Deliberately distinct from [`HandleResult`](crate::HandleResult): durable
 /// runs have outcomes the batch path cannot produce.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum DurableOutcome<R = ()> {
     /// The saga returned `Done` with zero outstanding calls.
     Completed {
