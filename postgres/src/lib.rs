@@ -527,32 +527,23 @@ impl EventStore for PostgresEventStore {
                     // PostgreSQL unique constraint violation error code is 23505
                     if let Some(db_err) = e.as_database_error() {
                         if db_err.code().as_deref() == Some("23505") {
-                            // Concurrent modification detected via PRIMARY KEY constraint
-                            // Re-query to get the actual current version
-                            let actual_version: Option<i64> = sqlx::query_scalar(
-                                "SELECT MAX(version) FROM events WHERE stream_id = $1",
-                            )
-                            .bind(stream_id.as_str())
-                            .fetch_optional(&mut *tx)
-                            .await
-                            .map_err(|e| EventStoreError::DatabaseError(e.to_string()))?;
-
-                            let actual = match actual_version {
-                                Some(v) => Version::new(u64::try_from(v).unwrap_or(0)),
-                                None => Version::new(0),
-                            };
-
+                            // Concurrent modification detected via the PRIMARY KEY
+                            // constraint. Do NOT re-query here: PostgreSQL aborts the
+                            // transaction after any statement error (25P02), so a
+                            // follow-up SELECT on this connection would itself fail
+                            // and mask the conflict as a DatabaseError. The version we
+                            // tried to insert provably exists — a truthful `actual`.
                             tracing::warn!(
                                 stream_id = %stream_id,
                                 expected = ?expected_version,
-                                actual = ?actual,
+                                actual = ?next_version,
                                 "Concurrent modification detected via unique constraint"
                             );
 
                             return Err(EventStoreError::ConcurrencyConflict {
                                 stream_id: stream_id.clone(),
                                 expected: expected_version.unwrap_or(Version::new(0)),
-                                actual,
+                                actual: next_version,
                             });
                         }
                     }
