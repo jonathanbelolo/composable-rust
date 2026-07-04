@@ -104,7 +104,12 @@ async fn all_projection_tests() {
         sqlx::raw_sql(sql).execute(&pool).await.expect("migration");
     }
 
-    let now = Utc::now();
+    // Truncate to microseconds: Postgres TIMESTAMPTZ stores µs, so a
+    // nanosecond-resolution `now` (Linux) would fail round-trip equality.
+    let now = {
+        let raw = Utc::now();
+        raw - Duration::nanoseconds(i64::from(raw.timestamp_subsec_nanos() % 1_000))
+    };
 
     // ═══════════════════════════════════════════════════════════════════════
     // EventProjector - All Event Types
