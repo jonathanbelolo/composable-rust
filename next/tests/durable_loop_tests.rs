@@ -257,6 +257,273 @@ async fn pre_cancelled_token_suspends_before_dispatch() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// Drain-mode cancellation
+// ═══════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn drain_defers_top_ups_and_suspends_when_in_flight_completes() {
+    let env = test_env();
+    let env_for_resume = env.clone(); // clones share the event store
+    let store = env.event_store().clone();
+
+    let (tx1, rx1) = oneshot::channel();
+    let (tx2, rx2) = oneshot::channel();
+    let (_tx3, rx3) = oneshot::channel();
+    let (_tx4, rx4) = oneshot::channel();
+    let gates: Gates = Arc::new(Mutex::new(HashMap::from([
+        (1, rx1),
+        (2, rx2),
+        (3, rx3),
+        (4, rx4),
+    ])));
+    let executor = gated_executor(gates);
+    let executor_handle = executor.clone();
+
+    let cancel = CancellationToken::new();
+    let handler = Arc::new(Handler::new(
+        WindowSaga::new(2, 4),
+        executor,
+        NoOpQueryFetcher,
+        env,
+    ));
+    let h = Arc::clone(&handler);
+    let token = cancel.clone();
+    let run = tokio::spawn(async move { h.handle_durable(WIn::Start { id: 11 }, token).await });
+
+    wait_for("initial window dispatched", || {
+        executor_handle.dispatch_count() == 2
+    })
+    .await;
+
+    // Drain, then let the two in-flight calls finish.
+    cancel.drain();
+    tx1.send(101).unwrap();
+    tx2.send(102).unwrap();
+
+    let outcome = run.await.unwrap().unwrap();
+    let DurableOutcome::Suspended { outstanding } = outcome else {
+        panic!("expected Suspended after drain, got {outcome:?}");
+    };
+
+    // Both in-flight completions journaled their cycles; the two top-ups
+    // (calls 3 and 4) were journaled but never started.
+    assert_eq!(
+        executor_handle.dispatch_count(),
+        2,
+        "no call may start after drain"
+    );
+    let events = store.events_for_stream("wsaga-11");
+    assert_eq!(count_type(&events, CALL_COMPLETED_EVENT_TYPE), 2);
+    assert_eq!(count_type(&events, CALL_DISPATCHED_EVENT_TYPE), 4);
+    let journal = scan_journal(&events).unwrap();
+    assert_eq!(journal.outstanding.len(), 2);
+    assert_eq!(
+        outstanding,
+        journal.outstanding.keys().copied().collect::<Vec<_>>(),
+        "Suspended must report exactly the journal's outstanding set"
+    );
+
+    // Resume runs the deferred calls. (ResumableSaga can decode the same
+    // u64 calls; seed its completion state from the journal so it knows
+    // 2 of 4 are already done.)
+    let completed_state: std::collections::HashSet<CallId> = events
+        .iter()
+        .filter(|e| e.event_type == CALL_DISPATCHED_EVENT_TYPE)
+        .map(|e| CallId::from_version(e.version.unwrap()))
+        .filter(|id| !journal.outstanding.contains_key(id))
+        .collect();
+    let resumer = Handler::new(
+        ResumableCountSaga {
+            total: 4,
+            completed: Arc::new(Mutex::new(completed_state)),
+        },
+        echo_executor(),
+        NoOpQueryFetcher,
+        env_for_resume,
+    );
+    let outcome = resumer
+        .resume(&StreamId::new("wsaga-11"), CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(
+        matches!(outcome, DurableOutcome::Completed { .. }),
+        "resume must run the drained top-ups to completion, got {outcome:?}"
+    );
+    let journal = scan_journal(&store.events_for_stream("wsaga-11")).unwrap();
+    assert!(journal.outstanding.is_empty());
+}
+
+#[tokio::test]
+async fn pre_drained_token_suspends_before_dispatch() {
+    let env = test_env();
+    let executor = echo_executor();
+    let executor_handle = executor.clone();
+
+    let cancel = CancellationToken::new();
+    cancel.drain();
+
+    let handler = Handler::new(WindowSaga::new(2, 4), executor, NoOpQueryFetcher, env);
+    let outcome = handler
+        .handle_durable(WIn::Start { id: 12 }, cancel)
+        .await
+        .unwrap();
+
+    let DurableOutcome::Suspended { outstanding } = outcome else {
+        panic!("expected Suspended, got {outcome:?}");
+    };
+    assert_eq!(outstanding.len(), 2, "the initial window was journaled");
+    assert_eq!(
+        executor_handle.dispatch_count(),
+        0,
+        "no call may start under a pre-drained token"
+    );
+}
+
+#[tokio::test]
+async fn done_while_draining_completes() {
+    let env = test_env();
+
+    let (tx1, rx1) = oneshot::channel();
+    let (tx2, rx2) = oneshot::channel();
+    let gates: Gates = Arc::new(Mutex::new(HashMap::from([(1, rx1), (2, rx2)])));
+    let executor = gated_executor(gates);
+    let executor_handle = executor.clone();
+
+    let cancel = CancellationToken::new();
+    let handler = Arc::new(Handler::new(
+        ResumableCountSaga {
+            total: 2,
+            completed: Arc::new(Mutex::new(std::collections::HashSet::new())),
+        },
+        executor,
+        NoOpQueryFetcher,
+        env,
+    ));
+    let h = Arc::clone(&handler);
+    let token = cancel.clone();
+    let run = tokio::spawn(async move { h.handle_durable(WIn::Start { id: 13 }, token).await });
+
+    wait_for("window dispatched", || {
+        executor_handle.dispatch_count() == 2
+    })
+    .await;
+    cancel.drain();
+    tx1.send(101).unwrap();
+    tx2.send(102).unwrap();
+
+    let outcome = run.await.unwrap().unwrap();
+    assert!(
+        matches!(outcome, DurableOutcome::Completed { .. }),
+        "a saga that finishes while draining must complete, got {outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn drain_then_cancel_aborts_in_flight() {
+    let env = test_env();
+
+    let (_tx1, rx1) = oneshot::channel();
+    let (_tx2, rx2) = oneshot::channel();
+    let gates: Gates = Arc::new(Mutex::new(HashMap::from([(1, rx1), (2, rx2)])));
+    let executor = gated_executor(gates);
+    let executor_handle = executor.clone();
+
+    let cancel = CancellationToken::new();
+    let handler = Arc::new(Handler::new(
+        WindowSaga::new(2, 2),
+        executor,
+        NoOpQueryFetcher,
+        env,
+    ));
+    let h = Arc::clone(&handler);
+    let token = cancel.clone();
+    let run = tokio::spawn(async move { h.handle_durable(WIn::Start { id: 14 }, token).await });
+
+    wait_for("window dispatched", || {
+        executor_handle.dispatch_count() == 2
+    })
+    .await;
+    // Drain first (calls never complete), then escalate to abort.
+    cancel.drain();
+    cancel.cancel();
+
+    let outcome = run.await.unwrap().unwrap();
+    let DurableOutcome::Suspended { outstanding } = outcome else {
+        panic!("expected Suspended after abort, got {outcome:?}");
+    };
+    assert_eq!(
+        outstanding.len(),
+        2,
+        "both in-flight calls stay outstanding"
+    );
+}
+
+/// Resume-safe count-based saga usable across handler instances (its
+/// completion state lives in a shared handle standing in for a projection).
+/// Decodes the same `u64` calls the other fixtures journal.
+struct ResumableCountSaga {
+    total: u64,
+    completed: Arc<Mutex<std::collections::HashSet<CallId>>>,
+}
+
+impl BusinessLogic for ResumableCountSaga {
+    type State = WState;
+    type Input = WIn;
+    type Event = WEv;
+    type Error = WErr;
+    type Call = u64;
+    type CallResult = u64;
+    type Response = ();
+
+    fn stream_id(input: &WIn) -> StreamId {
+        w_stream_id("wsaga", input)
+    }
+
+    fn process(
+        &self,
+        input: WIn,
+        _clock: &dyn Clock,
+    ) -> Result<BusinessResult<WEv, u64, ()>, WErr> {
+        match input {
+            WIn::Start { id } => Ok(BusinessResult::Continue {
+                events: vec![WEv::Started(id)],
+                calls: (1..=self.total).collect(),
+            }),
+            WIn::Completion {
+                id,
+                call_id,
+                result,
+            } => {
+                let mut done = self.completed.lock().unwrap();
+                done.insert(call_id);
+                if done.len() as u64 == self.total {
+                    Ok(BusinessResult::Done(vec![WEv::Finished(id)]))
+                } else {
+                    Ok(BusinessResult::Continue {
+                        events: vec![WEv::Progress(result)],
+                        calls: Vec::new(),
+                    })
+                }
+            },
+        }
+    }
+
+    fn apply(&self, _state: &mut WState, _event: &WEv) {}
+
+    fn event_type_name(event: &WEv) -> &'static str {
+        w_event_type_name(event)
+    }
+}
+
+impl DurableBusinessLogic for ResumableCountSaga {
+    const LOGIC_TAG: &'static str = "wsaga";
+
+    fn completion_input(stream_id: &StreamId, call_id: CallId, result: u64) -> WIn {
+        w_completion_input("wsaga", stream_id, call_id, result)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // Durable-mode contract errors (all before persisting)
 // ═══════════════════════════════════════════════════════════════════
 

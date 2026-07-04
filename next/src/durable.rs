@@ -403,9 +403,13 @@ where
     ///   (lifetime dispatched calls), not `max_saga_iterations`.
     /// - Each cycle gets a fresh `max_retries` version-conflict budget (the
     ///   batch path shares one budget across the whole run).
-    /// - Cancellation via `cancel` suspends the run: in-flight calls are
-    ///   aborted and stay outstanding in the journal, so a later `resume`
-    ///   re-dispatches exactly them. Cancellation is observed between
+    /// - Cancellation via [`CancellationToken::cancel`] (abort) suspends the
+    ///   run: in-flight calls are dropped and stay outstanding in the
+    ///   journal, so a later `resume` re-dispatches exactly them.
+    ///   [`CancellationToken::drain`] is the graceful variant: no new calls
+    ///   start, in-flight ones complete and journal their cycles, then the
+    ///   run suspends (top-ups requested while draining are journaled but
+    ///   not started — resume runs them). Both are observed between
     ///   completion cycles (latency = the in-progress cycle).
     ///
     /// # Errors
@@ -597,6 +601,11 @@ where
     /// Drive the unordered-completion loop until the saga finishes, errs, or
     /// is cancelled. `initial_calls` are dispatched first (their journal
     /// markers are already persisted).
+    ///
+    /// Drain semantics need no dedicated select arm — the token is polled at
+    /// three decision points: loop entry (covers pre-drained tokens), every
+    /// top-up (journal the calls, don't start them), and the
+    /// in-flight-empty arm (suspend instead of erroring).
     async fn run_completion_loop(
         &self,
         stream_id: &StreamId,
@@ -608,9 +617,10 @@ where
             run.outstanding.insert(*id);
         }
 
-        // A pre-cancelled token suspends before any call starts; the
-        // dispatched markers are journaled, so resume re-dispatches them.
-        if cancel.is_cancelled() {
+        // A pre-cancelled OR pre-drained token suspends before any call
+        // starts (abort implies draining); the dispatched markers are
+        // journaled, so resume re-dispatches them.
+        if cancel.is_draining() {
             return Ok(DurableOutcome::Suspended {
                 outstanding: run.outstanding.iter().copied().collect(),
             });
@@ -626,8 +636,8 @@ where
                 biased;
 
                 () = cancel.cancelled() => {
-                    // Dropping `in_flight` aborts the calls; their journal
-                    // entries stay outstanding → resumable.
+                    // ABORT: dropping `in_flight` aborts the calls; their
+                    // journal entries stay outstanding → resumable.
                     return Ok(DurableOutcome::Suspended {
                         outstanding: run.outstanding.iter().copied().collect(),
                     });
@@ -638,9 +648,16 @@ where
                     // refutable arm pattern would silently disable the branch
                     // on None and park on cancelled() forever.
                     let Some((call_id, result)) = next else {
+                        if cancel.is_draining() {
+                            // DRAIN complete: everything in flight finished
+                            // and journaled; top-ups deferred to resume.
+                            return Ok(DurableOutcome::Suspended {
+                                outstanding: run.outstanding.iter().copied().collect(),
+                            });
+                        }
                         // Defensive: the loop invariant (every cycle either
                         // finishes the run or keeps calls in flight) makes
-                        // this unreachable.
+                        // this unreachable outside drain.
                         return Err(HandlerError::SagaStuck);
                     };
                     // Remove BEFORE the cycle so the Done-check counts only
@@ -659,9 +676,17 @@ where
                             });
                         },
                         CycleOutcome::Dispatched { calls } => {
+                            let draining = cancel.is_draining();
                             for (id, call) in calls {
                                 run.outstanding.insert(id);
-                                in_flight.push(dispatch_one(&self.call_executor, id, call));
+                                // DRAIN: the top-up's markers persisted in
+                                // this cycle's append (journal exact), but
+                                // the call is not started — resume runs it.
+                                if !draining {
+                                    in_flight.push(
+                                        dispatch_one(&self.call_executor, id, call),
+                                    );
+                                }
                             }
                         },
                         // durable_cycle rejects Respond on feedback cycles.
