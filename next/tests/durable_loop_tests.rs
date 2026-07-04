@@ -951,6 +951,59 @@ impl<P: ProjectionQueries> QueryFetcher<WIn, P> for FrozenVersionFetcher {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// Stuck-call watchdog
+// ═══════════════════════════════════════════════════════════════════
+
+#[tokio::test(start_paused = true)]
+async fn stuck_call_watchdog_fires_and_run_is_resumable() {
+    let env = test_env();
+    let env_for_resume = env.clone();
+    let store = env.event_store().clone();
+
+    // The single call never completes.
+    let (_tx1, rx1) = oneshot::channel();
+    let gates: Gates = Arc::new(Mutex::new(HashMap::from([(1, rx1)])));
+
+    let handler = HandlerBuilder::new(SingleCallSaga)
+        .call_executor(gated_executor(gates))
+        .query_fetcher(NoOpQueryFetcher)
+        .environment(env)
+        .max_call_duration(std::time::Duration::from_secs(5))
+        .build();
+
+    // Paused tokio time auto-advances when everything is idle: the gated
+    // call parks the loop, the watchdog deadline fires "5 seconds" later.
+    let err = handler
+        .handle_durable(WIn::Start { id: 21 }, CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, HandlerError::CallStuck { .. }),
+        "the watchdog must trip on the hung call, got {err:?}"
+    );
+
+    // Crash-equivalent: the call stays outstanding in the journal...
+    let journal = scan_journal(&store.events_for_stream("single-21")).unwrap();
+    assert_eq!(journal.outstanding.len(), 1);
+
+    // ...and resume with a healthy executor completes the saga.
+    let resumer = Handler::new(
+        SingleCallSaga,
+        echo_executor(),
+        NoOpQueryFetcher,
+        env_for_resume,
+    );
+    let outcome = resumer
+        .resume(&StreamId::new("single-21"), CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(
+        matches!(outcome, DurableOutcome::Completed { .. }),
+        "resume must re-dispatch and complete the stuck call, got {outcome:?}"
+    );
+}
+
 #[tokio::test]
 async fn stale_fetcher_version_does_not_livelock() {
     let env = test_env();

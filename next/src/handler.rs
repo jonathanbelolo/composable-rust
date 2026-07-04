@@ -208,6 +208,7 @@ where
     pub(crate) max_retries: u32,
     max_saga_iterations: u32,
     pub(crate) max_total_calls: u32,
+    pub(crate) max_call_duration: Option<std::time::Duration>,
 }
 
 impl<T, E, QF, Env> Handler<T, E, QF, Env>
@@ -232,6 +233,7 @@ where
             max_retries: DEFAULT_MAX_RETRIES,
             max_saga_iterations: DEFAULT_MAX_SAGA_ITERATIONS,
             max_total_calls: DEFAULT_MAX_TOTAL_CALLS,
+            max_call_duration: None,
         }
     }
 
@@ -252,6 +254,7 @@ where
             max_retries,
             max_saga_iterations: DEFAULT_MAX_SAGA_ITERATIONS,
             max_total_calls: DEFAULT_MAX_TOTAL_CALLS,
+            max_call_duration: None,
         }
     }
 
@@ -606,6 +609,7 @@ pub struct HandlerBuilder<T, E = (), QF = (), Env = ()> {
     max_retries: u32,
     max_saga_iterations: u32,
     max_total_calls: u32,
+    max_call_duration: Option<std::time::Duration>,
 }
 
 impl<T: BusinessLogic> HandlerBuilder<T, (), (), ()> {
@@ -620,6 +624,7 @@ impl<T: BusinessLogic> HandlerBuilder<T, (), (), ()> {
             max_retries: DEFAULT_MAX_RETRIES,
             max_saga_iterations: DEFAULT_MAX_SAGA_ITERATIONS,
             max_total_calls: DEFAULT_MAX_TOTAL_CALLS,
+            max_call_duration: None,
         }
     }
 }
@@ -636,6 +641,7 @@ impl<T: BusinessLogic, E, QF, Env> HandlerBuilder<T, E, QF, Env> {
             max_retries: self.max_retries,
             max_saga_iterations: self.max_saga_iterations,
             max_total_calls: self.max_total_calls,
+            max_call_duration: self.max_call_duration,
         }
     }
 
@@ -650,6 +656,7 @@ impl<T: BusinessLogic, E, QF, Env> HandlerBuilder<T, E, QF, Env> {
             max_retries: self.max_retries,
             max_saga_iterations: self.max_saga_iterations,
             max_total_calls: self.max_total_calls,
+            max_call_duration: self.max_call_duration,
         }
     }
 
@@ -664,6 +671,7 @@ impl<T: BusinessLogic, E, QF, Env> HandlerBuilder<T, E, QF, Env> {
             max_retries: self.max_retries,
             max_saga_iterations: self.max_saga_iterations,
             max_total_calls: self.max_total_calls,
+            max_call_duration: self.max_call_duration,
         }
     }
 
@@ -694,6 +702,20 @@ impl<T: BusinessLogic, E, QF, Env> HandlerBuilder<T, E, QF, Env> {
         self.max_total_calls = max_total_calls;
         self
     }
+
+    /// Set the stuck-call watchdog for durable saga runs (default: off)
+    ///
+    /// If the **oldest** in-flight call exceeds this duration, the run ends
+    /// with [`HandlerError::CallStuck`] — crash-equivalently: nothing is
+    /// persisted at timeout, all in-flight calls stay outstanding in the
+    /// journal, and `resume` re-dispatches them. Note the trade-off: a
+    /// timeout aborts the *sibling* in-flight calls too; their work is
+    /// re-paid on resume.
+    #[must_use]
+    pub const fn max_call_duration(mut self, max_call_duration: std::time::Duration) -> Self {
+        self.max_call_duration = Some(max_call_duration);
+        self
+    }
 }
 
 impl<T, E, QF, Env> HandlerBuilder<T, E, QF, Env>
@@ -715,6 +737,7 @@ where
             max_retries: self.max_retries,
             max_saga_iterations: self.max_saga_iterations,
             max_total_calls: self.max_total_calls,
+            max_call_duration: self.max_call_duration,
         }
     }
 }

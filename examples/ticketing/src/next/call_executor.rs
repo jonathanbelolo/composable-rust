@@ -518,13 +518,8 @@ where
                 message: format!("Saga exceeded max iterations: {max_iterations}"),
             }
         },
-        err @ (composable_rust_next::HandlerError::DoneWithOutstandingCalls { .. }
-        | composable_rust_next::HandlerError::SagaStuck
-        | composable_rust_next::HandlerError::RespondInFeedbackCycle
-        | composable_rust_next::HandlerError::TotalCallsExceeded { .. }) => {
-            EventError::ValidationFailed {
-                message: format!("Durable saga error: {err}"),
-            }
+        other => EventError::ValidationFailed {
+            message: format!("Handler error: {other}"),
         },
     }
 }
@@ -555,12 +550,7 @@ where
         composable_rust_next::HandlerError::SagaIterationsExceeded { max_iterations } => {
             format!("Saga exceeded max iterations: {max_iterations}")
         },
-        err @ (composable_rust_next::HandlerError::DoneWithOutstandingCalls { .. }
-        | composable_rust_next::HandlerError::SagaStuck
-        | composable_rust_next::HandlerError::RespondInFeedbackCycle
-        | composable_rust_next::HandlerError::TotalCallsExceeded { .. }) => {
-            format!("Durable saga error: {err}")
-        },
+        other => format!("Handler error: {other}"),
     };
     InventoryError::ValidationFailed(message)
 }
@@ -591,12 +581,7 @@ where
         composable_rust_next::HandlerError::SagaIterationsExceeded { max_iterations } => {
             format!("Saga exceeded max iterations: {max_iterations}")
         },
-        err @ (composable_rust_next::HandlerError::DoneWithOutstandingCalls { .. }
-        | composable_rust_next::HandlerError::SagaStuck
-        | composable_rust_next::HandlerError::RespondInFeedbackCycle
-        | composable_rust_next::HandlerError::TotalCallsExceeded { .. }) => {
-            format!("Durable saga error: {err}")
-        },
+        other => format!("Handler error: {other}"),
     };
     PaymentError::ValidationFailed(message)
 }

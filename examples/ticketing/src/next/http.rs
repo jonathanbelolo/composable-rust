@@ -391,12 +391,7 @@ fn to_app_error(err: HandlerError<EventError>) -> AppError {
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Saga exceeded max iterations: {max_iterations}"))
         },
-        err @ (HandlerError::DoneWithOutstandingCalls { .. }
-        | HandlerError::SagaStuck
-        | HandlerError::RespondInFeedbackCycle
-        | HandlerError::TotalCallsExceeded { .. }) => {
-            AppError::internal(format!("Durable saga error: {err}"))
-        },
+        other => AppError::internal(format!("Handler error: {other}")),
     }
 }
 
@@ -424,12 +419,7 @@ fn event_inventory_saga_to_app_error(err: HandlerError<SagaError>) -> AppError {
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Saga exceeded max iterations: {max_iterations}"))
         },
-        err @ (HandlerError::DoneWithOutstandingCalls { .. }
-        | HandlerError::SagaStuck
-        | HandlerError::RespondInFeedbackCycle
-        | HandlerError::TotalCallsExceeded { .. }) => {
-            AppError::internal(format!("Durable saga error: {err}"))
-        },
+        other => AppError::internal(format!("Handler error: {other}")),
     }
 }
 
@@ -460,12 +450,7 @@ fn reservation_saga_to_app_error(err: HandlerError<ReservationSagaError>) -> App
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Saga exceeded max iterations: {max_iterations}"))
         },
-        err @ (HandlerError::DoneWithOutstandingCalls { .. }
-        | HandlerError::SagaStuck
-        | HandlerError::RespondInFeedbackCycle
-        | HandlerError::TotalCallsExceeded { .. }) => {
-            AppError::internal(format!("Durable saga error: {err}"))
-        },
+        other => AppError::internal(format!("Handler error: {other}")),
     }
 }
 
@@ -1504,12 +1489,7 @@ fn inventory_to_app_error(err: HandlerError<InventoryError>) -> AppError {
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Saga exceeded max iterations: {max_iterations}"))
         },
-        err @ (HandlerError::DoneWithOutstandingCalls { .. }
-        | HandlerError::SagaStuck
-        | HandlerError::RespondInFeedbackCycle
-        | HandlerError::TotalCallsExceeded { .. }) => {
-            AppError::internal(format!("Durable saga error: {err}"))
-        },
+        other => AppError::internal(format!("Handler error: {other}")),
     }
 }
 
@@ -1639,12 +1619,7 @@ fn payment_to_app_error(err: HandlerError<PaymentError>) -> AppError {
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Saga exceeded max iterations: {max_iterations}"))
         },
-        err @ (HandlerError::DoneWithOutstandingCalls { .. }
-        | HandlerError::SagaStuck
-        | HandlerError::RespondInFeedbackCycle
-        | HandlerError::TotalCallsExceeded { .. }) => {
-            AppError::internal(format!("Durable saga error: {err}"))
-        },
+        other => AppError::internal(format!("Handler error: {other}")),
     }
 }
 
@@ -2063,12 +2038,7 @@ fn saga_to_app_error(err: HandlerError<ReservationSagaError>) -> AppError {
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Saga exceeded max iterations: {max_iterations}"))
         },
-        err @ (HandlerError::DoneWithOutstandingCalls { .. }
-        | HandlerError::SagaStuck
-        | HandlerError::RespondInFeedbackCycle
-        | HandlerError::TotalCallsExceeded { .. }) => {
-            AppError::internal(format!("Durable saga error: {err}"))
-        },
+        other => AppError::internal(format!("Handler error: {other}")),
     }
 }
 
@@ -2539,12 +2509,7 @@ fn analytics_to_app_error(err: HandlerError<AnalyticsError>) -> AppError {
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Exceeded max iterations: {max_iterations}"))
         },
-        err @ (HandlerError::DoneWithOutstandingCalls { .. }
-        | HandlerError::SagaStuck
-        | HandlerError::RespondInFeedbackCycle
-        | HandlerError::TotalCallsExceeded { .. }) => {
-            AppError::internal(format!("Durable saga error: {err}"))
-        },
+        other => AppError::internal(format!("Handler error: {other}")),
     }
 }
 
@@ -2802,12 +2767,7 @@ fn reservation_query_to_app_error(err: HandlerError<ReservationQueryError>) -> A
         HandlerError::SagaIterationsExceeded { max_iterations } => {
             AppError::internal(format!("Exceeded max iterations: {max_iterations}"))
         },
-        err @ (HandlerError::DoneWithOutstandingCalls { .. }
-        | HandlerError::SagaStuck
-        | HandlerError::RespondInFeedbackCycle
-        | HandlerError::TotalCallsExceeded { .. }) => {
-            AppError::internal(format!("Durable saga error: {err}"))
-        },
+        other => AppError::internal(format!("Handler error: {other}")),
     }
 }
 

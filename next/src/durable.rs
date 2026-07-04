@@ -333,6 +333,9 @@ pub enum DurableOutcome<R = ()> {
 struct RunState {
     /// Dispatched-but-uncompleted call IDs (mirrors the journal).
     outstanding: BTreeSet<CallId>,
+    /// Dispatch instants of the calls whose futures are actually in flight
+    /// (drain-deferred calls are absent). Drives the stuck-call watchdog.
+    in_flight_since: BTreeMap<CallId, tokio::time::Instant>,
     /// Calls dispatched over the instance's lifetime (journal-seeded on
     /// resume); checked against `max_total_calls`.
     dispatched_total: u64,
@@ -444,6 +447,7 @@ where
 
         let mut run = RunState {
             outstanding: BTreeSet::new(),
+            in_flight_since: BTreeMap::new(),
             dispatched_total: 0,
             domain_events_total: 0,
             carried_version: None,
@@ -581,6 +585,7 @@ where
 
         let run = RunState {
             outstanding: BTreeSet::new(),
+            in_flight_since: BTreeMap::new(),
             // Lifetime guard continuity: count every call this instance has
             // ever dispatched (re-dispatching outstanding ones is not new).
             dispatched_total: journal.dispatched_count,
@@ -628,10 +633,23 @@ where
 
         let mut in_flight = FuturesUnordered::new();
         for (id, call) in initial_calls {
+            run.in_flight_since.insert(id, tokio::time::Instant::now());
             in_flight.push(dispatch_one(&self.call_executor, id, call));
         }
 
         loop {
+            // Stuck-call watchdog: fires when the OLDEST in-flight call
+            // exceeds max_call_duration. Recomputed per iteration (arms are
+            // rebuilt anyway); None disables the arm.
+            let stuck_watch = self.max_call_duration.and_then(|max| {
+                run.in_flight_since
+                    .iter()
+                    .min_by_key(|(_, since)| **since)
+                    .map(|(id, since)| (*id, *since + max, max))
+            });
+            let watchdog_deadline =
+                stuck_watch.map_or_else(tokio::time::Instant::now, |(_, deadline, _)| deadline);
+
             tokio::select! {
                 biased;
 
@@ -664,6 +682,7 @@ where
                     // *other* calls; this completion's marker persists in the
                     // same append as the saga's reaction to it.
                     run.outstanding.remove(&call_id);
+                    run.in_flight_since.remove(&call_id);
                     let input = T::completion_input(stream_id, call_id, result);
                     match self
                         .durable_cycle(stream_id, input, Some(call_id), &mut run)
@@ -683,6 +702,8 @@ where
                                 // this cycle's append (journal exact), but
                                 // the call is not started — resume runs it.
                                 if !draining {
+                                    run.in_flight_since
+                                        .insert(id, tokio::time::Instant::now());
                                     in_flight.push(
                                         dispatch_one(&self.call_executor, id, call),
                                     );
@@ -693,6 +714,19 @@ where
                         CycleOutcome::Query(_) => {
                             return Err(HandlerError::RespondInFeedbackCycle);
                         },
+                    }
+                },
+
+                // Ordered after completions (biased): a completion that is
+                // ready always beats the watchdog.
+                () = tokio::time::sleep_until(watchdog_deadline), if stuck_watch.is_some() => {
+                    if let Some((call_id, _, max_call_duration)) = stuck_watch {
+                        // Crash-equivalent: nothing persisted, all in-flight
+                        // calls stay outstanding, resume re-dispatches them.
+                        return Err(HandlerError::CallStuck {
+                            call_id,
+                            max_call_duration,
+                        });
                     }
                 },
             }

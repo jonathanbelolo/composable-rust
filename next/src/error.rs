@@ -169,6 +169,21 @@ pub enum HandlerError<E: std::error::Error> {
     #[error("saga returned Respond in a feedback cycle; the completion cannot be journaled")]
     RespondInFeedbackCycle,
 
+    /// A durable saga call exceeded the configured watchdog duration
+    ///
+    /// The oldest in-flight call ran longer than the handler's
+    /// `max_call_duration`. The run ended crash-equivalently: nothing was
+    /// persisted at timeout, every in-flight call (the stuck one AND its
+    /// siblings) stays outstanding in the journal, and `resume`
+    /// re-dispatches them. This error is the alerting hook for hung calls.
+    #[error("saga call {call_id} exceeded max_call_duration ({max_call_duration:?})")]
+    CallStuck {
+        /// The oldest in-flight call (the one that tripped the watchdog)
+        call_id: crate::CallId,
+        /// The configured watchdog duration
+        max_call_duration: std::time::Duration,
+    },
+
     /// Durable saga exceeded the maximum total dispatched calls
     ///
     /// This is durable mode's runaway guard (the analogue of
