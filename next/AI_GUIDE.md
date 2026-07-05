@@ -417,6 +417,30 @@ impl DurableBusinessLogic for MySaga {
 Durable mode never calls `feedback_input(_from)` — every completion, live or
 post-resume, flows through `completion_input`.
 
+### Running a durable saga
+
+```rust
+let cancel = CancellationToken::new();
+match handler.handle_durable(input, cancel.clone()).await? {
+    DurableOutcome::Completed { version, event_count } => { /* finished (or parked at a gate) */ }
+    DurableOutcome::Suspended { outstanding }          => { /* cancelled/drained; resume later */ }
+    DurableOutcome::Query(response)                    => { /* initial input was a query */ }
+    other => { /* NoOutstandingCalls is resume-only; enum is non_exhaustive */ }
+}
+```
+
+- `cancel.cancel()` — **abort**: in-flight call futures dropped, run suspends
+  immediately; their journal entries stay outstanding.
+- `cancel.drain()` — **graceful**: no new calls start, in-flight ones complete
+  and journal their cycles, then the run suspends (top-ups requested while
+  draining are journaled but not started). `cancel()` upgrades a drain; a
+  configured watchdog still applies while draining.
+
+Runs are observable out of the box: `saga.durable.*` metrics (dispatched /
+completed / resumed counters, in-flight gauge, cycle-duration histogram,
+per-outcome run counter, all labeled `logic_tag`) plus `saga.durable_run` /
+`saga.durable_cycle` tracing spans.
+
 ### Durable-mode rules (hard errors, raised BEFORE persisting)
 
 | Situation | Error |
@@ -930,13 +954,18 @@ impl BusinessLogic for MyAggregate {
 }
 ```
 
-### DO: Implement feedback_input for Sagas
+### DO: Implement feedback_input_from for Batch Sagas
 
 ```rust
-// GOOD: Sagas must implement this
-fn feedback_input(results: Vec<SagaCallResult>) -> SagaInput {
-    SagaInput::Feedback { results, fetched: None }
+// GOOD: prefer feedback_input_from — the correlation key comes from the
+// PRIOR input, which stays exact even when a call fails and its result
+// carries no id. (Legacy feedback_input is its default fallback.)
+fn feedback_input_from(prior: &SagaInput, results: Vec<SagaCallResult>) -> SagaInput {
+    let saga_id = prior.saga_id(); // however your input exposes its key
+    SagaInput::Feedback { saga_id, results, fetched: None }
 }
+
+// Durable sagas implement completion_input on DurableBusinessLogic instead.
 ```
 
 ---
@@ -996,6 +1025,11 @@ fn process(&self, input: Input, clock: &dyn Clock) -> Result<...> {
 ```
 
 ### DON'T: Forget to Handle All Command Variants
+
+(This applies to **your own** command/event enums, where the compiler should
+force you to confront new variants. The framework's error enums and
+`DurableOutcome` are the opposite case: they're `#[non_exhaustive]`, so there
+you MUST write a catch-all arm.)
 
 ```rust
 // BAD: Non-exhaustive match with wildcard
@@ -1116,8 +1150,8 @@ budget across the whole run), and `max_saga_iterations` does not apply —
 | `HandlerError::Load(e)` | Event store read failed | Return 503, retry |
 | `HandlerError::Persist(VersionConflict)` | Concurrent modification | Auto-retried |
 | `HandlerError::Persist(other)` | Event store write failed | Return 503 |
-| `HandlerError::Projection(e)` | Read model update failed | Events saved, retry projection |
-| `HandlerError::Broadcast(e)` | Event bus publish failed | Events saved, retry broadcast |
+| `HandlerError::Projection(e)` | Read model update failed | Atomic path: rolled back with the events. Non-atomic: events saved, retry projection |
+| `HandlerError::Broadcast(e)` | Event bus publish failed | Events saved; broadcast is best-effort (durable `resume` does NOT re-broadcast) |
 | `HandlerError::Serialization(e)` | Event serialization failed | Bug in event schema |
 | `HandlerError::SagaIterationsExceeded` | Batch saga loop runaway | Bug in saga logic |
 | `HandlerError::DoneWithOutstandingCalls` | Durable: `Done` with calls in flight | Bug in saga logic |
