@@ -985,6 +985,16 @@ mod tests {
         }
     }
 
+    /// The in-memory store honors the SAME store contract as PostgresEventStore
+    /// — including version + stream_id stamping on load — pinned by running the
+    /// full conformance suite against it (Postgres runs it in
+    /// postgres-next/tests/integration_tests.rs).
+    #[tokio::test]
+    async fn in_memory_store_passes_event_store_conformance() {
+        let store = InMemoryEventStore::new();
+        crate::conformance::event_store_conformance(&store, "conf-mem").await;
+    }
+
     #[tokio::test]
     async fn event_store_append_and_load() {
         let store = InMemoryEventStore::new();
