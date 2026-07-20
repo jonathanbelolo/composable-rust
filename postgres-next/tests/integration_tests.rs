@@ -103,6 +103,7 @@ fn event(typ: &str, data: &[u8]) -> SerializedEvent {
         payload: data.to_vec(),
         metadata: None,
         version: None,
+        stream_id: None,
     }
 }
 

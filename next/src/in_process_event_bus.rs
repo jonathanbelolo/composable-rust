@@ -214,6 +214,7 @@ mod tests {
             payload: vec![1, 2, 3],
             metadata: None,
             version: None,
+            stream_id: None,
         }
     }
 

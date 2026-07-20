@@ -38,6 +38,7 @@ fn serialized(event: &ReservationSagaEvent) -> SerializedEvent {
         payload: bincode::serialize(event).expect("serialize saga event"),
         metadata: None,
         version: None,
+        stream_id: None,
     }
 }
 
@@ -492,6 +493,7 @@ fn serialized_event_inventory(event: &EventInventorySagaEvent) -> SerializedEven
         payload: bincode::serialize(event).expect("serialize event-inventory saga event"),
         metadata: None,
         version: None,
+        stream_id: None,
     }
 }
 

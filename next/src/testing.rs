@@ -229,6 +229,7 @@ impl InMemoryEventStore {
             let mut versioned = Vec::with_capacity(events.len());
             for (i, mut event) in events.into_iter().enumerate() {
                 event.version = Some(Version::new(start_version + i as u64));
+                event.stream_id = Some(key.clone());
                 versioned.push(event.clone());
                 stream.push(event);
             }
@@ -322,10 +323,12 @@ impl EventStore for InMemoryEventStore {
             }
         }
 
-        // Append events with version numbers
+        // Append events with version numbers + source stream identity (the same
+        // stamping contract as PostgresEventStore, pinned by the conformance suite)
         let start_version = current_version.as_u64() + 1;
         for (i, mut event) in events.into_iter().enumerate() {
             event.version = Some(Version::new(start_version + i as u64));
+            event.stream_id = Some(stream_id.as_str().to_string());
             stream.push(event);
         }
 
@@ -978,6 +981,7 @@ mod tests {
             payload: vec![1, 2, 3],
             metadata: None,
             version: None,
+            stream_id: None,
         }
     }
 
@@ -1359,6 +1363,40 @@ mod tests {
         assert_eq!(projector.projection_count(), 2);
         // The environment's own (non-atomic) projector was bypassed entirely.
         assert_eq!(env_handle.projector().projection_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn handler_stamps_stream_id_on_projected_and_broadcast_events() {
+        let env = TestEnvironment::new(FixedClock::new(Utc::now()));
+        let env_handle = env.clone();
+
+        let handler = Handler::new(SagaLogic, OneCallExecutor, NoOpQueryFetcher, env);
+        handler
+            .handle(SagaIn::Start { id: 7 })
+            .await
+            .expect("saga run succeeds");
+
+        // Both the projector and the bus receive infrastructure-stamped events:
+        // version AND stream_id (per-stream read-model guards depend on both).
+        let projected = env_handle.projector().projected_events();
+        assert_eq!(projected.len(), 2, "Started + Finished projected");
+        for event in &projected {
+            assert_eq!(
+                event.stream_id.as_deref(),
+                Some("saga-7"),
+                "projected events must carry the source stream_id"
+            );
+            assert!(event.version.is_some(), "projected events must be versioned");
+        }
+        let published = env_handle.event_bus().published_events();
+        assert_eq!(published.len(), 2, "Started + Finished broadcast");
+        for (_, event) in &published {
+            assert_eq!(
+                event.stream_id.as_deref(),
+                Some("saga-7"),
+                "broadcast events must carry the source stream_id"
+            );
+        }
     }
 
     // ── Backward-compat: a saga overriding ONLY the legacy `feedback_input` ──

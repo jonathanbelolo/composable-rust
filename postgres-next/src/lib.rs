@@ -206,7 +206,7 @@ impl PostgresEventStore {
 
         // Stamp versions so the projector sees the same versioned events the caller
         // will broadcast.
-        let versioned = stamp_versions(events, final_version);
+        let versioned = stamp_versions(events, final_version, stream_id.as_str());
 
         projector
             .project_in_tx(&mut tx, final_version, &versioned)
@@ -382,11 +382,13 @@ fn metadata_from_json(
 fn stamp_versions(
     mut events: Vec<SerializedEvent>,
     final_version: Version,
+    stream_id: &str,
 ) -> Vec<SerializedEvent> {
     let count = events.len() as u64;
     let start = final_version.as_u64() - count + 1;
     for (i, event) in events.iter_mut().enumerate() {
         event.version = Some(Version::new(start + i as u64));
+        event.stream_id = Some(stream_id.to_string());
     }
     events
 }
@@ -458,6 +460,7 @@ impl EventStore for PostgresEventStore {
                         payload: row.get("event_data"),
                         metadata: metadata_from_json(&stream_id_str, version, row.get("metadata")),
                         version: Some(version),
+                        stream_id: Some(stream_id_str.clone()),
                     }
                 })
                 .collect();
@@ -817,6 +820,7 @@ impl SagaJournalProjector {
                     payload: row.get("event_data"),
                     metadata: metadata_from_json(&stream_id, version, row.get("metadata")),
                     version: Some(version),
+                    stream_id: Some(stream_id),
                 }
             })
             .collect();

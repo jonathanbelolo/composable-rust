@@ -42,6 +42,7 @@ fn event(event_type: &str, payload: &[u8]) -> SerializedEvent {
         payload: payload.to_vec(),
         metadata: None,
         version: None,
+        stream_id: None,
     }
 }
 
@@ -107,6 +108,14 @@ pub async fn check_version_stamping<S: EventStore>(store: &S, prefix: &str) {
         vec![1, 2, 3],
         "streams must start at version 1 and be sequential"
     );
+    for e in &events {
+        assert_eq!(
+            e.stream_id.as_deref(),
+            Some(id.as_str()),
+            "load must stamp the source stream_id on every event (per-stream \
+             read-model guards depend on it)"
+        );
+    }
 
     // A SECOND append must continue the numbering, not restart it.
     let final_version = store

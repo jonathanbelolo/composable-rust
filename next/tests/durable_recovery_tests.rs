@@ -445,6 +445,7 @@ async fn resume_errors_on_corrupted_marker_payload() {
                 payload: vec![0xFF, 0xFE, 0xFD],
                 metadata: None,
                 version: None,
+                stream_id: None,
             }],
         )
         .await
@@ -530,6 +531,7 @@ async fn seed_journal(
             payload: bincode::serialize(&marker).unwrap(),
             metadata: None,
             version: None,
+            stream_id: None,
         });
     }
     store
@@ -549,6 +551,7 @@ async fn seed_journal(
             payload: bincode::serialize(&marker).unwrap(),
             metadata: None,
             version: None,
+            stream_id: None,
         });
     }
     if !completions.is_empty() {

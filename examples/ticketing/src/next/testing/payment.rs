@@ -684,12 +684,14 @@ mod tests {
                 payload: bincode::serialize(&processed_event).unwrap(),
                 metadata: None,
                 version: None,
+                stream_id: None,
             },
             SerializedEvent {
                 event_type: "PaymentSucceeded".to_string(),
                 payload: bincode::serialize(&succeeded_event).unwrap(),
                 metadata: None,
                 version: None,
+                stream_id: None,
             },
         ];
 
@@ -989,6 +991,7 @@ mod tests {
             payload: vec![1, 2, 3],                         // Invalid payload
             metadata: None,
             version: None,
+            stream_id: None,
         };
 
         // Project should succeed (skip the event, not fail)
@@ -1032,12 +1035,14 @@ mod tests {
                 payload: bincode::serialize(&processed_event).unwrap(),
                 metadata: None,
                 version: None,
+                stream_id: None,
             },
             SerializedEvent {
                 event_type: "PaymentFailed".to_string(),
                 payload: bincode::serialize(&failed_event).unwrap(),
                 metadata: None,
                 version: None,
+                stream_id: None,
             },
         ];
 

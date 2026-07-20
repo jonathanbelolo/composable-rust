@@ -467,6 +467,7 @@ where
                     payload,
                     metadata: metadata.clone(),
                     version: None,
+                    stream_id: None,
                 })
             })
             .collect()
@@ -509,13 +510,13 @@ where
                     AtomicError::Append(es) => HandlerError::Persist(es),
                     AtomicError::Projection(pe) => HandlerError::Projection(pe),
                 })?;
-            let versioned = Self::assign_versions(serialized, final_version, event_count);
+            let versioned = Self::assign_versions(serialized, final_version, event_count, stream_id);
             Ok((final_version, versioned))
         } else {
             let final_version = self
                 .persist_events(stream_id, &serialized, expected_version)
                 .await?;
-            let versioned = Self::assign_versions(serialized, final_version, event_count);
+            let versioned = Self::assign_versions(serialized, final_version, event_count, stream_id);
             self.project_and_wait(&versioned).await?;
             Ok((final_version, versioned))
         }
@@ -557,14 +558,20 @@ where
     ///
     /// - If `final_version` is V and we persisted N events
     /// - The events have versions: V-N+1, V-N+2, ..., V
+    ///
+    /// The source `stream_id` is stamped alongside the version: projectors and
+    /// bus subscribers receive [`SerializedEvent`]s without any other stream
+    /// context, and per-stream read-model guards depend on it.
     fn assign_versions(
         mut events: Vec<SerializedEvent>,
         final_version: Version,
         event_count: usize,
+        stream_id: &StreamId,
     ) -> Vec<SerializedEvent> {
         let start_version = final_version.as_u64() - event_count as u64 + 1;
         for (i, event) in events.iter_mut().enumerate() {
             event.version = Some(Version::new(start_version + i as u64));
+            event.stream_id = Some(stream_id.as_str().to_string());
         }
         events
     }

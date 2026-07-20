@@ -910,6 +910,7 @@ async fn version_conflict_retry_preserves_completion() {
                 payload: Vec::new(),
                 metadata: None,
                 version: None,
+                stream_id: None,
             }],
         )
         .await

@@ -648,6 +648,12 @@ pub struct SerializedEvent {
 
     /// Event version in the stream (set by event store on load)
     pub version: Option<Version>,
+
+    /// Source stream identity (set by the event store on load, and stamped by
+    /// the handler/store infrastructure after a successful append — mirrors
+    /// `version`). `None` only for events that have not yet passed through
+    /// persistence.
+    pub stream_id: Option<String>,
 }
 
 /// Event metadata for correlation and auditing

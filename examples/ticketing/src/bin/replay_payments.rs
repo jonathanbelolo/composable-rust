@@ -166,6 +166,7 @@ async fn query_payment_events(pool: &PgPool) -> Result<Vec<EventRow>, sqlx::Erro
                     payload: row.get("event_data"),
                     metadata: None,
                     version: Some(Version::new(version_i64 as u64)),
+                    stream_id: Some(row.get("stream_id")),
                 },
             }
         })

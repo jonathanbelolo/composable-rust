@@ -61,6 +61,7 @@ fn ser<T: serde::Serialize>(event: &T, typ: &str) -> SerializedEvent {
         payload: bincode::serialize(event).expect("serialize"),
         metadata: None,
         version: None,
+        stream_id: None,
     }
 }
 

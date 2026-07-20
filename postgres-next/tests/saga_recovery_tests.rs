@@ -395,6 +395,7 @@ fn dispatched_marker(stream_id: &str, call: u64) -> SerializedEvent {
         payload: bincode::serialize(&marker).unwrap(),
         metadata: None,
         version: None,
+        stream_id: None,
     }
 }
 
@@ -408,6 +409,7 @@ fn completed_marker(stream_id: &str, call_id: u64) -> SerializedEvent {
         payload: bincode::serialize(&marker).unwrap(),
         metadata: None,
         version: None,
+        stream_id: None,
     }
 }
 
@@ -417,6 +419,7 @@ fn domain_event(typ: &str) -> SerializedEvent {
         payload: vec![1, 2, 3],
         metadata: None,
         version: None,
+        stream_id: None,
     }
 }
 

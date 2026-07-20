@@ -121,9 +121,13 @@ impl std::fmt::Display for CallId {
 /// version, which is unknowable before the append and self-describing
 /// after a load (the store stamps versions).
 ///
-/// `stream_id` is embedded because projectors and event-bus subscribers
-/// receive [`SerializedEvent`]s without stream context — the payload is the
-/// only place they can learn which saga instance the marker belongs to.
+/// `stream_id` is embedded for historical reasons: when this marker was
+/// designed, [`SerializedEvent`] carried no stream context, so the payload was
+/// the only place a projector could learn which saga instance a marker belongs
+/// to. `SerializedEvent::stream_id` now exists (stamped by the store on load
+/// and by the handler after append), but the payload copy is kept: the journal
+/// scanner decodes payloads independent of transport, and stored markers are
+/// immutable.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallDispatched {
     /// The saga instance's stream ID.
@@ -1080,6 +1084,7 @@ where
             payload,
             metadata: Some(metadata.clone()),
             version: None,
+            stream_id: None,
         })
     }
 
@@ -1109,6 +1114,7 @@ where
             payload,
             metadata: Some(metadata.clone()),
             version: None,
+            stream_id: None,
         })
     }
 }
@@ -1212,6 +1218,7 @@ mod tests {
             payload: bincode::serialize(&marker).unwrap(),
             metadata: None,
             version: Some(Version::new(version)),
+            stream_id: Some(stream_id.to_string()),
         }
     }
 
@@ -1226,6 +1233,7 @@ mod tests {
             payload: bincode::serialize(&marker).unwrap(),
             metadata: None,
             version: Some(Version::new(version)),
+            stream_id: Some(stream_id.to_string()),
         }
     }
 
@@ -1235,6 +1243,7 @@ mod tests {
             payload: vec![1, 2, 3],
             metadata: None,
             version: Some(Version::new(version)),
+            stream_id: None,
         }
     }
 
@@ -1320,6 +1329,7 @@ mod tests {
             payload: vec![0xFF; 3],
             metadata: None,
             version: Some(Version::new(1)),
+            stream_id: None,
         };
 
         let result = scan_journal(&[event]);
@@ -1427,6 +1437,7 @@ mod tests {
             payload: bincode::serialize(&MiniEv::Bumped).unwrap(),
             metadata: None,
             version: Some(Version::new(version)),
+            stream_id: None,
         };
 
         // Domain events interleaved with journal markers, as a durable saga

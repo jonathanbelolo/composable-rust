@@ -216,6 +216,7 @@ mod tests {
             payload: Vec::new(),
             metadata: None,
             version: None,
+            stream_id: None,
         }
     }
 

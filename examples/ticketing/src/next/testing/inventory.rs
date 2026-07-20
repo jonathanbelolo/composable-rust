@@ -839,6 +839,7 @@ mod tests {
             payload: bincode::serialize(&event).unwrap(),
             metadata: None,
             version: None,
+            stream_id: None,
         };
 
         // Project
@@ -1366,6 +1367,7 @@ mod tests {
             payload: vec![1, 2, 3],                   // Invalid payload for inventory
             metadata: None,
             version: None,
+            stream_id: None,
         };
 
         // Project should succeed (skip the event, not fail)
