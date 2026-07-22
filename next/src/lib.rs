@@ -99,9 +99,10 @@ mod version;
 pub use cancel::CancellationToken;
 pub use clock::{Clock, FixedClock, SystemClock};
 pub use durable::{
-    CALL_COMPLETED_EVENT_TYPE, CALL_DISPATCHED_EVENT_TYPE, CallCompleted, CallDispatched, CallId,
-    DurableBusinessLogic, DurableOutcome, JournalState, SweepReport, is_framework_event_type,
-    scan_journal,
+    AWAITING_CLEARED_EVENT_TYPE, AWAITING_EVENT_TYPE, CALL_COMPLETED_EVENT_TYPE,
+    CALL_DISPATCHED_EVENT_TYPE, CallCompleted, CallDispatched, CallId, DurableBusinessLogic,
+    DurableOutcome, JournalState, SagaAwaiting, SagaAwaitingCleared, SweepReport,
+    is_framework_event_type, scan_awaiting, scan_journal,
 };
 pub use error::{AtomicError, HandlerError, ProjectionError, SerializationError};
 pub use executor::{CallExecutor, NoOpCallExecutor, UnitCallExecutor};
@@ -114,8 +115,8 @@ pub use in_process_event_bus::{DEFAULT_CHANNEL_CAPACITY, InProcessEventBus};
 pub use logic::BusinessLogic;
 pub use multi_projector::{DynProjector, MultiProjector};
 pub use projections::{GetById, NoOpProjectionQueries, ProjectionQueries};
-pub use registry::{SagaInstanceRecord, SagaRegistry};
-pub use result::BusinessResult;
+pub use registry::{CorrelationIndex, ExpiredAwait, SagaInstanceRecord, SagaRegistry};
+pub use result::{AwaitDeadline, BusinessResult, Correlation};
 pub use stream::StreamId;
 pub use subject::{InvocationContext, Subject, SubjectId};
 pub use version::Version;

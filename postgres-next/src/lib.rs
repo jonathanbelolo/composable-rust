@@ -24,9 +24,11 @@
 #![warn(missing_docs)]
 
 use composable_rust_next::{
-    AtomicError, CALL_COMPLETED_EVENT_TYPE, CALL_DISPATCHED_EVENT_TYPE, CallCompleted,
-    CallDispatched, DynAtomicPersist, EventMetadata, EventStore, EventStoreError, ProjectionError,
-    Projector, SagaInstanceRecord, SagaRegistry, SerializedEvent, StreamId, Version,
+    AWAITING_CLEARED_EVENT_TYPE, AWAITING_EVENT_TYPE, AtomicError, CALL_COMPLETED_EVENT_TYPE,
+    CALL_DISPATCHED_EVENT_TYPE, CallCompleted, CallDispatched, Correlation, CorrelationIndex,
+    DynAtomicPersist, EventMetadata, EventStore, EventStoreError, ExpiredAwait, ProjectionError,
+    Projector, SagaAwaiting, SagaAwaitingCleared, SagaInstanceRecord, SagaRegistry, SerializedEvent,
+    StreamId, Version,
 };
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -921,6 +923,310 @@ impl SagaRegistry for PostgresSagaRegistry {
                     .try_into()
                     .unwrap_or_default(),
                 oldest_dispatched_at: row.get("oldest"),
+            })
+            .collect())
+    }
+}
+
+/// Projector of the saga await/wake correlation index (`saga_correlation_index`).
+///
+/// Writes the query-side of the `$saga.awaiting` / `$saga.awaiting_cleared`
+/// marker events: one row per PARKED instance, deleted on wake. Like
+/// [`SagaJournalProjector`], implements both projector traits:
+///
+/// - [`PgTransactionalProjector`] — the **required** path for `Await`: the
+///   index row must commit in the SAME transaction as the marker append, or a
+///   crash in the gap parks the saga unfindably (the framework's `Await` arm
+///   rejects fail-loud when no atomic path is wired).
+/// - [`Projector`] — the non-atomic path; only safe for offline rebuilds. A
+///   crash between append and project loses the row permanently — heal with
+///   [`rebuild_from_store`](Self::rebuild_from_store).
+///
+/// Construct with the saga type's `DurableBusinessLogic::LOGIC_TAG`.
+#[derive(Clone)]
+pub struct SagaCorrelationProjector {
+    pool: PgPool,
+    logic_tag: &'static str,
+}
+
+impl SagaCorrelationProjector {
+    /// Create a correlation-index projector for one saga type.
+    #[must_use]
+    pub const fn new(pool: PgPool, logic_tag: &'static str) -> Self {
+        Self { pool, logic_tag }
+    }
+
+    /// Apply awaiting markers on an open connection (shared by both paths).
+    async fn project_on_conn(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        events: &[SerializedEvent],
+    ) -> Result<(), ProjectionError> {
+        for event in events {
+            match event.event_type.as_str() {
+                AWAITING_EVENT_TYPE => {
+                    let marker: SagaAwaiting =
+                        bincode::deserialize(&event.payload).map_err(|e| {
+                            ProjectionError::Deserialization(format!("{AWAITING_EVENT_TYPE}: {e}"))
+                        })?;
+                    // m4: source awaiting_since from the marker's metadata
+                    // timestamp (projection-time now() only as a fallback), like
+                    // the journal projector's dispatched_at.
+                    let awaiting_since = event
+                        .metadata
+                        .as_ref()
+                        .map_or_else(chrono::Utc::now, |m| m.timestamp);
+
+                    // M3: the PK is (logic_tag, correlation_key,
+                    // correlation_value) — no stream_id — so a DIFFERENT instance
+                    // parking on an existing correlation would silently orphan
+                    // one. The `DO UPDATE ... WHERE existing.stream_id =
+                    // EXCLUDED.stream_id` makes rows_affected == 0 exactly in
+                    // that collision case (fresh insert or same-instance re-park
+                    // → 1 row), so we fail loud rather than swallow the loss.
+                    //
+                    // m1: reconstruct the deadline via INTEGER interval
+                    // arithmetic from epoch millis — NOT float `to_timestamp`,
+                    // which rounds at the microsecond digit. NULL millis → NULL
+                    // deadline (paired with NULL timeout_tag per the CHECK).
+                    let result = sqlx::query(
+                        r"
+                        INSERT INTO saga_correlation_index
+                            (logic_tag, correlation_key, correlation_value, stream_id,
+                             deadline, timeout_tag, awaiting_since)
+                        VALUES (
+                            $1, $2, $3, $4,
+                            CASE WHEN $5::BIGINT IS NULL THEN NULL
+                                 ELSE TIMESTAMPTZ 'epoch' + ($5::BIGINT * INTERVAL '1 millisecond')
+                            END,
+                            $6, $7
+                        )
+                        ON CONFLICT (logic_tag, correlation_key, correlation_value) DO UPDATE
+                        SET stream_id = EXCLUDED.stream_id,
+                            deadline = EXCLUDED.deadline,
+                            timeout_tag = EXCLUDED.timeout_tag,
+                            awaiting_since = EXCLUDED.awaiting_since
+                        WHERE saga_correlation_index.stream_id = EXCLUDED.stream_id
+                        ",
+                    )
+                    .bind(self.logic_tag)
+                    .bind(&marker.key)
+                    .bind(&marker.value)
+                    .bind(&marker.stream_id)
+                    .bind(marker.deadline_ms)
+                    .bind(&marker.timeout_tag)
+                    .bind(awaiting_since)
+                    .execute(&mut *conn)
+                    .await
+                    .map_err(|e| ProjectionError::Database(e.to_string()))?;
+
+                    if result.rows_affected() == 0 {
+                        return Err(ProjectionError::Custom(format!(
+                            "correlation collision: (logic_tag '{}', key '{}', value '{}') is \
+                             already held by a different saga instance; incoming stream '{}'. A \
+                             correlation value must identify exactly ONE parked instance — this \
+                             is a modeling error, not a transient failure.",
+                            self.logic_tag, marker.key, marker.value, marker.stream_id
+                        )));
+                    }
+                },
+                AWAITING_CLEARED_EVENT_TYPE => {
+                    let marker: SagaAwaitingCleared =
+                        bincode::deserialize(&event.payload).map_err(|e| {
+                            ProjectionError::Deserialization(format!(
+                                "{AWAITING_CLEARED_EVENT_TYPE}: {e}"
+                            ))
+                        })?;
+                    // Scope by stream_id: a saga clears only its OWN park (a
+                    // stale cleared for a correlation another instance now holds
+                    // must not wipe that instance's row).
+                    sqlx::query(
+                        r"
+                        DELETE FROM saga_correlation_index
+                        WHERE logic_tag = $1 AND correlation_key = $2
+                          AND correlation_value = $3 AND stream_id = $4
+                        ",
+                    )
+                    .bind(self.logic_tag)
+                    .bind(&marker.key)
+                    .bind(&marker.value)
+                    .bind(&marker.stream_id)
+                    .execute(&mut *conn)
+                    .await
+                    .map_err(|e| ProjectionError::Database(e.to_string()))?;
+                },
+                _ => {},
+            }
+        }
+        Ok(())
+    }
+
+    /// Rebuild correlation-index rows from the `events` table (disaster
+    /// recovery, or healing after non-atomic-path projection loss).
+    ///
+    /// Replays every `$saga.awaiting*` marker whose stream starts with
+    /// `stream_id_prefix` through the same idempotent statements, in
+    /// stream-version order (so a `cleared` is applied before a later `awaiting`
+    /// for the same correlation).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProjectionError`] on query failure or undecodable marker
+    /// payloads.
+    pub async fn rebuild_from_store(&self, stream_id_prefix: &str) -> Result<(), ProjectionError> {
+        let rows = sqlx::query(
+            r"
+            SELECT stream_id, version, event_type, event_data, metadata
+            FROM events
+            WHERE event_type IN ($1, $2)
+            ORDER BY stream_id, version ASC
+            ",
+        )
+        .bind(AWAITING_EVENT_TYPE)
+        .bind(AWAITING_CLEARED_EVENT_TYPE)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| ProjectionError::Database(e.to_string()))?;
+
+        let events: Vec<SerializedEvent> = rows
+            .into_iter()
+            .filter(|row| {
+                row.get::<String, _>("stream_id")
+                    .starts_with(stream_id_prefix)
+            })
+            .map(|row| {
+                let stream_id: String = row.get("stream_id");
+                let version_i64: i64 = row.get("version");
+                let version = Version::new(version_i64.try_into().unwrap_or(0));
+                SerializedEvent {
+                    event_type: row.get("event_type"),
+                    payload: row.get("event_data"),
+                    metadata: metadata_from_json(&stream_id, version, row.get("metadata")),
+                    version: Some(version),
+                    stream_id: Some(stream_id),
+                }
+            })
+            .collect();
+
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| ProjectionError::Database(e.to_string()))?;
+        self.project_on_conn(&mut conn, &events).await
+    }
+}
+
+impl std::fmt::Debug for SagaCorrelationProjector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SagaCorrelationProjector")
+            .field("logic_tag", &self.logic_tag)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PgTransactionalProjector for SagaCorrelationProjector {
+    fn project_in_tx<'a>(
+        &'a self,
+        conn: &'a mut sqlx::PgConnection,
+        _final_version: Version,
+        events: &'a [SerializedEvent],
+    ) -> impl std::future::Future<Output = Result<(), ProjectionError>> + Send + 'a {
+        self.project_on_conn(conn, events)
+    }
+}
+
+impl Projector for SagaCorrelationProjector {
+    async fn project(&self, events: &[SerializedEvent]) -> Result<(), ProjectionError> {
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| ProjectionError::Database(e.to_string()))?;
+        self.project_on_conn(&mut conn, events).await
+    }
+}
+
+/// [`CorrelationIndex`] over the `saga_correlation_index` table.
+///
+/// The event-wake / timeout-sweep query side: resolve a parked instance's
+/// stream from a correlation (`find`, PK-served) or list instances past their
+/// deadline (`find_expired`, partial-index-served). The write side is
+/// [`SagaCorrelationProjector`].
+#[derive(Clone)]
+pub struct PostgresCorrelationIndex {
+    pool: PgPool,
+}
+
+impl PostgresCorrelationIndex {
+    /// Create a correlation index over the given pool.
+    #[must_use]
+    pub const fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+impl std::fmt::Debug for PostgresCorrelationIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PostgresCorrelationIndex")
+            .finish_non_exhaustive()
+    }
+}
+
+impl CorrelationIndex for PostgresCorrelationIndex {
+    type Error = sqlx::Error;
+
+    async fn find(
+        &self,
+        logic_tag: &str,
+        correlation: &Correlation,
+    ) -> Result<Option<StreamId>, sqlx::Error> {
+        let row = sqlx::query(
+            r"
+            SELECT stream_id FROM saga_correlation_index
+            WHERE logic_tag = $1 AND correlation_key = $2 AND correlation_value = $3
+            ",
+        )
+        .bind(logic_tag)
+        .bind(&correlation.key)
+        .bind(&correlation.value)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|r| StreamId::new(r.get::<String, _>("stream_id"))))
+    }
+
+    async fn find_expired(
+        &self,
+        logic_tag: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<ExpiredAwait>, sqlx::Error> {
+        let rows = sqlx::query(
+            r"
+            SELECT stream_id, correlation_key, correlation_value, timeout_tag
+            FROM saga_correlation_index
+            WHERE logic_tag = $1 AND deadline IS NOT NULL AND deadline <= $2
+            ",
+        )
+        .bind(logic_tag)
+        .bind(now)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| ExpiredAwait {
+                stream_id: StreamId::new(row.get::<String, _>("stream_id")),
+                correlation: Correlation::new(
+                    row.get::<String, _>("correlation_key"),
+                    row.get::<String, _>("correlation_value"),
+                ),
+                // Non-NULL for any row with a deadline (the
+                // saga_correlation_deadline_tag_paired CHECK); default-guarded
+                // so a schema drift can never panic the sweep.
+                timeout_tag: row
+                    .get::<Option<String>, _>("timeout_tag")
+                    .unwrap_or_default(),
             })
             .collect())
     }

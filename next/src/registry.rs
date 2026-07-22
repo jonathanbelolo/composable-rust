@@ -17,7 +17,7 @@
 
 use std::future::Future;
 
-use crate::StreamId;
+use crate::{Correlation, StreamId};
 
 /// One saga instance with outstanding (dispatched-but-uncompleted) calls.
 #[derive(Debug, Clone)]
@@ -61,4 +61,64 @@ pub trait SagaRegistry: Send + Sync {
         &self,
         logic_tag: &str,
     ) -> impl Future<Output = Result<Vec<SagaInstanceRecord>, Self::Error>> + Send;
+}
+
+/// One parked saga instance whose await deadline has passed.
+#[derive(Debug, Clone)]
+pub struct ExpiredAwait {
+    /// The instance's event stream.
+    pub stream_id: StreamId,
+
+    /// The correlation the instance is parked on (passed back to
+    /// [`Handler::resume_awaiting`](crate::Handler::resume_awaiting) so the
+    /// wake clears exactly this entry).
+    pub correlation: Correlation,
+
+    /// The saga-chosen tag identifying which await timed out.
+    pub timeout_tag: String,
+}
+
+/// Query surface over the saga **correlation index**: "which parked instance
+/// waits on this correlation?" and "which awaits have expired?".
+///
+/// # The write side is NOT here
+///
+/// Index rows are registered / deregistered by PROJECTING the `$saga.awaiting`
+/// / `$saga.awaiting_cleared` marker events (see the
+/// `composable-rust-postgres-next` `SagaCorrelationProjector`), so every row
+/// commits ATOMICALLY with the saga's domain events in the same transaction.
+/// An imperative `register()` after the append would be a non-atomic two-step
+/// that could park a saga unfindably on a crash between persist and register —
+/// so it is deliberately not offered.
+pub trait CorrelationIndex: Send + Sync {
+    /// Error type for index queries.
+    type Error: std::error::Error + Send + Sync + 'static;
+
+    /// The stream of the saga instance parked on `correlation`, if any.
+    ///
+    /// Scoped by `logic_tag` so two saga types may reuse a correlation key
+    /// name without collision. Returns `None` when no instance is parked on it
+    /// (never parked, or already woken — the wake's `$saga.awaiting_cleared`
+    /// deregistered the row), which is what makes event delivery idempotent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying query fails.
+    fn find(
+        &self,
+        logic_tag: &str,
+        correlation: &Correlation,
+    ) -> impl Future<Output = Result<Option<StreamId>, Self::Error>> + Send;
+
+    /// All instances of the given saga type whose await deadline is at or
+    /// before `now` — the input to a timeout sweep.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying query fails.
+    fn find_expired(
+        &self,
+        logic_tag: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> impl Future<Output = Result<Vec<ExpiredAwait>, Self::Error>> + Send;
 }

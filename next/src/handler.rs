@@ -413,6 +413,16 @@ where
                     // For saga continuation, the next iteration will re-fetch from
                     // projections to get updated state and version
                 },
+
+                BusinessResult::Await { .. } => {
+                    // `Await` is a durable-mode-only primitive: parking on a
+                    // correlation requires the atomic `$saga.awaiting` marker
+                    // append + the correlation index, neither of which the batch
+                    // path provides. Persisting the marker here without the
+                    // atomic guarantee would risk parking the saga unfindably.
+                    // Reject loudly rather than silently drop the wait.
+                    return Err(HandlerError::AwaitRequiresDurable);
+                },
             }
         }
     }

@@ -71,6 +71,7 @@
 /// }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BusinessResult<E, C, R = ()> {
     /// Emit events and finish processing
     ///
@@ -134,6 +135,82 @@ pub enum BusinessResult<E, C, R = ()> {
     /// }
     /// ```
     Respond(R),
+
+    /// Park the saga mid-flight, waiting for a correlated external domain event
+    /// (or a deadline) to wake it. **Durable-mode only** — rejected on the batch
+    /// path, and rejected when the saga has outstanding calls (a saga is either
+    /// call-driven or awaiting, never both).
+    ///
+    /// This is the legal form of "wait for something external" that the
+    /// `SagaStuck` guard (empty `Continue` with no outstanding calls) otherwise
+    /// rejects. The handler will:
+    /// 1. Persist `events` **atomically** with a `$saga.awaiting` framework
+    ///    marker carrying `resume_on` (+ `timeout`), in one append.
+    /// 2. The marker's projector registers the correlation in the index in that
+    ///    same transaction (never a separate `register()` call — the two-step
+    ///    would park the saga unfindably on a crash).
+    /// 3. Return control. The instance is resumed later by
+    ///    [`Handler::resume_awaiting`](crate::Handler::resume_awaiting) — when an
+    ///    awaited event arrives or the deadline fires (the caller resolves the
+    ///    stream via a `CorrelationIndex`).
+    Await {
+        /// Events to persist atomically with the awaiting marker.
+        events: Vec<E>,
+        /// How a future event finds and wakes THIS instance (a
+        /// `(key, value)` the awaited event must carry).
+        resume_on: Correlation,
+        /// Optional deadline; on expiry the saga is woken via the timeout path
+        /// so the timeout and the event collapse into one resume.
+        timeout: Option<AwaitDeadline>,
+    },
+}
+
+/// Identifies which future event wakes a parked saga, and the value that routes
+/// that event to THIS instance.
+///
+/// Scoped by the saga's `LOGIC_TAG` at the index layer, so two saga types may
+/// reuse a `key` name (e.g. `"order_id"`) without collision.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Correlation {
+    /// The logical correlation dimension (e.g. `"order_id"`).
+    pub key: String,
+    /// The instance value the awaited event must carry (e.g. a specific id).
+    pub value: String,
+}
+
+impl Correlation {
+    /// Create a correlation from a key and value.
+    pub fn new(key: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            value: value.into(),
+        }
+    }
+}
+
+/// An absolute deadline for a parked saga's await, plus an opaque tag the saga
+/// chooses.
+///
+/// The tag lets the timeout wake and the event wake collapse into a single
+/// resume path — the saga branches on which arrived (the timeout wake's input,
+/// built by the caller and passed to `Handler::resume_awaiting`, carries the
+/// tag back).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AwaitDeadline {
+    /// The absolute instant at which the await times out.
+    pub at: chrono::DateTime<chrono::Utc>,
+    /// Opaque tag identifying which await timed out (saga-chosen).
+    pub tag: String,
+}
+
+impl AwaitDeadline {
+    /// Create a deadline from an absolute instant and a saga-chosen tag.
+    pub fn new(at: chrono::DateTime<chrono::Utc>, tag: impl Into<String>) -> Self {
+        Self {
+            at,
+            tag: tag.into(),
+        }
+    }
 }
 
 impl<E, C, R> BusinessResult<E, C, R> {
@@ -161,6 +238,20 @@ impl<E, C, R> BusinessResult<E, C, R> {
         Self::Respond(data)
     }
 
+    /// Create an `Await` result — park on a correlation, with an optional deadline
+    #[must_use]
+    pub const fn await_on(
+        events: Vec<E>,
+        resume_on: Correlation,
+        timeout: Option<AwaitDeadline>,
+    ) -> Self {
+        Self::Await {
+            events,
+            resume_on,
+            timeout,
+        }
+    }
+
     /// Check if this is a `Done` result
     #[must_use]
     pub const fn is_done(&self) -> bool {
@@ -179,13 +270,21 @@ impl<E, C, R> BusinessResult<E, C, R> {
         matches!(self, Self::Respond(_))
     }
 
+    /// Check if this is an `Await` result (a parked saga waiting on a correlation)
+    #[must_use]
+    pub const fn is_await(&self) -> bool {
+        matches!(self, Self::Await { .. })
+    }
+
     /// Get events from `Done` or `Continue` variants
     ///
     /// Returns an empty slice for `Respond` variants.
     #[must_use]
     pub fn events(&self) -> &[E] {
         match self {
-            Self::Done(events) | Self::Continue { events, .. } => events,
+            Self::Done(events) | Self::Continue { events, .. } | Self::Await { events, .. } => {
+                events
+            }
             Self::Respond(_) => &[],
         }
     }
@@ -194,7 +293,7 @@ impl<E, C, R> BusinessResult<E, C, R> {
     #[must_use]
     pub fn calls(&self) -> Option<&[C]> {
         match self {
-            Self::Done(_) | Self::Respond(_) => None,
+            Self::Done(_) | Self::Respond(_) | Self::Await { .. } => None,
             Self::Continue { calls, .. } => Some(calls),
         }
     }
@@ -204,7 +303,7 @@ impl<E, C, R> BusinessResult<E, C, R> {
     pub const fn response(&self) -> Option<&R> {
         match self {
             Self::Respond(data) => Some(data),
-            Self::Done(_) | Self::Continue { .. } => None,
+            Self::Done(_) | Self::Continue { .. } | Self::Await { .. } => None,
         }
     }
 
@@ -215,7 +314,7 @@ impl<E, C, R> BusinessResult<E, C, R> {
     pub fn into_response(self) -> Option<R> {
         match self {
             Self::Respond(data) => Some(data),
-            Self::Done(_) | Self::Continue { .. } => None,
+            Self::Done(_) | Self::Continue { .. } | Self::Await { .. } => None,
         }
     }
 }

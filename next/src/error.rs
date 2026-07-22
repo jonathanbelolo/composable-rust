@@ -158,10 +158,49 @@ pub enum HandlerError<E: std::error::Error> {
     ///
     /// The saga returned `Continue` with no new calls while no calls were
     /// outstanding — no completion will ever arrive, so the loop would
-    /// wait forever. Nothing was persisted. A saga that wants to park at a
-    /// human-review gate must return `Done` instead.
+    /// wait forever. Nothing was persisted. To WAIT legally: return `Done` to
+    /// park at a human-review gate (re-entered later by an explicit command),
+    /// or return `Await` to park on a correlated external event.
     #[error("saga returned Continue with no calls and none outstanding; it can never be woken")]
     SagaStuck,
+
+    /// `Await` was returned on the non-durable (batch) `handle` path
+    ///
+    /// Parking on a correlation requires the atomic `$saga.awaiting` marker
+    /// append and the correlation-index registration, which only the durable
+    /// path provides. Nothing was persisted. Run the saga via `handle_durable`
+    /// to use `Await`.
+    #[error("saga returned Await on the batch path; Await requires durable mode")]
+    AwaitRequiresDurable,
+
+    /// Durable saga returned `Await` while calls were still outstanding
+    ///
+    /// A saga is EITHER call-driven OR awaiting a correlation, never both:
+    /// allowing both would let the call-recovery sweep and the correlation
+    /// wake double-drive the same instance. Nothing was persisted. Consume
+    /// every outstanding call's completion before parking on a correlation.
+    #[error("saga returned Await with {outstanding} outstanding call(s)")]
+    AwaitWithOutstandingCalls {
+        /// Number of dispatched-but-uncompleted calls at the time of the error
+        outstanding: usize,
+    },
+
+    /// Durable saga returned `Await` but the environment has no `atomic_persist`
+    ///
+    /// `Await` registers its correlation by PROJECTING the `$saga.awaiting`
+    /// marker; that registration is crash-safe only when it commits in the SAME
+    /// transaction as the marker append (the `atomic_persist` path). Without it,
+    /// a crash in the append→project gap parks the saga unfindably — invisible
+    /// to BOTH the recovery sweep (no outstanding calls) and the correlation
+    /// index (row never written). Nothing was persisted; the run is rejected
+    /// fail-loud rather than risk a lost saga. Wire
+    /// `HandlerEnvironment::atomic_persist` (e.g. a `PostgresAtomicPersist`
+    /// composing a `SagaCorrelationProjector`) to use `Await`.
+    #[error(
+        "saga returned Await but the environment provides no atomic_persist; \
+         Await requires atomic persistence for crash-safe correlation registration"
+    )]
+    AwaitRequiresAtomicPersist,
 
     /// Durable saga returned `Respond` in a feedback cycle
     ///

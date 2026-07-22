@@ -55,10 +55,10 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tracing::Instrument;
 
 use crate::{
-    BusinessLogic, BusinessResult, CallExecutor, CancellationToken, EventMetadata, EventStore,
-    EventStoreError, FetchResult, Handler, HandlerEnvironment, HandlerError, InvocationContext,
-    QueryFetcher, SagaRegistry, SerializationError, SerializedEvent, StreamId, Subject, SubjectId,
-    UnitCallExecutor, Version,
+    AwaitDeadline, BusinessLogic, BusinessResult, CallExecutor, CancellationToken, Correlation,
+    EventMetadata, EventStore, EventStoreError, FetchResult, Handler, HandlerEnvironment,
+    HandlerError, InvocationContext, QueryFetcher, SagaRegistry, SerializationError, SerializedEvent,
+    StreamId, Subject, SubjectId, UnitCallExecutor, Version,
 };
 
 /// Event type of the framework marker persisted when a saga call is
@@ -68,6 +68,21 @@ pub const CALL_DISPATCHED_EVENT_TYPE: &str = "$saga.call_dispatched";
 /// Event type of the framework marker persisted when a saga call's result
 /// has been consumed by a feedback cycle.
 pub const CALL_COMPLETED_EVENT_TYPE: &str = "$saga.call_completed";
+
+/// Event type of the framework marker persisted when a saga parks on a
+/// correlation via [`BusinessResult::Await`](crate::BusinessResult::Await).
+///
+/// Carries the correlation (+ optional deadline) so the correlation-index
+/// projector can register `(logic_tag, key, value) -> stream_id` in the SAME
+/// transaction as the saga's domain events — a crash can never leave the saga
+/// parked-but-unfindable.
+pub const AWAITING_EVENT_TYPE: &str = "$saga.awaiting";
+
+/// Event type of the framework marker persisted when a parked saga's await is
+/// resolved (an awaited event arrived, or its deadline fired). The projector
+/// deletes the matching correlation-index row in the same append as the wake
+/// cycle's events, so a duplicate delivery finds nothing and no-ops.
+pub const AWAITING_CLEARED_EVENT_TYPE: &str = "$saga.awaiting_cleared";
 
 /// Whether an event type belongs to the reserved framework namespace (`$`).
 ///
@@ -150,6 +165,51 @@ pub struct CallCompleted {
 
     /// The completed call (the stream version of its dispatched marker).
     pub call_id: CallId,
+}
+
+/// Payload of a `$saga.awaiting` marker event.
+///
+/// Persisted atomically with the awaiting cycle's domain events; the
+/// correlation-index projector reads it to register `(logic_tag, key, value) ->
+/// stream_id` in the same transaction, so a crash can never leave the saga
+/// parked-but-unfindable. Like [`CallDispatched`], it embeds `stream_id` so a
+/// payload-decoding projector learns the instance independent of transport.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SagaAwaiting {
+    /// The saga instance's stream ID.
+    pub stream_id: String,
+
+    /// The correlation key the awaited event must carry (the logical dimension).
+    pub key: String,
+
+    /// The correlation value that routes the awaited event to THIS instance.
+    pub value: String,
+
+    /// Optional absolute deadline as epoch milliseconds (bincode-safe; the
+    /// in-memory [`AwaitDeadline`](crate::AwaitDeadline) keeps a `DateTime`).
+    /// The deadline sweep wakes the saga at/after it.
+    pub deadline_ms: Option<i64>,
+
+    /// Optional saga-chosen tag identifying which await timed out (paired with
+    /// `deadline_ms`).
+    pub timeout_tag: Option<String>,
+}
+
+/// Payload of a `$saga.awaiting_cleared` marker event.
+///
+/// Persisted in the same append as the wake cycle's events; the projector
+/// deletes the matching correlation-index row so a duplicate event delivery
+/// finds nothing and no-ops (mirrors the duplicate-completion tolerance).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SagaAwaitingCleared {
+    /// The saga instance's stream ID.
+    pub stream_id: String,
+
+    /// The correlation key being cleared.
+    pub key: String,
+
+    /// The correlation value being cleared.
+    pub value: String,
 }
 
 /// Business logic that can run in durable mode.
@@ -292,6 +352,51 @@ pub fn scan_journal(events: &[SerializedEvent]) -> Result<JournalState, Serializ
     })
 }
 
+/// Fold a loaded stream into the correlation the saga is CURRENTLY parked on,
+/// if any.
+///
+/// A saga parks on at most one correlation at a time (it cannot `Await` while
+/// awaiting — a wake must clear the prior park first), so the last
+/// `$saga.awaiting` marker not superseded by a matching `$saga.awaiting_cleared`
+/// is the live park. Returns `None` when the saga is not currently awaiting
+/// (never parked, or its last await was already cleared). This is the
+/// stream-level source of truth [`resume_awaiting`](Handler::resume_awaiting)
+/// uses to reject stale / duplicate / wrong-correlation wakes.
+///
+/// # Errors
+///
+/// Returns [`SerializationError::Decode`] if an awaiting marker payload is
+/// undecodable (framework-authored bytes — tolerating them would risk waking a
+/// saga against the wrong correlation).
+pub fn scan_awaiting(events: &[SerializedEvent]) -> Result<Option<Correlation>, SerializationError> {
+    let mut current: Option<Correlation> = None;
+    for event in events {
+        match event.event_type.as_str() {
+            AWAITING_EVENT_TYPE => {
+                let marker: SagaAwaiting = bincode::deserialize(&event.payload)
+                    .map_err(|e| SerializationError::Decode(format!("{AWAITING_EVENT_TYPE}: {e}")))?;
+                current = Some(Correlation::new(marker.key, marker.value));
+            },
+            AWAITING_CLEARED_EVENT_TYPE => {
+                let marker: SagaAwaitingCleared =
+                    bincode::deserialize(&event.payload).map_err(|e| {
+                        SerializationError::Decode(format!("{AWAITING_CLEARED_EVENT_TYPE}: {e}"))
+                    })?;
+                // Clear only if it matches the live park: a `cleared` for a
+                // stale correlation must never wipe a newer park.
+                if current
+                    .as_ref()
+                    .is_some_and(|c| c.key == marker.key && c.value == marker.value)
+                {
+                    current = None;
+                }
+            },
+            _ => {},
+        }
+    }
+    Ok(current)
+}
+
 /// Outcome of a durable saga run.
 ///
 /// Returned by `Handler::handle_durable` (and later `Handler::resume`).
@@ -334,6 +439,20 @@ pub enum DurableOutcome<R = ()> {
     /// doesn't exist — deliberately indistinguishable here, because none of
     /// them are the recovery driver's business to act on.
     NoOutstandingCalls,
+
+    /// The saga parked on a correlation via
+    /// [`Await`](crate::BusinessResult::Await).
+    ///
+    /// The `$saga.awaiting` marker (and the correlation-index registration it
+    /// drives) persisted atomically with the cycle's domain events. The
+    /// instance is resumed later by
+    /// [`resume_awaiting`](Handler::resume_awaiting) — when an awaited event
+    /// arrives (the caller resolves the stream via `CorrelationIndex::find`) or
+    /// its deadline expires (via `CorrelationIndex::find_expired`).
+    Awaiting {
+        /// The correlation the instance is now parked on.
+        correlation: Correlation,
+    },
 }
 
 /// Mutable state threaded through one durable run.
@@ -416,6 +535,8 @@ enum CycleOutcome<C, R> {
     /// `Continue` persisted; these calls (with their journal-assigned IDs)
     /// must now be dispatched.
     Dispatched { calls: Vec<(CallId, C)> },
+    /// `Await` persisted; the instance is parked on this correlation.
+    Awaiting { correlation: Correlation },
 }
 
 /// Wrap a single call execution so its completion carries the [`CallId`].
@@ -448,6 +569,7 @@ where
             Ok(DurableOutcome::Query(_)) => "query",
             Ok(DurableOutcome::Suspended { .. }) => "suspended",
             Ok(DurableOutcome::NoOutstandingCalls) => "no_outstanding",
+            Ok(DurableOutcome::Awaiting { .. }) => "awaiting",
             Err(_) => "error",
         };
         metrics::counter!(
@@ -543,7 +665,7 @@ where
         };
 
         let initial_calls = match self
-            .durable_cycle(&stream_id, input, None, &mut run)
+            .durable_cycle(&stream_id, input, None, None, &mut run)
             .await?
         {
             CycleOutcome::Query(response) => return Ok(DurableOutcome::Query(response)),
@@ -552,6 +674,9 @@ where
                     version,
                     event_count: run.domain_events_total,
                 });
+            },
+            CycleOutcome::Awaiting { correlation } => {
+                return Ok(DurableOutcome::Awaiting { correlation });
             },
             CycleOutcome::Dispatched { calls } => calls,
         };
@@ -708,6 +833,137 @@ where
             .await
     }
 
+    /// Wake a saga parked on [`Await`](crate::BusinessResult::Await) and run one
+    /// durable cycle with the caller-built `input`.
+    ///
+    /// The caller has resolved `stream_id` from `correlation` via a
+    /// [`CorrelationIndex`](crate::CorrelationIndex) (an awaited event arrived,
+    /// or its deadline fired) and built the saga's resume `input` from the
+    /// event / timeout payload — the same division of labor as
+    /// [`completion_input`](DurableBusinessLogic::completion_input) for calls.
+    /// The wake cycle's append carries the `$saga.awaiting_cleared` marker,
+    /// deregistering the correlation atomically with the saga's reaction; if the
+    /// saga dispatches calls in reaction, the normal completion loop drives them
+    /// to completion.
+    ///
+    /// # Duplicate / stale delivery
+    ///
+    /// The wake is guarded by a stream-level check ([`scan_awaiting`]): it
+    /// no-ops unless the stream is CURRENTLY parked on exactly `correlation`, so
+    /// a redelivered event (whose park was already cleared), a stale index row,
+    /// or a wrong-correlation delivery does nothing — it neither re-runs the
+    /// saga's reaction nor clears the wrong park. This covers the ordinary
+    /// at-least-once case.
+    ///
+    /// It is NOT, however, idempotent against a *truly concurrent* double
+    /// delivery where both callers read the pre-wake stream head: optimistic
+    /// concurrency serializes their appends (the loser retries), and on retry
+    /// the loser re-runs `process()` against post-wake state. Guard exactly as
+    /// the call path does — the saga's `process()` must branch on its fetched
+    /// phase (a wake against already-advanced state is a no-op), and/or hold a
+    /// per-instance advisory lock across the wake (see [`resume`](Handler::resume)).
+    ///
+    /// # Errors
+    ///
+    /// - [`HandlerError::Load`]: the stream could not be read.
+    /// - [`HandlerError::RespondInFeedbackCycle`]: the saga returned `Respond`
+    ///   on the wake cycle (queries are only legal as an initial input).
+    /// - Everything [`handle_durable`](Handler::handle_durable) can return once
+    ///   the completion loop is running.
+    pub async fn resume_awaiting(
+        &self,
+        stream_id: &StreamId,
+        correlation: Correlation,
+        input: T::Input,
+        cancel: CancellationToken,
+    ) -> Result<DurableOutcome<T::Response>, HandlerError<T::Error>> {
+        let span = tracing::info_span!(
+            "saga.durable_run",
+            stream_id = %stream_id,
+            logic_tag = T::LOGIC_TAG,
+            mode = "resume_awaiting",
+        );
+        let result = self
+            .resume_awaiting_inner(stream_id, correlation, input, cancel)
+            .instrument(span)
+            .await;
+        Self::record_run_outcome(&result);
+        result
+    }
+
+    async fn resume_awaiting_inner(
+        &self,
+        stream_id: &StreamId,
+        correlation: Correlation,
+        input: T::Input,
+        cancel: CancellationToken,
+    ) -> Result<DurableOutcome<T::Response>, HandlerError<T::Error>> {
+        let events = self
+            .env
+            .event_store()
+            .load(stream_id, None)
+            .await
+            .map_err(HandlerError::Load)?;
+
+        let journal = scan_journal(&events).map_err(HandlerError::Serialization)?;
+
+        // Defense-in-depth: an awaiting saga has no outstanding calls (the
+        // write-time Await invariant). If the stream shows outstanding calls it
+        // is NOT cleanly parked — refuse to wake it, else a `Done` on the wake
+        // would slip past `DoneWithOutstandingCalls` (which checks
+        // `run.outstanding`, seeded empty here) and strand real dispatched calls.
+        if !journal.outstanding.is_empty() {
+            return Err(HandlerError::AwaitWithOutstandingCalls {
+                outstanding: journal.outstanding.len(),
+            });
+        }
+
+        // Structural wake dedup: only wake if the stream is CURRENTLY parked on
+        // EXACTLY this correlation. A duplicate / stale / wrong-correlation
+        // delivery (the common at-least-once case) finds a different or no live
+        // park and no-ops — without re-running the saga's reaction or clearing
+        // the wrong row. (A truly-concurrent double delivery that both read the
+        // pre-wake head still relies on the saga's `process()` being
+        // state-driven, exactly as the call path does — see this method's docs.)
+        match scan_awaiting(&events).map_err(HandlerError::Serialization)? {
+            Some(c) if c == correlation => {}, // parked on this correlation — wake it
+            Some(other) => return Ok(DurableOutcome::Awaiting { correlation: other }),
+            None => return Ok(DurableOutcome::NoOutstandingCalls),
+        }
+
+        // The run starts with an empty outstanding set; `carried_version` and
+        // `origin` are seeded from the stream exactly as `resume` does.
+        let mut run = RunState {
+            outstanding: BTreeSet::new(),
+            in_flight_since: BTreeMap::new(),
+            dispatched_total: journal.dispatched_count,
+            domain_events_total: 0,
+            carried_version: events.last().and_then(|e| e.version),
+            origin: events.iter().rev().find_map(|e| {
+                e.metadata
+                    .as_ref()
+                    .and_then(|m| m.origin_subject_id.clone())
+            }),
+        };
+
+        match self
+            .durable_cycle(stream_id, input, None, Some(correlation), &mut run)
+            .await?
+        {
+            CycleOutcome::Query(_) => Err(HandlerError::RespondInFeedbackCycle),
+            CycleOutcome::Completed { version } => Ok(DurableOutcome::Completed {
+                version,
+                event_count: run.domain_events_total,
+            }),
+            CycleOutcome::Awaiting { correlation } => Ok(DurableOutcome::Awaiting { correlation }),
+            CycleOutcome::Dispatched { calls } => {
+                // The wake let the saga dispatch calls; drive them to completion.
+                self.run_completion_loop(stream_id, calls, run, &cancel)
+                    .await
+            },
+        }
+    }
+
     /// Drive the unordered-completion loop until the saga finishes, errs, or
     /// is cancelled. `initial_calls` are dispatched first (their journal
     /// markers are already persisted).
@@ -793,7 +1049,7 @@ where
                     in_flight_gauge.decrement();
                     let input = T::completion_input(stream_id, call_id, result);
                     let outcome = self
-                        .durable_cycle(stream_id, input, Some(call_id), &mut run)
+                        .durable_cycle(stream_id, input, Some(call_id), None, &mut run)
                         .await?;
                     // Count JOURNALED completions only: a cycle error leaves
                     // the completion un-journaled (the call re-runs on
@@ -828,6 +1084,10 @@ where
                                 }
                             }
                         },
+                        // A wake cycle whose last call let the saga park again.
+                        CycleOutcome::Awaiting { correlation } => {
+                            return Ok(DurableOutcome::Awaiting { correlation });
+                        },
                         // durable_cycle rejects Respond on feedback cycles.
                         CycleOutcome::Query(_) => {
                             return Err(HandlerError::RespondInFeedbackCycle);
@@ -858,19 +1118,25 @@ where
     /// (`None` for the initial cycle); its `$saga.call_completed` marker is
     /// persisted atomically with whatever the saga emitted in response.
     ///
+    /// `cleared` is the correlation this cycle RESOLVES — set only on a wake
+    /// cycle (`resume_awaiting`); its `$saga.awaiting_cleared` marker is
+    /// persisted atomically so the correlation-index entry is deregistered in
+    /// the same append.
+    ///
     /// Version-conflict retries are per-cycle (fresh `attempts` budget) and
-    /// re-fetch for fresh state while `completed` stays in hand.
+    /// re-fetch for fresh state while `completed` / `cleared` stay in hand.
     async fn durable_cycle(
         &self,
         stream_id: &StreamId,
         input: T::Input,
         completed: Option<CallId>,
+        cleared: Option<Correlation>,
         run: &mut RunState,
     ) -> Result<CycleOutcome<T::Call, T::Response>, HandlerError<T::Error>> {
         let span = tracing::debug_span!("saga.durable_cycle", call_id = ?completed);
         let started = std::time::Instant::now();
         let result = self
-            .durable_cycle_inner(stream_id, input, completed, run)
+            .durable_cycle_inner(stream_id, input, completed, cleared, run)
             .instrument(span)
             .await;
         metrics::histogram!("saga.durable.cycle.duration_seconds", "logic_tag" => T::LOGIC_TAG)
@@ -879,11 +1145,13 @@ where
     }
 
     #[allow(clippy::too_many_lines)] // One cycle's full fetch→process→persist state machine
+    #[allow(clippy::cognitive_complexity)] // The 4 BusinessResult arms are one cohesive state machine
     async fn durable_cycle_inner(
         &self,
         stream_id: &StreamId,
         input: T::Input,
         completed: Option<CallId>,
+        cleared: Option<Correlation>,
         run: &mut RunState,
     ) -> Result<CycleOutcome<T::Call, T::Response>, HandlerError<T::Error>> {
         let mut current_input = input;
@@ -920,7 +1188,7 @@ where
 
             match result {
                 BusinessResult::Respond(data) => {
-                    if completed.is_some() || !run.outstanding.is_empty() {
+                    if completed.is_some() || cleared.is_some() || !run.outstanding.is_empty() {
                         return Err(HandlerError::RespondInFeedbackCycle);
                     }
                     return Ok(CycleOutcome::Query(data));
@@ -933,9 +1201,11 @@ where
                         });
                     }
 
-                    if events.is_empty() && completed.is_none() {
+                    if events.is_empty() && completed.is_none() && cleared.is_none() {
                         // Aggregate-style no-op on the initial cycle: batch
-                        // parity, nothing persisted.
+                        // parity, nothing persisted. A wake cycle (`cleared`)
+                        // must NOT take this shortcut — its awaiting_cleared
+                        // marker has to persist to deregister the correlation.
                         return Ok(CycleOutcome::Completed {
                             version: expected_version.unwrap_or_else(Version::initial),
                         });
@@ -946,6 +1216,10 @@ where
                     Self::reject_reserved_type_names(&serialized)?;
                     if let Some(call_id) = completed {
                         serialized.push(Self::completed_marker(stream_id, call_id, &metadata)?);
+                    }
+                    if let Some(correlation) = cleared.as_ref() {
+                        serialized
+                            .push(Self::awaiting_cleared_marker(stream_id, correlation, &metadata)?);
                     }
 
                     match self
@@ -995,6 +1269,10 @@ where
                     if let Some(call_id) = completed {
                         serialized.push(Self::completed_marker(stream_id, call_id, &metadata)?);
                     }
+                    if let Some(correlation) = cleared.as_ref() {
+                        serialized
+                            .push(Self::awaiting_cleared_marker(stream_id, correlation, &metadata)?);
+                    }
                     for call in &calls {
                         serialized.push(Self::dispatched_marker(stream_id, call, &metadata)?);
                     }
@@ -1034,6 +1312,78 @@ where
                                 attempt = attempts,
                                 actual_version = actual.as_u64(),
                                 "version conflict; retrying durable cycle"
+                            );
+                            run.carried_version = Some(actual);
+                            current_input = prepared_input;
+                        },
+                        Err(e) => return Err(e),
+                    }
+                },
+
+                BusinessResult::Await {
+                    events,
+                    resume_on,
+                    timeout,
+                } => {
+                    // Await's crash-safety REQUIRES that the correlation-index
+                    // registration (a projection of the $saga.awaiting marker)
+                    // commits in the SAME transaction as the marker append. That
+                    // is the `atomic_persist` path; without it a crash in the
+                    // append→project gap parks the saga unfindably. Reject
+                    // fail-loud rather than persist an unrecoverable park.
+                    if self.env.atomic_persist().is_none() {
+                        return Err(HandlerError::AwaitRequiresAtomicPersist);
+                    }
+                    // A saga is EITHER call-driven OR awaiting a correlation,
+                    // never both — else the call-recovery sweep and the
+                    // correlation wake would double-drive this instance.
+                    if !run.outstanding.is_empty() {
+                        return Err(HandlerError::AwaitWithOutstandingCalls {
+                            outstanding: run.outstanding.len(),
+                        });
+                    }
+
+                    let metadata = Self::stamped_metadata(metadata_context, &ctx);
+                    let mut serialized = Self::serialize_events_with(&events, &metadata)?;
+                    Self::reject_reserved_type_names(&serialized)?;
+                    if let Some(call_id) = completed {
+                        serialized.push(Self::completed_marker(stream_id, call_id, &metadata)?);
+                    }
+                    if let Some(correlation) = cleared.as_ref() {
+                        serialized
+                            .push(Self::awaiting_cleared_marker(stream_id, correlation, &metadata)?);
+                    }
+                    // The awaiting marker MUST always persist (even with zero
+                    // domain events): it is what registers the correlation, so a
+                    // crash after this append can still find and wake the saga.
+                    serialized.push(Self::awaiting_marker(
+                        stream_id,
+                        &resume_on,
+                        timeout.as_ref(),
+                        &metadata,
+                    )?);
+
+                    match self
+                        .persist_and_project(stream_id, serialized, expected_version)
+                        .await
+                    {
+                        Ok((final_version, versioned)) => {
+                            self.broadcast(&versioned).await?;
+                            run.domain_events_total += events.len();
+                            run.carried_version = Some(final_version);
+                            return Ok(CycleOutcome::Awaiting {
+                                correlation: resume_on,
+                            });
+                        },
+                        Err(HandlerError::Persist(EventStoreError::VersionConflict {
+                            actual,
+                            ..
+                        })) if attempts < self.max_retries => {
+                            attempts += 1;
+                            tracing::warn!(
+                                attempt = attempts,
+                                actual_version = actual.as_u64(),
+                                "version conflict; retrying durable await cycle"
                             );
                             run.carried_version = Some(actual);
                             current_input = prepared_input;
@@ -1111,6 +1461,63 @@ where
         })?;
         Ok(SerializedEvent {
             event_type: CALL_DISPATCHED_EVENT_TYPE.to_string(),
+            payload,
+            metadata: Some(metadata.clone()),
+            version: None,
+            stream_id: None,
+        })
+    }
+
+    /// Build a `$saga.awaiting` marker carrying the correlation (+ optional
+    /// deadline) so the correlation-index projector can register the instance
+    /// atomically with this cycle's domain events.
+    fn awaiting_marker(
+        stream_id: &StreamId,
+        correlation: &Correlation,
+        deadline: Option<&AwaitDeadline>,
+        metadata: &EventMetadata,
+    ) -> Result<SerializedEvent, HandlerError<T::Error>> {
+        let marker = SagaAwaiting {
+            stream_id: stream_id.as_str().to_string(),
+            key: correlation.key.clone(),
+            value: correlation.value.clone(),
+            deadline_ms: deadline.map(|d| d.at.timestamp_millis()),
+            timeout_tag: deadline.map(|d| d.tag.clone()),
+        };
+        let payload = bincode::serialize(&marker).map_err(|e| {
+            HandlerError::Serialization(SerializationError::Encode(format!(
+                "{AWAITING_EVENT_TYPE}: {e}"
+            )))
+        })?;
+        Ok(SerializedEvent {
+            event_type: AWAITING_EVENT_TYPE.to_string(),
+            payload,
+            metadata: Some(metadata.clone()),
+            version: None,
+            stream_id: None,
+        })
+    }
+
+    /// Build a `$saga.awaiting_cleared` marker so the correlation-index
+    /// projector deregisters the instance in the same append as the wake
+    /// cycle's events.
+    fn awaiting_cleared_marker(
+        stream_id: &StreamId,
+        correlation: &Correlation,
+        metadata: &EventMetadata,
+    ) -> Result<SerializedEvent, HandlerError<T::Error>> {
+        let marker = SagaAwaitingCleared {
+            stream_id: stream_id.as_str().to_string(),
+            key: correlation.key.clone(),
+            value: correlation.value.clone(),
+        };
+        let payload = bincode::serialize(&marker).map_err(|e| {
+            HandlerError::Serialization(SerializationError::Encode(format!(
+                "{AWAITING_CLEARED_EVENT_TYPE}: {e}"
+            )))
+        })?;
+        Ok(SerializedEvent {
+            event_type: AWAITING_CLEARED_EVENT_TYPE.to_string(),
             payload,
             metadata: Some(metadata.clone()),
             version: None,
@@ -1245,6 +1652,90 @@ mod tests {
             version: Some(Version::new(version)),
             stream_id: None,
         }
+    }
+
+    fn awaiting_event(stream_id: &str, version: u64, key: &str, value: &str) -> SerializedEvent {
+        let marker = SagaAwaiting {
+            stream_id: stream_id.to_string(),
+            key: key.to_string(),
+            value: value.to_string(),
+            deadline_ms: None,
+            timeout_tag: None,
+        };
+        SerializedEvent {
+            event_type: AWAITING_EVENT_TYPE.to_string(),
+            #[allow(clippy::unwrap_used)]
+            payload: bincode::serialize(&marker).unwrap(),
+            metadata: None,
+            version: Some(Version::new(version)),
+            stream_id: Some(stream_id.to_string()),
+        }
+    }
+
+    fn cleared_event(stream_id: &str, version: u64, key: &str, value: &str) -> SerializedEvent {
+        let marker = SagaAwaitingCleared {
+            stream_id: stream_id.to_string(),
+            key: key.to_string(),
+            value: value.to_string(),
+        };
+        SerializedEvent {
+            event_type: AWAITING_CLEARED_EVENT_TYPE.to_string(),
+            #[allow(clippy::unwrap_used)]
+            payload: bincode::serialize(&marker).unwrap(),
+            metadata: None,
+            version: Some(Version::new(version)),
+            stream_id: Some(stream_id.to_string()),
+        }
+    }
+
+    /// `scan_awaiting` folds a stream into the correlation it is CURRENTLY
+    /// parked on — the source of truth `resume_awaiting` uses to dedup stale /
+    /// duplicate / wrong-correlation wakes (hostile-review MA-2 / MI-3).
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn scan_awaiting_tracks_the_live_park() {
+        let s = "saga-1";
+        // Not parked.
+        assert_eq!(scan_awaiting(&[]).unwrap(), None);
+        assert_eq!(scan_awaiting(&[domain_event(1)]).unwrap(), None);
+
+        // Parked on (order_id, 42).
+        assert_eq!(
+            scan_awaiting(&[awaiting_event(s, 1, "order_id", "42")]).unwrap(),
+            Some(Correlation::new("order_id", "42"))
+        );
+
+        // Parked then cleared → not parked.
+        assert_eq!(
+            scan_awaiting(&[
+                awaiting_event(s, 1, "order_id", "42"),
+                cleared_event(s, 2, "order_id", "42"),
+            ])
+            .unwrap(),
+            None
+        );
+
+        // Wake, do work, re-park on a NEW correlation → the live park is the new one.
+        assert_eq!(
+            scan_awaiting(&[
+                awaiting_event(s, 1, "order_id", "42"),
+                cleared_event(s, 2, "order_id", "42"),
+                domain_event(3),
+                awaiting_event(s, 4, "shipment_id", "99"),
+            ])
+            .unwrap(),
+            Some(Correlation::new("shipment_id", "99"))
+        );
+
+        // A cleared for a STALE correlation must NOT wipe the live park.
+        assert_eq!(
+            scan_awaiting(&[
+                awaiting_event(s, 1, "order_id", "42"),
+                cleared_event(s, 2, "order_id", "STALE"),
+            ])
+            .unwrap(),
+            Some(Correlation::new("order_id", "42"))
+        );
     }
 
     #[test]
