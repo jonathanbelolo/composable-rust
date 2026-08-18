@@ -8,21 +8,34 @@
 //! Tokens are stored in Redis with:
 //! - **Primary key**: `auth:token:{token_id}` → JSON-serialized `TokenData`
 //! - **TTL**: Configurable based on token type (5-15 minutes typical)
-//! - **Atomic consumption**: Uses GETDEL command for single-use guarantee
+//! - **Atomic consumption**: a Lua script compares and deletes in one command
 //!
 //! # Security
 //!
-//! - **Single-use**: Tokens consumed atomically via GETDEL (get + delete in one operation)
-//! - **Expiration**: Tokens automatically expire after TTL (Redis-level + validation)
-//! - **Constant-time validation**: Uses `constant_time_eq` to prevent timing attacks
-//! - **Defense-in-depth**: Double-checks expiration even though TTL handles it
-//! - **Replay protection**: Once consumed, token cannot be reused
-//! - **Key namespacing**: All keys prefixed with `auth:token:` to avoid collisions
+//! - **The secret is never stored.** `store_token` persists a SHA-256 digest of
+//!   it, so a Redis dump, replica or `KEYS`-capable operator comes away with
+//!   nothing usable inside the token's lifetime.
+//! - **Single-use, and only on a MATCH**: consumption is a Lua
+//!   compare-then-delete. Concurrent consumes leave exactly one winner, and a
+//!   WRONG secret leaves the token in place — presenting a bad secret for a
+//!   known token id must not destroy the holder's valid token.
+//! - **No timing side-channel that matters**: Lua string equality is
+//!   variable-time, so the comparison is between DIGESTS. What leaks is
+//!   information about a SHA-256 output, which is worthless without a preimage.
+//!   (This is why `constant_time_eq` is no longer used here: it cannot run
+//!   inside the script, and moving the comparison out of the script is what
+//!   made the delete non-atomic in the first place.)
+//! - **Expiration**: Redis TTL, plus a defense-in-depth check against clock
+//!   skew, a manual `PERSIST`, or maxmemory-policy misconfiguration.
+//! - **No enumeration**: absent, already-consumed, expired and mismatched are
+//!   all one indistinguishable `Ok(None)`.
+//! - **Key namespacing**: all keys prefixed with `auth:token:`.
 //!
 //! # Performance
 //!
-//! - **Connection pooling**: Uses `ConnectionManager` for efficient connection reuse
-//! - **Single round-trip**: GETDEL fetches and deletes in one Redis command
+//! - **Connection pooling**: `ConnectionManager`, shareable with the host
+//!   application via [`RedisTokenStore::from_connection_manager`]
+//! - **Single round-trip**: the compare-and-delete is one `EVALSHA`
 //! - **Automatic cleanup**: Redis TTL ensures expired tokens are removed
 //!
 //! # Example
@@ -139,7 +152,7 @@ impl RedisTokenStore {
     /// Requires the caller to compile against the same `redis` version this
     /// crate does — the type is not convertible across major versions.
     #[must_use]
-    pub fn from_connection_manager(conn_manager: ConnectionManager) -> Self {
+    pub const fn from_connection_manager(conn_manager: ConnectionManager) -> Self {
         Self { conn_manager }
     }
 
@@ -156,6 +169,27 @@ impl RedisTokenStore {
     fn token_key(token_id: &str) -> String {
         format!("auth:token:{token_id}")
     }
+
+    /// Hex SHA-256 of a token secret.
+    ///
+    /// Stored in place of the secret, and recomputed on the consume path so the
+    /// comparison happens between two digests. A timing side-channel on that
+    /// comparison leaks about the DIGEST, which is worthless without a
+    /// preimage — which is what lets the comparison move into Lua, where it can
+    /// be atomic with the delete but cannot be constant-time.
+    fn digest(token: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(token.as_bytes());
+        hasher
+            .finalize()
+            .iter()
+            .fold(String::with_capacity(64), |mut acc, b| {
+                use std::fmt::Write as _;
+                let _ = write!(acc, "{b:02x}");
+                acc
+            })
+    }
 }
 
 impl Clone for RedisTokenStore {
@@ -171,8 +205,14 @@ impl TokenStore for RedisTokenStore {
         let mut conn = self.conn_manager.clone();
         let token_key = Self::token_key(token_id);
 
-        // Serialize token data (using JSON instead of bincode because TokenData contains serde_json::Value)
-        let token_bytes = serde_json::to_vec(&token_data)
+        // Persist a DIGEST of the secret, never the secret itself. Redis holds
+        // these under a 5-15 minute TTL, but a dump, a replica, or an operator
+        // with `KEYS` access should not come away with live credentials — and
+        // the digest is also what makes the consume-side comparison safe to do
+        // in Lua (see `consume_token`).
+        let mut stored = token_data.clone();
+        stored.token = Self::digest(&token_data.token);
+        let token_bytes = serde_json::to_vec(&stored)
             .map_err(|e| AuthError::SerializationError(e.to_string()))?;
 
         // Calculate TTL in seconds
@@ -203,92 +243,86 @@ impl TokenStore for RedisTokenStore {
         let mut conn = self.conn_manager.clone();
         let token_key = Self::token_key(token_id);
 
-        // ✅ SECURITY: GETDEL is atomic (get + delete in one operation)
+        // ✅ SECURITY: compare-then-delete, atomically, in ONE round trip.
         //
-        // This ensures single-use semantics with no race conditions:
-        // - Multiple concurrent consume attempts will result in exactly one success
-        // - Once consumed, the token cannot be reused
-        // - No TOCTOU vulnerability between check and delete
-        let token_bytes: Option<Vec<u8>> = conn
-            .get_del(&token_key)
+        // The previous implementation ran `GETDEL` and validated afterwards, so
+        // presenting a WRONG secret for a known token id destroyed the holder's
+        // valid token — a login denial, and the opposite of this module's own
+        // contract. GETDEL cannot express "delete only if it matches", so the
+        // comparison moves into the script, where it is atomic with the delete:
+        //
+        // - concurrent consumes: exactly one wins, DEL runs once
+        // - a wrong secret: the token is LEFT IN PLACE
+        // - no TOCTOU: check and delete are one Redis command
+        //
+        // The comparison is between DIGESTS (see `digest`), not secrets. Lua
+        // string equality is variable-time, so comparing secrets here would
+        // reintroduce exactly the timing side-channel `constant_time_eq` was
+        // added to close; comparing digests leaks only about the digest, which
+        // is worthless without a preimage.
+        let lua_script = r"
+            local raw = redis.call('GET', KEYS[1])
+            if not raw then
+                return nil
+            end
+            local ok, obj = pcall(cjson.decode, raw)
+            if not ok or obj.token ~= ARGV[1] then
+                return nil
+            end
+            redis.call('DEL', KEYS[1])
+            return raw
+        ";
+
+        let script = redis::Script::new(lua_script);
+        let raw: Option<String> = script
+            .key(&token_key)
+            .arg(Self::digest(token))
+            .invoke_async(&mut conn)
             .await
             .map_err(|e| AuthError::InternalError(format!("Failed to consume token: {e}")))?;
 
-        if let Some(bytes) = token_bytes {
-            // Deserialize (using JSON instead of bincode because TokenData contains serde_json::Value)
-            let token_data: TokenData = serde_json::from_slice(&bytes)
-                .map_err(|e| AuthError::SerializationError(e.to_string()))?;
-
-            // ✅ SECURITY: Constant-time token comparison to prevent timing attacks
-            //
-            // Using variable-time comparison (==) would allow attackers to:
-            // 1. Measure response time for different token values
-            // 2. Determine which characters match via timing differences
-            // 3. Gradually reconstruct the token character-by-character
-            //
-            // constant_time_eq prevents this by always taking the same time
-            // regardless of where the first mismatch occurs.
-            let token_matches =
-                constant_time_eq::constant_time_eq(token.as_bytes(), token_data.token.as_bytes());
-
-            // ✅ SECURITY: Defense-in-depth expiration check
-            //
-            // Although Redis TTL should automatically delete expired tokens,
-            // we validate expiration here to guard against:
-            // - Clock skew between application and Redis
-            // - Manual Redis TTL manipulation (PERSIST command)
-            // - Redis configuration issues (maxmemory-policy noeviction)
-            let now = Utc::now();
-            let is_expired = token_data.expires_at <= now;
-
-            // Both conditions must pass
-            let is_valid = token_matches && !is_expired;
-
-            if is_valid {
-                tracing::info!(
-                    token_type = ?token_data.token_type,
-                    token_id = token_id,
-                    "Token consumed successfully (single-use)"
-                );
-                Ok(Some(token_data))
-            } else {
-                // ✅ SECURITY: Generic error path prevents information leakage
-                //
-                // We return None for both "wrong token" and "expired token" cases
-                // to prevent attackers from distinguishing between:
-                // - Valid but expired tokens (token exists in system)
-                // - Invalid tokens (token never existed or was consumed)
-                //
-                // This prevents token enumeration and timing attacks.
-                if token_matches {
-                    tracing::warn!(
-                        token_id = token_id,
-                        expires_at = %token_data.expires_at,
-                        now = %now,
-                        "Token consumption failed: token expired (TTL should have cleaned this up)"
-                    );
-                } else {
-                    tracing::warn!(
-                        token_id = token_id,
-                        "Token consumption failed: token mismatch"
-                    );
-                }
-                Ok(None)
-            }
-        } else {
-            // Token not found - could be:
-            // 1. Already consumed (single-use semantics)
-            // 2. Expired (Redis TTL deleted it)
-            // 3. Never existed (invalid token_id)
-            //
-            // We don't distinguish between these cases for security
-            // (prevents enumeration of valid token IDs).
+        let Some(raw) = raw else {
+            // Not found, already consumed, expired, or the secret did not
+            // match. Deliberately indistinguishable: telling them apart would
+            // let a caller enumerate valid token ids.
             tracing::debug!(
                 token_id = token_id,
-                "Token not found (consumed, expired, or invalid)"
+                "Token not consumed (absent, already used, expired, or mismatched)"
             );
-            Ok(None)
+            return Ok(None);
+        };
+
+        let mut token_data: TokenData =
+            serde_json::from_str(&raw).map_err(|e| AuthError::SerializationError(e.to_string()))?;
+
+        // ✅ SECURITY: defense-in-depth expiration check.
+        //
+        // Redis TTL should already have removed an expired token. This guards
+        // against clock skew, a manual `PERSIST`, and maxmemory-policy
+        // misconfiguration. The token has been deleted by now either way, which
+        // is what we want for an expired one.
+        let now = Utc::now();
+        if token_data.expires_at <= now {
+            tracing::warn!(
+                token_id = token_id,
+                expires_at = %token_data.expires_at,
+                now = %now,
+                "Token consumption failed: token expired (TTL should have cleaned this up)"
+            );
+            return Ok(None);
         }
+
+        // Hand back the secret the caller presented, not the digest we store.
+        // `TokenData.token` means "the token" to every caller; returning a
+        // digest under that name would be a quiet trap.
+        token_data.token = token.to_string();
+
+        tracing::info!(
+            token_type = ?token_data.token_type,
+            token_id = token_id,
+            "Token consumed successfully (single-use)"
+        );
+        Ok(Some(token_data))
     }
 
     async fn delete_token(&self, token_id: &str) -> Result<()> {
@@ -676,6 +710,63 @@ mod tests {
 
         // Cleanup
         store.delete_token(token_id).await.unwrap();
+    }
+
+    /// The secret never reaches Redis in a readable form.
+    ///
+    /// Tokens live 5-15 minutes, but a dump, a replica, or an operator with
+    /// `KEYS` access must not come away with a working credential inside that
+    /// window. Asserted against the RAW stored bytes rather than through the
+    /// store's own API, which would happily round-trip a plaintext secret and
+    /// tell us nothing.
+    #[tokio::test]
+    #[ignore] // Requires Redis running
+    async fn test_secret_is_not_stored_in_plaintext() {
+        let store = RedisTokenStore::new("redis://127.0.0.1:6379")
+            .await
+            .expect("Failed to create store");
+
+        let token_id = "digest-at-rest-test";
+        let secret = "correct-horse-battery-staple-256-bits";
+        store
+            .store_token(
+                token_id,
+                TokenData::new(
+                    TokenType::MagicLink,
+                    secret.to_string(),
+                    serde_json::json!({"email": "cargo@example.com"}),
+                    Utc::now() + Duration::minutes(10),
+                ),
+            )
+            .await
+            .expect("Failed to store token");
+
+        let mut conn = store.conn_manager.clone();
+        let raw: String = conn
+            .get(RedisTokenStore::token_key(token_id))
+            .await
+            .expect("Failed to read raw token record");
+
+        assert!(
+            !raw.contains(secret),
+            "the secret must NOT be readable in the stored record, got: {raw}"
+        );
+        assert!(
+            raw.contains(&RedisTokenStore::digest(secret)),
+            "the stored record must carry the digest of the secret"
+        );
+
+        // And the digest is what makes it verifiable: the real secret still
+        // consumes, so this is privacy at rest, not a broken store.
+        let consumed = store
+            .consume_token(token_id, secret)
+            .await
+            .expect("consume failed")
+            .expect("the correct secret must still consume the token");
+        assert_eq!(
+            consumed.token, secret,
+            "the caller gets back the secret it presented, never the digest"
+        );
     }
 
     #[tokio::test]
