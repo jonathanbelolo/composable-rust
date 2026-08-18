@@ -60,7 +60,7 @@ impl RedisChallengeStore {
         let client = Client::open(redis_url)
             .map_err(|e| AuthError::InternalError(format!("Failed to create Redis client: {e}")))?;
 
-        let conn_manager = ConnectionManager::new(client).await.map_err(|e| {
+        let conn_manager = super::connect_manager(client).await.map_err(|e| {
             AuthError::InternalError(format!("Failed to create Redis connection manager: {e}"))
         })?;
 

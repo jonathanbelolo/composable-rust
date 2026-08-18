@@ -117,13 +117,30 @@ impl RedisTokenStore {
         let client = Client::open(redis_url)
             .map_err(|e| AuthError::InternalError(format!("Failed to create Redis client: {e}")))?;
 
-        let conn_manager = ConnectionManager::new(client).await.map_err(|e| {
+        let conn_manager = super::connect_manager(client).await.map_err(|e| {
             AuthError::InternalError(format!("Failed to create Redis connection manager: {e}"))
         })?;
 
         tracing::info!("RedisTokenStore initialized successfully");
 
         Ok(Self { conn_manager })
+    }
+
+    /// Build a token store over an **existing** connection manager.
+    ///
+    /// [`Self::new`] opens its own pool, which is right for a caller that has
+    /// no Redis of its own. An application that already holds one — the
+    /// generated apps keep their sessions in the same Redis the tokens go to —
+    /// should pass it in rather than double the connection count for two key
+    /// prefixes. `ConnectionManager` is cheaply cloneable and multiplexes, so
+    /// sharing costs nothing and keeps one place where timeouts and retry
+    /// policy are configured.
+    ///
+    /// Requires the caller to compile against the same `redis` version this
+    /// crate does — the type is not convertible across major versions.
+    #[must_use]
+    pub fn from_connection_manager(conn_manager: ConnectionManager) -> Self {
+        Self { conn_manager }
     }
 
     /// Get the `Redis` key for a token.

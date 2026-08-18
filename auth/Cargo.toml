@@ -52,8 +52,13 @@ anyhow = { workspace = true }
 # Logging
 tracing = { workspace = true }
 
-# Redis for session storage
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+# Redis for session storage + the one-time token store
+#
+# 1.x is the maintained line (the 0.x series ended at 0.27). Kept in lockstep
+# with composable-effects and the generated workspace: RedisTokenStore shares
+# the consuming application's ConnectionManager, which is only possible while
+# they compile against the same redis crate.
+redis = { version = "1.6", features = ["tokio-comp", "connection-manager"] }
 
 # PostgreSQL for device registry (optional)
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "migrate"], optional = true }
