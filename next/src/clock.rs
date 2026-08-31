@@ -157,6 +157,119 @@ impl Clock for FixedClock {
     }
 }
 
+/// Real time, shifted by an amount the holder controls.
+///
+/// [`FixedClock`] freezes time, which is what a unit test around a pure
+/// `process()` wants. An integration test wants something different: the
+/// application under test writes `updated_at` from this clock and several
+/// generated queries `ORDER BY updated_at`, so a frozen clock gives every row
+/// in a scenario the same timestamp and makes that ordering arbitrary. What
+/// such a test needs is time that still MOVES, and that it can also jump.
+///
+/// `now()` is `base.now() + offset`. [`advance`](Self::advance) adds to the
+/// offset; [`set`](Self::set) pins `now()` to an instant and lets it run on from
+/// there, which is how a rule about a particular weekday or hour is reached.
+///
+/// Cloning shares the offset, so a harness can hand the application one handle
+/// and keep another to steer with — the same sharing [`FixedClock`] documents.
+pub struct OffsetClock<C: Clock = SystemClock> {
+    base: C,
+    offset: Arc<Mutex<chrono::Duration>>,
+}
+
+impl Default for OffsetClock<SystemClock> {
+    fn default() -> Self {
+        Self::new(SystemClock)
+    }
+}
+
+impl<C: Clock> OffsetClock<C> {
+    /// A clock reading `base`, with no shift yet.
+    pub fn new(base: C) -> Self {
+        Self {
+            base,
+            offset: Arc::new(Mutex::new(chrono::Duration::zero())),
+        }
+    }
+
+    /// Move time forward by `duration`.
+    #[allow(clippy::expect_used)] // Intentional: mutex poisoning is unrecoverable
+    pub fn advance(&self, duration: std::time::Duration) {
+        let delta = chrono::Duration::from_std(duration)
+            .unwrap_or_else(|_| chrono::TimeDelta::MAX);
+        let mut offset = self
+            .offset
+            .lock()
+            .expect("OffsetClock mutex poisoned - a thread panicked while holding the lock");
+        *offset = offset.checked_add(&delta).unwrap_or(chrono::TimeDelta::MAX);
+    }
+
+    /// Make `now()` read `instant`, and carry on from there.
+    ///
+    /// Deliberately not a freeze: the shift is fixed, not the time. Later reads
+    /// are `instant` plus however long has actually elapsed, so a scenario that
+    /// jumps to a Thursday afternoon still gets increasing timestamps for the
+    /// commands it sends next.
+    #[allow(clippy::expect_used)] // Intentional: mutex poisoning is unrecoverable
+    pub fn set(&self, instant: DateTime<Utc>) {
+        let mut offset = self
+            .offset
+            .lock()
+            .expect("OffsetClock mutex poisoned - a thread panicked while holding the lock");
+        *offset = instant - self.base.now();
+    }
+
+    /// Drop the shift; `now()` reads the base clock again.
+    #[allow(clippy::expect_used)] // Intentional: mutex poisoning is unrecoverable
+    pub fn reset(&self) {
+        *self
+            .offset
+            .lock()
+            .expect("OffsetClock mutex poisoned - a thread panicked while holding the lock") =
+            chrono::Duration::zero();
+    }
+}
+
+impl<C: Clock + Clone> Clone for OffsetClock<C> {
+    fn clone(&self) -> Self {
+        Self {
+            base: self.base.clone(),
+            offset: Arc::clone(&self.offset),
+        }
+    }
+}
+
+impl<C: Clock> Clock for OffsetClock<C> {
+    #[allow(clippy::expect_used)] // Intentional: mutex poisoning is unrecoverable
+    fn now(&self) -> DateTime<Utc> {
+        let offset = *self
+            .offset
+            .lock()
+            .expect("OffsetClock mutex poisoned - a thread panicked while holding the lock");
+        self.base.now() + offset
+    }
+}
+
+/// A clock behind a shared pointer is a clock.
+///
+/// Without this, `Arc<dyn Clock>` does not satisfy `Clock`, so a composition
+/// root cannot hold the trait — it has to name a concrete clock type in every
+/// environment it builds, and the choice becomes unreachable from outside.
+/// That is what happened to the generated applications: `SystemClock` was
+/// hardwired at every environment, and no integration test could control time,
+/// so every rule expressed in days, hours or weekdays was untestable.
+///
+/// `?Sized` is what makes the trait-object form work; the blanket also covers
+/// `Arc<SystemClock>` and `Arc<FixedClock>` for free.
+///
+/// Cloning an `Arc` shares the clock, which matches [`FixedClock`]'s own
+/// documented behaviour: every holder observes the same `advance`.
+impl<T: Clock + ?Sized> Clock for Arc<T> {
+    fn now(&self) -> DateTime<Utc> {
+        (**self).now()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,6 +315,78 @@ mod tests {
         clock.set(new_time);
 
         assert_eq!(clock.now(), new_time);
+    }
+
+    /// A composition root must be able to hold the TRAIT, not a concrete clock.
+    ///
+    /// The generated applications hardwired `SystemClock` into every
+    /// environment because `Arc<dyn Clock>` did not satisfy `Clock`, which left
+    /// integration tests unable to control time at all.
+    fn read_generically<C: Clock>(clock: &C) -> DateTime<Utc> {
+        clock.now()
+    }
+
+    /// An offset clock JUMPS but does not FREEZE.
+    ///
+    /// That distinction is the reason it exists. The generated applications
+    /// write `updated_at` from the injected clock and several generated queries
+    /// order by it, so a frozen clock would give every row in one scenario the
+    /// same timestamp and make that ordering arbitrary.
+    #[test]
+    fn an_offset_clock_jumps_without_freezing() {
+        let base = FixedClock::new(Utc.with_ymd_and_hms(2025, 1, 15, 10, 0, 0).unwrap());
+        let clock = OffsetClock::new(base.clone());
+        assert_eq!(clock.now(), base.now(), "no shift to begin with");
+
+        clock.advance(Duration::from_secs(14 * 24 * 3600));
+        assert_eq!(clock.now(), Utc.with_ymd_and_hms(2025, 1, 29, 10, 0, 0).unwrap());
+
+        // Time still moves underneath the shift — this is what a frozen clock
+        // cannot do, and what keeps `ORDER BY updated_at` meaningful.
+        base.advance(Duration::from_secs(1));
+        assert_eq!(clock.now(), Utc.with_ymd_and_hms(2025, 1, 29, 10, 0, 1).unwrap());
+
+        // `set` pins the instant, then lets it run on from there.
+        let thursday = Utc.with_ymd_and_hms(2025, 3, 6, 14, 0, 0).unwrap();
+        clock.set(thursday);
+        assert_eq!(clock.now(), thursday);
+        base.advance(Duration::from_secs(60));
+        assert_eq!(clock.now(), thursday + chrono::Duration::seconds(60));
+
+        clock.reset();
+        assert_eq!(clock.now(), base.now());
+    }
+
+    /// Clones share the shift, so a harness keeps the lever after handing the
+    /// clock to the application.
+    #[test]
+    fn offset_clock_clones_share_the_shift() {
+        let clock = OffsetClock::new(FixedClock::new(
+            Utc.with_ymd_and_hms(2025, 1, 15, 10, 0, 0).unwrap(),
+        ));
+        let erased: Arc<dyn Clock> = Arc::new(clock.clone());
+
+        clock.advance(Duration::from_secs(3600));
+        assert_eq!(erased.now(), Utc.with_ymd_and_hms(2025, 1, 15, 11, 0, 0).unwrap());
+    }
+
+    #[test]
+    fn a_clock_behind_a_shared_pointer_is_a_clock() {
+        let fixed = FixedClock::new(Utc.with_ymd_and_hms(2025, 1, 15, 10, 0, 0).unwrap());
+        let erased: Arc<dyn Clock> = Arc::new(fixed.clone());
+
+        // The trait object reads through to the clock it wraps.
+        assert_eq!(erased.now(), fixed.now());
+
+        // And advancing the original is visible through the erased handle, so a
+        // test harness can keep the lever after handing the clock to the app.
+        fixed.advance(Duration::from_secs(3600));
+        assert_eq!(erased.now(), Utc.with_ymd_and_hms(2025, 1, 15, 11, 0, 0).unwrap());
+
+        // Accepting a generic `C: Clock` is what an environment does, and it is
+        // the bound the blanket impl has to satisfy.
+        assert_eq!(read_generically(&erased), fixed.now());
+        assert!(read_generically(&Arc::new(SystemClock)).timestamp() > 0);
     }
 
     #[test]

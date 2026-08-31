@@ -97,7 +97,7 @@ mod version;
 
 // Re-export core types from modules
 pub use cancel::CancellationToken;
-pub use clock::{Clock, FixedClock, SystemClock};
+pub use clock::{Clock, FixedClock, OffsetClock, SystemClock};
 pub use durable::{
     AWAITING_CLEARED_EVENT_TYPE, AWAITING_EVENT_TYPE, CALL_COMPLETED_EVENT_TYPE,
     CALL_DISPATCHED_EVENT_TYPE, CallCompleted, CallDispatched, CallId, DurableBusinessLogic,
